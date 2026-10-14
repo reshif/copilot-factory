@@ -7,12 +7,15 @@
 // Copilot may drop this hook's output: the reference says command-hook output is dropped,
 // the changelog (1.0.65) says additionalContext reaches the model (hooks.md §5.3). So the
 // outcome is ALSO written to .factory/last-reply.json, which `factory next` shows until the
-// next routing decision. A new prompt also starts a new turn: the stop gate's block counter
-// is reset here.
+// next routing decision. A new prompt from the human also starts a new turn: the stop gate's
+// block counter is reset here. Not for continuation prompts: Copilot feeds every stop-gate
+// block reason back as a prompt, and Autopilot sends its own continuation text — resetting
+// on those meant the gate's cap of 3 never triggered (only Copilot's own limit of 8 did).
+// In an agent process `factory run` started there is no human and no stop gate: nothing to do.
 
 const fs = require('fs');
 const path = require('path');
-const { safe, context, findRoot } = require('./lib');
+const { safe, context, findRoot, runnerAgent, isContinuation } = require('./lib');
 
 function writeLastReply(root, rec) {
   try {
@@ -25,6 +28,7 @@ function writeLastReply(root, rec) {
 }
 
 safe((input) => {
+  if (runnerAgent() || isContinuation(input.prompt)) return;
   const root0 = findRoot(input.cwd);
   if (root0) {
     try {

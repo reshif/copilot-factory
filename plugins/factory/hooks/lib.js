@@ -43,6 +43,18 @@ const TOOLS = {
   bash: 'Bash',
   powershell: 'Bash',
   shell: 'Bash',
+  // Copilot's shell-session tools. write_bash / write_powershell type input into a running
+  // shell (docs: "Send input to a shell session"; CLI 1.0.62 says it is no longer supported,
+  // but the docs still list it): their input is checked as a command. read/stop/list only
+  // touch a session's output, under the Claude names for those (not guarded, not logged).
+  write_bash: 'Bash',
+  write_powershell: 'Bash',
+  read_bash: 'BashOutput',
+  read_powershell: 'BashOutput',
+  list_bash: 'BashOutput',
+  list_powershell: 'BashOutput',
+  stop_bash: 'KillShell',
+  stop_powershell: 'KillShell',
   view: 'Read',
   read: 'Read',
   read_file: 'Read',
@@ -141,6 +153,8 @@ function normalise(raw, argvEvent) {
   const args = parseArgs(rawArgs, runtimeTool);
   const tool = toolName(runtimeTool, args);
   const file = str(args.file_path, args.filePath, args.path, args.notebook_path, args.notebookPath, args.file);
+  // Copilot's rg and glob search `paths`: one directory or an array of them.
+  const searchPaths = (Array.isArray(args.paths) ? args.paths : [args.paths]).filter((x) => typeof x === 'string' && x);
   // apply_patch: the patch is the argument (input / patch / a raw string), never a path.
   const isPatchTool = /patch/i.test(String(runtimeTool || ''));
   const patch = tool === 'Edit' || tool === 'Write' || isPatchTool ? patchFiles(str(args.input, args.patch, args.diff, typeof rawArgs === 'string' ? rawArgs : null)) : [];
@@ -161,9 +175,10 @@ function normalise(raw, argvEvent) {
     tool,
     runtimeTool,
     args,
-    command: tool === 'Bash' ? str(args.command, args.cmd, args.script) || '' : '',
+    command: tool === 'Bash' ? str(args.command, args.cmd, args.script, args.input, args.text, args.keys) || '' : '',
     file,
     files,
+    searchPaths,
     content,
     isPatch: isPatchTool || patch.length > 0,
     agent: str(r.agentName, r.agent_name, r.agent_type, r.agentType),
@@ -265,9 +280,36 @@ function realpath(p) {
   }
 }
 
+// Inside an agent process `factory run` started (runner.js sets FACTORY_RUNNER=1 plus the
+// job, role and root): every hook of this plugin runs there too, because each agent is a
+// full `copilot -p --agent factory:<role>` session. The hooks then act for that agent, not
+// for the main session: a short role note at session start, the guard's agent rules, no
+// reply parsing, no stop gate. null in the main session.
+function runnerAgent() {
+  if (process.env.FACTORY_RUNNER !== '1') return null;
+  return {
+    role: process.env.FACTORY_AGENT_ROLE || null,
+    job: process.env.FACTORY_JOB || null,
+    root: process.env.FACTORY_ROOT || null,
+    label: process.env.FACTORY_AGENT_LABEL || process.env.FACTORY_AGENT_ROLE || null,
+  };
+}
+
+// The stop gate's block reason starts with this. Copilot sends a block reason back as the
+// next prompt, and Autopilot sends its own fixed continuation text; both fire
+// userPromptSubmitted (verified on CLI 1.0.97). Neither is the human speaking, so
+// prompt.js must not treat them as a new turn (that reset the stop gate's cap) or as a reply.
+const STOP_MARK = '[factory stop gate]';
+const AUTOPILOT_CONTINUE = /^\s*You have not yet marked the task as complete using the task_complete tool/;
+
+function isContinuation(prompt) {
+  const p = String(prompt || '').trimStart();
+  return p.startsWith(STOP_MARK) || /^\[factory\] Not (done|finished):/.test(p) || AUTOPILOT_CONTINUE.test(p);
+}
+
 // The plugin's own CLI as an absolute command: a plugin's bin/ is not on PATH in Copilot.
 function cliCommand() {
   return `node "${path.join(path.resolve(__dirname, '..'), 'bin', 'factory')}"`;
 }
 
-module.exports = { readInput, normalise, toolName, patchFiles, emit, deny, context, findRoot, safe, realpath, traceError, cliCommand, EVENTS, TOOLS };
+module.exports = { readInput, normalise, toolName, patchFiles, emit, deny, context, findRoot, safe, realpath, traceError, cliCommand, runnerAgent, isContinuation, STOP_MARK, EVENTS, TOOLS };

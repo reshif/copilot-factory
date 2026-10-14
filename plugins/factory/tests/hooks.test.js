@@ -116,6 +116,20 @@ test('hooks.json: native Copilot format, every event, plugin-root env var, no ma
   assert.equal(run({ COPILOT_PLUGIN_ROOT: F.PLUGIN }).status, 2);
   assert.equal(run({ PLUGIN_ROOT: F.PLUGIN }).status, 2);
   assert.equal(run({}).status, 0);
+  // no node on PATH: every hook exits 0 with a warning (a non-zero preToolUse exit would deny every tool)
+  const noNode = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nonode-'));
+  for (const b of ['bash', 'dirname', 'cat']) {
+    const p = spawnSync('bash', ['-c', `command -v ${b}`], { encoding: 'utf8' }).stdout.trim();
+    if (p) fs.symlinkSync(p, path.join(noNode, b));
+  }
+  for (const [ev, list] of Object.entries(H.hooks)) {
+    const r = spawnSync(path.join(noNode, 'bash'), ['-c', list[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: noNode, PLUGIN_ROOT: F.PLUGIN } });
+    assert.equal(r.status, 0, ev);
+    assert.match(r.stderr, /node is not on PATH/, ev);
+    assert.ok(list[0].powershell.includes('if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine("['), ev);
+  }
+  const missing = spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: process.env.PATH, PLUGIN_ROOT: '/nonexistent' } });
+  assert.deepEqual([missing.status, /not found; hook skipped/.test(missing.stderr)], [0, true]);
   // postToolUse filters in-script what the Claude matcher used to
   const { shouldLog } = require('../hooks/activity');
   for (const t of ['bash', 'create', 'edit', 'apply_patch', 'task', 'web_fetch']) assert.ok(shouldLog(lib.normalise({ toolName: t, toolArgs: {} }, 'postToolUse')), t);
@@ -306,4 +320,154 @@ test('agentStop: never gates an agent session started by factory run', () => {
   const r = spawnSync('node', [path.join(F.PLUGIN, 'hooks', 'stop.js'), 'agentStop'], { input: JSON.stringify({ cwd: root }), encoding: 'utf8', env: { ...process.env, FACTORY_RUNNER: '1' } });
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '', 'a runner agent ends its turn freely; its result goes through factory record');
+});
+
+// --- agents started by `factory run` (FACTORY_RUNNER=1) -----------------------------------
+
+const AGENT_ENV = { FACTORY_RUNNER: '1', FACTORY_JOB: 'J-0001', FACTORY_AGENT_ROLE: 'tester', FACTORY_AGENT_LABEL: 'test T1' };
+const agentHook = (name, input, event, extra = {}) => spawnSync('node', [path.join(F.PLUGIN, 'hooks', name), ...(event ? [event] : [])], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, ...AGENT_ENV, ...extra } });
+const CLI = `node "${path.join(F.PLUGIN, 'bin', 'factory')}"`;
+
+test('agent sessions: a short role note at session start, no reply parsing, no counter reset', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  const note = JSON.parse(agentHook('session-start.js', { source: 'startup', cwd: root }, 'sessionStart', { FACTORY_ROOT: root }).stdout).additionalContext;
+  assert.match(note, new RegExp(`factory agent "tester" for job ${J}`));
+  assert.match(note, /never run factory next, run, record, wfargs, ship, close/i);
+  assert.match(note, /approve/);
+  assert.match(note, /one JSON object/);
+  assert.doesNotMatch(note, /Current job|factory:start/, 'never told to drive the job');
+  // the prompt hook does nothing in an agent: no reply applied, the main session's counter kept
+  fs.writeFileSync(path.join(root, '.factory', 'stop-blocks.json'), JSON.stringify({ count: 2, at: new Date().toISOString() }));
+  const r = agentHook('prompt.js', { prompt: 'cancel job', cwd: root }, 'userPromptSubmitted');
+  assert.deepEqual([r.status, r.stdout], [0, '']);
+  assert.ok(fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')), 'the main session\'s stop counter survives an agent spawn');
+  assert.equal(F.cli(root, ['job', 'show']).status, 'active', 'a prompt in an agent is never a human reply');
+  // activity lines carry the agent's role, not "main session"
+  agentHook('activity.js', { toolName: 'bash', toolArgs: { command: 'npm test' }, cwd: root }, 'postToolUse');
+  const line = events(root).filter((e) => e.event === 'PostToolUse').pop();
+  assert.equal(line.agent_type, 'factory:tester');
+  assert.equal(line.job, J);
+  assert.equal(line.runner, true);
+});
+
+test('agent sessions: the guard denies driving the job and human commands, allows what briefs ask for', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  const g = (command) => agentHook('guard.js', { toolName: 'bash', toolArgs: { command }, cwd: root }, 'preToolUse', { FACTORY_ROOT: root });
+  const R = `${CLI} --root "${root}"`;
+  for (const c of ['next', 'run realize --scope all', 'record --file x.json', 'wfargs ground', 'ship', 'close', 'init', 'job new --title y', 'amend start', 'park --reason later', 'followup', 'epic spawn', 'distill done', 'use J-0002', 'answer --id Q-1 --answer no', 'evidence add AC1 --type doc', 'verify run', 'approve', 'lessons accept L1']) {
+    const r = g(`${R} ${c}`);
+    assert.ok(isDeny(r), `agent may not run factory ${c}`);
+  }
+  assert.match(JSON.parse(g(`${R} next`).stdout).permissionDecisionReason, /not for a factory agent/);
+  assert.ok(isDeny(g(`F=${path.join(F.PLUGIN, 'bin', 'factory')}; node $F next`)), 'through a variable');
+  for (const c of [`task verify T1 --job ${J}`, `task start T1 --job ${J}`, `task show T1 --job ${J}`, `plan validate --job ${J}`, `reconcile run --job ${J}`, `reconcile continue --job ${J}`, `reconcile abort --job ${J}`, `doc check "${path.join(root, '.factory', 'jobs', J, 'adr-0001.md')}" --job ${J}`, 'doc template threat-model', 'contract show', 'contract check', 'lessons list', `lessons add --job ${J} --text x --scope src --why y`, 'why', 'job show', 'help']) {
+    assert.ok(isAllow(g(`${R} ${c}`)), `agent may run factory ${c}`);
+  }
+  assert.ok(isAllow(g('npm test && git -C . log --oneline -3')));
+  // the same commands are fine for the main session
+  assert.ok(isAllow(guard({ toolName: 'bash', toolArgs: { command: `${R} next` }, cwd: root })));
+  // the denial names the agent
+  const deny = events(root).filter((e) => e.event === 'guard_deny').pop();
+  assert.equal(deny.agent_type, 'factory:tester');
+  // the stop gate never blocks an agent (see also below), and the brief's doc check is not an "inline script"
+  assert.ok(isAllow(guard({ toolName: 'bash', toolArgs: { command: `${R} doc check "${path.join(root, '.factory', 'jobs', J, 'adr-0001.md')}" --job ${J}` }, cwd: root })));
+});
+
+// --- guard bypasses -------------------------------------------------------------------------
+
+test('guard: Copilot shell-session tools, interactive shells, and human commands through indirection', () => {
+  const root = F.makeRepo();
+  const bash = (command) => guard({ toolName: 'bash', toolArgs: { command }, cwd: root });
+  const B = path.join(F.PLUGIN, 'bin', 'factory');
+  // write_bash input is a command; read/stop/list_bash are not guarded
+  assert.ok(isDeny(guard({ toolName: 'write_bash', toolArgs: { shellId: 's1', input: `node ${B} approve\n` }, cwd: root })));
+  assert.ok(isDeny(guard({ toolName: 'write_powershell', toolArgs: { shellId: 's1', input: 'git push --force\n' }, cwd: root })));
+  assert.ok(isAllow(guard({ toolName: 'write_bash', toolArgs: { shellId: 's1', input: 'y\n' }, cwd: root })));
+  for (const t of ['read_bash', 'stop_bash', 'list_bash']) assert.ok(isAllow(guard({ toolName: t, toolArgs: { shellId: 's1' }, cwd: root })), t);
+  assert.equal(lib.toolName('write_bash', {}), 'Bash');
+  assert.equal(lib.toolName('read_bash', {}), 'BashOutput');
+  // interactive shells
+  for (const c of ['bash', 'sh', 'zsh -l', 'bash -i', 'exec bash', 'sudo bash']) assert.ok(isDeny(bash(c)), c);
+  for (const c of ['bash -c "npm test"', 'bash scripts/build.sh', 'echo ls | sh', 'sh < script.sh']) assert.ok(isAllow(bash(c)), c);
+  // human-only verbs through variables, $(…), xargs, eval, aliases, functions, heredocs to a shell
+  for (const c of [
+    `F=${B}; node $F approve`,
+    `F="${B}"; node "$F" resume`,
+    '$(which factory) resume',
+    'node "$(command -v factory)" approve H1',
+    `echo approve | xargs node ${B}`,
+    `eval "node ${B} app""rove"`,
+    `alias f=${B}; f merged abc123`,
+    `f() { node ${B} "$@"; }; f cancel`,
+    `bash <<'EOF'\nnode ${B} approve\nEOF`,
+    `cat <<'EOF' | sh\nnode ${B} waive AC1\nEOF`,
+    `node ${B} lessons accept L1`,
+  ]) assert.ok(isDeny(bash(c)), c);
+  for (const c of [`node ${B} job show | grep -i approve`, 'git commit -m "approve flow"', `git commit -F - <<'EOF'\nnode ${B} approve\nEOF`, 'grep -rn approve src/', `node ${B} park --reason "waiting to approve"`]) assert.ok(isAllow(bash(c)), c);
+});
+
+test('guard: rg and glob `paths` (string or array) get the read rules', () => {
+  const root = F.makeRepo();
+  const secretDir = path.dirname(require('../cli/lib/seal').secretFile());
+  assert.ok(isDeny(guard({ toolName: 'rg', toolArgs: { pattern: '.', paths: secretDir }, cwd: root })));
+  assert.ok(isDeny(guard({ toolName: 'rg', toolArgs: { pattern: '.', paths: ['src', secretDir] }, cwd: root })));
+  assert.ok(isDeny(guard({ toolName: 'glob', toolArgs: { pattern: '*', paths: [secretDir] }, cwd: root })));
+  assert.ok(isAllow(guard({ toolName: 'rg', toolArgs: { pattern: 'add', paths: ['src'] }, cwd: root })));
+});
+
+// --- stop gate: continuation prompts and false "done" at a gate ------------------------------
+
+test('agentStop: block reasons and Autopilot continuations fed back as prompts do not reset the cap', () => {
+  const root = F.makeRepo();
+  F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  F.cli(root, ['next']);
+  const reasons = [];
+  let r = stop(root, { stop_hook_active: false });
+  for (let i = 0; i < 5 && blocked(r); i++) {
+    const reason = JSON.parse(r.stdout).reason;
+    reasons.push(reason);
+    assert.match(reason, /^\[factory stop gate\] /);
+    // what Copilot does with a block: the reason becomes the next prompt
+    assert.equal(hook('prompt.js', { prompt: reason, cwd: root }, 'userPromptSubmitted').stdout, '');
+    r = stop(root, { stop_hook_active: true });
+  }
+  assert.equal(reasons.length, 3, 'the cap ends the loop after 3 blocks');
+  assert.equal(r.stdout, '');
+  assert.equal(events(root).filter((e) => e.event === 'stop_block_cap').length, 1);
+  // Autopilot's continuation text is not the human either
+  assert.ok(blocked(stop(root, { stop_hook_active: false })));
+  hook('prompt.js', { prompt: 'You have not yet marked the task as complete using the task_complete tool. Continue.', cwd: root }, 'userPromptSubmitted');
+  assert.ok(fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')));
+  // a real prompt from the human does reset it
+  hook('prompt.js', { prompt: 'keep going', cwd: root }, 'userPromptSubmitted');
+  assert.ok(!fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')));
+  assert.ok(lib.isContinuation(reasons[0]) && !lib.isContinuation('please continue'));
+});
+
+test('agentStop: a false "done" at a pending gate is blocked; saying what is pending is not', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  assert.equal(F.cli(root, ['next']).action, 'gate');
+  const t = path.join(root, '.factory', 'scratch', 'transcript.jsonl');
+  fs.mkdirSync(path.dirname(t), { recursive: true });
+  const say = (text) => {
+    fs.writeFileSync(t, JSON.stringify({ type: 'assistant.message', data: { content: text } }) + '\n');
+    return stop(root, { transcriptPath: t });
+  };
+  assert.equal(stop(root).stdout, '', 'no readable message: plain waiting is never blocked');
+  const out = JSON.parse(say('All done! The fix is complete.').stdout);
+  assert.equal(out.decision, 'block');
+  assert.match(out.reason, /^\[factory stop gate\] Not done/);
+  assert.match(out.reason, new RegExp(`${J} is not finished`));
+  assert.match(out.reason, /tell the user it's waiting for H1/);
+  for (const ok of ['The contract is ready for review: reply "approve" or "deny <what must change>".', 'Done drafting. It is waiting at H1 for you.', 'I wrote the contract. Should I add floats?']) assert.equal(say(ok).stdout, '', ok);
+  // parked: same rule
+  F.cli(root, ['park', '--reason', 'later']);
+  assert.match(JSON.parse(say('Everything is done.').stdout).reason, /waiting for them to reply "resume"/);
+  assert.equal(say('Parked until you say resume.').stdout, '');
 });

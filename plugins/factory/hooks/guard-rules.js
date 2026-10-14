@@ -6,8 +6,15 @@
 //     through Read, Grep (path and its glob filter), Glob (where it searches) and NotebookRead
 //   - force-push in any spelling, --no-verify / commit -n, hook-path redirects, .git/hooks and .git/config edits
 //   - moving a job branch by hand, secret reads through git objects
-//   - human-only factory commands (approve, deny, resume, cancel, abandon, waive, merged, confirm, lessons accept|reject|promote, ci install)
-// Prose inside --reason/--text/--question/--answer/-m and quoted heredocs is data, not a command.
+//   - human-only factory commands (approve, deny, resume, cancel, abandon, waive, merged, confirm, reseal, lessons accept|reject|promote, ci install),
+//     also when reached indirectly: through a variable, alias or function that names the CLI,
+//     `$(…)`, eval, xargs, or a heredoc fed to a shell (conservative: a command that names the
+//     factory CLI, uses any indirection and contains a human-only verb is denied)
+//   - starting an interactive shell (bash/sh/zsh/… with no command, or -i)
+// And for an agent `factory run` started (opts.agent): every factory command its role is not
+// briefed to run (AGENT_ALLOWED) — driving the job is the main session's work.
+// Prose inside --reason/--text/--question/--answer/-m and quoted heredocs is data, not a command
+// (a heredoc fed to a shell or interpreter is code, and is checked).
 
 const path = require('path');
 const { realpath, deny: denyOut } = require('./lib');
@@ -122,10 +129,13 @@ function checkReadTool(root, tool, ti, absFile, cwd, policy) {
   return null;
 }
 
+// A heredoc fed to a shell or an interpreter is code, not data.
+const HEREDOC_TO_SHELL = /\b(?:bash|sh|zsh|dash|ksh|mksh|fish|pwsh|powershell|node|nodejs|python[0-9.]*|perl|ruby|php|deno|bun|xargs|eval|source)\b[^\n|;&]*<<-?\s*['"]?\w+|<<-?\s*['"]?\w+['"]?[^\n]*\|\s*(?:bash|sh|zsh|dash|ksh|mksh|xargs)\b/;
+
 function stripData(cmd) {
   let s = String(cmd || '');
-  // Quoted heredocs are data.
-  s = s.replace(/<<-?\s*(['"])(\w+)\1[\s\S]*?\n\s*\2\b/g, '<<DATA');
+  // Quoted heredocs are data — unless a shell or an interpreter runs them.
+  if (!HEREDOC_TO_SHELL.test(s)) s = s.replace(/<<-?\s*(['"])(\w+)\1[\s\S]*?\n\s*\2\b/g, '<<DATA');
   // Prose arguments are data in a plain factory/git command.
   s = s.replace(/(--(?:reason|text|question|answer|title|note|by)|\s-m)\s+("(?:[^"\\]|\\.)*"|'[^']*'|\S+)/g, '$1 _');
   return s;
@@ -137,16 +147,89 @@ function normalise(cmd) {
 }
 
 const HUMAN_ONLY = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal']);
-const VALUE_FLAGS = new Set(['--root', '--job', '--reason', '--text', '--scope', '--question', '--answer', '--title', '--note', '--by', '--type', '--risk', '--config', '--mode', '--scope', '--lanes', '--out', '--file', '--since', '--format', '--commit', '--manifest-dir', '--path', '--check', '--base', '--step', '--findings-file']);
+const VALUE_FLAGS = new Set(['--root', '--job', '--reason', '--text', '--scope', '--question', '--answer', '--title', '--note', '--by', '--type', '--risk', '--config', '--mode', '--scope', '--lanes', '--out', '--file', '--since', '--format', '--commit', '--manifest-dir', '--path', '--check', '--base', '--step', '--findings-file', '--id', '--why', '--model', '--timeout']);
 const TTY_FAKERS = /^(script|unbuffer|expect|socat|faketty|ptyexec|zpty|empty)$/;
 const INTERPRETER = /(^|[\s;&|(])(node|nodejs|python[0-9.]*|ruby|perl|php|deno|bun|osascript|tclsh)\b/;
 const INTERNALS = /\.factory\/(jobs|log|lessons|project\.json|policy\.json|current)|cli\/core\/|cli\/lib\/(seal|util)|software-factory\/secret|\.config\/software-factory/;
+const SHELLS = /^(bash|sh|zsh|dash|ksh|mksh|fish|csh|tcsh|pwsh|powershell)$/;
+// Ways a command can reach the factory CLI without naming it plainly where it runs.
+const INDIRECTION = /\$|`|\beval\b|\bxargs\b|\balias\b|\bsource\b|(?:^|[;&|(]\s*)\.\s|\bparallel\b|\s-exec(?:dir)?\b|\(\)\s*\{|\bfunction\s+\w|\bprintf\b|<<<|\bexec\b|\benv\b|\bcommand\b|\bbash\b|\bsh\b|\bzsh\b/;
+const LAUNCHERS = /^(node|nodejs|exec|command|env|sudo|time|nice|nohup|xargs|bash|sh|zsh|dash)$/;
 
-// Find a factory invocation in a token list and return its subcommand words, parsing
-// options the way the CLI does (--k=v, --k v for value flags, and --).
-function factorySubcommand(tokens) {
-  const at = tokens.findIndex((t) => t === 'factory' || /\/factory$/.test(t));
-  if (at === -1) return null;
+// Factory CLI commands an agent `factory run` started may run: read-only ones, and the ones a
+// brief tells a role to run — wfargs.js: plan validate (planner, slicer), task start / show
+// (builder), task verify (tester), reconcile run / continue / abort (integrator), doc check
+// (architect, threat modeler, slicer, planner); agent bodies: doc template; lesson-writer:
+// lessons add. Everything else drives the job (next, run, record, wfargs, ship, close, init,
+// use, job new, amend, park, followup, epic, distill, finalize, answer, verify run, evidence,
+// ci, pr, shim, console …) or is the human's (HUMAN_ONLY): the main session's or yours.
+const AGENT_ALLOWED = {
+  help: '*',
+  why: '*',
+  report: '*',
+  job: ['show', 'list'],
+  contract: ['show', 'check'],
+  plan: ['validate'],
+  task: ['start', 'show', 'verify'],
+  reconcile: ['run', 'continue', 'abort'],
+  doc: ['list', 'template', 'check', 'index'],
+  lessons: ['list', 'add'],
+  recipe: ['list', 'show', 'check', 'select'],
+  telemetry: ['report'],
+};
+// Words that only ever mean "drive the job" next to the factory CLI (for the indirect-call
+// rule; ambiguous words like run/use/init are caught when the call itself parses).
+const AGENT_DRIVER_WORDS = new Set(['next', 'record', 'wfargs', 'ship', 'close', 'amend', 'park', 'followup', 'epic', 'distill', 'finalize', 'shim']);
+
+// Every top-level factory command (cli/main.js): an agent is refused only a real command,
+// so a directory that happens to end in /factory (grep foo src/factory lib) is left alone.
+const CLI_VERBS = new Set(['help', 'init', 'doctor', 'shim', 'run', 'console', 'job', 'use', 'next', 'why', 'finalize', 'contract', 'answer', 'wfargs', 'record', 'plan', 'task', 'reconcile', 'verify', 'evidence', 'report', 'ship', 'pr', 'ci', 'close', 'followup', 'doc', 'distill', 'lessons', 'amend', 'park', 'epic', 'telemetry', 'recipe', ...HUMAN_ONLY]);
+
+function agentAllowed(a, b) {
+  if (!a || !CLI_VERBS.has(a)) return true;
+  const ok = AGENT_ALLOWED[a];
+  return ok === '*' || (Array.isArray(ok) && ok.includes(b));
+}
+
+function isHumanOnly(a, b) {
+  return HUMAN_ONLY.has(a) || (a === 'lessons' && ['accept', 'reject', 'promote'].includes(b)) || (a === 'ci' && b === 'install');
+}
+
+function humanMessage(a, b) {
+  return `"factory ${a}${b && a !== 'approve' && !HUMAN_ONLY.has(a) ? ` ${b}` : ''}" is a human-only action. Ask the human to reply in chat (e.g. "approve", "resume") or run it in their own terminal.`;
+}
+
+function agentMessage(a, b) {
+  return `"factory ${a}${b ? ` ${b}` : ''}" is not for a factory agent: driving the job (next, run, record, ship, close, …) is the main session's work, and approvals are the human's. Run only the factory commands your brief gives you, and return your result as your final JSON message.`;
+}
+
+// A path or word that runs the factory CLI: `factory` (a shim on PATH), …/bin/factory, the
+// CLI entry point itself, or a variable / alias / function defined to one of those.
+function isFactoryPath(t) {
+  return t === 'factory' || /\/factory$/.test(t) || /(^|\/)factory\/cli\/main(\.js)?$/.test(t);
+}
+
+function factoryNames(s) {
+  const names = new Set();
+  for (const m of s.matchAll(/(?:^|[\s;&|(])(?:export\s+|alias\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?)?([A-Za-z_]\w*)=(\S*)/g)) {
+    if (/(^|[\s/=])factory(\s|$)|\/factory\b|factory\/cli\/main/.test(m[2]) || isFactoryPath(m[2])) names.add(m[1]);
+  }
+  for (const m of s.matchAll(/(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)\s*\{([^}]*)/g)) {
+    if (/(^|[\s/])factory(\s|$)|\/factory\b/.test(m[2])) names.add(m[1]);
+  }
+  return names;
+}
+
+function isFactoryToken(t, names) {
+  if (isFactoryPath(t)) return true;
+  if (!names.size) return false;
+  const v = t.match(/^\$\{?([A-Za-z_]\w*)\}?$/);
+  return Boolean((v && names.has(v[1])) || names.has(t));
+}
+
+// The subcommand words after position `at`, parsing options the way the CLI does
+// (--k=v, --k v for value flags, and --).
+function wordsAfter(tokens, at) {
   const words = [];
   for (let i = at + 1; i < tokens.length && words.length < 2; i++) {
     const t = tokens[i];
@@ -160,21 +243,75 @@ function factorySubcommand(tokens) {
   return words;
 }
 
-function checkBash(root, cmd, policy) {
+// Find a factory invocation in a token list and return its subcommand words.
+function factorySubcommand(tokens, names = new Set()) {
+  const at = tokens.findIndex((t) => isFactoryToken(t, names));
+  if (at === -1) return null;
+  return wordsAfter(tokens, at);
+}
+
+// The whole command names the factory CLI somewhere (a word, a path, a variable set to it).
+function mentionsFactory(s, names) {
+  return names.size > 0 || /(^|[\s/=;&|(`])factory($|[\s;&|)`])|\/factory\/cli\/main/.test(s);
+}
+
+// An interactive shell: a shell with no command and no script (or with -i), not fed by a pipe
+// or a redirect. Typed input could then reach it past the guard.
+function interactiveShell(tokens, piped, seg) {
+  let i = 0;
+  while (i < tokens.length && /^(sudo|exec|command|env|nohup|time)$/.test(tokens[i])) i += 1;
+  if (!SHELLS.test(tokens[i] || '')) return false;
+  const rest = tokens.slice(i + 1);
+  if (rest.some((t) => /^-[a-zA-Z]*i[a-zA-Z]*$/.test(t) && !/^-[a-zA-Z]*c/.test(t))) return true;
+  if (piped || /<|>/.test(seg)) return false;
+  return rest.every((t) => t.startsWith('-') && !/^-[a-zA-Z]*c[a-zA-Z]*$/.test(t) && t !== '-s');
+}
+
+function checkFactoryIndirect(s, opts) {
+  const names = factoryNames(s);
+  if (!mentionsFactory(s, names) || !INDIRECTION.test(s)) return null;
+  const words = s.split(/[\s|;&()`$<>{}]+/).filter(Boolean);
+  const has = (w) => words.includes(w);
+  for (const w of words) {
+    if (HUMAN_ONLY.has(w)) return humanMessage(w);
+  }
+  if (has('lessons') && ['accept', 'reject', 'promote'].some(has)) return humanMessage('lessons', ['accept', 'reject', 'promote'].find(has));
+  if (has('ci') && has('install')) return humanMessage('ci', 'install');
+  if (opts.agent) {
+    const w = words.find((x) => AGENT_DRIVER_WORDS.has(x));
+    if (w) return agentMessage(w);
+    if (/\bxargs\b|\bparallel\b|\s-exec(?:dir)?\b/.test(s)) return 'Factory agents run the factory CLI directly, never through xargs, parallel or find -exec.';
+  }
+  return null;
+}
+
+function checkBash(root, cmd, policy, opts = {}) {
   const original = String(cmd || '');
-  // Code fed to an interpreter is not data: check the raw text, heredocs included.
-  if (INTERPRETER.test(original) && INTERNALS.test(original)) {
+  // Code fed to an interpreter is not data: check the raw text, heredocs included. Running the
+  // factory CLI itself (node …/bin/factory) is not an inline script: briefs tell agents to run
+  // `node "…/bin/factory" doc check <root>/.factory/jobs/J/adr-….md`.
+  const scriptish = original.replace(/\b(?:node|nodejs)\s+(["']?)[^\s"';&|]*\/bin\/factory\1(?=[\s;&|]|$)/g, 'factory');
+  if (INTERPRETER.test(scriptish) && INTERNALS.test(original)) {
     return 'Inline scripts may not reach into factory state or internals. To read a job file use the Read tool; to change one you are allowed to change (an ADR, the plan, a threat model) use Write or Edit; for job state use the factory CLI (factory job show, contract show, why).';
   }
   if (/software-factory\/secret|\.config\/software-factory/.test(original)) return 'The factory seal secret is off limits.';
   const s = normalise(cmd);
-  const seg = s.split(/[|;&\n]+|\$\(|`/);
-  for (const raw of seg) {
+  const indirect = checkFactoryIndirect(s, opts);
+  if (indirect) return indirect;
+  const names = factoryNames(s);
+  // Segments with the separator before each: a pipe feeds the next segment.
+  const pieces = s.split(/([|;&\n]+|\$\(|`|\))/);
+  let piped = false;
+  for (let k = 0; k < pieces.length; k += 2) {
+    const raw = pieces[k];
+    const sep = k > 0 ? pieces[k - 1] : '';
+    piped = sep === '|';
     const c = raw.trim();
     if (!c) continue;
     const tokens = c.split(/\s+/).filter(Boolean);
     if (/^\$/.test(tokens[0])) return 'Run commands by name, not through a variable or expansion.';
     if (TTY_FAKERS.test(tokens[0]) || (tokens[0] === 'sudo' && TTY_FAKERS.test(tokens[1] || ''))) return `${tokens[0]} (terminal emulation) is not allowed here.`;
+    if (interactiveShell(tokens, piped, c)) return 'Starting an interactive shell is not allowed here: run each command directly (bash -c "…" or plain commands).';
     if (/\bgit\b/.test(c)) {
       if (/\bpush\b/.test(c) && (/(^|\s)--force(-with-lease)?\b/.test(c) || /(^|\s)-[a-zA-Z]*f[a-zA-Z]*\b/.test(c) || /\s\+[^\s]+/.test(c))) return 'Force-push is not allowed, in any spelling.';
       if (/--no-verify\b/.test(c)) return '--no-verify is not allowed; hooks always run.';
@@ -187,12 +324,18 @@ function checkBash(root, cmd, policy) {
       }
     }
     if (/\.git\/(hooks|config)\b/.test(c)) return '.git/hooks and .git/config are off limits.';
-    const sub = factorySubcommand(tokens);
+    const sub = factorySubcommand(tokens, names);
     if (sub && sub.length) {
       const [a, b] = sub;
-      if (HUMAN_ONLY.has(a) || (a === 'lessons' && ['accept', 'reject', 'promote'].includes(b)) || (a === 'ci' && b === 'install')) {
-        return `"factory ${a}${b && a !== 'approve' ? ` ${b}` : ''}" is a human-only action. Ask the human to reply in chat (e.g. "approve", "resume") or run it in their own terminal.`;
-      }
+      if (isHumanOnly(a, b)) return humanMessage(a, b);
+      if (opts.agent && !agentAllowed(a, b)) return agentMessage(a, b);
+    }
+    // `node $X <verb>`: an expansion where the CLI would be, followed by a factory verb.
+    for (let i = 1; i < tokens.length; i++) {
+      if (!/\$/.test(tokens[i]) || !LAUNCHERS.test(tokens[i - 1])) continue;
+      const [a, b] = wordsAfter(tokens, i);
+      if (a && isHumanOnly(a, b)) return humanMessage(a, b);
+      if (a && opts.agent && AGENT_DRIVER_WORDS.has(a)) return agentMessage(a, b);
     }
     // Shell writes into factory state.
     const targets = [];
@@ -233,4 +376,4 @@ function checkContent(text, file) {
     : null;
 }
 
-module.exports = { checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkContent, normalise, deny, loadPolicy, factorySubcommand };
+module.exports = { checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkContent, normalise, deny, loadPolicy, factorySubcommand, AGENT_ALLOWED, HUMAN_ONLY };
