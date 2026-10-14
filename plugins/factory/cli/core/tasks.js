@@ -22,9 +22,19 @@ function planTask(root, state, taskId) {
   return { plan, task: t };
 }
 
+// A worktree folder removed without `git worktree prune` stays registered, and git then
+// refuses to add it again ("already checked out"): prune first. The build-cache excludes are
+// (re)written here too, for repositories initialised before they existed.
+function addWorktree(root, wt, branch) {
+  require('./setup').ensureGitSetup(root);
+  if (exists(path.join(wt, '.git'))) return;
+  git.run(root, ['worktree', 'prune'], { allowFail: true });
+  git.run(root, ['worktree', 'add', wt, branch]);
+}
+
 function ensureJobWorktree(root, state) {
   const wt = jobPaths(root, state.id).worktree;
-  if (!exists(path.join(wt, '.git'))) git.run(root, ['worktree', 'add', wt, state.branch]);
+  addWorktree(root, wt, state.branch);
   return wt;
 }
 
@@ -34,30 +44,55 @@ function prepareWorktree(root, state, taskId) {
   const branch = steps.taskBranch(state, taskId);
   const wt = taskWorktree(root, state.id, taskId);
   if (!git.branchExists(root, branch)) git.run(root, ['branch', branch, state.branch]);
-  if (!exists(path.join(wt, '.git'))) git.run(root, ['worktree', 'add', wt, branch]);
+  addWorktree(root, wt, branch);
   return wt;
+}
+
+// Files this task itself changed since it started: changed overall (an edit reverted later
+// doesn't count) and touched by its own commits (the first-parent line of its branch, merges
+// skipped), so what a dependency or the job branch brought in by merge is never counted as
+// the task's change or as a scope violation.
+function ownChangedFiles(wt, from, to) {
+  const o = git.out(wt, ['log', '--first-parent', '--no-merges', '--name-only', '--format=', `${from}..${to}`]);
+  const own = new Set(o.split('\n').map((l) => l.trim()).filter(Boolean));
+  return git.changedFiles(wt, from, to).filter((f) => own.has(f));
+}
+
+// In a fix round the commit-msg hook adds a Factory-Fix trailer (reconcile protects those
+// lines); the marker lives in the worktree's own git dir.
+function fixMarker(wt, kind) {
+  const gd = path.resolve(wt, git.out(wt, ['rev-parse', '--git-dir']));
+  const f = path.join(gd, 'factory-fix');
+  if (kind) require('fs').writeFileSync(f, `${kind}\n`);
+  else require('fs').rmSync(f, { force: true });
 }
 
 function start(root, jobId, taskId) {
   const state = job.resolve(root, jobId);
-  const { task } = planTask(root, state, taskId);
+  const { plan, task } = planTask(root, state, taskId);
   const branch = steps.taskBranch(state, taskId);
   const wt = taskWorktree(root, state.id, taskId);
   const ctx = steps.context(root, state, job.load);
-  for (const d of task.depends_on || []) {
-    if (!steps.taskDone(ctx, d)) fail(`${taskId} depends on ${d}, which is not done yet`, 'dependency_not_done');
+  // Explicit depends_on plus earlier-wave tasks with overlapping paths (plan.effectiveDeps).
+  const deps = planMod.effectiveDeps(plan.tasks, taskId);
+  for (const d of deps) {
+    if (!steps.taskDone(ctx, d)) fail(`${taskId} depends on ${d}${(task.depends_on || []).includes(d) ? '' : ' (an earlier wave touching the same paths)'}, which is not done yet`, 'dependency_not_done');
   }
   prepareWorktree(root, state, taskId);
-  for (const d of task.depends_on || []) {
-    const db = steps.taskBranch(state, d);
-    if (!git.isAncestor(root, db, branch)) {
-      const r = git.run(wt, ['merge', '--no-ff', '--no-edit', '-m', `factory: bring ${d} into ${taskId}`, db], { allowFail: true });
-      if (r.code !== 0) {
-        git.run(wt, ['merge', '--abort'], { allowFail: true });
-        fail(`Merging dependency ${d} into ${taskId} conflicts; this needs a plan change.`, 'dependency_conflict');
-      }
+  const bring = (ref, what) => {
+    if (git.isAncestor(root, ref, branch)) return;
+    const r = git.run(wt, ['merge', '--no-ff', '--no-edit', '-m', `factory: bring ${what} into ${taskId}`, ref], { allowFail: true });
+    if (r.code !== 0) {
+      git.run(wt, ['merge', '--abort'], { allowFail: true });
+      fail(`Merging ${what} into ${taskId} conflicts; this needs a plan change.`, 'dependency_conflict');
     }
-  }
+  };
+  // A rebuild (fix round, amendment) starts from what is integrated now, never from the
+  // task's stale branch: other tasks' merged work must not be reverted by this one.
+  bring(state.branch, `the job branch (${state.branch})`);
+  for (const d of deps) bring(steps.taskBranch(state, d), d);
+  const inFix = Boolean(state.fix && (state.fix.tasks || []).includes(taskId));
+  fixMarker(wt, inFix ? state.fix.kind : null);
   const fresh = job.load(root, state.id);
   const t = fresh.tasks[taskId] || {};
   const head = git.revParse(wt, 'HEAD');
@@ -103,6 +138,8 @@ function currentFindings(root, state, task) {
   const rec = ledger.lastStep(root, state.id, 'challenge');
   const all = (rec && rec.detail && rec.detail.findings) || [];
   const serious = all.filter((f) => ['blocker', 'major'].includes(f.severity) && f.status === 'confirmed');
+  const owners = (state.fix && state.fix.owners) || null;
+  if (owners) return serious.filter((f) => owners[f.id] === task.id);
   const mine = serious.filter((f) => f.file && matchesAny(f.file, task.allowed_paths));
   return mine.length ? mine : serious;
 }
@@ -122,7 +159,7 @@ function verify(root, jobId, taskId) {
   if (dirty) fail(`${taskId} has uncommitted changes. Commit them on the task branch first:\n${dirty}`, 'dirty_worktree');
   const t = state.tasks[taskId] || {};
   const head = git.revParse(wt, 'HEAD');
-  const changed = t.start_commit ? git.changedFiles(wt, t.start_commit, head) : [];
+  const changed = t.start_commit ? ownChangedFiles(wt, t.start_commit, head) : [];
   const scopeViolations = changed.filter((f) => !matchesAny(f, task.allowed_paths) || matchesAny(f, state.policy.protected_paths));
   const L = state.policy.limits;
   const commands = task.verify_commands.map((c) => runCommand(planMod.cmdOf(c), wt, { timeoutSec: L.command_timeout_seconds, reruns: L.flaky_reruns }));
@@ -166,4 +203,4 @@ function setState(root, jobId, taskId, value, reason) {
   return { job: state.id, task: taskId, state: value };
 }
 
-module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree };
+module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles };

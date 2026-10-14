@@ -1,4 +1,4 @@
-{ "type": "object", "required": ["focus", "questions"], "properties": {
+{ "type": "object", "required": ["questions"], "properties": {
   "focus": { "type": "string" },
   "questions": { "type": "array", "items": { "type": "object", "required": ["question", "why", "blocking"], "properties": {
     "question": { "type": "string" }, "why": { "type": "string" }, "blocking": { "type": "boolean" },

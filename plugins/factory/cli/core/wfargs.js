@@ -467,7 +467,8 @@ function realize(root, state, ctx, action) {
       id: t.id,
       // Where this task's builder and tester work (`factory run` starts them there).
       worktree: wt,
-      depends_on: t.depends_on || [],
+      // depends_on plus earlier-wave tasks on overlapping paths: a failed one skips this task.
+      depends_on: require('./plan').effectiveDeps(plan.tasks, t.id),
       retry_limit: t.retry_limit || state.policy.limits.retry_limit,
       // Builders may move to a stronger model on retries (policy.agents.builder_escalation).
       builder: { ...agentSpec(state, 'builder'), escalate: ((state.policy.agents || {}).builder_escalation || []).slice() },
@@ -506,7 +507,7 @@ function reconcile(root, state, ctx) {
       ...agentSpec(state, 'integrator'),
       prompt: prompt(
         'integrator',
-        `${jc}\n- Run \`${cli(root)} reconcile run --job ${state.id}\`.\n- If it reports textual_conflict: resolve the markers in the listed files inside ${jobPaths(root, state.id).worktree}, keep both tasks' intent, git add them, then run \`${cli(root)} reconcile continue --job ${state.id}\`. Repeat until merged.\n- If the conflict is behavioural (the tasks' logic disagrees, not just their text), run \`${cli(root)} reconcile abort --job ${state.id}\` and return behavioural_conflict.`,
+        `${jc}\n- Run \`${cli(root)} reconcile run --job ${state.id}\`.\n- If it reports textual_conflict: resolve the markers in the listed files inside ${jobPaths(root, state.id).worktree}, keep both tasks' intent, git add them, then run \`${cli(root)} reconcile continue --job ${state.id}\`. Repeat until merged.\n- Resolving means combining, never choosing a side: every line the job branch already has from merged tasks or fix rounds stays (\`git checkout --ours/--theirs\` on a whole file is almost always wrong). Where the incoming task changed a line that was rewritten since, re-apply its change on top of the merged version.\n- If it reports regression, the CLI found merged or fixed lines missing from the result: return regression with its message. Do not work around it.\n- If the conflict is behavioural (the tasks' logic disagrees, not just their text), run \`${cli(root)} reconcile abort --job ${state.id}\` and return behavioural_conflict.`,
         'integrator',
       ),
       schema: schema('integrator'),

@@ -30,6 +30,7 @@ Repeat until you reach a stop point:
 | `skill` | Follow the factory skill named in `skill` (clarify, ship, distill, amend), then go back to step 1. |
 | `workflow` | Run the workflow with `factory run` (section 3), act on its result, go back to step 1. |
 | `cli` | Run exactly the `command` shown. Read its JSON. If it failed, show the user the message and run `factory next` again (the CLI decides whether to retry or park). |
+| `evidence` | A criterion needs a doc or diff record, not a code change. For each AC in `acs`, check the build (the job worktree) shows it, then run its line in `commands` yourself with the real file path (relative to the repository root). If it isn't there, tell the user and stop. Then go back to step 1. |
 | `gate` | Follow the **gate** skill. **Stop** and wait for the user's reply. |
 | `wait` | If it lists `ready` slice jobs (epic), run `factory use <first ready id>` and continue the loop on that job. Otherwise tell the user in one or two lines what is being waited for (`reason`) and **stop**. |
 | `parked` | Follow the **park** skill. **Stop.** |

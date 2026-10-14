@@ -223,6 +223,7 @@ function expectationsFor(d) {
     if (d.skill === 'amend') return { required: [(e) => e.cmd === 'amend'], requiredLabel: 'factory amend start/submit', allowed: new Set(['amend']) };
     return { required: [], allowed: new Set() };
   }
+  if (d.action === 'evidence') return { required: [(e) => e.cmd === 'evidence'], requiredLabel: 'factory evidence add', allowed: new Set(['evidence']) };
   if (d.action === 'cli' && d.command) {
     const words = d.command.replace(/^factory\s+/, '').split(/\s+/).filter((w) => w && !w.startsWith('--') && !/^J-\d+$/.test(w));
     const [cmd, sub] = words;
@@ -367,7 +368,7 @@ function friction(obs, threshold) {
   return out;
 }
 
-// ---------------------------------------------------------------- health: R10–R20
+// ---------------------------------------------------------------- health: R10–R22
 // Everything the factory reports about itself — hook failures, hook pushback, CLI
 // failures, workflow and agent trouble, parks, idle jobs, slow gates — checked against
 // the thresholds in config "limits". Findings carry `latest` (newest evidence) so a
@@ -411,7 +412,7 @@ function factoryHealth(obs, L) {
   return out;
 }
 
-// R12–R20 for one job, from its own events, ledger, decisions and intent record.
+// R12–R22 for one job, from its own events, ledger, decisions and intent record.
 function jobHealth(job, L, now) {
   const out = [];
   const ev = job.events;
@@ -465,7 +466,10 @@ function jobHealth(job, L, now) {
     escalated.push(...items.slice(1).filter((a) => a.model && a.model !== items[0].model));
   }
   if (escalated.length >= L.escalations_per_job) out.push(f({ rule: 'R14.escalations', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(escalated, 'at'), summary: `${escalated.length} agent run(s) in ${id} were escalated to a stronger model: ${escalated.slice(0, 4).map((a) => `${a.label} → ${a.model}`).join(', ')}.`, question: 'Is the first-attempt model too weak for these tasks?' }));
-  for (const [step, items] of groupBy(job.ledger.filter((e) => e.kind === 'step' && e.ok === false && !['prove', 'challenge'].includes(e.step)), (e) => e.step)) {
+  // A round that stopped to ask the user (outcome needs_user; before it was recorded: a clarify
+  // round with questions, a ground round with blocking unknowns) is not a failure.
+  const askedUser = (e) => (e.detail && (e.detail.outcome === 'needs_user' || (e.step === 'clarify' && Number(e.detail.questions) > 0) || (e.step === 'ground' && Array.isArray(e.detail.blocking) && e.detail.blocking.length > 0)));
+  for (const [step, items] of groupBy(job.ledger.filter((e) => e.kind === 'step' && e.ok === false && !['prove', 'challenge'].includes(e.step) && !askedUser(e)), (e) => e.step)) {
     if (items.length >= L.step_failures) out.push(f({ rule: 'R14.step_failures', class: 'ambiguity', severity: 'medium', subject: `${id}:${step}`, job: id, latest: latest(items, 'at'), summary: `"${step}" was recorded as failed ${items.length} times in ${id}.`, question: `What keeps ${step} from passing?` }));
   }
   // R15 agents that started and never stopped
@@ -498,7 +502,54 @@ function jobHealth(job, L, now) {
   const dropped = clarify.reduce((n, e) => n + (Number(e.detail.dropped) || 0), 0);
   if (dropped >= L.questions_dropped_per_job) out.push(f({ rule: 'R19.question_overrun', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(clarify.filter((e) => e.detail.dropped), 'at'), summary: `Clarify in ${id} proposed ${dropped} question(s) beyond the round budget or already asked; the CLI dropped them (limit ${L.questions_dropped_per_job}).`, question: 'Does the judge ignore the question budget or the never-re-ask list in its brief?' }));
   out.push(...groundedIntent(job, L));
+  out.push(...reviewRegressions(job), ...reconcileDrops(job));
   return out;
+}
+
+// R21 review regressions: a finding confirmed serious in one challenge round and found again in
+// a later one — the fix was lost (reverted, merged over, rebuilt from stale code). High when the
+// later round let it through (downgraded, minor, or not confirmed); medium when it blocked again.
+// Same finding: same file and (same lane and rule, or a line within ±10, or the same summary);
+// a minor finding matches by rule or summary only.
+const SERIOUS = new Set(['blocker', 'major']);
+const reportedSerious = (x) => SERIOUS.has(x.severity) || (x.notes || []).some((n) => /^downgraded from (blocker|major)/.test(String(n)));
+function sameIssue(a, b, minor) {
+  if (!a.file || a.file !== b.file) return false;
+  const rule = a.rule && a.rule === b.rule && a.lane === b.lane;
+  const summary = String(a.summary || '').toLowerCase() === String(b.summary || '').toLowerCase();
+  if (minor) return Boolean(rule || summary);
+  return Boolean(rule || summary || (a.line && b.line && Math.abs(Number(a.line) - Number(b.line)) <= 10));
+}
+function reviewRegressions(job) {
+  const id = job.id;
+  const rounds = job.ledger.filter((e) => e.kind === 'step' && e.step === 'challenge' && e.detail && Array.isArray(e.detail.findings)).sort((a, b) => (a.at < b.at ? -1 : 1));
+  const confirmed = [];
+  const items = [];
+  for (const e of rounds) {
+    const round = e.detail.round || 1;
+    for (const x of e.detail.findings) {
+      const prior = confirmed.find((p) => p.round < round && sameIssue(p.f, x, !reportedSerious(x)));
+      if (!prior && !x.regression) continue;
+      const blocked = SERIOUS.has(x.severity) && x.status === 'confirmed';
+      items.push({ at: e.at, round, f: x, prior: prior || { round: x.regression.round, f: { id: x.regression.id, severity: x.regression.severity } }, blocked });
+    }
+    for (const x of e.detail.findings) if (SERIOUS.has(x.severity) && x.status === 'confirmed') confirmed.push({ round, f: x });
+  }
+  const seen = new Set();
+  const uniq = items.filter((i) => !seen.has(`${i.round}|${i.f.id}`) && seen.add(`${i.round}|${i.f.id}`));
+  if (!uniq.length) return [];
+  const through = uniq.filter((i) => !i.blocked);
+  return [f({ rule: 'R21.review_regression', class: through.length ? 'deviation' : 'ambiguity', severity: through.length ? 'high' : 'medium', subject: id, job: id, latest: latest(uniq, 'at'), summary: `${uniq.length} finding(s) confirmed in an earlier review round came back in ${id}${through.length ? `, ${through.length} let through (${through.slice(0, 3).map((i) => `${i.f.id} as ${i.f.severity}/${i.f.status}`).join(', ')})` : ' (blocked again)'}: ${uniq.slice(0, 4).map((i) => `${i.f.file}${i.f.line ? `:${i.f.line}` : ''} round ${i.round} = ${i.prior.f.id} [${i.prior.f.severity}] of round ${i.prior.round}`).join('; ')}.`, evidence: uniq.slice(0, 6).map((i) => `round ${i.round}: ${i.f.id}`), question: 'How was the fix lost — a task rebuilt from stale code, a conflict resolved by dropping it, or a fix round that never merged the job branch?' })];
+}
+
+// R22 reconcile drops: integration tried to drop lines already-merged tasks or fix rounds had
+// added (the CLI's regression guard caught it and undid the merge).
+function reconcileDrops(job) {
+  const id = job.id;
+  const drops = job.ledger.filter((e) => e.kind === 'step' && e.step === 'reconcile' && e.ok === false && e.detail && e.detail.regression);
+  if (!drops.length) return [];
+  const files = [...new Set(drops.flatMap((e) => e.detail.regression.files || []))];
+  return [f({ rule: 'R22.reconcile_drop', class: 'deviation', severity: 'high', subject: id, job: id, latest: latest(drops, 'at'), summary: `Reconcile in ${id} would have dropped merged or fixed work ${drops.length} time(s) (${files.slice(0, 5).join(', ')}): ${String(drops[drops.length - 1].detail.message || '').slice(0, 200)}`, evidence: files.slice(0, 10), question: 'Did the integrator resolve a conflict by picking a side, or was a task built from a base without the other task\'s change?' })];
 }
 
 // R20 grounded intent: what clarify's research could not spare the user.
@@ -559,4 +610,4 @@ function inspectGlobal(obs, threshold, { limits } = {}) {
   return out;
 }
 
-module.exports = { AGENT_FAILED, HUMAN_ACTIONS, inspectJob, intentSummary, groundedIntent, inspectGlobal, jobHealth, factoryHealth, seals, intendedRecipe, conformance, gates, evidenceChain, loops, driverFidelity, consistency, friction, expectationsFor };
+module.exports = { AGENT_FAILED, HUMAN_ACTIONS, inspectJob, intentSummary, groundedIntent, reviewRegressions, reconcileDrops, inspectGlobal, jobHealth, factoryHealth, seals, intendedRecipe, conformance, gates, evidenceChain, loops, driverFidelity, consistency, friction, expectationsFor };
