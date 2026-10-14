@@ -5,40 +5,40 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/session-start.js\" ] || exit 0; exec node \"$R/hooks/session-start.js\" sessionStart",
-        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/session-start.js\")) { exit 0 }; node \"$r/hooks/session-start.js\" sessionStart; exit $LASTEXITCODE",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/session-start.js\" ] || { echo \"[inspector] hook script $R/hooks/session-start.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\" >&2; exit 0; }; exec node \"$R/hooks/session-start.js\" sessionStart",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/session-start.js\")) { [Console]::Error.WriteLine(\"[inspector] hook script $r/hooks/session-start.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/session-start.js\" sessionStart; exit $LASTEXITCODE",
         "timeoutSec": 60
       }
     ],
     "userPromptSubmitted": [
       {
         "type": "command",
-        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/prompt.js\" ] || exit 0; exec node \"$R/hooks/prompt.js\" userPromptSubmitted",
-        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/prompt.js\")) { exit 0 }; node \"$r/hooks/prompt.js\" userPromptSubmitted; exit $LASTEXITCODE",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/prompt.js\" ] || { echo \"[inspector] hook script $R/hooks/prompt.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\" >&2; exit 0; }; exec node \"$R/hooks/prompt.js\" userPromptSubmitted",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/prompt.js\")) { [Console]::Error.WriteLine(\"[inspector] hook script $r/hooks/prompt.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/prompt.js\" userPromptSubmitted; exit $LASTEXITCODE",
         "timeoutSec": 15
       }
     ],
     "preToolUse": [
       {
         "type": "command",
-        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/guard.js\" ] || exit 0; exec node \"$R/hooks/guard.js\" preToolUse",
-        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/guard.js\")) { exit 0 }; node \"$r/hooks/guard.js\" preToolUse; exit $LASTEXITCODE",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/guard.js\" ] || { echo \"[inspector] hook script $R/hooks/guard.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\" >&2; exit 0; }; exec node \"$R/hooks/guard.js\" preToolUse",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/guard.js\")) { [Console]::Error.WriteLine(\"[inspector] hook script $r/hooks/guard.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/guard.js\" preToolUse; exit $LASTEXITCODE",
         "timeoutSec": 10
       }
     ],
     "postToolUse": [
       {
         "type": "command",
-        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/after-close.js\" ] || exit 0; exec node \"$R/hooks/after-close.js\" postToolUse",
-        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/after-close.js\")) { exit 0 }; node \"$r/hooks/after-close.js\" postToolUse; exit $LASTEXITCODE",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/after-close.js\" ] || { echo \"[inspector] hook script $R/hooks/after-close.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\" >&2; exit 0; }; exec node \"$R/hooks/after-close.js\" postToolUse",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/after-close.js\")) { [Console]::Error.WriteLine(\"[inspector] hook script $r/hooks/after-close.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/after-close.js\" postToolUse; exit $LASTEXITCODE",
         "timeoutSec": 60
       }
     ],
     "agentStop": [
       {
         "type": "command",
-        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/catch-up.js\" ] || exit 0; exec node \"$R/hooks/catch-up.js\" agentStop",
-        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/catch-up.js\")) { exit 0 }; node \"$r/hooks/catch-up.js\" agentStop; exit $LASTEXITCODE",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/catch-up.js\" ] || { echo \"[inspector] hook script $R/hooks/catch-up.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\" >&2; exit 0; }; exec node \"$R/hooks/catch-up.js\" agentStop",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/catch-up.js\")) { [Console]::Error.WriteLine(\"[inspector] hook script $r/hooks/catch-up.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[inspector] node is not on PATH; inspector hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/catch-up.js\" agentStop; exit $LASTEXITCODE",
         "timeoutSec": 60
       }
     ]

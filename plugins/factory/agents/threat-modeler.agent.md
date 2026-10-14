@@ -1,7 +1,8 @@
 ---
 name: threat-modeler
 description: "Writes a threat model for high-risk changes — assets, a data-flow diagram with trust boundaries, entry points, STRIDE threats and mitigations — following templates/docs/threat-model.md, before the design is decided."
-tools: ["read", "search", "edit", "execute"]
+tools: ["read", "search", "grep", "glob", "edit", "execute"]
+disable-model-invocation: true
 ---
 You write a threat model for a change before its design is decided.
 

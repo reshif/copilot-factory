@@ -48,6 +48,13 @@ const MARKET_FIELDS = new Set(['name', 'owner', 'plugins', 'metadata']);
 const MARKET_ENTRY_FIELDS = new Set(['name', 'source', 'description', 'version', 'author', 'homepage', 'repository', 'license', 'keywords', 'category', 'tags', 'commands', 'agents', 'skills', 'hooks', 'mcpServers', 'lspServers', 'strict']);
 const AGENT_FIELDS = new Set(['name', 'description', 'tools', 'model', 'models', 'modelPolicy', 'reasoningEffort', 'include-custom-instructions', 'disable-model-invocation', 'user-invocable', 'target', 'mcp-servers', 'metadata', 'skills', 'hooks']);
 const TOOL_ALIASES = new Set(['read', 'search', 'edit', 'execute', 'web', 'agent', 'todo']);
+// Copilot CLI 1.0.97 ignores the documented `search` and `web` aliases (a probe agent with
+// ["search"] gets no rg/glob, with ["web"] no web_fetch), so agents also list the runtime
+// names the CLI does resolve: grep → rg, glob → glob, web_fetch → web_fetch. Verified against
+// the real CLI with a mock model: see the commit that added this.
+const RUNTIME_TOOLS = new Set(['grep', 'glob', 'web_fetch']);
+// Write-capable tool names (aliases and runtime names) a read-only role must never list.
+const WRITE_TOOLS = ['edit', 'write', 'create', 'apply_patch', 'str_replace_editor'];
 const SKILL_FIELDS = new Set(['name', 'description', 'argument-hint', 'allowed-tools', 'user-invocable', 'disable-model-invocation', 'license']);
 // Words that only make sense in Claude Code.
 const CLAUDE_ONLY = [/\bClaude\b/, /Workflow tool/, /Agent tool/, /\bBash tool\b/, /\$ARGUMENTS/, /run_in_background/, /subagent_type/];
@@ -125,7 +132,14 @@ test('factory: 19 custom agents as <name>.agent.md with documented frontmatter a
     assert.equal(fm.name, f.replace(/\.agent\.md$/, ''), `${f}: name matches the file (agent id)`);
     assert.ok(typeof fm.description === 'string' && fm.description.length > 20, `${f}: description`);
     assert.ok(Array.isArray(fm.tools) && fm.tools.length > 0, `${f}: tools list`);
-    for (const t of fm.tools) assert.ok(TOOL_ALIASES.has(t), `${f}: tool ${t} is a Copilot alias`);
+    for (const t of fm.tools) assert.ok(TOOL_ALIASES.has(t) || RUNTIME_TOOLS.has(t), `${f}: tool ${t} is a Copilot alias or a runtime tool name the CLI resolves`);
+    if (fm.tools.includes('search')) assert.ok(fm.tools.includes('grep') && fm.tools.includes('glob'), `${f}: "search" alone gives no rg/glob on CLI 1.0.97; list grep and glob too`);
+    if (fm.tools.includes('web')) assert.ok(fm.tools.includes('web_fetch'), `${f}: "web" alone gives no web_fetch on CLI 1.0.97; list web_fetch too`);
+    // Only the lesson-writer is started as a subagent (task tool, distill skill); every other
+    // role is started by `factory run` with --agent, so the main agent may not pick it itself.
+    if (fm.name === 'lesson-writer') assert.notEqual(fm['disable-model-invocation'], true, `${f}: the distill skill delegates to it`);
+    else assert.equal(fm['disable-model-invocation'], true, `${f}: not auto-selected by the main agent`);
+    assert.notEqual(fm['user-invocable'], false, `${f}: --agent factory:${fm.name} must keep working`);
     assert.ok(!('model' in fm), `${f}: no model, so the runner's --model applies`);
     if ('include-custom-instructions' in fm) assert.equal(typeof fm['include-custom-instructions'], 'boolean');
     assert.ok(body.length <= 30000, `${f}: body within Copilot's 30,000 character limit`);
@@ -134,7 +148,8 @@ test('factory: 19 custom agents as <name>.agent.md with documented frontmatter a
   }
   // Read-only roles stay read-only.
   for (const role of ['code-reviewer', 'test-reviewer', 'security-reviewer', 'ux-reviewer', 'epic-reviewer', 'finding-verifier', 'god-eye', 'intent-analyst', 'judge', 'tester', 'option-generator', 'researcher']) {
-    assert.ok(!frontmatter(path.join(dir, `${role}.agent.md`)).fm.tools.includes('edit'), `${role} has no edit tool`);
+    const tools = frontmatter(path.join(dir, `${role}.agent.md`)).fm.tools;
+    for (const w of WRITE_TOOLS) assert.ok(!tools.includes(w), `${role} has no ${w} tool`);
   }
 });
 

@@ -1,7 +1,8 @@
 ---
 name: slicer
 description: "Splits an epic into slices — S00 freezes contracts and the feature flag, later slices are vertical and safe to stop after — in slices.json."
-tools: ["read", "search", "edit", "execute"]
+tools: ["read", "search", "grep", "glob", "edit", "execute"]
+disable-model-invocation: true
 ---
 You split an epic into slices, each of which becomes its own job.
 

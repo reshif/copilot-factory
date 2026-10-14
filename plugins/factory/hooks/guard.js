@@ -5,8 +5,14 @@
 // before loading anything for tools it doesn't guard. A timeout fails OPEN in Copilot
 // (hooks.md §5.1): the hot path stays small and requires are lazy.
 
+//
+// In an agent process `factory run` started (FACTORY_RUNNER=1) the agent rules apply on top:
+// only the factory commands roles are briefed to run are allowed (guard-rules AGENT_ALLOWED).
+// Copilot's shell-session tools are normalised to Bash (write_bash: its input is checked
+// as a command; read/stop/list_bash are not guarded).
+
 const path = require('path');
-const { safe, findRoot, traceError } = require('./lib');
+const { safe, findRoot, traceError, runnerAgent } = require('./lib');
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 const READS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead']);
@@ -19,7 +25,8 @@ safe((input) => {
   const cwd = input.cwd;
   const abs = (p) => (path.isAbsolute(p) ? p : path.resolve(cwd, p));
   const absFile = input.file ? abs(input.file) : null;
-  const root = findRoot(cwd, absFile && path.dirname(absFile));
+  const agent = runnerAgent();
+  const root = findRoot(cwd, absFile && path.dirname(absFile), agent && agent.root);
   const policy = root ? loadPolicy(root) : require('../cli/core/policy').defaults();
   let why = null;
   if (WRITE_TOOLS.has(tool)) {
@@ -29,8 +36,14 @@ safe((input) => {
       if (why) break;
     }
     if (!why && root && input.isPatch && !input.files.length) why = 'Could not tell which files this patch touches; use the edit or create tool on one file at a time.';
-  } else if (READS.has(tool)) why = checkReadTool(root, tool, ti, absFile, cwd, policy);
-  else if (tool === 'Bash' && root) why = checkBash(root, input.command, policy);
+  } else if (READS.has(tool)) {
+    why = checkReadTool(root, tool, ti, absFile, cwd, policy);
+    // Copilot's rg / glob search `paths` (one directory or several), each checked like a path.
+    for (const p of input.searchPaths || []) {
+      if (why) break;
+      why = checkReadTool(root, tool, ti, abs(p), cwd, policy);
+    }
+  } else if (tool === 'Bash' && root) why = checkBash(root, input.command, policy, { agent: Boolean(agent), shellInput: /^write_/.test(String(input.runtimeTool || '')) });
   if (why) {
     deny(why);
     try {

@@ -1,8 +1,9 @@
 ---
 name: builder
 description: "Builds one task in its own git worktree, only inside its allowed paths, and commits on its task branch."
-tools: ["read", "search", "edit", "execute"]
+tools: ["read", "search", "grep", "glob", "edit", "execute"]
 include-custom-instructions: true
+disable-model-invocation: true
 ---
 You build exactly one task of a plan, in an isolated git worktree.
 

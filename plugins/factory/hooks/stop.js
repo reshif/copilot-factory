@@ -12,16 +12,20 @@
 //
 // Best effort only: if a last message is available (a Claude-shaped payload, or a readable
 // JSONL transcript), a closing question to the user counts as waiting, and a "done" claim
-// sharpens the reason and adds the jobs it names. Never required.
+// sharpens the reason and adds the jobs it names. Never required. A "done" claim is also
+// blocked while the job waits on the human (a pending gate, a park, open questions) and
+// its floors are unmet — unless the message itself says what is pending (names the gate,
+// asks for the reply, says it is waiting): the agent is told to say it is waiting, not done.
 //
 // Runaway guard: Copilot ends the turn after 8 consecutive blocks (CL 1.0.72). We stop at
 // 3 in a row (.factory/stop-blocks.json), log stop_block_cap, and let the turn end. The
 // counter restarts when stop_hook_active is false (a fresh stop, not a continuation), on
-// every user prompt (prompt.js), and after 30 minutes.
+// every prompt from the human (prompt.js; not the block reasons Copilot feeds back as
+// prompts), and after 30 minutes.
 
 const fs = require('fs');
 const path = require('path');
-const { safe, emit, findRoot } = require('./lib');
+const { safe, emit, findRoot, STOP_MARK } = require('./lib');
 
 const MAX_BLOCKS = 3;
 const COUNTER_TTL_MS = 30 * 60 * 1000;
@@ -96,6 +100,15 @@ function lastAssistantText(file) {
     /* unreadable transcript: never required */
   }
   return null;
+}
+
+// The message already tells the user what the job waits for: it names a gate or the reply
+// to send, or says it is waiting / parked. Then a "done" in it (e.g. "the contract is ready
+// for review") is not a false claim.
+function mentionsWait(msg, state) {
+  const m = String(msg || '');
+  if (state.pending_gate && new RegExp(`\\b${state.pending_gate.id}\\b`).test(m)) return true;
+  return /\b(?:approve|approval|deny|resume|reply|replies|waiting|waits|awaiting|parked|your (?:answer|decision|review|go-ahead|ok))\b/i.test(m);
 }
 
 // Tail of the event log: the last `factory record` and `factory next` for a job.
@@ -188,11 +201,13 @@ if (require.main === module) safe((input) => {
   if (cur) ids.add(cur);
   const wt = cwd.match(/\.factory[\\/]worktrees[\\/](J-\d+)/);
   if (wt) ids.add(wt[1]);
-  if (claimed) for (const m of msg.matchAll(/\bJ-\d{4,}\b/g)) ids.add(m[0]);
+  const named = new Set(claimed ? [...msg.matchAll(/\bJ-\d{4,}\b/g)].map((m) => m[0]) : []);
+  for (const id of named) ids.add(id);
   const steps = require('../cli/core/steps');
   const floors = require('../cli/core/floors');
   const events = require('../cli/core/events');
   const owed = [];
+  const falseDone = []; // "done" claimed while the job waits on the human
   for (const id of ids) {
     let state;
     try {
@@ -200,33 +215,44 @@ if (require.main === module) safe((input) => {
     } catch {
       continue; // named but not a job here
     }
-    if (!state || state.status !== 'active') continue;
+    if (!state || !['active', 'parked'].includes(state.status)) continue;
     const ctx = steps.context(root, state, job.load);
     if (ctx.recipe.outcome !== 'change') continue;
     // Merging is the human's step: before it, only pre-ship floors can be owed by the agent.
     const r = floors.evaluate(ctx, state.pr && state.pr.merged ? 'full' : 'before_ship');
     if (r.ok) continue;
-    if (waitingOnHuman(root, state)) continue;
+    const waiting = waitingOnHuman(root, state);
+    if (waiting) {
+      // A claim that names jobs is about those jobs only.
+      if (claimed && !mentionsWait(msg, state) && (!named.size || named.has(id))) falseDone.push({ state, missing: r.missing, waiting });
+      continue;
+    }
     owed.push({ state, missing: r.missing });
   }
   // Ending on a question to the user is waiting too — unless it claims done.
-  if (!owed.length || (!claimed && asksUser(msg))) {
+  if ((!owed.length && !falseDone.length) || (!claimed && asksUser(msg))) {
     writeCounter(root, 0);
     return;
   }
+  const all = [...owed, ...falseDone];
   if (count >= MAX_BLOCKS) {
-    for (const o of owed) events.append(root, { event: 'stop_block_cap', job: o.state.id, missing: o.missing, blocks: count, decision_id: o.state.last_decision_id || null });
+    for (const o of all) events.append(root, { event: 'stop_block_cap', job: o.state.id, missing: o.missing, blocks: count, decision_id: o.state.last_decision_id || null });
     writeCounter(root, 0);
     return;
   }
   count += 1;
   writeCounter(root, count);
-  for (const o of owed) events.append(root, { event: 'stop_block', job: o.state.id, missing: o.missing, claimed, blocks: count, decision_id: o.state.last_decision_id || null });
-  const list = owed.map((o) => `${o.state.id} (${o.missing.join(', ')})`).join('; ');
-  emit({
-    decision: 'block',
-    reason: `[factory] ${claimed ? 'Not done' : 'Not finished'}: floors not met for ${list}, and nothing is waiting on the user. Run \`factory next\` (or the factory command from session start) and keep going. If you truly need the user, ask them one clear question and end your turn with it.`,
-  });
+  for (const o of all) events.append(root, { event: 'stop_block', job: o.state.id, missing: o.missing, claimed, blocks: count, decision_id: o.state.last_decision_id || null, ...(o.waiting ? { waiting: o.waiting } : {}) });
+  const parts = [];
+  if (owed.length) {
+    const list = owed.map((o) => `${o.state.id} (${o.missing.join(', ')})`).join('; ');
+    parts.push(`${claimed ? 'Not done' : 'Not finished'}: floors not met for ${list}, and nothing is waiting on the user. Run \`factory next\` (or the factory command from session start) and keep going. If you truly need the user, ask them one clear question and end your turn with it.`);
+  }
+  for (const o of falseDone) {
+    const waitFor = o.state.status === 'parked' ? 'them to reply "resume"' : o.state.pending_gate ? `${o.state.pending_gate.id} (their reply, e.g. "approve" or "deny <what must change>")` : 'their answer';
+    parts.push(`Not done: ${o.state.id} is not finished (floors not met: ${o.missing.join(', ')}) and is waiting on the user (${o.waiting}). Do not say it is done: tell the user it's waiting for ${waitFor}, then end your turn.`);
+  }
+  emit({ decision: 'block', reason: `${STOP_MARK} ${parts.join(' ')}` });
 });
 
-module.exports = { claims, asksUser, lastAssistantText, waitingOnHuman, MAX_BLOCKS };
+module.exports = { claims, asksUser, mentionsWait, lastAssistantText, waitingOnHuman, MAX_BLOCKS };

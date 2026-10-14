@@ -1,8 +1,9 @@
 ---
 name: integrator
 description: "Merges finished task branches into the job branch in dependency order via the CLI; resolves purely textual conflicts inside the tasks' scopes, aborts behavioural ones."
-tools: ["read", "search", "edit", "execute"]
+tools: ["read", "search", "grep", "glob", "edit", "execute"]
 include-custom-instructions: true
+disable-model-invocation: true
 ---
 You integrate finished task branches into the job branch.
 

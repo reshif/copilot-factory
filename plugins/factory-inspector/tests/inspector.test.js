@@ -419,3 +419,76 @@ test('independence: the inspector imports nothing from the factory', () => {
     }
   }
 });
+
+test('R7 ignores factory run failure lines and shim/console/doc/help; R14 reads agent_run; R19 only fires on a real park', () => {
+  const { LIMITS } = require('../inspector/config');
+  const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
+  const cli = (h, d, extra) => ({ event: 'cli', ts: at(h), job: 'J-0001', decision_id: d, ok: true, ...extra });
+  const job = {
+    id: 'J-0001',
+    state: { status: 'active', updated_at: at(9) },
+    lock: null,
+    ledger: [{ kind: 'step', step: 'clarify', ok: false, at: at(1), detail: { round: 1, questions: 1, question_ids: ['Q-1'], intent_open: true, held: 2, dropped: 0 } }],
+    decisions: [
+      { id: 'J-0001-D0001', ts: at(1), action: 'gate', step: 'H1' },
+      { id: 'J-0001-D0002', ts: at(2), action: 'workflow', workflow: 'ground' },
+      { id: 'J-0001-D0003', ts: at(3), action: 'workflow', workflow: 'ground' },
+    ],
+    events: [
+      cli(1.1, 'J-0001-D0001', { cmd: 'shim' }), cli(1.2, 'J-0001-D0001', { cmd: 'console' }), cli(1.3, 'J-0001-D0001', { cmd: 'help' }), cli(1.4, 'J-0001-D0001', { cmd: 'doc', sub: 'list' }),
+      cli(1.5, 'J-0001-D0001', { cmd: 'run', sub: 'ground', ok: false, code: 'gate_pending' }),
+      cli(2.1, 'J-0001-D0002', { cmd: 'run', sub: 'ground', ok: false, code: 'copilot_unavailable' }),
+      cli(2.2, 'J-0001-D0002', { cmd: 'wfargs', sub: 'ground', workflow: 'ground' }), cli(2.3, 'J-0001-D0002', { cmd: 'record', workflow: 'ground', status: 'ok' }),
+      { event: 'agent_run', ts: at(2.25), job: 'J-0001', agent_type: 'factory:researcher', label: 'research a', outcome: 'timeout', exit: null, errors: ['timed out after 1800s'] },
+      { event: 'agent_run', ts: at(2.26), job: 'J-0001', agent_type: 'factory:researcher', label: 'research b', outcome: 'failed', exit: 1, errors: ['exit 1: rate limited'] },
+      { event: 'agent_run', ts: at(2.27), job: 'J-0001', agent_type: 'factory:judge', label: 'judge', outcome: 'failed', exit: 1, errors: ['exit 1: model error'] },
+      { event: 'agent_run', ts: at(2.28), job: 'J-0001', agent_type: 'factory:judge', label: 'judge', outcome: 'failed', exit: -1, errors: ['exit -1: spawn copilot ENOENT'] },
+    ],
+  };
+  const r7 = rules.driverFidelity(job).map((x) => x.rule);
+  assert.deepEqual(r7, [], `no R7 for shim/console/help/doc or a failed factory run: ${r7}`);
+  const health = rules.jobHealth(job, LIMITS, at(10));
+  const ids = health.map((x) => x.rule);
+  assert.ok(!ids.includes('R19.intent_parked'), 'a needs_user intent round is not a park');
+  for (const r of ['R14.agent_timeouts', 'R14.agent_crashes', 'R14.copilot_unavailable']) assert.ok(ids.includes(r), `${r} in ${ids}`);
+  assert.match(health.find((x) => x.rule === 'R14.agent_timeouts').summary, /1 agent run\(s\) in J-0001 timed out: factory:researcher ×1/);
+  assert.match(health.find((x) => x.rule === 'R14.agent_crashes').summary, /2 agent process\(es\)/);
+  assert.equal(health.find((x) => x.rule === 'R14.copilot_unavailable').severity, 'high');
+  // the real park entry still fires
+  job.ledger.push({ kind: 'step', step: 'clarify', ok: false, at: at(4), detail: { round: 2, intent_open: true, intent_rounds: 2, questions: 0, contract_problems: [] } });
+  assert.ok(rules.jobHealth(job, LIMITS, at(10)).some((x) => x.rule === 'R19.intent_parked'));
+});
+
+test('hooks in an agent `factory run` started do nothing; the guard keeps agents out of inspections; indirection is caught', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  F.reply(root, 'cancel job');
+  const env = { ...process.env, FACTORY_RUNNER: '1', FACTORY_JOB: J, FACTORY_AGENT_ROLE: 'tester', FACTORY_ROOT: root };
+  const run = (hook, input, event) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook), event], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8', env });
+  for (const [hook, input, event] of [['session-start.js', {}, 'sessionStart'], ['prompt.js', { prompt: 'ack finding F1' }, 'userPromptSubmitted'], ['catch-up.js', { stop_hook_active: false }, 'agentStop'], ['after-close.js', { toolName: 'bash', toolArgs: { command: 'factory close' } }, 'postToolUse']]) {
+    const r = run(hook, input, event);
+    assert.deepEqual([r.status, r.stdout], [0, ''], hook);
+  }
+  assert.deepEqual(I.pending(root), [J], 'no inspection ran inside the agent');
+  const g = (command) => run('guard.js', { toolName: 'bash', toolArgs: { command } }, 'preToolUse');
+  for (const c of ['factory-inspect run', 'factory-inspect health', `node ${BIN} run --job ${J}`]) assert.equal(g(c).status, 2, c);
+  assert.equal(g('factory-inspect report').status, 0);
+  // indirection, for everyone
+  for (const c of [`I=${BIN}; node $I mark F1 --to fixed`, `echo mode | xargs node ${BIN}`, 'eval "factory-inspect ma""rk F1"']) assert.ok(guardCheck(c), c);
+  assert.equal(guardCheck('factory-inspect report --status open'), null);
+  assert.ok(guardCheck('factory-inspect run', { agent: true }));
+  assert.equal(guardCheck('factory-inspect run'), null);
+});
+
+test('hooks: a catch-up line reaches the model on the next prompt, not a session later', () => {
+  const root = F.makeRepo();
+  const run = (hook, input, event) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook), event], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
+  const J = F.cli(root, ['job', 'new', '--title', 'Never mind', '--type', 'bug', '--risk', 'low']).job;
+  F.reply(root, 'cancel job');
+  assert.equal(run('catch-up.js', { stop_hook_active: false }, 'agentStop').stdout, '');
+  const ctx = JSON.parse(run('prompt.js', { prompt: 'what now?' }, 'userPromptSubmitted').stdout).additionalContext;
+  assert.match(ctx, new RegExp(`inspected ${J}`));
+  assert.match(ctx, /Tell the user in one line/);
+  assert.equal(run('prompt.js', { prompt: 'and now?' }, 'userPromptSubmitted').stdout, '', 'reported once');
+  assert.doesNotMatch(JSON.parse(run('session-start.js', {}, 'sessionStart').stdout).additionalContext, new RegExp(`inspected ${J}`));
+});

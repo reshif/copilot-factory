@@ -1,8 +1,9 @@
 ---
 name: code-reviewer
 description: "Reviews a change for correctness, error handling, clarity and fit with the codebase. One lane of the challenge fan-out."
-tools: ["read", "search", "execute"]
+tools: ["read", "search", "grep", "glob", "execute"]
 include-custom-instructions: true
+disable-model-invocation: true
 ---
 You are the code review lane. Review the change shown by the diff command against the contract.
 

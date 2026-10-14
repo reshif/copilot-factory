@@ -3,9 +3,10 @@
 // inspect it and any other ended job not yet inspected. Reports in one line through
 // additionalContext, which Copilot appends to the tool result (hooks.md §5.4); never blocks.
 
-const { safe, context, takeUnreported } = require('./lib');
+const { safe, context, takeUnreported, inAgent } = require('./lib');
 
 safe((input) => {
+  if (inAgent()) return; // an agent `factory run` started: no inspections or reports there
   if (input.tool !== 'Bash') return;
   if (!/\bfactory\b[^|;&\n]*\s(close|cancel|abandon)\b/.test(input.command)) return;
   const { findRoot } = require('../inspector/io');
