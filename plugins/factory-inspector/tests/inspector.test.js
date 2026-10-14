@@ -541,3 +541,89 @@ test('guard regressions: redirects to /dev/null, prose and patterns are not insp
   ]) assert.ok(guardCheck(c), c);
   assert.equal(require('../hooks/shell.js').parse.toString(), require('../../factory/hooks/shell.js').parse.toString(), 'the shell reader is an identical copy of the factory\'s');
 });
+
+// ---------------------------------------------------------------- R20 grounded intent
+// A clarify round with research (the scout phase's data, as fanout-judge returns it).
+function scoutData(world) {
+  return {
+    ran: true, round: 1, web: { enabled: true, reason: null, available: true }, map: { ran: true, ok: true },
+    unknowns: [
+      { id: 'U-1', text: 'Where is add?', kind: 'repo', impact: 'high', draft: 'add is in src/add.js', research: 'repo', resolution: 'assumption', evidence: ['E-1'], researched: true },
+      { id: 'U-2', text: 'Is + numeric addition per ECMAScript?', kind: 'world', impact: 'medium', draft: 'ECMAScript + adds numbers', research: 'web', resolution: world === 'confirmed' ? 'assumption' : 'question', evidence: ['E-2'], researched: true },
+    ],
+    evidence: [
+      { id: 'E-1', unknown: 'U-1', claim: 'add is in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high', scout: 'repo', verdict: 'confirmed' },
+      { id: 'E-2', unknown: 'U-2', claim: 'ECMAScript + adds two numbers', source: 'https://tc39.es/ecma262/', source_tier: 'standard', retrieved_at: '2026-10-14', quote: 'Return ? operation(lnum, rnum).', confidence: 'high', scout: 'web', verdict: world },
+    ],
+    assumptions: [], scouts: [{ label: 'scout · repo #1', mode: 'repo', unknowns: ['U-1'], outcome: 'ok' }, { label: 'scout · web #1', mode: 'web', unknowns: ['U-2'], outcome: 'ok' }], verifiers: 1, degraded: [],
+  };
+}
+
+test('R20 grounded intent: a researchable question still asked (with its reason) and an overridden assumption, from the real CLI', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  next(root);
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  const r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [], researchable_questions: [] }, scout: scoutData('unverified') }));
+  assert.equal(r.status, 'needs_user');
+  assert.equal(r.questions[0].researchable, true);
+  F.reply(root, 'change A-1 add lives in lib/add.js');
+  F.cli(root, ['intent', 'show']); // read-only: no R7
+  inspect(root, ['run', '--job', J]);
+  const fds = I.report(root).findings.filter((x) => x.job === J);
+  const asked = fds.find((x) => x.rule === 'R20.researchable_asked');
+  assert.ok(asked, JSON.stringify(fds.map((x) => x.rule)));
+  assert.equal(asked.class, 'ambiguity');
+  assert.equal(asked.severity, 'medium');
+  assert.match(asked.summary, /Q-1 \(U-2, world\) — research did not confirm it: E-2 unverified/);
+  const over = fds.find((x) => x.rule === 'R20.assumption_overridden');
+  assert.ok(over);
+  assert.equal(over.severity, 'low');
+  assert.match(over.summary, /A-1 changed to "add lives in lib\/add\.js" \(research said: add is in src\/add\.js and subtracts\)/);
+  assert.ok(!fds.some((x) => /^R7\./.test(x.rule) && /intent/.test(x.summary)), 'factory intent show is read-only');
+  assert.ok(!fds.some((x) => x.rule === 'R1.seals'), 'intent-evidence.json is sealed by the CLI');
+  const h = I.health(root);
+  assert.deepEqual(h.intent, { jobs_researched: 1, researchable_asked: 1, assumptions_overridden: 1 });
+  assert.match(I.healthMd(h), /Grounded intent: 1 job\(s\) researched in clarify · researchable questions asked 1 · assumptions you overrode 1/);
+  // a hand-edited research record is a forged record (R1)
+  const file = path.join(F.jobDir(root, J), 'intent-evidence.json');
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  data.assumptions[0].statement = 'edited';
+  fs.writeFileSync(file, JSON.stringify(data));
+  inspect(root, ['run', '--job', J]);
+  assert.match(I.report(root).findings.find((x) => x.rule === 'R1.seals' && x.job === J).summary, /intent-evidence\.json/);
+});
+
+test('R20 from synthetic records: web off is low severity; limits and quiet jobs; R7 skips human assumption commands; R3 accepts an override as a rewind cause', () => {
+  const { LIMITS } = require('../inspector/config');
+  const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
+  const job = {
+    id: 'J-0002', state: { status: 'active', updated_at: at(1) }, lock: null, events: [],
+    ledger: [{ kind: 'intent', round: 1, at: at(1), questions: [{ id: 'Q-1', unknown: 'U-2', researchable: true }, { id: 'Q-2', unknown: 'U-3', researchable: false, preference: true }] }],
+    intent: { unknowns: [{ id: 'U-2', kind: 'world', note: 'not researched (web off: policy (intent_research.web is false))' }], assumptions: [{ id: 'A-1', statement: 's', overridden: false }] },
+    intentSealed: true,
+    decisions: [],
+  };
+  let found = rules.groundedIntent(job, LIMITS);
+  assert.deepEqual(found.map((x) => [x.rule, x.severity]), [['R20.researchable_asked', 'low']]);
+  assert.match(found[0].question, /intent_research\.web/);
+  // overrides from decisions (also after the last clarify round)
+  job.decisions.push({ ts: at(2), action: 'human.drop_assumption', assumption: 'A-1', was: 's' });
+  found = rules.groundedIntent(job, LIMITS);
+  assert.match(found.find((x) => x.rule === 'R20.assumption_overridden').summary, /A-1 dropped \(research said: s\)/);
+  // under the limits, or no research at all: nothing
+  assert.deepEqual(rules.groundedIntent(job, { ...LIMITS, researchable_asked_per_job: 2, assumptions_overridden_per_job: 2 }), []);
+  assert.deepEqual(rules.groundedIntent({ ...job, ledger: [], intent: null, decisions: [] }, LIMITS), []);
+  // R7: factory intent show (read-only) and factory assumption change (a human action) at a gate
+  const cli = (h, d, extra) => ({ event: 'cli', ts: at(h), job: 'J-0002', decision_id: d, ok: true, ...extra });
+  const g = { ...job, decisions: [{ id: 'J-0002-D0001', ts: at(1), action: 'gate', step: 'H1' }, { id: 'J-0002-D0002', ts: at(3), action: 'skill', skill: 'clarify', step: 'clarify' }], events: [cli(1.1, 'J-0002-D0001', { cmd: 'intent', sub: 'show' }), cli(1.2, 'J-0002-D0001', { cmd: 'assumption', sub: 'change', arg: 'A-1' })] };
+  assert.deepEqual(rules.driverFidelity(g).filter((x) => x.rule !== 'R7.not_done'), []);
+  // R3: H1 → clarify after "change A-n" is explained
+  const recipe = { id: 'standard@medium', steps: [{ step: 'clarify', run: 'skill:clarify' }, { step: 'H1', run: 'gate' }, { step: 'ground', run: 'workflow:ground' }] };
+  const rw = { ...job, lock: { recipe }, decisions: [{ id: 'D1', ts: at(1), action: 'skill', step: 'clarify' }, { id: 'D2', ts: at(2), action: 'gate', step: 'H1' }, { ts: at(2.5), action: 'human.change_assumption', assumption: 'A-1' }, { id: 'D3', ts: at(3), action: 'skill', step: 'clarify', rule: 'recipe.next' }] };
+  rw.ledger = [{ kind: 'step', step: 'clarify', ok: true, at: at(1.5) }];
+  assert.ok(!rules.conformance(rw).some((x) => x.rule === 'R3.unexplained_rewind'));
+  rw.decisions.splice(2, 1);
+  assert.ok(rules.conformance(rw).some((x) => x.rule === 'R3.unexplained_rewind'), 'without the override the rewind is unexplained');
+});

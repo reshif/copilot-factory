@@ -5,7 +5,7 @@ An independent auditor for the Software Factory, packaged as a GitHub Copilot CL
 1. **Was the intended recipe the one used?**
 2. **Did the factory behave the way that recipe says?** That covers the order of steps, gates, the evidence chain and caps, and whether the Copilot agent did what `factory next` told it to.
 
-It also finds **ambiguities**: places where the rules left room and someone had to improvise. And it watches the factory's **health**: every issue the factory reports about itself — hooks that failed, guard denials, blocked stops, refused replies, CLI failures and crashes, stale or degraded workflow results, agent failures, retries and escalations, agents that never stopped, parks, idle jobs, slow gates. Each finding goes into a register for you to decide on.
+It also finds **ambiguities**: places where the rules left room and someone had to improvise. And it watches the factory's **health**: every issue the factory reports about itself — hooks that failed, guard denials, blocked stops, refused replies, CLI failures and crashes, stale or degraded workflow results, agent failures, retries and escalations, agents that never stopped, parks, idle jobs, slow gates, and clarify asking you what research could have answered. Each finding goes into a register for you to decide on.
 
 It never blocks, approves or changes a job, a recipe or a policy.
 
@@ -22,13 +22,13 @@ The inspector has its own implementations of three things: seal verification, re
 
 | Rule | Class | Checks |
 |---|---|---|
-| R1 seals | deviation | Records written outside the factory CLI (state, lock, ledger, decision log, event log) |
+| R1 seals | deviation | Records written outside the factory CLI (state, lock, ledger, decision log, event log, clarify's `intent-evidence.json`) |
 | R2 intended recipe | deviation / gap | Replays the selection rules from the job's inputs. Checks the risk floor, the lock hash, and the recipe version every decision used. Flags a recipe file edited without a version bump |
-| R3 conformance | deviation / ambiguity | Steps outside the recipe; steps reached before earlier ones completed; closed without a step; moving backwards with no recorded cause |
+| R3 conformance | deviation / ambiguity | Steps outside the recipe; steps reached before earlier ones completed; closed without a step; moving backwards with no recorded cause (a denial, resume, amendment or a `change A-n` / `drop A-n` reply counts as a cause) |
 | R4 gates | deviation | Approvals that were never presented, or presented for a different document hash; automatic approvals the recipe doesn't allow |
 | R5 evidence chain | deviation | Review on a build with no passing proof; proof on a build never integrated; shipping without both on the same build |
 | R6 loops | deviation | Fix or clarify rounds beyond their caps plus your resumes |
-| R7 driver fidelity | deviation | The agent didn't run what `factory next` asked for, ran something else, or changed things while waiting at a gate |
+| R7 driver fidelity | deviation | The agent didn't run what `factory next` asked for, ran something else, or changed things while waiting at a gate (read-only commands such as `factory intent show`, and your own `factory assumption change/drop`, don't count) |
 | R8 consistency | ambiguity / deviation | The same failing check routed by different rules under the same rulebook; identical inputs picking different recipes |
 | R9 friction | ambiguity | Repeated patterns across jobs (3+ by default): the same guard denial, refused replies, refused workflow results, caps you nearly always resume past, the same floor waived, denials clustering at one gate, a step repeating with no progress |
 | R10 hook errors | gap | A factory hook failed (`hook_error`; high for the guard, stop and prompt hooks, which enforce nothing while failing); the inspector's own hooks failed (`.factory/inspect/hook-errors.jsonl`) |
@@ -41,6 +41,7 @@ The inspector has its own implementations of three things: seal verification, re
 | R17 idle job | gap | Active, not waiting for you, and nothing has happened for a long time |
 | R18 slow reply | ambiguity | A gate that waited longer than a limit for your reply |
 | R19 clarify | ambiguity | A job parked because its intent was still unclear after the intent rounds; clarify proposing questions over the round budget or already asked (dropped by the CLI) beyond a limit |
+| R20 grounded intent | ambiguity | Clarify asked you questions its research could have answered (repo or world unknowns), with the reason research gave (web off — low severity, a setting to revisit — no web access, sources disagree, budget spent); evidence-backed assumptions you changed or dropped (low severity: a learning signal that the evidence was wrong or the point was yours to decide). From the job's `kind: intent` ledger entries, its `intent-evidence.json` and your `change`/`drop` replies |
 
 ## Use
 
@@ -68,7 +69,7 @@ All hooks read Copilot payloads in either casing (`toolName`/`toolArgs` or `tool
 
 A finding marked fixed that is seen again reopens automatically (marked ↺).
 
-A finding from the health rules (R10–R19) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
+A finding from the health rules (R10–R20) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
 
 **CLI** (`factory-inspect`; `factory shim` puts it on your PATH, or run `node <plugin folder>/bin/factory-inspect`: the folder is `~/.copilot/installed-plugins/copilot-factory/factory-inspector` for a GitHub install (under `$COPILOT_HOME` if set), or `<your clone>/plugins/factory-inspector` for a marketplace added from a local folder; `copilot plugin list --json` tells you which): `run [--job J | --all | --active]` · `report [--format md]` (findings plus a **Factory health** section) · `health [--format md]` · `status` · `show F3` · `trace --job J`. The commands `mark` and `mode` are human-only: use them from your own terminal, or reply in chat.
 
@@ -81,7 +82,7 @@ A finding from the health rules (R10–R19) is tied to its newest evidence: once
 
 Settings live in `.factory/inspect/config.json`: `mode`, `sample_every`, `settle_after`, `threshold` (R9), per-recipe overrides, and:
 
-- `limits` — the thresholds of R10–R19, e.g. `{ "guard_denials_per_job": 5, "stop_blocks_per_job": 2, "cli_failures": 3, "agent_retries_per_job": 4, "orphan_agent_minutes": 120, "idle_hours": 72, "reply_hours": 48 }` (full list and defaults: `factory-inspect status`).
+- `limits` — the thresholds of R10–R20, e.g. `{ "guard_denials_per_job": 5, "stop_blocks_per_job": 2, "cli_failures": 3, "agent_retries_per_job": 4, "orphan_agent_minutes": 120, "idle_hours": 72, "reply_hours": 48, "researchable_asked_per_job": 1, "assumptions_overridden_per_job": 1 }` (full list and defaults: `factory-inspect status`).
 - `rules_off` — rules or families you don't want, e.g. `["R18", "R14.agent_retries"]`.
 
 The register is `.factory/inspect/register.json`.
@@ -89,7 +90,7 @@ The register is `.factory/inspect/register.json`.
 ## Test
 
 ```bash
-npm test   # 18 tests: a clean job has no findings; forged records, gate-window actions, skipped work,
-           # synthetic deviations, cross-job ambiguity, friction, job and factory health (R10–R19: hook errors, torn lines, intent parks,
-           # crashes, --active, health report), limits/rules_off, marks/regressions/modes/re-arming, hooks, jobs ending outside Bash, independence
+npm test   # 21 tests: a clean job has no findings; forged records, gate-window actions, skipped work,
+           # synthetic deviations, cross-job ambiguity, friction, job and factory health (R10–R20: hook errors, torn lines, intent parks,
+           # crashes, --active, health report), grounded intent (R20 from a real clarify record and synthetic ones), limits/rules_off, marks/regressions/modes/re-arming, hooks, jobs ending outside Bash, independence
 ```

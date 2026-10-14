@@ -7,7 +7,7 @@
 
 const { readJson, writeJson, layout } = require('./io');
 
-// Thresholds for the factory-wide and per-job health rules (R10–R19). Edit them in
+// Thresholds for the factory-wide and per-job health rules (R10–R20). Edit them in
 // .factory/inspect/config.json under "limits"; switch rules off with "rules_off"
 // (a rule id like "R18.slow_reply" or a family like "R18").
 const LIMITS = {
@@ -29,6 +29,8 @@ const LIMITS = {
   idle_hours: 72,
   reply_hours: 48,
   questions_dropped_per_job: 3, // clarify questions over budget or re-asked, dropped by the CLI
+  researchable_asked_per_job: 1, // clarify questions asked although research could have answered them
+  assumptions_overridden_per_job: 1, // evidence-backed assumptions you changed or dropped (a learning signal)
 };
 const DEFAULTS = { version: 1, mode: 'on', sample_every: 10, settle_after: 20, threshold: 3, recipes: {}, limits: LIMITS, rules_off: [] };
 

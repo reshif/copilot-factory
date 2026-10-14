@@ -154,6 +154,7 @@ function health(root, { now = nowIso() } = {}) {
     }
   }
   waits.sort((a, b) => a - b);
+  const grounded = jobs.map((j) => rules.intentSummary(j)).filter((x) => x.researched);
   const r1 = (x) => Math.round(x * 10) / 10;
   return {
     jobs: { total: jobs.length, ...Object.fromEntries(top(jobs, (j) => (j.state && j.state.status) || 'unknown', 10).map((x) => [x.key, x.count])) },
@@ -172,6 +173,7 @@ function health(root, { now = nowIso() } = {}) {
     resumes: obs.decisions.filter((d) => d.action === 'human.resume').length,
     idle_jobs: idle,
     gate_wait_hours: waits.length ? { median: r1(waits[Math.floor(waits.length / 2)]), max: r1(waits[waits.length - 1]), n: waits.length } : null,
+    intent: { jobs_researched: grounded.length, researchable_asked: grounded.reduce((n, x) => n + x.researchable.length, 0), assumptions_overridden: grounded.reduce((n, x) => n + x.overridden.length, 0) },
   };
 }
 
@@ -188,6 +190,7 @@ function healthMd(h) {
     `- Workflows: stale results ${h.records.stale} · degraded ${h.records.degraded} · errors ${h.records.workflow_errors}`,
     `- Agents: ${h.agents.runs} runs · ${h.agents.retries} retries · ${h.agents.failed} failed · ${h.agents.not_stopped} of ${h.agents.started} started never stopped`,
     `- Parks ${h.parks} · resumes ${h.resumes}${h.gate_wait_hours ? ` · gate replies: median ${h.gate_wait_hours.median} h, max ${h.gate_wait_hours.max} h` : ''}`,
+    ...(h.intent && h.intent.jobs_researched ? [`- Grounded intent: ${h.intent.jobs_researched} job(s) researched in clarify · researchable questions asked ${h.intent.researchable_asked} · assumptions you overrode ${h.intent.assumptions_overridden}`] : []),
   ].join('\n');
 }
 

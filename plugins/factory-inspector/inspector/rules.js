@@ -19,6 +19,7 @@ function seals(job) {
   const bad = [];
   if (job.state && !job.stateSealed) bad.push('state.json');
   if (job.lock && !job.lockSealed) bad.push('recipe.lock.json');
+  if (job.intent && job.intentSealed === false) bad.push('intent-evidence.json');
   const ledgerBad = job.ledgerLines.filter((l) => !l.torn && (!l.sealed || (l.rec && l.rec.job && l.rec.job !== job.id))); // torn lines: R11
   if (ledgerBad.length) bad.push(`ledger.jsonl lines ${ledgerBad.map((l) => l.line).slice(0, 10).join(', ')}`);
   const decBad = job.decisionLines.filter((d) => !d.sealed);
@@ -96,7 +97,7 @@ function conformance(job) {
     if (idx < maxIdx) {
       if (d.rule && M.REWIND_RULES.test(d.rule)) rewound = true;
       else if (!rewound) {
-        const cause = human.find((h) => ['human.deny', 'human.resume', 'human.approve'].includes(h.action) && h.ts <= d.ts && (!h.gate || h.gate === 'A' || h.action !== 'human.approve'));
+        const cause = human.find((h) => ['human.deny', 'human.resume', 'human.approve', 'human.change_assumption', 'human.drop_assumption'].includes(h.action) && h.ts <= d.ts && (!h.gate || h.gate === 'A' || h.action !== 'human.approve'));
         if (!cause) {
           const from = recipe.steps[maxIdx].step;
           out.push(f({ rule: 'R3.unexplained_rewind', class: 'ambiguity', severity: 'low', subject: `${job.id}:${from}->${d.step}`, job: job.id, summary: `Went back from "${from}" to "${d.step}" with no recorded cause (no failing check, denial, resume or amendment).`, evidence: [d.id], question: 'Was an approved or recorded document edited by hand? If that is a normal way of working, should it go through an amendment?' }));
@@ -187,8 +188,12 @@ function loops(job) {
 }
 
 // ---------------------------------------------------------------- R7 driver fidelity
-// shim (a symlink on PATH) and console (a read-only snapshot / server) change no job state.
-const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console']);
+// shim (a symlink on PATH) and console (a read-only snapshot / server) change no job state;
+// `intent show` only prints clarify's research.
+const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console']);
+// Human actions run from the user's own terminal, not driver commands: `factory assumption
+// change|drop` (the guard blocks agents from it). Judged by their human.* decision (R20), not R7.
+const HUMAN_ACTIONS = new Set(['assumption']);
 const MUTATING_IN_WAIT = new Set(['record', 'ship', 'task:start', 'task:verify', 'task:state', 'reconcile', 'verify', 'evidence', 'plan:from-contract', 'close', 'epic', 'amend', 'followup', 'distill:done', 'wfargs']);
 
 function cmdKey(e) {
@@ -242,7 +247,7 @@ function driverFidelity(job) {
     }
     for (const e of evs) {
       const k = cmdKey(e);
-      if (READ_ONLY.has(k) || READ_ONLY.has(e.cmd)) continue;
+      if (READ_ONLY.has(k) || READ_ONLY.has(e.cmd) || HUMAN_ACTIONS.has(e.cmd)) continue;
       // `factory run` logs its own wfargs / agent_run / record lines, which are judged here;
       // a `cmd: run` line is only written when the run failed before or around them, and a
       // failed run changed nothing by itself (R13 counts repeated failures).
@@ -343,7 +348,7 @@ function friction(obs, threshold) {
   return out;
 }
 
-// ---------------------------------------------------------------- health: R10–R19
+// ---------------------------------------------------------------- health: R10–R20
 // Everything the factory reports about itself — hook failures, hook pushback, CLI
 // failures, workflow and agent trouble, parks, idle jobs, slow gates — checked against
 // the thresholds in config "limits". Findings carry `latest` (newest evidence) so a
@@ -387,7 +392,7 @@ function factoryHealth(obs, L) {
   return out;
 }
 
-// R12–R18 for one job, from its own events, ledger and decisions.
+// R12–R20 for one job, from its own events, ledger, decisions and intent record.
 function jobHealth(job, L, now) {
   const out = [];
   const ev = job.events;
@@ -473,6 +478,50 @@ function jobHealth(job, L, now) {
   if (intentParks.length) out.push(f({ rule: 'R19.intent_parked', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(intentParks, 'at'), summary: `${id} parked ${intentParks.length} time(s) because the intent was still unclear after ${Math.max(...intentParks.map((e) => e.detail.intent_rounds || 0))} intent round(s).`, question: 'Was the request too vague to start, or were the intent questions badly put?' }));
   const dropped = clarify.reduce((n, e) => n + (Number(e.detail.dropped) || 0), 0);
   if (dropped >= L.questions_dropped_per_job) out.push(f({ rule: 'R19.question_overrun', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(clarify.filter((e) => e.detail.dropped), 'at'), summary: `Clarify in ${id} proposed ${dropped} question(s) beyond the round budget or already asked; the CLI dropped them (limit ${L.questions_dropped_per_job}).`, question: 'Does the judge ignore the question budget or the never-re-ask list in its brief?' }));
+  out.push(...groundedIntent(job, L));
+  return out;
+}
+
+// R20 grounded intent: what clarify's research could not spare the user.
+//   - questions asked although their unknown was researchable (repo or world kind), with the
+//     reason research gave (web off, no web access, sources disagree, budget spent…)
+//   - evidence-backed assumptions the user changed or dropped (a learning signal: research
+//     settled them, the user disagreed)
+// From the job's kind:'intent' ledger entries, its human.* decisions and, when present,
+// its intent-evidence.json (for the reasons and what research had said).
+const WEB_OFF = /web off|policy/i;
+function intentSummary(job) {
+  const rounds = job.ledger.filter((e) => e.kind === 'intent');
+  const data = job.intent && job.intentSealed !== false ? job.intent : null;
+  const unknowns = new Map(((data && data.unknowns) || []).map((u) => [u.id, u]));
+  const asked = new Map();
+  for (const r of rounds) for (const q of r.questions || []) if (q.researchable && q.id && !asked.has(q.id)) asked.set(q.id, { ...q, at: r.at });
+  const researchable = [...asked.values()].map((q) => {
+    const u = unknowns.get(q.unknown) || {};
+    return { id: q.id, unknown: q.unknown || null, kind: u.kind || null, reason: u.note || 'research did not settle it', at: q.at };
+  });
+  const decisions = job.decisions.filter((d) => ['human.change_assumption', 'human.drop_assumption'].includes(d.action));
+  const byId = new Map();
+  for (const d of decisions) byId.set(d.assumption, { id: d.assumption, action: d.action === 'human.drop_assumption' ? 'dropped' : 'changed', value: d.value || null, was: d.was || null, at: d.ts });
+  for (const a of (data && data.assumptions) || []) {
+    if (byId.has(a.id) || !(a.overridden || a.dropped)) continue;
+    byId.set(a.id, { id: a.id, action: a.dropped ? 'dropped' : 'changed', value: a.override ? a.override.value : null, was: a.statement || null, at: (a.override && a.override.at) || a.dropped_at || null });
+  }
+  return { rounds: rounds.length, researchable, overridden: [...byId.values()], researched: Boolean(rounds.length || data) };
+}
+
+function groundedIntent(job, L) {
+  const out = [];
+  const id = job.id;
+  const s = intentSummary(job);
+  if (!s.researched) return out;
+  if (s.researchable.length >= L.researchable_asked_per_job) {
+    const allOff = s.researchable.every((q) => WEB_OFF.test(q.reason));
+    out.push(f({ rule: 'R20.researchable_asked', class: 'ambiguity', severity: allOff ? 'low' : 'medium', subject: id, job: id, latest: latest(s.researchable, 'at'), summary: `Clarify in ${id} asked you ${s.researchable.length} question(s) research could have answered: ${s.researchable.slice(0, 4).map((q) => `${q.id}${q.unknown ? ` (${q.unknown}${q.kind ? `, ${q.kind}` : ''})` : ''} — ${String(q.reason).slice(0, 80)}`).join('; ')}.`, evidence: s.researchable.slice(0, 6).map((q) => q.id), question: allOff ? 'Web research is off for this repository: is that still the right setting (policy intent_research.web)?' : 'Why could research not settle these: no web access, a budget too small for this risk, or sources that disagree?' }));
+  }
+  if (s.overridden.length >= L.assumptions_overridden_per_job) {
+    out.push(f({ rule: 'R20.assumption_overridden', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(s.overridden, 'at'), summary: `You overrode ${s.overridden.length} evidence-backed assumption(s) in ${id}: ${s.overridden.slice(0, 4).map((a) => `${a.id} ${a.action}${a.value ? ` to "${String(a.value).slice(0, 50)}"` : ''}${a.was ? ` (research said: ${String(a.was).slice(0, 60)})` : ''}`).join('; ')}.`, evidence: s.overridden.slice(0, 6).map((a) => a.id), question: 'Was the evidence wrong or out of date, or is this something only you could know (it should have been a question)?' }));
+  }
   return out;
 }
 
@@ -491,4 +540,4 @@ function inspectGlobal(obs, threshold, { limits } = {}) {
   return out;
 }
 
-module.exports = { AGENT_FAILED, inspectJob, inspectGlobal, jobHealth, factoryHealth, seals, intendedRecipe, conformance, gates, evidenceChain, loops, driverFidelity, consistency, friction, expectationsFor };
+module.exports = { AGENT_FAILED, HUMAN_ACTIONS, inspectJob, intentSummary, groundedIntent, inspectGlobal, jobHealth, factoryHealth, seals, intendedRecipe, conformance, gates, evidenceChain, loops, driverFidelity, consistency, friction, expectationsFor };
