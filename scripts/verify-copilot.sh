@@ -4,17 +4,19 @@
 #   bash scripts/verify-copilot.sh            # uses the installed plugins
 #   bash scripts/verify-copilot.sh --model claude-haiku-5.5
 # It makes two short `copilot -p` calls (a few premium requests / AI credits) in a
-# throwaway git repo, and writes everything to ./copilot-verify-<time>/ — send that
-# folder's report.md back if anything is marked FAIL or UNKNOWN.
+# throwaway git repo, and writes everything to $TMPDIR/copilot-verify-<time>/ (or
+# $VERIFY_OUT) — send that folder's report.md back if anything is marked FAIL or UNKNOWN.
+# Exit status: 0 when nothing FAILed, 1 otherwise.
 set -u
 MODEL=""
 [ "${1:-}" = "--model" ] && MODEL="${2:-}"
 COPILOT="${COPILOT_BIN:-copilot}"
-OUT="$PWD/copilot-verify-$(date +%Y%m%d-%H%M%S)"
+OUT="${VERIFY_OUT:-${TMPDIR:-/tmp}/copilot-verify-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
 REPORT="$OUT/report.md"
 ok()   { echo "- PASS: $*" | tee -a "$REPORT"; }
-bad()  { echo "- FAIL: $*" | tee -a "$REPORT"; }
+FAILS=0
+bad()  { FAILS=$((FAILS+1)); echo "- FAIL: $*" | tee -a "$REPORT"; }
 unk()  { echo "- UNKNOWN: $*" | tee -a "$REPORT"; }
 echo "# copilot-factory verification — $(date -u +%FT%TZ)" > "$REPORT"
 echo "" >> "$REPORT"
@@ -45,8 +47,9 @@ EVENTS="$REPO/.factory/log/events.jsonl"
 before=$(wc -l < "$EVENTS" 2>/dev/null || echo 0)
 
 # 3. Headless agent call: --agent factory:<role>, JSON output shape, hooks in -p, guard
-PROMPT='Do exactly these steps and nothing else. 1) Run the shell command: cat .factory/project.json  2) Reply with exactly this JSON object and nothing else: {"ok":true}'
-ARGS=(-p "$PROMPT" --agent factory:researcher --output-format json -s --no-ask-user --allow-all-tools)
+# The plugin folder is passed with --add-dir like factory run does, so the agent may run the factory CLI.
+PROMPT="Do exactly these steps and nothing else. 1) Run the shell command: cat .factory/project.json  2) Run the shell command: node \"$ROOT/bin/factory\" --root \"$REPO\" help  3) Reply with exactly this JSON object and nothing else: {\"ok\":true}"
+ARGS=(-p "$PROMPT" --agent factory:researcher --output-format json -s --no-ask-user --allow-all-tools --add-dir "$REPO" --add-dir "$ROOT")
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
 "$COPILOT" "${ARGS[@]}" > "$OUT/agent.jsonl" 2> "$OUT/agent.stderr"
 code=$?
@@ -62,6 +65,7 @@ for(const l of lines){try{const e=JSON.parse(l);js++;types[e.type||"(no type)"]=
 console.log(JSON.stringify({lines:lines.length,json_lines:js,types}));' "$OUT/agent.jsonl" > "$OUT/agent-shape.json" 2>&1
 grep -q '"assistant.message"' "$OUT/agent-shape.json" && ok "--output-format json has assistant.message events (what factory run reads)" || bad "no assistant.message events in the JSON output — send agent-shape.json and agent.jsonl"
 grep -q '{\\"ok\\":true}\|{"ok":true}\|\\"ok\\": *true' "$OUT/agent.jsonl" && ok "the agent's final JSON object is in the output" || unk "final {\"ok\":true} not found in agent.jsonl"
+grep -q 'Permission denied because no interactive user response' "$OUT/agent.jsonl" && bad "a shell command was denied for lack of a path permission (see agent.jsonl): agents could not run the factory CLI" || ok "no shell command was denied for path permissions (factory CLI reachable with --add-dir)"
 
 # 3b. Guard probe: the builder agent can edit files, so it really attempts the write.
 GPROMPT='Use your file editing tool (not the shell) to create the file .factory/policy.json containing exactly {"probe":true}. If the tool call is refused, do not retry and do not use the shell; just reply with exactly this JSON object: {"refused":true}'
@@ -73,7 +77,9 @@ GARGS=(-p "$GPROMPT" --agent factory:builder --output-format json -s --no-ask-us
 tail -n +"$((before+1))" "$EVENTS" > "$OUT/new-events.jsonl" 2>/dev/null
 grep -q '"PostToolUse"' "$OUT/new-events.jsonl" && ok "postToolUse hook fired inside copilot -p (activity logged)" || bad "no PostToolUse events logged: plugin hooks may not run in -p processes"
 grep -q '"guard_deny"' "$OUT/new-events.jsonl" && ok "preToolUse guard denied the builder's write to .factory/policy.json" || { grep -q '"refused"' "$OUT/guard.jsonl" && unk "the builder reports a refusal but no guard_deny was logged (see guard.jsonl)" || bad "guard_deny not logged (see guard.jsonl: did the builder attempt the write?)"; }
-grep -q '"probe"' "$REPO/.factory/policy.json" && bad "the write to .factory/policy.json went through — the guard did NOT protect it" || ok ".factory/policy.json was not changed"
+if grep -q '"probe"' "$REPO/.factory/policy.json"; then bad "the write to .factory/policy.json went through — the guard did NOT protect it"
+elif grep -q '"guard_deny"' "$OUT/new-events.jsonl"; then ok ".factory/policy.json was not changed"
+else unk ".factory/policy.json was not changed, but no write was attempted (see guard.jsonl)"; fi
 grep -q '"hook_error"' "$OUT/new-events.jsonl" && bad "hook_error events logged (see new-events.jsonl)" || ok "no hook errors"
 node -e '
 const ev=require("fs").readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean);
@@ -88,3 +94,7 @@ $FACTORY run fanout-judge --config clarify --dry-run > "$OUT/run-dry.json" 2>&1 
 echo "" >> "$REPORT"
 echo "Files: $OUT" | tee -a "$REPORT"
 echo "Manual checks left: in an interactive 'copilot' session in $REPO run /agent (expect 19 factory agents) and /factory:start." | tee -a "$REPORT"
+echo "" >> "$REPORT"
+if [ "$FAILS" -gt 0 ]; then echo "$FAILS check(s) FAILED" | tee -a "$REPORT"; exit 1; fi
+echo "No check FAILED" | tee -a "$REPORT"
+exit 0
