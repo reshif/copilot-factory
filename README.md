@@ -6,8 +6,8 @@ This is a port of [claude-factory](https://github.com/reshif/claude-factory) (th
 
 | Plugin | Version | What it is |
 |---|---|---|
-| `factory` | 0.1.2 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 19 custom agents, recipes, templates and the console |
-| `factory-inspector` | 0.1.1 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R19) |
+| `factory` | 0.2.0 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 19 custom agents, recipes, templates and the console |
+| `factory-inspector` | 0.2.0 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R19) |
 
 The version line started again at 0.1.0 for Copilot. It is separate from claude-factory's (0.10.0 / 0.2.0 at the time of the port).
 
