@@ -92,7 +92,7 @@ function decisionKey(result) {
 }
 
 // Commands that only look: running them is not an attempt at the step factory next chose.
-const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'doc', 'report', 'recipe', 'telemetry', 'finalize', 'use', 'shim', 'task:show', 'lessons:list', 'distill:context']);
+const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'intent', 'doc', 'report', 'recipe', 'telemetry', 'finalize', 'use', 'shim', 'task:show', 'lessons:list', 'distill:context']);
 const REFUSED_RUN = new Set(['not_waiting_for_workflow', 'run_in_progress', 'copilot_unavailable', 'bad_input']); // nothing was tried
 
 // Was anything tried under the decision in force (a workflow ran, a record or step command

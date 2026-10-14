@@ -81,6 +81,8 @@ function floorCovered(recipe, floor) {
   switch (floor) {
     case 'contract_approved':
       return has('H1') || has('EH1');
+    case 'intent_grounded':
+      return has('clarify');
     case 'isolation':
       return has('realize');
     case 'prove':

@@ -6,6 +6,7 @@ Every document the factory keeps about a job follows a versioned template in [`t
 
 | Type | Template | Written by | Lives at | Required diagram |
 |---|---|---|---|---|
+| `intent-findings` | [`intent-findings.md`](../templates/docs/intent-findings.md) | CLI, after each clarify round and each `change A-n` / `drop A-n`, from `intent-evidence.json` | `jobs/<J>/intent-findings.md` | — |
 | `findings` | [`findings.md`](../templates/docs/findings.md) | CLI, from researchers' cited claims | `jobs/<J>/findings.md` | — |
 | `threat-model` | [`threat-model.md`](../templates/docs/threat-model.md) | threat modeler (high risk) | `jobs/<J>/threat-model.md` | Mermaid data-flow `flowchart` with every trust boundary as a `subgraph` |
 | `adr` | [`adr.md`](../templates/docs/adr.md) (MADR-style) | architect | `jobs/<J>/adr-NNN-<title>.md` | Mermaid architecture diagram: C4-style `flowchart`/`graph` or `C4Context`/`C4Container`…; optional `sequenceDiagram` for the key flow |
@@ -42,8 +43,9 @@ The check is cheap and syntactic — no Mermaid renderer is needed. For Mermaid 
 ## Where it is enforced
 
 - **Decide**: `factory record` checks the whole design record (ADR, no-adr, recommendation, threat model, epic contracts). Any problem — a missing section, no Mermaid architecture diagram, an uncovered criterion, an unmapped threat — makes the step `retry`; the next decide brief lists the problems for the architect, and three failures in a row park the job. The architect and threat modeler are told the template path and to run `factory doc check` before returning.
+- **Clarify**: the CLI renders `intent-findings.md` (summary, what we found with source, retrieval date, version and verdict, what we are assuming, what only you can answer, every unknown, the research log) after every round; `ground`'s `findings.md` links it and does not research those unknowns again.
 - **Ground** and **ship**: the CLI renders findings, the completion report and the index from sealed state, so they always match their templates; the same build renders the same report.
 
 ## Why it pays off later
 
-The docs form one traceable chain: **contract** (what, `AC-n`) → **findings** (cited facts) → **threat model** (`TH-n`) → **ADR** (decision, diagram, AC table, threat mapping, rollback) → **plan** (tasks own `AC-n`) → **evidence** (ledger) → **completion report** (AC → proof, what changed, risk, rollback) → **lessons** (rule, scope, why). `docs-index.md` puts the chain for each criterion on one row. Months later, `grep -l "doc: adr" -r .factory/jobs` finds every decision, the diagram shows the shape the team agreed on, and the report says how it was proven and how to undo it.
+The docs form one traceable chain: **intent findings** (the evidence behind the intent, `E-n`, `A-n`) → **contract** (what, `AC-n`) → **findings** (cited facts) → **threat model** (`TH-n`) → **ADR** (decision, diagram, AC table, threat mapping, rollback) → **plan** (tasks own `AC-n`) → **evidence** (ledger) → **completion report** (AC → proof, what changed, risk, rollback) → **lessons** (rule, scope, why). `docs-index.md` puts the chain for each criterion on one row. Months later, `grep -l "doc: adr" -r .factory/jobs` finds every decision, the diagram shows the shape the team agreed on, and the report says how it was proven and how to undo it.

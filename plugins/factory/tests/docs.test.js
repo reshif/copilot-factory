@@ -38,7 +38,7 @@ test('factory doc template / list print the template set', () => {
   assert.match(r.stdout, /^---\ndoc: adr\ntemplate: adr@1/);
   assert.match(r.stdout, /## Architecture diagram[\s\S]*```mermaid\nflowchart LR/);
   const l = JSON.parse(require('child_process').spawnSync('node', [F.BIN, 'doc', 'list'], { encoding: 'utf8' }).stdout);
-  assert.deepEqual(l.map((x) => x.type), ['adr', 'no-adr', 'recommendation', 'threat-model', 'contracts', 'findings', 'ship-report', 'lessons', 'index']);
+  assert.deepEqual(l.map((x) => x.type), ['adr', 'no-adr', 'recommendation', 'threat-model', 'contracts', 'intent-findings', 'findings', 'ship-report', 'lessons', 'index']);
   const bad = require('child_process').spawnSync('node', [F.BIN, 'doc', 'template', 'nope'], { encoding: 'utf8' });
   assert.equal(bad.status, 1);
 });

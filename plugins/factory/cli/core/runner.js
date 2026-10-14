@@ -397,13 +397,26 @@ async function runAgent(ctx, prompt, opts) {
   }
   const S = ctx.settings;
   const model = modelId(S.modelIds, o.model);
+  // A time cap from the workflow (opts.timeoutSec: clarify's scout budget) counts from the
+  // call, not from the spawn: time spent waiting for a free slot is part of the budget, and
+  // an agent whose budget ran out while it waited is not started at all (outcome timeout).
+  const capSec = typeof o.timeoutSec === 'number' && o.timeoutSec > 0 ? Math.min(o.timeoutSec, S.timeoutSec) : null;
+  const deadline = capSec ? Date.now() + capSec * 1000 : null;
+  const left = () => (deadline ? Math.floor((deadline - Date.now()) / 1000) : S.timeoutSec);
   return ctx.limit(async () => {
     const cwd = cwdFor(ctx, o, { prepare: true });
+    if (deadline && left() < 5) {
+      const rec = { label: o.label || role, role, agent_type: agentType, model: o.model || null, model_id: model, cwd, ms: 0, exit: null, retry: false, spawns: 0, outcome: 'timeout', time_cap_sec: capSec, errors: [`its ${capSec}s time budget ran out before a slot was free; not started`] };
+      ctx.runs.push(rec);
+      events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...rec });
+      ctx.say(`${rec.label} (${agentType}) not started: time budget spent while queued`);
+      return null;
+    }
     const sessionId = S.resumeForRetry ? crypto.randomUUID() : null;
     const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
     const spawnOnce = async (text, retryTurn = false) => {
       if (ctx.unavailable) throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
-      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags }), { cwd, env, timeoutSec: S.timeoutSec });
+      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags }), { cwd, env, timeoutSec: Math.max(1, left()) });
       const u = unavailable(r);
       if (u) {
         if (!ctx.unavailable) events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, cwd, ms: r.ms, exit: r.code, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [u.detail] });
@@ -422,7 +435,7 @@ async function runAgent(ctx, prompt, opts) {
       const c = check(o.schema, replyText(runs[0].stdout));
       result = c.obj;
       errors = c.errors;
-      if (!result) {
+      if (!result && (!deadline || left() >= 5)) {
         retry = true;
         const fix = correction(o.schema, errors);
         runs.push(await spawnOnce(S.resumeForRetry ? fix : `${full}\n\n${fix}`, true));
@@ -448,7 +461,8 @@ async function runAgent(ctx, prompt, opts) {
       retry,
       spawns: runs.length,
       outcome,
-      ...(result ? {} : { errors: (last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${S.timeoutSec}s` : `exit ${last.code}: ${String(last.stderr || '').trim().slice(-300)}`] : errors).slice(0, 5) }),
+      ...(capSec ? { time_cap_sec: capSec } : {}),
+      ...(result ? {} : { errors: (last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${String(last.stderr || '').trim().slice(-300)}`] : errors).slice(0, 5) }),
     };
     ctx.runs.push(rec);
     events.append(ctx.root, {
@@ -732,15 +746,35 @@ function summaryText(r) {
     L.push(`questions (${r.questions.length})${r.intent_first ? ' — intent first: other questions wait' : ''}:`);
     r.questions.forEach((q, i) => {
       const opts = Array.isArray(q.options) && q.options.length ? ` | options: ${q.options.map(one).join(' / ')}` : '';
-      L.push(`  ${i + 1}. ${q.id ? `${q.id} ` : ''}${q.category ? `[${q.category}] ` : ''}${q.question}${q.why ? ` | why: ${q.why}` : ''}${opts}${q.default !== undefined && q.default !== null ? ` | default: ${one(q.default)}` : ''}`);
+      const ground = `${q.unknown ? ` | unknown: ${q.unknown}${q.kind ? ` (${q.kind})` : ''}` : ''}${Array.isArray(q.evidence) && q.evidence.length ? ` | evidence: ${q.evidence.join(', ')}` : q.preference ? ' | your call' : ''}${q.researchable ? ` | researchable, asked because: ${q.note || 'research did not settle it'}` : ''}`;
+      L.push(`  ${i + 1}. ${q.id ? `${q.id} ` : ''}${q.category ? `[${q.category}] ` : ''}${q.question}${q.why ? ` | why: ${q.why}` : ''}${opts}${q.default !== undefined && q.default !== null ? ` | default: ${one(q.default)}` : ''}${ground}`);
     });
   }
   if (r.intent_first !== undefined) L.push(`intent_first: ${r.intent_first}`);
+  // Grounded intent (clarify): what research found, what the factory assumes, and where it all is.
+  if (Array.isArray(r.findings) && r.findings.length) {
+    L.push(`findings (${r.findings.length}):`);
+    for (const f of r.findings) L.push(`  - ${f.id} [${f.verdict}${f.confidence ? `, ${f.confidence}` : ''}] ${f.claim} — ${f.source}${f.retrieved_at ? ` (${f.retrieved_at})` : ''}`);
+  }
+  if (Array.isArray(r.assumptions) && r.assumptions.length) {
+    L.push(`assumptions (${r.assumptions.length}) — reply "change A-n <value>" or "drop A-n" to override:`);
+    for (const a of r.assumptions) L.push(`  - ${a.id}: ${a.statement}${a.overridden ? ' (overridden by user)' : ` (evidence: ${(a.evidence || []).join(', ')})`}`);
+  }
+  if (r.research) {
+    const x = r.research;
+    L.push(`research: ${x.unknowns || 0} unknown(s), ${x.evidence || 0} finding(s) (${x.confirmed || 0} confirmed), web ${x.web || 'n/a'}${x.researchable_dropped ? `, ${x.researchable_dropped} researchable question(s) not asked` : ''}${(x.degraded || []).length ? `, degraded: ${x.degraded.join(', ')}` : ''}`);
+  }
+  if (r.intent_findings) L.push(`intent_findings: ${r.intent_findings}`);
+  if (Array.isArray(r.warnings) && r.warnings.length) {
+    L.push('warnings:');
+    for (const w of r.warnings.slice(0, 10)) L.push(`  - ${one(w)}`);
+  }
   if (r.held) L.push(`held: ${r.held}`);
   if (r.critique) {
     const c = r.critique;
     L.push(`critique: verdict ${c.verdict}${c.intent_confirmed === false ? ', intent NOT confirmed' : ''}${c.restatement ? ` | restatement: ${one(c.restatement)}` : ''}`);
     for (const it of c.items || []) L.push(`  - ${one(it)}`);
+    for (const q of c.researchable_questions || []) L.push(`  - researchable (${q.kind}): ${q.question}`);
   }
   for (const k of ['problems', 'doc_problems', 'errors', 'missing', 'degraded', 'confirmed', 'unverified']) {
     if (Array.isArray(r[k]) && r[k].length) {

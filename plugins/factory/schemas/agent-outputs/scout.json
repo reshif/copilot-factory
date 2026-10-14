@@ -1,0 +1,18 @@
+{ "$comment": "researcher in scout mode (clarify): cited evidence for the unknowns it was given, or why it could not resolve them.",
+  "type": "object", "required": ["mode", "evidence", "unresolved"], "properties": {
+  "mode": { "enum": ["repo", "web"] },
+  "web_available": { "type": "boolean" },
+  "versions": { "type": "array", "items": { "type": "object", "required": ["name", "version", "source"], "properties": {
+    "name": { "type": "string" }, "version": { "type": "string" }, "source": { "type": "string" } } } },
+  "evidence": { "type": "array", "items": { "type": "object", "required": ["unknown", "claim", "source", "source_tier", "quote", "confidence"], "properties": {
+    "unknown": { "type": "string", "pattern": "^U-\\d+$" },
+    "claim": { "type": "string" },
+    "source": { "type": "string" },
+    "source_tier": { "enum": ["official", "primary", "standard", "secondary", "forum", "repo"] },
+    "retrieved_at": { "type": "string" },
+    "quote": { "type": "string" },
+    "applies_to_version": { "type": "string" },
+    "confidence": { "enum": ["high", "medium", "low"] } } } },
+  "unresolved": { "type": "array", "items": { "type": "object", "required": ["unknown", "reason"], "properties": {
+    "unknown": { "type": "string" }, "reason": { "type": "string" } } } },
+  "fetched": { "type": "array", "items": { "type": "string" } } } }

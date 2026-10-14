@@ -24,7 +24,7 @@ const { safe, emit, findRoot, STOP_MARK } = require('./lib');
 const MAX_BLOCKS = 1; // per routing decision
 const WAIT_ACTIONS = new Set(['wait', 'gate', 'parked', 'done', 'questions']);
 // Commands that only look: running them is not an attempt at the assigned step.
-const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'doc', 'report', 'recipe', 'telemetry', 'use', 'shim']);
+const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'intent', 'doc', 'report', 'recipe', 'telemetry', 'use', 'shim']);
 
 const THING = '(?:job|feature|fix|bug ?fix|change|changes|work|implementation|task|pr|pull request|refactor|patch|migration|update)';
 const CLAIM = new RegExp([

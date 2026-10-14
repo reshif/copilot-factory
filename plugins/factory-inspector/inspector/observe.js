@@ -67,6 +67,8 @@ function observe(root) {
     const state = readJson(p.state, null);
     const lock = readJson(p.lock, null);
     const ledgerLines = readLog(p.ledger);
+    // Grounded intent (clarify's research record), sealed like state.json; absent before 0.3.0.
+    const intent = readJson(p.intent, null);
     const decisions = decisionsAll.filter((d) => d.rec && d.rec.job === id);
     const events = eventsAll.filter((e) => e.rec && e.rec.job === id);
     jobs[id] = {
@@ -75,6 +77,8 @@ function observe(root) {
       lock,
       stateSealed: state ? sealOk(state) !== false : false,
       lockSealed: lock ? sealOk(lock) !== false : false,
+      intent,
+      intentSealed: intent ? sealOk(intent) !== false : true,
       ledgerLines,
       ledgerTorn: ledgerLines.filter((l) => l.torn).map((l) => l.line),
       ledger: ledgerLines.filter((l) => l.sealed && l.rec && l.rec.job === id).map((l) => l.rec),

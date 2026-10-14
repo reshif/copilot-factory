@@ -158,7 +158,7 @@ function checkReadTool(root, tool, ti, absFile, cwd, policy) {
 
 // ---- factory CLI recognition -------------------------------------------------------------
 
-const HUMAN_ONLY = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal']);
+const HUMAN_ONLY = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption']);
 // Mirrors cli/main.js parseArgs: --k=v, --k v (unless the flag is boolean or v starts with --), and --.
 const CLI_BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force']);
 const TTY_FAKERS = /^(script|unbuffer|expect|socat|faketty|ptyexec|zpty|empty)$/;
@@ -188,6 +188,7 @@ const AGENT_ALLOWED = {
   report: '*',
   job: ['show', 'list'],
   contract: ['show', 'check'],
+  intent: ['show'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
   reconcile: ['run', 'continue', 'abort'],
@@ -198,7 +199,7 @@ const AGENT_ALLOWED = {
 };
 
 // Every top-level factory command (cli/main.js): an agent is refused only a real command.
-const CLI_VERBS = new Set(['help', 'init', 'doctor', 'shim', 'run', 'console', 'job', 'use', 'next', 'why', 'finalize', 'contract', 'answer', 'wfargs', 'record', 'plan', 'task', 'reconcile', 'verify', 'evidence', 'report', 'ship', 'pr', 'ci', 'close', 'followup', 'doc', 'distill', 'lessons', 'amend', 'park', 'epic', 'telemetry', 'recipe', ...HUMAN_ONLY]);
+const CLI_VERBS = new Set(['help', 'init', 'doctor', 'shim', 'run', 'console', 'job', 'use', 'next', 'why', 'finalize', 'contract', 'intent', 'answer', 'wfargs', 'record', 'plan', 'task', 'reconcile', 'verify', 'evidence', 'report', 'ship', 'pr', 'ci', 'close', 'followup', 'doc', 'distill', 'lessons', 'amend', 'park', 'epic', 'telemetry', 'recipe', ...HUMAN_ONLY]);
 
 function agentAllowed(a, b) {
   if (!a || !CLI_VERBS.has(a)) return true;

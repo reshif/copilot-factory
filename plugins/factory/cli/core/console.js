@@ -110,6 +110,38 @@ function resultText(step, ok, d) {
   }
 }
 
+// Grounded intent: what clarify's scout phase researched in one round. `entry` is that
+// round's kind:'intent' ledger line (ids, verdicts and resolutions as they stood then);
+// `data` is jobs/<J>/intent-evidence.json, for claims, quotes, dates and statements.
+const VERDICT_ORDER = { confirmed: 0, contradicted: 1, unverified: 2, unchecked: 3 };
+function researchView(detail, entry, data) {
+  const d = detail || {};
+  const ev = new Map(((data && data.evidence) || []).map((e) => [e.id, e]));
+  const as = new Map(((data && data.assumptions) || []).map((a) => [a.id, a]));
+  const un = new Map(((data && data.unknowns) || []).map((u) => [u.id, u]));
+  const list = (entry && entry.evidence) || [];
+  const findings = list
+    .slice()
+    .sort((a, b) => (VERDICT_ORDER[a.verdict] ?? 9) - (VERDICT_ORDER[b.verdict] ?? 9) || (a.scout === 'web' ? -1 : 1) - (b.scout === 'web' ? -1 : 1))
+    .slice(0, 6)
+    .map((e) => {
+      const full = ev.get(e.id) || {};
+      return { id: e.id, unknown: e.unknown, claim: short(String(full.claim || ''), 180), source: short(String(e.source || full.source || ''), 160), tier: e.source_tier || full.source_tier || null, retrieved_at: full.retrieved_at || null, verdict: e.verdict || full.verdict || null, confidence: full.verdict_confidence || full.confidence || null, scout: e.scout || full.scout || null };
+    });
+  // As they stood that round (the ledger line), with the statement from the record.
+  const assumptions = ((entry && entry.assumptions) || []).map((a) => {
+    const full = as.get(a.id) || {};
+    return { id: a.id, statement: short(String(full.statement || ''), 180), evidence: a.evidence || [], overridden: Boolean(a.overridden), value: a.overridden && full.override ? short(String(full.override.value), 140) : null };
+  });
+  const asked = ((entry && entry.questions) || []).map((q) => ({ id: q.id, unknown: q.unknown || null, researchable: Boolean(q.researchable), preference: Boolean(q.preference), evidence: q.evidence || [], reason: q.researchable ? short(String((un.get(q.unknown) || {}).note || 'research did not settle it'), 140) : null }));
+  return {
+    unknowns: num(d.unknowns), evidence: num(d.evidence), confirmed: num(d.confirmed), assumptions: num(d.assumptions), web: d.web || null,
+    by_kind: d.by_kind || null, scouted: Boolean(d.scouted), scouts: num(d.scouts), verifiers: num(d.verifiers), degraded: d.degraded || [],
+    researchable_dropped: num(d.researchable_dropped), researchable_asked: num(d.researchable_asked),
+    findings, assumptions_list: assumptions, asked,
+  };
+}
+
 // The inspector's register, if that plugin is installed: findings for this job, each
 // anchored to the routing decision (or the moment) it cites.
 function inspectorFor(root, id, decisions) {
@@ -139,6 +171,9 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
   }
   checker.check(state);
   checker.check(lock);
+  const idata = readJson(path.join(jp.dir, 'intent-evidence.json'), null);
+  if (idata) checker.check(idata);
+  const intentRounds = {};
   const ledger = readJsonl(jp.ledger).filter((e) => e && e.job === id);
   ledger.forEach(checker.check);
   const decisions = all.decisions.filter((d) => d.job === id);
@@ -187,7 +222,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       const act = String(d.action || '').replace(/^human\./, '');
       const during = d.during ? stepOfDecision[d.during] : null;
       const step = d.gate ? (ids.has(d.gate) ? d.gate : null) : act === 'merged' ? 'H4' : ids.has(during) ? during : null;
-      push({ t: d.ts, type: 'human', action: act, step, gate: d.gate || null, reason: short(d.reason), commit: d.commit ? String(d.commit).slice(0, 7) : null, via: act === 'approve' && state.approvals && state.approvals[d.gate] ? state.approvals[d.gate].via : null });
+      push({ t: d.ts, type: 'human', action: act, step, gate: d.gate || null, reason: short(d.reason), commit: d.commit ? String(d.commit).slice(0, 7) : null, via: act === 'approve' && state.approvals && state.approvals[d.gate] ? state.approvals[d.gate].via : null, ...(d.assumption ? { assumption: String(d.assumption), value: d.value ? short(String(d.value), 140) : null, was: d.was ? short(String(d.was), 140) : null } : {}) });
     }
   }
 
@@ -212,6 +247,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       if (/challenge/.test(e.step) && d.findings) item.findings = d.findings.map((f) => ({ id: String(f.id || ''), lane: String(f.lane || ''), severity: String(f.severity || ''), status: String(f.status || ''), file: f.file ? String(f.file) : null, line: Number.isInteger(f.line) ? f.line : null, summary: short(String(f.summary || ''), 200) }));
       if (e.step === 'prove') item.acs = d.acs || {};
       if (e.step === 'clarify' && (d.categories || d.held)) Object.assign(item, { categories: d.categories || [], held: num(d.held), question_ids: d.question_ids || [] });
+      if (e.step === 'clarify' && d.research) item.research = researchView(d.research, intentRounds[d.round], idata);
       push(item);
     } else if (e.kind === 'agents') {
       const step = ids.has(stepOfDecision[e.decision_id]) ? stepOfDecision[e.decision_id] : null;
@@ -223,6 +259,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
         return { label: short(a.label, 100), role: roleOf(a.agent_type), model: a.model || null, retry: Boolean(a.retry), outcome: a.outcome || null, ms };
       });
       push({ t: e.at, type: 'agents', step, workflow: e.workflow, config: e.config, mode: e.mode, decision_id: e.decision_id, status: e.status, runs: e.agent_runs || agents.length, agents });
+    } else if (e.kind === 'intent') {
+      intentRounds[e.round] = e; // written just before that round's clarify step entry
     } else if (e.kind === 'error') {
       push({ t: e.at, type: 'error', step: null, text: short(`${e.workflow} reported an error: ${e.summary}`, 200) });
     }
@@ -305,6 +343,15 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     stale_agents: staleNow,
     tasks,
     lessons,
+    intent: idata ? {
+      web: idata.web || null,
+      unknowns: (idata.unknowns || []).length,
+      evidence: (idata.evidence || []).length,
+      confirmed: (idata.evidence || []).filter((e) => e.verdict === 'confirmed').length,
+      assumptions: (idata.assumptions || []).filter((a) => !a.withdrawn && !a.dropped).length,
+      overridden: (idata.assumptions || []).filter((a) => a.overridden || a.dropped).map((a) => a.id),
+      versions: (idata.versions || []).slice(0, 8).map((v) => `${v.name} ${v.version}`),
+    } : null,
   };
   // A cheap revision: the page re-renders only the jobs whose rev changed.
   job.rev = crypto.createHash('sha1').update(JSON.stringify(job)).digest('hex').slice(0, 12);

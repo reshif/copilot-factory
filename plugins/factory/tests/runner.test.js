@@ -47,9 +47,10 @@ function harness(script, extraEnv = {}) {
 
 const ANALYST = { focus: 'x', questions: [] };
 const CLARIFY = {
+  'factory:intent-mapper': { unknowns: [] },
   'factory:intent-analyst': ANALYST,
   'factory:judge': { questions: [], dismissed: [] },
-  'factory:god-eye': { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'add subtracts', outcome: 'add sums' }, items: [] },
+  'factory:god-eye': { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'add subtracts', outcome: 'add sums' }, items: [], researchable_questions: [] },
 };
 
 function newJob(root, policy) {
@@ -127,7 +128,7 @@ test('factory run fanout-judge --config clarify: agents as copilot processes, en
   assert.ok(!fs.existsSync(path.join(F.jobDir(root, J), 'run.lock')), 'the run lock is released');
   assert.match(r.__stderr, /\[factory run\] phase: clarify: intent gate/);
   const calls = h.log();
-  assert.deepEqual(calls.map((c) => c.agent).sort(), ['factory:god-eye', 'factory:intent-analyst', 'factory:intent-analyst', 'factory:intent-analyst', 'factory:intent-analyst', 'factory:judge']);
+  assert.deepEqual(calls.map((c) => c.agent).sort(), ['factory:god-eye', 'factory:intent-analyst', 'factory:intent-analyst', 'factory:intent-analyst', 'factory:intent-analyst', 'factory:intent-mapper', 'factory:judge']);
   for (const c of calls) {
     assert.equal(c.cwd, fs.realpathSync(root), 'analysts and judges run at the project root');
     assert.deepEqual(c.argv.map((a, i) => (a === '--add-dir' ? c.argv[i + 1] : null)).filter(Boolean), [root, F.PLUGIN]);
@@ -142,7 +143,7 @@ test('factory run fanout-judge --config clarify: agents as copilot processes, en
   assert.equal(F.cli(root, ['next']).step, 'H1');
   const ev = events(root);
   const runs = ev.filter((e) => e.event === 'agent_run');
-  assert.equal(runs.length, 6, 'one sealed agent_run per agent');
+  assert.equal(runs.length, 7, 'one sealed agent_run per agent');
   for (const e of runs) {
     assert.equal(require('../cli/lib/seal').valid(e), true, 'sealed');
     assert.equal(typeof e.ms, 'number');
@@ -158,12 +159,12 @@ test('factory run fanout-judge --config clarify: agents as copilot processes, en
   assert.ok(!cli.some((e) => e.cmd === 'run'), 'no separate run line (R7 would see it as an unexpected command)');
   // the roster sealed into the ledger matches the agents spawned
   const ledger = fs.readFileSync(path.join(F.jobDir(root, J), 'ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(ledger.filter((e) => e.kind === 'agents').pop().agents.length, 6);
+  assert.equal(ledger.filter((e) => e.kind === 'agents').pop().agents.length, 7);
   // the console shows each agent's wall time from the agent_run lines
   const data = require('../cli/core/console').build(root, { job: J });
   const a = data.jobs.find((j) => j.id === J).timeline.find((t) => t.type === 'agents');
   assert.equal(a.step, 'clarify');
-  assert.ok(a.agents.length === 6 && a.agents.every((x) => typeof x.ms === 'number'), JSON.stringify(a.agents));
+  assert.ok(a.agents.length === 7 && a.agents.every((x) => typeof x.ms === 'number'), JSON.stringify(a.agents));
 });
 
 test('a reply that misses the schema gets one corrective turn in the same session', () => {
@@ -348,7 +349,7 @@ test('the printed result is the RECORDED result: envelope ok but the contract ha
   assert.equal(lines[0], 'status: needs_user');
   assert.match(t.stdout, /^problems:\n  - /m);
   assert.match(t.stdout, /workflow: fanout-judge --config clarify → ok/);
-  assert.match(t.stdout, /agents: 6 \(6 ok\)/);
+  assert.match(t.stdout, /agents: 6 \(6 ok\)/, 'round 2 reuses round 1\'s map: no intent mapper again');
   assert.match(t.stdout, /full result: .*\.result\.json/);
   assert.ok(lines.length < 25, `compact: ${lines.length} lines`);
 });
@@ -357,7 +358,7 @@ test('God Eye asks for revisions: needs_user with the critique, in the JSON and 
   const root = F.makeRepo();
   newJob(root);
   F.cli(root, ['next']);
-  const critique = { verdict: 'revise', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [{ issue: 'AC-1 does not say what add(-1, 1) returns', severity: 'major' }] };
+  const critique = { verdict: 'revise', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [{ issue: 'AC-1 does not say what add(-1, 1) returns', severity: 'major' }], researchable_questions: [] };
   const h = harness({ ...CLARIFY, 'factory:god-eye': critique });
   const t = h.text(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(t.status, 0, t.stdout + t.stderr);
@@ -373,7 +374,7 @@ test('questions are at the top level and in the summary', () => {
   const root = F.makeRepo();
   newJob(root);
   F.cli(root, ['next']);
-  const q = { id: 'q1', category: 'intent', question: 'Should add accept strings?', why: 'changes the contract', options: ['yes', 'no'], default: 'no' };
+  const q = { id: 'q1', category: 'intent', question: 'Should add accept strings?', why: 'changes the contract', options: ['yes', 'no'], default: 'no', unknown: 'new', kind: 'user', preference: true };
   const h = harness({ ...CLARIFY, 'factory:intent-analyst': { focus: 'intent', questions: [q] }, 'factory:judge': { questions: [q], dismissed: [] } });
   const t = h.text(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(t.status, 0, t.stdout + t.stderr);
@@ -412,7 +413,7 @@ test('factory run refuses unless factory next asked for exactly that workflow on
   assert.equal(F.cli(root, ['next']).workflow, 'ground');
   F.cli(root, ['park', '--reason', 'waiting on the API team']);
   refused(h.run(root, ['ground']), 'parked');
-  assert.equal(h.log().length, 6, 'only the one allowed run spawned agents');
+  assert.equal(h.log().length, 7, 'only the one allowed run spawned agents (the intent mapper and six more)');
   assert.ok(!fs.existsSync(path.join(F.jobDir(root, J), 'run.lock')));
 });
 
@@ -461,7 +462,7 @@ test('Copilot missing or not signed in: the run aborts with copilot_unavailable 
   assert.equal(r.code, 'copilot_unavailable', JSON.stringify(r));
   assert.equal(r.details.why, 'not_found');
   assert.match(r.message, /could not be started[\s\S]*COPILOT_BIN[\s\S]*Nothing was recorded/);
-  const signedOut = harness({ 'factory:intent-analyst': { exit: 1, stderr: 'Error: No authentication information found.\n\nTo authenticate, you can use any of the following methods:' } });
+  const signedOut = harness({ 'factory:intent-mapper': { exit: 1, stderr: 'Error: No authentication information found.\n\nTo authenticate, you can use any of the following methods:' } });
   r = signedOut.run(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(r.code, 'copilot_unavailable', JSON.stringify(r));
   assert.equal(r.details.why, 'not_signed_in');
@@ -537,11 +538,26 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
     if (check) check(r);
     return r;
   };
-  step({ workflow: 'fanout-judge', dry: ['god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'judge'] });
+  step({ workflow: 'fanout-judge', dry: ['god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-mapper', 'judge', 'researcher', 'researcher', 'verifier'] }, (r) => {
+    // the scout phase ran first: map → repo scout → verifier, then the usual clarify crew
+    assert.deepEqual(roles(r), ['god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-mapper', 'judge', 'researcher', 'verifier']);
+    assert.deepEqual(r.agents.map((a) => a.label).slice(0, 3), ['intent map', 'scout · repo #1', 'verify evidence #1'], 'research comes before the analysts');
+    assert.ok(r.agents.filter((a) => /^(scout|verify)/.test(a.label)).every((a) => a.time_cap_sec === 120), 'scouts and the verifier run under the low-risk 2-minute cap');
+    assert.deepEqual(r.findings.map((f) => [f.id, f.verdict, f.source]), [['E-1', 'confirmed', 'src/add.js:1']]);
+    assert.deepEqual(r.assumptions.map((a) => [a.id, a.evidence]), [['A-1', ['E-1']]]);
+    assert.ok(fs.existsSync(r.intent_findings) && fs.existsSync(r.intent_evidence));
+    assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /## Assumptions \(evidence-backed\)\n<!--[^\n]*-->\n- A-1: add is implemented in src\/add\.js and subtracts \(evidence: E-1\)/);
+    const doc = require('../cli/core/doc');
+    assert.deepEqual(doc.checkFile(r.intent_findings, { type: 'intent-findings' }).problems, []);
+  });
   assert.equal(F.cli(root, ['next']).step, 'H1');
   F.reply(root, 'approve');
   step({ workflow: 'ground', dry: ['researcher', 'researcher', 'researcher', 'researcher'] }, (r) => {
     assert.deepEqual(roles(r), ['researcher', 'researcher', 'researcher', 'researcher'], 'one probe per topic');
+    const runnerFile = fs.readFileSync(h.log().filter((c) => c.agent === 'factory:researcher').pop().argv.find((a) => /instructions for this run/.test(a)).split('\n')[1].trim(), 'utf8');
+    const brief = fs.readFileSync(runnerFile.split('\n')[1].trim(), 'utf8');
+    assert.match(brief, /Intent research from clarify[\s\S]*U-1 \[repo\][\s\S]*assumed \(A-1\)[\s\S]*E-1 \(U-1, confirmed\)/, 'ground reuses the clarify evidence');
+    assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'findings.md'), 'utf8'), /related: \[intent-findings\.md\][\s\S]*Builds on the intent research from clarify/);
     assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'findings.md'), 'utf8'), /add subtracts/);
   });
   assert.match(F.cli(root, ['next']).command, /plan from-contract/);

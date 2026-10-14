@@ -6,8 +6,10 @@ This is a port of [claude-factory](https://github.com/reshif/claude-factory) (th
 
 | Plugin | Version | What it is |
 |---|---|---|
-| `factory` | 0.2.3 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 19 custom agents, recipes, templates and the console |
-| `factory-inspector` | 0.2.3 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R19) |
+| `factory` | 0.3.0 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 21 custom agents, recipes, templates and the console |
+| `factory-inspector` | 0.3.0 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R20) |
+
+0.3.0 adds **grounded intent**: clarify researches the repo and the web before it asks you anything (see [How a job runs](#grounded-intent-research-before-questions)).
 
 The version line started again at 0.1.0 for Copilot. It is separate from claude-factory's (0.10.0 / 0.2.0 at the time of the port).
 
@@ -49,7 +51,7 @@ flowchart TB
   store[/"<b>.factory/</b> in your repo · contract · ADRs · plan · ledger · decisions · events · lessons"/]:::art
 
   console["<b>Console</b><br/>factory console --serve<br/>live board · wire · line map · story"]
-  inspector["<b>Inspector</b><br/>plugin factory-inspector<br/>rules R1–R19 · runs when a job ends"]
+  inspector["<b>Inspector</b><br/>plugin factory-inspector<br/>rules R1–R20 · runs when a job ends"]
 
   you --> skills
   you --> hooks
@@ -196,10 +198,12 @@ The hook also writes the outcome to `.factory/last-reply.json`. The next `factor
 | `confirm AC-3` | Confirm a criterion whose evidence type is `human`. |
 | `waive ci_reverify <reason>` · `waive ship_size <reason>` | The only waivable floors. |
 | `accept lesson L4` · `reject lesson L4 <why>` | Decide on a proposed lesson. |
+| `change A-3 <value>` (also `change A-3: …`, `change A-3 to …`) | Override an evidence-backed assumption from clarify's research: the contract's line becomes your value, marked "overridden by user". Before H1, clarify re-checks the contract and H1 is presented again; after H1 the approved contract changed, so `factory next` opens an amendment for your approval. |
+| `drop A-3` | Remove an evidence-backed assumption (same effect on H1 / amendment). |
 | `ack finding F3` · `fixed finding F3` · `wontfix finding F3 <why>` | Settle an inspector finding. |
 | `inspect mode <recipe\|all> on\|off\|sample <N>` | How often the inspector runs. |
 
-From your own terminal you can run the human-only commands directly: `factory approve`, `factory resume`, `factory reseal`, `factory-inspect mark …`. Agents are blocked from running them.
+From your own terminal you can run the human-only commands directly: `factory approve`, `factory resume`, `factory reseal`, `factory assumption change A-3 --value "…"`, `factory assumption drop A-3`, `factory-inspect mark …`. Agents are blocked from running them.
 
 ### Gates you may see
 
@@ -213,6 +217,8 @@ From your own terminal you can run the human-only commands directly: `factory ap
 | **HF** spike findings · **EH1–EH3** epic contract, architecture, slices · **A** amendment · **P** parked | As they come up |
 
 ### Questions you may get (clarify)
+
+Research comes first (below), so you see **one screen**: **What I found** (3–8 findings, each with its source, date and whether the verifier confirmed it), **What I'm assuming** (`A-n` with the evidence ids; reply `change A-n <value>` or `drop A-n` to override), then only the questions research couldn't answer. Each question's default either cites evidence (`E-n`) or says it is your call. If a question could have been researched (web off, no network, sources disagree), it says so.
 
 The contract starts with an **Intent** section: problem, who, outcome, why now, success signal. An intent analyst reads it first, alone. Until the intent is settled you get **only intent questions**; then scope, constraint and acceptance questions follow, in that order. **At most 5 questions in round 1 and 3 in later rounds**, as one numbered list. Each has an id (`Q-3`), why it matters, the default the factory will use if you skip it, and options where possible. Nothing is asked twice. If the intent is still unclear after two rounds the job **parks rather than guessing**; reply `resume` for one more round. God Eye must restate and confirm the intent before H1.
 
@@ -229,6 +235,18 @@ The contract starts with an **Intent** section: problem, who, outcome, why now, 
 | `hotfix@high` | hotfix | as `full@high`, grounding scoped to the failing path, plus a post-merge review; confirmed problems open a linked follow-up job |
 | `spike` | spike | clarify → H1 → ground → decide (recommendation) → HF → close |
 | `epic` | `--epic` | contracts freeze first, then each slice runs as its own job with its own recipe |
+
+### Grounded intent: research before questions
+
+Every clarify run starts with a **scout phase**, inside the same `factory run`:
+
+1. The **intent mapper** lists the unknowns between your request and a buildable contract, each with a kind (`repo` — the code can answer it; `world` — documentation can; `decision` — a choice with options; `user` — only you know) and an impact (high, medium, low). Low-impact unknowns are assumed and listed, not researched.
+2. **Scouts** research in parallel within the risk budget: repo scouts quote `file:line`; web scouts read the versions your repo actually uses, then fetch official docs and quote them (source, retrieval date, version). Queries use only public names (libraries, vendors, standards, error codes); page text is treated as data, never as instructions.
+3. The **verifier** re-opens every high-impact and web finding and marks it confirmed, contradicted or unverified; at high risk a scope-changing claim needs a second independent source. The CLI re-checks repo quotes against the file and that web evidence has a URL and a quote.
+4. Confirmed findings become **evidence-backed assumptions** (`A-n`), written by the CLI into the contract's `## Assumptions (evidence-backed)` section: stated, not asked. Only user calls, decisions, and what research couldn't settle become questions (still at most 5, then 3).
+5. The analysts, judge and God Eye get the evidence. The judge drops questions research already answered; God Eye refuses to approve while it sees a researchable question and sends it back to the scouts (if that happens, `factory next` simply runs clarify again).
+
+Medium and high risk add the floor `intent_grounded`: every outside-world claim the contract relies on is confirmed evidence or an open question (low risk: a warning). Everything is in `.factory/jobs/<J>/intent-findings.md` (readable) and `intent-evidence.json` (sealed); `factory intent show` prints it. After H1, `ground` reuses this evidence instead of researching the same unknowns again. Gate H1 shows the assumptions and the findings they rest on with the contract.
 
 **Routing.** `factory next` checks, in order: contract approved → no drift from what you approved → floors met so far → no confirmed serious finding → every criterion proven → evidence still matches the build. The first that fails decides (clarify, amendment, the missing floor step, a fix round, a verify-fix round, prove again); if all pass, the recipe's next undone step runs. Loops are capped and **park** for you when a cap is hit. Every decision is a line in `.factory/log/decisions.jsonl`; `/factory:why` shows them.
 
@@ -278,14 +296,14 @@ Run `factory console`, or `/factory:console` in the Copilot CLI, then open `.fac
 - **The wire.** On the right, everything that happened across all jobs, newest first: routes, results, agent runs, your replies, guard blocks, parks, hook errors, stop-gate blocks and inspector findings. Pause it while you read; narrow it to the selected job; click a line to open the job at that moment.
 - **A job.** Click a row (or `Enter`). The list stays on the left so `j`/`k` still switch jobs; `Esc` goes back.
   - **Line**: the flow canvas. Stages are columns and time runs downward; each visit to a step is a row. Moving on is a blue line right; going back is a red line left, labelled with why (a fix round, a verify-fix round, re-proving, your denial); a repeated step drops straight down. Parks, resumes, amendments, cancels and abandons have their own rows. Each row shows the router's reason, every agent with its model (O/S/H), runs, retries `↻`, failures `✕` and escalation `↑`, the result and findings, your replies with how long each took, and guard blocks. A crew band shows who worked in each stage, inspector findings sit in a column beside the row they cite, and **Replay** drives the job down the canvas with the router's six checks at each decision.
-  - **Story**: the same job as prose, one paragraph per step visit, with return trips on a red rule and inspector findings as margin notes. A pinned **Now** card says what the job waits on and the exact reply to type, with a copy button (e.g. `approve J-0004 H3`).
+  - **Story**: the same job as prose, one paragraph per step visit, with return trips on a red rule and inspector findings as margin notes. A clarify paragraph shows that round's research: the unknowns, what the scouts found (claim, source, date, verdict; anything not confirmed is labelled as such), what was assumed instead of asked (overrides marked), and which questions were asked and why. A pinned **Now** card says what the job waits on and the exact reply to type, with a copy button (e.g. `approve J-0004 H3`).
   - **Tasks**, **Events** (a filterable table of every event) and **Lessons**.
 
   ![A job's story](plugins/factory/console/dev/screenshots/job-story.png)
 - **Live.** With `--serve`, the page gets each change over server-sent events. Only the rows whose job changed are redrawn, with a short highlight, and a row that changes group slides there. A new gate brings a toast with the reply to copy, and, if you turn on the bell, a desktop notification. On an open job, new steps play in if you are watching the latest moment, and your place is kept if you are scrubbing back. The server listens on this machine only (`http://127.0.0.1:4477/`, `--port 0` for any free port), refuses foreign `Host` headers and is read-only.
 - **Keys.** `j`/`k` move, `Enter` opens, `Esc` goes back, `/` filters, `⌘K` (or ctrl-K) opens a palette to jump to any job or view, `1`–`5` toggle the tiles, `g w` opens the next job waiting for you, `?` lists them all. The view, filters and open job are in the URL, so a link brings you back to the same place.
-- **Recipe map and Crew.** *Recipe map* is the whole factory as a floor plan for any recipe; *Crew* lists the 19 agents and how often each ran.
-- **Where the data comes from.** Each workflow returns a roster of every agent it started, and `factory record` seals it into the ledger as an `agents` entry tied to the routing decision. Hooks add timings. Parks, amendments, follow-ups, hook errors and stop-gate blocks come from the event log and the job's own records. An agent that started but never stopped counts as running for two hours at most, and only while its job is active; after that it shows as stale.
+- **Recipe map and Crew.** *Recipe map* is the whole factory as a floor plan for any recipe (clarify starts with the scout phase: intent map, repo and web scouts, verifier); *Crew* lists the 21 agents and how often each ran.
+- **Where the data comes from.** Each workflow returns a roster of every agent it started, and `factory record` seals it into the ledger as an `agents` entry tied to the routing decision. Hooks add timings. Clarify's research comes from the round's `intent` ledger entry and `intent-evidence.json`. Parks, amendments, follow-ups, hook errors and stop-gate blocks come from the event log and the job's own records. An agent that started but never stopped counts as running for two hours at most, and only while its job is active; after that it shows as stale.
 - **Options.** `--job J-0003` makes the page for one job, `--out file.html` writes it elsewhere, `--label "…"` adds a banner, and `--data file.json` also writes the data as JSON. Dark is the default look when your system is dark; the half-moon button switches theme.
 - **Sample.** `node plugins/factory/console/dev/make-sample.js <dir>` builds a realistic sample: nine jobs over about three days on a simulated clock. They run through the real CLI, workflows, hooks and inspector, with scripted agents. More screenshots are in [`plugins/factory/console/dev/screenshots/`](plugins/factory/console/dev/screenshots/).
 
@@ -294,7 +312,7 @@ Run `factory console`, or `/factory:console` in the Copilot CLI, then open `.fac
 `factory-inspector` audits the factory from the outside. It imports none of the factory's code: it reads `.factory/` directly, with its own seal check, so a bug in the factory can't hide itself. It never blocks or changes a job; its findings are questions for you, kept in `.factory/inspect/register.json`.
 
 - **Per job (R1–R9):** forged records, the wrong recipe, steps out of order, gates approved without being shown, review on an unproven build, loops past caps, the agent not doing what `factory next` said, the same situation routed differently, recurring friction.
-- **Factory health (R10–R19):** hook failures, torn log lines, repeated guard denials / stop-gate blocks / refused replies, CLI failures and crashes, degraded workflows and agent retries, agents that never stopped, repeated parks, idle jobs, slow gate replies, and clarify parking on an unclear intent or overrunning its question budget. Thresholds live in `.factory/inspect/config.json` (`limits`, `rules_off`).
+- **Factory health (R10–R20):** hook failures, torn log lines, repeated guard denials / stop-gate blocks / refused replies, CLI failures and crashes, degraded workflows and agent retries, agents that never stopped, repeated parks, idle jobs, slow gate replies, clarify parking on an unclear intent or overrunning its question budget, and (R20) clarify asking you what research could have answered, or assumptions you overrode. Thresholds live in `.factory/inspect/config.json` (`limits`, `rules_off`).
 - **When it runs:** whenever a job ends (closed, cancelled or abandoned), however it ended: right after Copilot runs the command, at the end of the turn if you ended it with a chat reply (its one-line summary then comes with your next message, because an `agentStop` hook can't show you text), or at the next session start if you ended it from your terminal. On demand with `/factory-inspector:inspect` (`active` also covers running jobs). Once a recipe has a long clean streak it suggests sampling, then off.
 
 Rule table and CLI: [`plugins/factory-inspector/README.md`](plugins/factory-inspector/README.md).
@@ -347,6 +365,20 @@ Project overrides go in `.factory/policy.json` (you edit it; agents can't). Defa
 - `limits.max_parallel_agents` caps how many `copilot -p` processes `factory run` runs at once (default 4). Keep it at or below what your plan allows for concurrent sessions.
 - `copilot.flags` adds flags to every `copilot -p` call the runner makes, for example `--reasoning-effort` or extra `--deny-tool` patterns (see `factory run --dry-run` for the full command line).
 - `secret_paths` are the files the guard won't let agents read or write (`.env`, `.env.*`, keys, `.npmrc`, credentials). `secret_exempt` lists templates that are never secrets: by default `.env.example`, `.env.sample`, `.env.template`, `.env.dist` and any `*.example` / `*.sample` / `*.template` / `*.dist`. Add a name there (e.g. `"**/.env.test"`) if your project keeps no secrets in it; your list replaces the default one, and the template suffixes stay exempt either way.
+- `intent_research` controls clarify's research (defaults shown):
+  ```json
+  "intent_research": {
+    "web": true,
+    "search_mcp": null,
+    "budgets": {
+      "low":    { "repo_scouts": 3, "web_scouts": 1, "minutes": 2, "strict_second_source": false },
+      "medium": { "repo_scouts": 4, "web_scouts": 3, "minutes": 4, "strict_second_source": false },
+      "high":   { "repo_scouts": 5, "web_scouts": 5, "minutes": 5, "strict_second_source": true }
+    },
+    "unknowns_per_scout": 3, "max_unknowns": 12, "verifier_batch": 4, "max_verifiers": 2, "mapper_seconds": 180
+  }
+  ```
+  `web: false` turns web research off for the repo (world unknowns become questions marked "not researched (web off)"). Copilot has no web search tool, so web scouts find documentation URLs from the package registry (`npm view <pkg> homepage repository.url`, `pip show`, …) and the vendor's docs root, and fetch them with `web_fetch`. `search_mcp` names a search tool from an MCP server you configured in Copilot, as `"<server>/<tool>"`; scouts are then told to use it (see [`docs/COPILOT.md`](docs/COPILOT.md) for what is still to verify). `minutes` caps each scout and the verifier; only high- and medium-impact unknowns are researched.
 - `COPILOT_BIN` (environment) points `factory run` at a different `copilot` binary. The tests use it to run a fake.
 
 Every workflow agent runs as its real factory custom agent (`agents/<role>.agent.md`), so each role's tool list applies. The read-only roles (researcher, analysts, option generators, reviewers, verifier, tester, God Eye, judge, lesson-writer) have no file-edit tool, but all of them except the judge have a shell (`execute`), and `factory run` pre-approves tools, so a shell command could still write files. What actually limits them: their tool list, the guard (no writes to protected paths, factory state, the plugin or secrets; builders stay inside their task's allowed paths; only the factory commands the role is briefed for, which the CLI enforces too), the task worktree a builder or tester works in, and `factory record`, which re-checks every result before it counts.
@@ -374,8 +406,8 @@ docs/                               DESIGN-COPILOT.md (port decisions) · COPILO
 plugins/factory/
   plugin.json                       plugin manifest (legacy Copilot format; version; read by the CLI and VS Code)
   skills/                           start · intake · clarify · gate · ship · distill · amend · park · why · console · review
-  agents/                           19 custom agents (<role>.agent.md): intent-analyst, judge, god-eye, researcher,
-                                    option-generator, threat-modeler, architect, planner, slicer, builder, tester, integrator,
+  agents/                           21 custom agents (<role>.agent.md): intent-mapper, verifier, intent-analyst, judge, god-eye,
+                                    researcher, option-generator, threat-modeler, architect, planner, slicer, builder, tester, integrator,
                                     code/test/security/ux-reviewer, finding-verifier, epic-reviewer, lesson-writer
   hooks.json                        the hooks (Copilot format, at the plugin root)
   hooks/                            the scripts in the table above (+ shell.js, the guards' shell reader)
@@ -391,7 +423,7 @@ plugins/factory/
   tests/                            end-to-end, unit and packaging tests
 plugins/factory-inspector/
   plugin.json                       plugin manifest
-  inspector/                        observe · rules (R1–R19) · register · config · io
+  inspector/                        observe · rules (R1–R20) · register · config · io
   hooks/ · skills/inspect/ · bin/factory-inspect · tests/
 ```
 
@@ -411,7 +443,7 @@ To try a working copy in the real CLI without installing it:
 copilot --plugin-dir plugins/factory --plugin-dir plugins/factory-inspector
 ```
 
-Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory agents) and `/env` (hooks loaded). The agents `factory run` starts are new `copilot -p` processes and don't inherit `--plugin-dir`; to make them load the working copy too, set `"copilot": { "flags": ["--plugin-dir", "{plugin_root}"] }` in the test repo's `.factory/policy.json` (`{plugin_root}` becomes the factory plugin's folder). Bump the version in `plugin.json`, `package.json` and the marketplace entry with every change you ship, so installs can tell versions apart.
+Then check `/skills` (11 factory skills plus `inspect`), `/agent` (21 factory agents) and `/env` (hooks loaded). The agents `factory run` starts are new `copilot -p` processes and don't inherit `--plugin-dir`; to make them load the working copy too, set `"copilot": { "flags": ["--plugin-dir", "{plugin_root}"] }` in the test repo's `.factory/policy.json` (`{plugin_root}` becomes the factory plugin's folder). Bump the version in `plugin.json`, `package.json` and the marketplace entry with every change you ship, so installs can tell versions apart.
 
 ## Troubleshooting
 
@@ -437,6 +469,11 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 | A job is parked | `/factory:why` shows why; reply `resume` for one more round, or `deny` / `cancel job` |
 | Hooks don't seem to run | Trust the folder, check `/env`, and check `disableAllHooks` isn't set in `~/.copilot/settings.json`, `.github/copilot/settings(.local).json` or `.claude/settings(.local).json` |
 | Hooks print "node is not on PATH; factory hooks are off" (or "inspector hooks are off") | The hooks need `node` on the PATH Copilot runs them with. Without it every factory and inspector hook exits quietly with that warning, so **the guard allows everything** and replies aren't applied. Install Node 18+ or fix the PATH, then `/restart`. (`factory doctor` checks the Node version it runs on, but it can't see the hooks' PATH.) |
+| Clarify asks a question that says "not researched (web off)" | `intent_research.web` is `false` in `.factory/policy.json`. Answer it, or set it to `true` (or remove it) so the next clarify round researches world unknowns |
+| Questions say "no web access" or findings stay "unverified" | The scouts or the verifier couldn't fetch pages: no network, a proxy blocking `copilot -p`, or `web_fetch` unavailable. Nothing unverified is stated as fact: those points come to you as questions. Check `copilot -p "fetch https://nodejs.org" --agent factory:researcher` works in the repo |
+| You set `intent_research.search_mcp` but scouts still use registry URLs | The MCP server must be configured for Copilot (`~/.copilot/mcp-config.json`) so `copilot -p` processes have it, and Copilot filters MCP tools by the agent's `tools:` list, which the shipped researcher doesn't extend. The registry/docs-root path still works without it |
+| Research stops early or many questions say "research budget spent" | The risk's budget (`intent_research.budgets.<risk>`: scouts and minutes) ran out. Raise it in `.factory/policy.json`, or answer the questions |
+| An assumption is wrong | Reply `change A-n <value>` or `drop A-n`. Before H1 clarify re-runs and H1 comes back; after H1 it opens an amendment |
 | The console doesn't update | Use `factory console --serve` (a written file is a snapshot); the LED shows live / reconnecting / snapshot |
 
 ## Status: verified here vs. needs checking on a real Copilot CLI
@@ -450,7 +487,7 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 - [x] The default `model_ids` (`claude-opus-5.5`, `claude-sonnet-5.5`, `claude-haiku-5.5`) are in `copilot help config`'s model list.
 
 **Verified with the real CLI 1.0.97 against a local mock model** (real `copilot -p` sessions in which an OpenAI-compatible mock server plays the model and makes scripted tool calls, so no sign-in is needed; the CLI ran in bring-your-own-key mode):
-- [x] All 19 agents load as `factory:<role>`, and `--agent factory:<role>` loads the plugin's agent in `-p` even when the project has its own agent of the same name.
+- [x] All 19 agents of 0.2.x load as `factory:<role>`, and `--agent factory:<role>` loads the plugin's agent in `-p` even when the project has its own agent of the same name.
 - [x] Slash commands are `/factory:start`, `/factory:why`, `/factory:console`, `/factory:review` and `/factory-inspector:inspect`; the seven step skills are not user-invocable.
 - [x] These hooks fire in `-p`, without trusting the folder: `sessionStart`, `userPromptSubmitted`, `preToolUse`, `postToolUse`, `agentStop`, `sessionEnd`, `subagentStart` and `subagentStop` (subagent events carry `agentName`).
 - [x] The guard's deny (`permissionDecision: "deny"` on stdout, exit 0, the documented form) works and shows the reason: `factory approve` was refused with `Denied by preToolUse hook: [factory guard] …`, while `grep -rn "factory approve" README.md` and `ls .factory/ 2>/dev/null` ran.
@@ -482,6 +519,7 @@ Packaging and invocation ([plugins-cli](docs/research/plugins-cli.md), [agents-s
 - [ ] The model ids in `model_ids` are accepted by `--model` on your plan, and Auto mode doesn't override them.
 - [ ] The tool restrictions above with a real Copilot model rather than bring-your-own-key mode (tool aliases are resolved by the client, so they shouldn't differ).
 - [ ] Plan limits on concurrent sessions and rate limits at `max_parallel_agents` processes.
+- [ ] Grounded intent (0.3.0) on a real CLI and model: `intent-mapper` and `verifier` load as `factory:<role>`; web scouts reach documentation through `web_fetch` with URLs from `npm view` / `pip show`; a search MCP named in `intent_research.search_mcp` is visible to the researcher despite its `tools:` list; the per-call time caps (`minutes`) hold.
 - [ ] The fixes made after the mock-model checks, on a real CLI: `--agent factory:<role>` with `disable-model-invocation: true`, the agents' `grep`/`glob`/`web_fetch` tools, and agents running the factory CLI through `--add-dir <plugin root>` (`verify-copilot.sh` probes the last one).
 
 Hooks ([hooks](docs/research/hooks.md)):

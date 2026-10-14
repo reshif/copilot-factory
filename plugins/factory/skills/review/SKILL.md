@@ -13,6 +13,7 @@ Telemetry informs the user; the system never changes its own recipes. Recipes, f
    - **Cost**: which recipe costs the most agent runs and hours per job? Which steps (fix rounds, review lanes) cost much and changed little?
    - **Lanes**: which review lanes raise mostly refuted or minor findings (low precision)? Which confirm real problems?
    - **Gates**: where do denials cluster — contract, design or plan? That's where drafts are weakest.
+   - **Grounded intent** (the "Grounded intent" table): how often clarify asked questions research could have answered, how many evidence-backed assumptions the user overrode, scout runs and time, and time to H1. Many researchable questions point at `intent_research` (web off, budgets too small for the risk); many overrides mean the evidence or the mapper's "repo/world" calls are off.
 3. Propose at most three concrete changes, each as a small JSON diff against `recipes/*.json`, `policy/floors.json` or the project's `.factory/policy.json`, with the evidence for it. Floor changes are policy changes — say so.
 4. Recurring accepted lessons with a clear check can be promoted by the user: `factory lessons promote L4 --check "<command>"` (human-only, from their terminal).
 5. For a specific open question ("is the extra lane worth it?"), suggest a paired A/B: the same task on the same base commit through both recipes, three runs each, compared as a range — not a single number.

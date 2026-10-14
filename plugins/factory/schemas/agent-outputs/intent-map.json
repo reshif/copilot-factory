@@ -1,0 +1,12 @@
+{ "$comment": "intent-mapper: every unknown between the request and a buildable contract, classified (kind, impact) with a draft and where to look. The workflow numbers them U-n.",
+  "type": "object", "required": ["unknowns"], "properties": {
+  "restatement": { "type": "string" },
+  "unknowns": { "type": "array", "maxItems": 15, "items": { "type": "object", "required": ["text", "kind", "impact", "draft"], "properties": {
+    "text": { "type": "string" },
+    "kind": { "enum": ["repo", "world", "decision", "user"] },
+    "impact": { "enum": ["high", "medium", "low"] },
+    "draft": { "type": "string" },
+    "options": { "type": "array", "maxItems": 5, "items": { "type": "string" } },
+    "research": { "enum": ["repo", "web", "none"] },
+    "search": { "type": "string" },
+    "why": { "type": "string" } } } } } }

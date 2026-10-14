@@ -15,5 +15,7 @@ Minor wording issues alone never justify "revise". Do not edit any file.
 
 When your focus is **intent** (a contract): before anything else, restate from the contract alone, one line each, the problem, who has it, the outcome and the success signal (`restatement`). Set `intent_confirmed` true only if that restatement matches the Intent section and the Goal, and the two agree. If it is false, verdict is "revise" with a blocker naming the mismatch: no amount of good criteria rescues the wrong problem.
 
+When your focus is **intent**, also check grounding. INTENT EVIDENCE (under your instructions) lists what scouts found and the evidence-backed assumptions (A-n) the factory adds to the contract. List under `researchable_questions` anything the contract leaves as a guess, an open question or an uncited claim that the repository or a primary source could settle (`kind` repo or world): those go back to the scouts. Any researchable question means verdict "revise". Under `ungrounded_claims`, list claims about the outside world in Intent or Constraints that cite no evidence (E-n) and no answered question.
+
 ## Your final message
 Your final message is exactly one JSON object that matches the output schema in your instructions for this run, with no prose before or after it. The factory runner reads that object, validates it against the schema, and asks you once to correct it if it does not parse or match.

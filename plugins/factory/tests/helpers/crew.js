@@ -5,6 +5,9 @@
 // role owns (ADR, threat model, plan). FAKE_CREW (JSON) tunes it:
 //   { "finding": "major" }   the code reviewer reports one finding of that severity
 //   { "verdict": "refuted" } what the finding verifier says (default refuted)
+//   { "world": true }        the intent mapper also finds a world unknown (a web scout runs)
+//   { "web": "down" }        the web scout reports no web access
+//   { "evidence": "contradicted" } what the evidence verifier says (default confirmed)
 
 const fs = require('fs');
 const path = require('path');
@@ -23,17 +26,39 @@ module.exports = (c) => {
   const J = c.env.FACTORY_JOB;
   const jd = path.join(root, '.factory', 'jobs', J);
   const S = sc();
-  const text = c.instructions || '';
+  // The runner's prompt file points at the brief file wfargs wrote: read both.
+  const nested = (t) => t.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/') && l.endsWith('.md') && fs.existsSync(l)).map((l) => fs.readFileSync(l, 'utf8')).join('\n');
+  const text = `${c.instructions || ''}\n${nested(c.instructions || '')}`;
   switch (c.role) {
+    case 'intent-mapper': {
+      // The scout phase: one repo unknown the repo answers, optionally one world unknown.
+      const unknowns = [{ text: 'Where is add implemented and what does it do today?', kind: 'repo', impact: 'high', draft: 'add is implemented in src/add.js and subtracts', research: 'repo', search: 'src/add.js' }];
+      if (S.world) unknowns.push({ text: 'Does the ECMAScript spec define + on two numbers as addition?', kind: 'world', impact: 'medium', draft: 'ECMAScript defines + on numbers as numeric addition', research: 'web', search: 'tc39.es ecma262' });
+      unknowns.push({ text: 'Should non-numbers be rejected?', kind: 'user', impact: 'low', draft: 'Leave non-numbers as they are?', research: 'none' });
+      return { unknowns };
+    }
+    case 'verifier': {
+      const ids = [...text.matchAll(/"id": "(E-\d+)"/g)].map((m) => m[1]);
+      return { verdicts: [...new Set(ids)].map((id) => ({ evidence_id: id, verdict: S.evidence || 'confirmed', confidence: 'high', reason: 'quote found at the source', quote_found: S.evidence !== 'unverified', version_applies: true, second_source: null })) };
+    }
     case 'intent-analyst':
       return { focus: 'x', questions: [] };
     case 'judge':
       return { questions: [], dismissed: [] };
     case 'god-eye':
-      if (/intent_confirmed/.test(text)) return { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'add subtracts', outcome: 'add sums' }, items: [] };
+      if (/intent_confirmed/.test(text)) return { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'add subtracts', outcome: 'add sums' }, items: [], researchable_questions: [] };
       return { verdict: 'approve', items: [] };
-    case 'researcher':
+    case 'researcher': {
+      if (/Mode: \*\*repo\*\*/.test(text)) {
+        return { mode: 'repo', versions: [{ name: 'node', version: process.versions.node, source: 'process.versions' }], evidence: [{ unknown: (text.match(/"id": "(U-\d+)"/) || [])[1] || 'U-1', claim: 'add is implemented in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high' }], unresolved: [] };
+      }
+      if (/Mode: \*\*web\*\*/.test(text)) {
+        const u = (text.match(/"id": "(U-\d+)"/) || [])[1] || 'U-2';
+        if (S.web === 'down') return { mode: 'web', web_available: false, evidence: [], unresolved: [{ unknown: u, reason: 'web_fetch failed: no network' }], fetched: [] };
+        return { mode: 'web', web_available: true, evidence: [{ unknown: u, claim: 'ECMAScript defines + on two numbers as numeric addition', source: 'https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator', source_tier: 'standard', retrieved_at: '2026-10-14', quote: 'Return ? operation(lnum, rnum).', applies_to_version: 'ES2025', confidence: 'high' }], unresolved: [], fetched: ['https://tc39.es/ecma262/'] };
+      }
       return { topic: 'codebase', claims: [{ claim: 'add subtracts', source: 'src/add.js:1' }], unknowns: [] };
+    }
     case 'option-generator':
       return { title: 'Fix in place', summary: 'Change the operator', pros: ['small'], cons: [] };
     case 'threat-modeler': {

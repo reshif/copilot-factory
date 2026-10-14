@@ -10,7 +10,7 @@ user-invocable: false
 ## What each gate shows
 | Gate | Show |
 |---|---|
-| H1 / EH1 | The contract (it is short: show the goal and every acceptance criterion with its evidence type; mention allowed paths and verify commands). |
+| H1 / EH1 | The contract (it is short: show the goal and every acceptance criterion with its evidence type; mention allowed paths and verify commands). Then the **evidence-backed assumptions** (`## Assumptions (evidence-backed)`, each `A-n` with its evidence ids) and, from `factory intent show`, the key findings they rest on (claim, source, date, verdict); mark any the user overrode. Tell them `change A-n <value>` or `drop A-n` overrides one (the contract changes, so the gate comes back). Say which questions were asked although research could have answered them (web off, no web access) — never present an unverified claim as fact. |
 | H2 / EH2 | The design record: the decision, rejected options, how criteria are met, and the ADR's architecture diagram (paste its ```mermaid block as is so it renders); the God Eye critique verdict and any open items (from `critiques/design.json`). For EH2, the contracts being frozen. |
 | H3 / EH3 | The plan as a table: task, objective, allowed paths, depends on, criteria; then the waves. For EH3, the slices and their order. |
 | HF | The findings summary and the recommendation (spike). |

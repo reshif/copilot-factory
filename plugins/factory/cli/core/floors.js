@@ -44,6 +44,8 @@ function check(ctx, floor) {
   switch (floor) {
     case 'contract_approved':
       return steps.approved(ctx, state.epic ? 'EH1' : 'H1', b.contract);
+    case 'intent_grounded':
+      return require('./intent').floorOk(ctx);
     case 'isolation':
       return steps.allTasksDone(ctx);
     case 'prove':

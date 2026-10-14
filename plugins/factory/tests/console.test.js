@@ -19,12 +19,13 @@ const instructions = (prompt) => {
 async function clarify(root) {
   const brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify'], { allowFail: false });
   const { result } = await H.run(path.join(F.PLUGIN, 'workflows', 'fanout-judge.js'), JSON.stringify(brief), (prompt, opts) => {
+    if (opts.agentType === 'factory:intent-mapper') return { unknowns: [] };
     if (opts.agentType === 'factory:intent-analyst') return { focus: 'x', questions: [] };
     if (opts.agentType === 'factory:judge') return { questions: [], dismissed: [] };
     if (opts.agentType === 'factory:god-eye') return { verdict: 'approve', items: [] };
     throw new Error(`unexpected ${opts.agentType}: ${instructions(prompt).slice(0, 80)}`);
   });
-  assert.ok(Array.isArray(result.agents) && result.agents.length === 6, 'the envelope carries the roster (intent gate + 3 angles, judge, God Eye)');
+  assert.ok(Array.isArray(result.agents) && result.agents.length === 7, 'the envelope carries the roster (intent mapper, intent gate + 3 angles, judge, God Eye)');
   return F.record(root, result);
 }
 
@@ -56,7 +57,7 @@ test('console: steps, timeline and the agents per step, read-only', async () => 
   const ag = ledger.find((e) => e.kind === 'agents');
   assert.ok(ag && ag.seal, 'agents entry is sealed');
   assert.equal(ag.workflow, 'fanout-judge');
-  assert.deepEqual([...new Set(ag.agents.map((a) => a.agent_type))].sort(), ['factory:god-eye', 'factory:intent-analyst', 'factory:judge']);
+  assert.deepEqual([...new Set(ag.agents.map((a) => a.agent_type))].sort(), ['factory:god-eye', 'factory:intent-analyst', 'factory:intent-mapper', 'factory:judge']);
   assert.match(ag.decision_id, /^J-\d+-D\d+$/);
 
   const before = snapshot(root);
@@ -189,4 +190,55 @@ test('console page: one data slot, self-contained, and a static file says it is 
   assert.ok(html.includes('"live":false'), 'a written file is not live');
   assert.ok(!html.includes('</script><script>alert'), 'data cannot close the script tag');
   assert.ok(!html.includes('/*__FACTORY_DATA__*/'), 'the slot is filled');
+});
+
+test('console: clarify research (findings with source and verdict, assumptions, overrides) per round, from the ledger and intent-evidence.json', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  F.cli(root, ['next']);
+  const scout = {
+    ran: true, round: 1, web: { enabled: true, reason: null, available: true }, map: { ran: true, ok: true },
+    unknowns: [
+      { id: 'U-1', text: 'Where is add?', kind: 'repo', impact: 'high', draft: 'add is in src/add.js', research: 'repo', resolution: 'assumption', evidence: ['E-1'], researched: true },
+      { id: 'U-2', text: 'Is + numeric addition per ECMAScript?', kind: 'world', impact: 'medium', draft: 'ECMAScript + adds numbers', research: 'web', resolution: 'question', evidence: ['E-2'], researched: true },
+    ],
+    evidence: [
+      { id: 'E-1', unknown: 'U-1', claim: 'add is in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high', scout: 'repo', verdict: 'confirmed' },
+      { id: 'E-2', unknown: 'U-2', claim: 'ECMAScript + adds two numbers', source: 'https://tc39.es/ecma262/', source_tier: 'standard', retrieved_at: '2026-10-14', quote: 'Return ? operation(lnum, rnum).', confidence: 'high', scout: 'web', verdict: 'unverified' },
+    ],
+    assumptions: [], scouts: [{ label: 'scout · repo #1', mode: 'repo', unknowns: ['U-1'], outcome: 'ok' }, { label: 'scout · web #1', mode: 'web', unknowns: ['U-2'], outcome: 'ok' }], verifiers: 1, degraded: [],
+  };
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  const r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [], researchable_questions: [] }, scout }));
+  assert.equal(r.status, 'needs_user');
+  F.reply(root, 'change A-1 add lives in lib/add.js');
+  const dataFile = path.join(os.tmpdir(), `console-intent-${process.pid}-${Date.now()}.json`);
+  F.cli(root, ['console', '--out', `${dataFile}.html`, '--data', dataFile]);
+  const job = JSON.parse(fs.readFileSync(dataFile, 'utf8')).jobs.find((j) => j.id === J);
+  const res = job.timeline.find((t) => t.type === 'result' && t.step === 'clarify');
+  const x = res.research;
+  assert.equal(x.unknowns, 2);
+  assert.equal(x.scouts, 2);
+  assert.equal(x.verifiers, 1);
+  assert.deepEqual(x.findings.map((f) => [f.id, f.verdict]), [['E-1', 'confirmed'], ['E-2', 'unverified']], 'confirmed first');
+  assert.equal(x.findings[1].claim, 'ECMAScript + adds two numbers');
+  assert.equal(x.findings[1].source, 'https://tc39.es/ecma262/');
+  assert.equal(x.findings[1].retrieved_at, '2026-10-14');
+  assert.deepEqual(x.assumptions_list.map((a) => [a.id, a.overridden]), [['A-1', false]], 'as it stood that round');
+  assert.equal(x.asked[0].researchable, true);
+  assert.match(x.asked[0].reason, /E-2 unverified/);
+  const h = job.timeline.find((t) => t.type === 'human' && t.action === 'change_assumption');
+  assert.equal(h.assumption, 'A-1');
+  assert.equal(h.value, 'add lives in lib/add.js');
+  assert.equal(h.was, 'add is in src/add.js and subtracts');
+  assert.deepEqual(job.intent.overridden, ['A-1']);
+  // the page knows the two new roles, the scout phase on the recipe map and renders the research
+  const html = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
+  for (const role of ['intent-mapper', 'verifier']) assert.match(html, new RegExp(`'${role}': \\['Clarify'`));
+  assert.match(html, /P\('intent map', 'agent', 'intent-mapper'\)[\s\S]*P\('verify evidence', 'agent', 'verifier'\)/);
+  assert.match(html, /function researchHtml/);
+  const agents = fs.readdirSync(path.join(F.PLUGIN, 'agents')).map((f) => f.replace(/\.agent\.md$/, ''));
+  const table = html.slice(html.indexOf('const AGENTS = {'), html.indexOf('const RECIPES'));
+  for (const a of agents) assert.ok(table.includes(`'${a}':`), `Crew lists ${a}`);
 });

@@ -22,6 +22,7 @@ const TYPES = {
   recommendation: { file: 'recommendation.md', match: /^recommendation\.md$/, what: 'Spike answer (architect)' },
   'threat-model': { file: 'threat-model.md', match: /^threat-model\.md$/, what: 'STRIDE threat model with a data-flow diagram (threat modeler)' },
   contracts: { file: 'contracts.md', match: /^contracts\.md$/, what: 'Epic interfaces to freeze (architect)' },
+  'intent-findings': { file: 'intent-findings.md', match: /^intent-findings\.md$/, what: 'Clarify research: unknowns, cited evidence, evidence-backed assumptions (rendered by the CLI)' },
   findings: { file: 'findings.md', match: /^findings\.md$/, what: 'Cited grounding claims (rendered by the CLI)' },
   'ship-report': { file: 'ship-report.md', match: /^completion-report\.md$/, what: 'Completion report and PR body (rendered by the CLI)' },
   lessons: { file: 'lessons.md', match: /^lessons\.md$/, what: 'Lessons register (rendered by the CLI)' },
@@ -322,7 +323,7 @@ function jobDocs(root, jobId) {
   const jp = jobPaths(root, jobId);
   if (!exists(jp.dir)) return [];
   const names = fs.readdirSync(jp.dir);
-  const order = ['findings', 'threat-model', 'adr', 'no-adr', 'recommendation', 'contracts', 'ship-report', 'index'];
+  const order = ['intent-findings', 'findings', 'threat-model', 'adr', 'no-adr', 'recommendation', 'contracts', 'ship-report', 'index'];
   return order.flatMap((type) => names.filter((n) => TYPES[type].match.test(n)).sort().map((n) => ({ type, file: path.join(jp.dir, n) })));
 }
 
@@ -398,7 +399,7 @@ function index(root, { jobId }) {
   if (exists(lessonsMd)) rows.push(['../../lessons/lessons.md', 'lessons', 'lessons@1', 'project', '—']);
   const units = plan ? plan.tasks || plan.slices || [] : [];
   const prove = ledger.lastStep(root, state.id, 'prove');
-  const design = Object.entries(texts).filter(([n]) => !/^(findings|completion-report)\.md$/.test(n));
+  const design = Object.entries(texts).filter(([n]) => !/^(intent-findings|findings|completion-report)\.md$/.test(n));
   const L = [
     frontBlock({ doc: 'index', template: loadTemplate('index').version, job: state.id, title: state.title, status: 'current', date, contract: 'contract.md', related: docs.map((d) => path.basename(d.file)) }),
     '',
