@@ -55,8 +55,10 @@ Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config cl
            [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
            record --file <envelope.json | ->
            run <ground|fanout-judge|decompose|realize|reconcile> [--config c] [--mode m] [--scope s] [--lanes a,b] [--accept-degraded]
-               [--threat-model | --no-threat-model] [--plan-critique] [--dry-run]
+               [--threat-model | --no-threat-model] [--plan-critique] [--dry-run] [--json]
                runs the workflow on the Copilot CLI (one \`copilot -p --agent factory:<role>\` per agent) and records it;
+               only the workflow factory next asked for, one run per job at a time. Prints the recorded result
+               (status first; --json for the full JSON, the workflow's own status under "workflow");
                COPILOT_BIN, policy.copilot.flags, policy.limits.max_parallel_agents, policy.agents.model_ids
 Plan       plan validate · plan from-contract
 Tasks      task start <T> · task show <T> · task verify <T> · task state <T> blocked|exhausted [--reason]
@@ -102,9 +104,11 @@ function run(argv) {
       return C('setup').doctor(opt.root || process.cwd());
     case 'shim':
       return C('setup').shim({ dir: opt.dir, force: Boolean(opt.force) });
-    case 'run':
-      // async: main() awaits it, prints the result and the record outcome
-      return C('runner').run(R(), {
+    case 'run': {
+      // async: main() awaits it. Prints the recorded result as a short summary (status first),
+      // or the full JSON with --json (--dry-run always prints JSON).
+      const runner = C('runner');
+      const p = runner.run(R(), {
         jobId: J,
         workflow: sub,
         config: opt.config,
@@ -116,6 +120,8 @@ function run(argv) {
         acceptDegraded: Boolean(opt['accept-degraded']),
         dryRun: Boolean(opt['dry-run']),
       });
+      return opt.json || opt['dry-run'] ? p : p.then((r) => runner.summaryText(r));
+    }
     case 'console':
       if (opt.serve) { C('console').runServe(R(), { port: opt.port, job: J, label: opt.label }); return LONG_RUNNING; } // prints its own URL once listening
       return C('console').run(R(), { out: opt.out, job: J, label: opt.label, data: opt.data });
