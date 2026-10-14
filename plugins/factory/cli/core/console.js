@@ -339,7 +339,7 @@ function build(root, { job: only, now } = {}) {
       return { findings: f.length, open: f.filter((x) => x.status === 'open').length, runs: (reg.runs || []).length, last_run: (reg.runs || []).slice(-1)[0] ? reg.runs.slice(-1)[0].at || null : null, health };
     })(),
     // log lines that belong to no job: hooks failing outside a job, unparsed replies
-    factory_events: all.events.filter((e) => !e.job && ['hook_error', 'reply_unparsed', 'stop_block'].includes(e.event)).slice(-100).map((e) => ({ t: e.ts, type: e.event === 'reply_unparsed' ? 'unparsed' : e.event, text: short(e.event === 'hook_error' ? `The ${e.hook || 'factory'} hook failed${e.tool ? ` on ${e.tool}` : ''}: ${e.message || ''}` : e.event === 'reply_unparsed' ? `A message looked like "${e.verb || 'a reply'}" but was not applied ("${e.word || ''}")` : `The Stop hook refused a "done" claim`, 200) })),
+    factory_events: all.events.filter((e) => !e.job && ['hook_error', 'reply_unparsed', 'stop_block'].includes(e.event)).slice(-100).map((e) => ({ t: e.ts, type: e.event === 'reply_unparsed' ? 'unparsed' : e.event, text: short(e.event === 'hook_error' ? `The ${e.hook || 'factory'} hook failed${e.tool ? ` on ${e.tool}` : ''}: ${e.message || ''}` : e.event === 'reply_unparsed' ? `A message looked like "${e.verb || 'a reply'}" but was not applied ("${e.word || ''}")` : `The stop gate sent the agent back to work`, 200) })),
     integrity: checker.hasKey ? { ...checker.tally, status: checker.tally.invalid ? 'tampered' : 'verified' } : { status: 'not_checked' },
     jobs,
   };
@@ -387,7 +387,7 @@ function fingerprint(root) {
 }
 
 // factory console --serve: the same page over http://127.0.0.1, kept current. Hooks and the
-// CLI append to .factory/ as Claude works; the server notices within `interval` ms and
+// CLI append to .factory/ as Copilot works; the server notices within `interval` ms and
 // pushes the rebuilt data to every open page over server-sent events. Still read-only.
 function serve(root, { port = 4477, job, label, interval = 400, onReady } = {}) {
   const http = require('http');
