@@ -76,6 +76,7 @@ function deny(root, { jobId, reason, channel }) {
   const state = job.resolve(root, jobId);
   const pending = state.pending_gate;
   if (!pending || pending.id === 'P') fail(`${state.id} has no gate waiting.`, 'no_gate');
+  if (!String(reason || '').trim()) fail(`Say what must change: reply "deny <what must change>" (for example "deny cover negative numbers too"). Nothing was denied; ${pending.id} is still waiting.`, 'needs_reason');
   state.denials.push({ gate: pending.id, hash: pending.hash, at: nowIso(), reason: reason || '' });
   if (pending.id === 'A') {
     state.amendment.status = 'open';
@@ -184,7 +185,7 @@ function parseReply(text) {
   let m;
   const J = '(J-\\d+)';
   if ((m = t.match(new RegExp(`^approve(?:\\s+${J})?(?:\\s+(${GATE_IDS.join('|')}))?$`, 'i')))) return { cmd: 'approve', jobId: m[1] && m[1].toUpperCase(), gate: m[2] && m[2].toUpperCase() };
-  if ((m = t.match(new RegExp(`^deny(?:\\s+${J})?(?:\\s+(.*))?$`, 'i')))) return { cmd: 'deny', jobId: m[1] && m[1].toUpperCase(), reason: (m[2] || '').trim() };
+  if ((m = t.match(new RegExp(`^deny(?:\\s+${J})?(?:(?:\\s*[:\u2014\u2013-]\\s*|\\s+)(.*))?$`, 'i')))) return { cmd: 'deny', jobId: m[1] && m[1].toUpperCase(), reason: (m[2] || '').trim() };
   if ((m = t.match(new RegExp(`^resume(?:\\s+${J})?(?:\\s+(.*))?$`, 'i')))) return { cmd: 'resume', jobId: m[1] && m[1].toUpperCase(), step: (m[2] || '').trim() || null };
   if ((m = t.match(new RegExp(`^(cancel|abandon)\\s+job(?:\\s+${J})?(?:\\s+(.*))?$`, 'i')))) return { cmd: m[1].toLowerCase() === 'cancel' ? 'cancel' : 'abandon', jobId: m[2] && m[2].toUpperCase(), reason: (m[3] || '').trim() };
   if ((m = t.match(/^(accept|reject)\s+lesson\s+(L\d+)(?:\s+(.*))?$/i))) return { cmd: `${m[1].toLowerCase()}_lesson`, lessonId: m[2].toUpperCase(), reason: (m[3] || '').trim() };

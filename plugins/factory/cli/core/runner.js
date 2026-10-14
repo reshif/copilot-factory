@@ -5,9 +5,16 @@
 // args / agent / pipeline / parallel / phase / log, no Date or Math.random), and each
 // agent() call spawns one non-interactive Copilot CLI session as the role's custom agent:
 //
-//   copilot -p <prompt> --agent factory:<role> [--model <id>] --output-format json -s
-//           --no-ask-user --allow-all-tools [--add-dir <project root>] [--session-id <uuid>]
+//   copilot -p <pointer to the prompt file> --agent factory:<role> [--model <id>]
+//           --output-format json -s --no-ask-user --allow-all-tools
+//           --add-dir <project root> --add-dir <plugin root> [--session-id <uuid>]
 //           [policy.copilot.flags…]
+//
+// Every agent's full prompt is written to a file in the run's scratch folder
+// (.factory/scratch/runner/<job>/<run>/) and -p only tells the agent to read it: Windows
+// caps a whole command line at 32,767 characters. --add-dir <plugin root> lets an agent
+// run `node "<plugin root>/bin/factory" …` headless: Copilot's path permissions apply to
+// shell commands too, and -p cannot ask (verified against Copilot CLI 1.0.97).
 //
 // Flags, from the official docs (gh-docs/content/copilot/…):
 //   -p, -s, --agent, --model, --no-ask-user, --output-format json (JSONL), --add-dir:
@@ -38,7 +45,6 @@ const { validate } = require('../lib/schema');
 const events = require('./events');
 
 const WORKFLOWS = ['ground', 'fanout-judge', 'decompose', 'realize', 'reconcile'];
-const MAX_ARG_PROMPT = 96 * 1024; // Linux caps one argv string at 128 KiB; longer prompts go through a file
 const MAX_OUTPUT = 32 * 1024 * 1024;
 
 // Aliases used by policy.agents.models / builder_escalation → Copilot model ids. Defaults
@@ -203,7 +209,16 @@ const correction = (schema, errors) =>
 
 // ---------------------------------------------------------------- spawning Copilot
 
-function copilotArgs({ prompt, agentType, model, cwd, root, sessionId, flags }) {
+// The folders an agent may touch besides its cwd: the project (job folder, briefs, prompt
+// files) and the plugin (bin/factory, templates). Copilot also allows the system temp dir.
+function addDirs(root) {
+  const dirs = [path.resolve(root)];
+  const plugin = path.resolve(PLUGIN_ROOT);
+  if (!dirs.includes(plugin)) dirs.push(plugin);
+  return dirs;
+}
+
+function copilotArgs({ prompt, agentType, model, root, sessionId, flags }) {
   return [
     '-p', prompt,
     '--agent', agentType,
@@ -212,20 +227,62 @@ function copilotArgs({ prompt, agentType, model, cwd, root, sessionId, flags }) 
     '-s',
     '--no-ask-user',
     '--allow-all-tools',
-    ...(path.resolve(cwd) !== path.resolve(root) ? ['--add-dir', root] : []),
+    ...addDirs(root).flatMap((d) => ['--add-dir', d]),
     ...(sessionId ? ['--session-id', sessionId] : []),
     ...flags,
   ];
 }
 
-function command(bin, argv) {
-  return /\.c?js$/.test(bin) ? [process.execPath, [bin, ...argv]] : [bin, argv];
+// How to start the Copilot CLI: [file, leading args, shell]. A .js entry point runs on this
+// Node. On Windows, `npm install -g @github/copilot` installs copilot.cmd, which Node can't
+// spawn without a shell (ENOENT through PATHEXT, EINVAL for .cmd since Node 18.20.2/20.12.2):
+// the npm shim's JavaScript target (npm-loader.js) is run with Node instead, and only an
+// unknown .cmd/.bat falls back to a shell. copilot.exe (WinGet) is spawned directly.
+function resolveBin(bin, { platform = process.platform, env = process.env, existsFn = exists, readFn = (f) => fs.readFileSync(f, 'utf8') } = {}) {
+  const b = String(bin || 'copilot');
+  if (/\.[cm]?js$/i.test(b)) return { file: process.execPath, pre: [b], shell: false };
+  if (platform !== 'win32') return { file: b, pre: [], shell: false };
+  const P = path.win32;
+  const exts = String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((e) => e.toLowerCase());
+  const hasDir = /[\\/]/.test(b);
+  const hasExt = Boolean(P.extname(b));
+  const dirs = hasDir ? [''] : String(env.PATH || env.Path || '').split(';').filter(Boolean);
+  let found = null;
+  for (const d of dirs) {
+    const base = d ? P.join(d, b) : b;
+    const cands = hasExt ? [base] : exts.map((e) => base + e);
+    found = cands.find((c) => existsFn(c)) || null;
+    if (found) break;
+  }
+  if (!found) return { file: b, pre: [], shell: false }; // spawn reports ENOENT → copilot_unavailable
+  if (!/\.(cmd|bat)$/i.test(found)) return { file: found, pre: [], shell: false };
+  const dir = P.dirname(found);
+  let js = null;
+  try {
+    const m = /"%~?dp0%?\\?([^"%]+?\.[cm]?js)"/i.exec(readFn(found));
+    if (m && existsFn(P.join(dir, m[1]))) js = P.join(dir, m[1]);
+  } catch {
+    js = null;
+  }
+  const loader = P.join(dir, 'node_modules', '@github', 'copilot', 'npm-loader.js');
+  if (!js && existsFn(loader)) js = loader;
+  if (js) return { file: process.execPath, pre: [js], shell: false };
+  return { file: found, pre: [], shell: true };
+}
+
+// cmd.exe quoting for the shell fallback (the prompt is a short pointer, never the prompt).
+const cmdQuote = (a) => `"${String(a).replace(/"/g, '""')}"`;
+
+function command(bin, argv, opts) {
+  const r = resolveBin(bin, opts);
+  if (r.shell) return [[r.file, ...r.pre, ...argv].map((a) => cmdQuote(String(a).replace(/\r?\n/g, ' '))).join(' '), [], true]; // cmd.exe ends a command at a newline
+  return [r.file, [...r.pre, ...argv], false];
 }
 
 function spawnCopilot(bin, argv, { cwd, env, timeoutSec }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const [file, args] = command(bin, argv);
+    const [file, args, shell] = command(bin, argv);
     let out = '';
     let err = '';
     let timedOut = false;
@@ -238,7 +295,7 @@ function spawnCopilot(bin, argv, { cwd, env, timeoutSec }) {
       resolve({ code: code === null || code === undefined ? -1 : code, signal: signal || null, stdout: out, stderr: err + extra, ms: Date.now() - started, timedOut });
     };
     try {
-      child = spawn(file, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(file, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], ...(shell ? { shell: true, windowsVerbatimArguments: true } : {}) });
     } catch (e) {
       resolve({ code: -1, signal: null, stdout: '', stderr: e.message, ms: 0, timedOut: false });
       return;
@@ -303,13 +360,32 @@ function cwdFor(ctx, opts, { prepare }) {
   }
 }
 
-// Long prompts go through a file so they never hit the argv size limit.
-function deliverable(ctx, prompt, label) {
-  if (Buffer.byteLength(prompt) <= MAX_ARG_PROMPT) return prompt;
+// Every prompt goes through a file in the run's scratch folder (inside the project, which
+// every agent may read); -p carries only this pointer, so no command line gets long.
+function promptFile(ctx, label) {
   ctx.files += 1;
-  const file = path.join(ctx.scratch, `${String(ctx.files).padStart(3, '0')}-${String(label).replace(/[^\w.-]+/g, '_').slice(0, 60)}.md`);
+  return path.join(ctx.scratch, `${String(ctx.files).padStart(3, '0')}-${String(label).replace(/[^\w.-]+/g, '_').slice(0, 60)}.md`);
+}
+
+const pointer = (file, retry) =>
+  retry
+    ? `Your last reply did not have the required format. Read this file and follow it exactly:\n  ${file}\nReply with only the corrected JSON object.`
+    : `Your full instructions for this run are in this file. Read all of it first and follow it exactly:\n  ${file}\nFinish by replying with only the JSON object it asks for.`;
+
+function deliverable(ctx, prompt, label, retry = false) {
+  const file = promptFile(ctx, label);
   writeText(file, prompt);
-  return `Your full instructions for this run are in this file. Read all of it first and follow it exactly:\n  ${file}\nFinish by replying with only the JSON object it asks for.`;
+  return pointer(file, retry);
+}
+
+// Copilot can't run at all: not installed (spawn ENOENT/EACCES/EINVAL) or not signed in.
+// Its first such failure aborts the run instead of being recorded as a degraded result.
+const AUTH_TEXT = /No authentication information found|Authentication token found but could not be validated|To authenticate, you can use any of the following methods|not (?:logged|signed) in to (?:GitHub )?Copilot/i;
+function unavailable(r) {
+  const text = `${r.stderr || ''}\n${r.stdout || ''}`;
+  if (r.code === -1 && !r.timedOut && /\b(ENOENT|EACCES|EINVAL|EPERM)\b/.test(text)) return { why: 'not_found', detail: text.trim().split('\n').pop().slice(0, 200) };
+  if (r.code !== 0 && AUTH_TEXT.test(text)) return { why: 'not_signed_in', detail: (text.match(AUTH_TEXT) || [''])[0] };
+  return null;
 }
 
 async function runAgent(ctx, prompt, opts) {
@@ -325,8 +401,17 @@ async function runAgent(ctx, prompt, opts) {
     const cwd = cwdFor(ctx, o, { prepare: true });
     const sessionId = S.resumeForRetry ? crypto.randomUUID() : null;
     const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
-    const spawnOnce = (text) =>
-      spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, o.label || role), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags }), { cwd, env, timeoutSec: S.timeoutSec });
+    const spawnOnce = async (text, retryTurn = false) => {
+      if (ctx.unavailable) throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
+      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags }), { cwd, env, timeoutSec: S.timeoutSec });
+      const u = unavailable(r);
+      if (u) {
+        if (!ctx.unavailable) events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, cwd, ms: r.ms, exit: r.code, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [u.detail] });
+        ctx.unavailable = ctx.unavailable || { ...u, label: o.label || role };
+        throw new Error(`Copilot CLI unavailable: ${u.detail}`);
+      }
+      return r;
+    };
     const full = `${prompt}${replyBlock(o.schema)}`;
     const runs = [await spawnOnce(full)];
     let result = null;
@@ -340,7 +425,7 @@ async function runAgent(ctx, prompt, opts) {
       if (!result) {
         retry = true;
         const fix = correction(o.schema, errors);
-        runs.push(await spawnOnce(S.resumeForRetry ? fix : `${full}\n\n${fix}`));
+        runs.push(await spawnOnce(S.resumeForRetry ? fix : `${full}\n\n${fix}`, true));
         const last = runs[1];
         if (ok(last)) {
           const c2 = check(o.schema, replyText(last.stdout));
@@ -390,7 +475,10 @@ function plannedAgents(ctx) {
   const add = (label, spec, prompt, schema) => {
     const model = modelId(S.modelIds, spec.model);
     const cwd = cwdFor(ctx, { label }, { prepare: false });
-    items.push({ label, agent_type: spec.agent_type, model: spec.model || null, model_id: model, cwd, command: [S.bin, ...copilotArgs({ prompt: `${prompt}${replyBlock(schema)}`, agentType: spec.agent_type, model, cwd, root: ctx.root, sessionId: S.resumeForRetry ? '<uuid>' : null, flags: S.flags })] });
+    const full = `${prompt}${replyBlock(schema)}`;
+    const file = promptFile(ctx, label); // the path the real run would write; nothing is written here
+    const [exe, argv] = command(S.bin, copilotArgs({ prompt: pointer(file), agentType: spec.agent_type, model, cwd, root: ctx.root, sessionId: S.resumeForRetry ? '<uuid>' : null, flags: S.flags }));
+    items.push({ label, agent_type: spec.agent_type, model: spec.model || null, model_id: model, cwd, prompt_file: file, prompt: full, command: [S.bin, ...copilotArgs({ prompt: pointer(file), agentType: spec.agent_type, model, cwd, root: ctx.root, sessionId: S.resumeForRetry ? '<uuid>' : null, flags: S.flags })], spawn: [exe, ...argv] });
   };
   if (b.workflow === 'realize') {
     for (const id of Object.keys(b.tasks || {})) {
@@ -417,80 +505,263 @@ function logCli(root, rec) {
   events.append(root, { event: 'cli', arg: null, how: ctx.how, decision_id: ctx.decision_id, ok: true, code: null, via: 'run', ...rec });
 }
 
+function readEvents(root) {
+  try {
+    return fs.readFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// What the router last asked for, as `factory run` arguments: { workflow, config } or null.
+function askedFor(d) {
+  if (!d) return null;
+  if (d.action === 'workflow' && d.workflow) return { workflow: d.workflow, config: d.config || null };
+  if (d.action === 'skill' && d.skill === 'clarify') return { workflow: 'fanout-judge', config: 'clarify' }; // the clarify skill's round
+  return null;
+}
+
+// A workflow runs only when `factory next` asked for exactly it, on an active job with no
+// gate pending, and its result hasn't been recorded for that decision yet (a degraded or
+// stale result may be run again, e.g. with --accept-degraded).
+function preflight(root, state, workflow, config) {
+  const refuse = (message, reason, extra = {}) => fail(`${message} Nothing was started.`, 'not_waiting_for_workflow', { reason, job: state.id, ...extra });
+  if (state.status !== 'active') {
+    refuse(state.status === 'parked' ? `${state.id} is parked (${(state.park && state.park.reason) || 'see factory next'}); only your reply ("resume", "cancel job", "abandon job") moves it.` : `${state.id} is ${state.status}.`, state.status);
+  }
+  if (state.pending_gate) {
+    refuse(`${state.id} is waiting at gate ${state.pending_gate.id} for your reply; run factory next and present the gate instead.`, 'gate_pending', { gate: state.pending_gate.id });
+  }
+  const d = state.last_decision_id ? require('./decisions').forJob(root, state.id).find((x) => x.id === state.last_decision_id) : null;
+  const want = askedFor(d);
+  const got = { workflow, config: config || null };
+  if (!want || want.workflow !== got.workflow || want.config !== got.config) {
+    const said = !d ? 'nothing yet' : want ? `factory run ${want.workflow}${want.config ? ` --config ${want.config}` : ''}` : `${d.action} "${d.step || d.skill || d.command || ''}"`;
+    refuse(`factory next did not ask for factory run ${workflow}${config ? ` --config ${config}` : ''} (its last decision${d ? ` ${d.id}` : ''} says ${said}). Run factory next and do what it says.`, 'not_asked', { decision_id: d ? d.id : null, expected: want });
+  }
+  const done = readEvents(root).filter((e) => e.event === 'cli' && e.cmd === 'record' && e.decision_id === d.id && e.ok !== false && !['degraded', 'stale'].includes(e.status));
+  if (done.length) {
+    refuse(`This workflow's result is already recorded for decision ${d.id} (status ${done[done.length - 1].status || 'unknown'}). Run factory next for the next step.`, 'already_recorded', { decision_id: d.id });
+  }
+  return d;
+}
+
+// One `factory run` per job at a time: .factory/jobs/<J>/run.lock holds the pid and start
+// time; a lock whose process is gone (or is no longer a factory process) is stale.
+function lockAlive(lock) {
+  if (!lock || !Number.isInteger(lock.pid) || lock.pid <= 0) return false;
+  if (lock.host && lock.host !== require('os').hostname()) return true; // another machine: can't tell, assume live
+  try {
+    process.kill(lock.pid, 0);
+  } catch (e) {
+    if (e.code !== 'EPERM') return false;
+  }
+  try {
+    const cmdline = fs.readFileSync(`/proc/${lock.pid}/cmdline`, 'utf8');
+    if (cmdline && !/factory|node/.test(cmdline)) return false; // the pid was reused
+  } catch {
+    /* no /proc (macOS, Windows): trust the pid */
+  }
+  return true;
+}
+
+function acquireLock(root, state, info) {
+  const file = path.join(require('../lib/paths').jobPaths(root, state.id).dir, 'run.lock');
+  const body = JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: new Date().toISOString(), ...info });
+  for (let i = 0; i < 2; i++) {
+    try {
+      fs.writeFileSync(file, body, { flag: 'wx' });
+      return {
+        file,
+        release: () => {
+          try {
+            if (JSON.parse(fs.readFileSync(file, 'utf8')).pid === process.pid) fs.rmSync(file, { force: true });
+          } catch {
+            /* already gone */
+          }
+        },
+      };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    let held = null;
+    try {
+      held = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      held = null;
+    }
+    if (held && lockAlive(held)) {
+      fail(`Another factory run (${held.workflow || 'workflow'}${held.config ? ` --config ${held.config}` : ''}, pid ${held.pid}, started ${held.started_at}) is still running for ${state.id}. Wait for it to finish and read its output; don't start it again.`, 'run_in_progress', { lock: file, ...held });
+    }
+    fs.rmSync(file, { force: true }); // stale: its process is gone
+  }
+  fail(`Could not take the run lock ${file}.`, 'run_in_progress', { lock: file });
+}
+
+function copilotUnavailable(ctx) {
+  const u = ctx.unavailable;
+  const how = u.why === 'not_signed_in'
+    ? 'The Copilot CLI is not signed in. Run `copilot` in a terminal and use /login (or set COPILOT_GITHUB_TOKEN), then run factory next.'
+    : `The Copilot CLI could not be started as "${ctx.settings.bin}". Install it (npm install -g @github/copilot, or see the Copilot CLI docs), make sure it is on PATH or set COPILOT_BIN, then run factory next.`;
+  fail(`${how} (${u.detail}) Nothing was recorded.`, 'copilot_unavailable', { why: u.why, detail: u.detail, copilot: ctx.settings.bin, agents: ctx.runs });
+}
+
 async function run(root, { jobId, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded, dryRun = false, quiet = false }) {
   if (!WORKFLOWS.includes(workflow)) fail(`factory run <${WORKFLOWS.join('|')}> (got ${workflow || 'nothing'})`, 'bad_input');
   const job = require('./job');
-  const state = job.resolve(root, jobId);
-  const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
-  const S = settings(root, state);
+  let state = job.resolve(root, jobId);
   const say = (m) => {
     if (!quiet) process.stderr.write(`[factory run] ${m}\n`);
   };
-  const ctx = {
-    root,
-    state,
-    brief,
-    settings: S,
-    runs: [],
-    phases: [],
-    notes: [],
-    files: 0,
-    scratch: path.join(root, '.factory', 'scratch', 'runner', state.id),
-    decisionId: events.context(root, state.id).decision_id,
-    limit: limiter(S.maxParallel),
-    say,
-    note: (m) => {
-      ctx.notes.push(m);
-      say(m);
-    },
-  };
-  const head = { job: state.id, workflow, config: brief.config || null, copilot: S.bin, max_parallel_agents: S.maxParallel };
-  if (dryRun) return { dry_run: true, ...head, brief, agents: plannedAgents(ctx) };
-
-  const args = {};
-  for (const [k, v] of Object.entries({ config, mode, scope, lanes, 'threat-model': threatModel, 'plan-critique': planCritique, 'accept-degraded': acceptDegraded || undefined })) if (v !== undefined && v !== null) args[k] = v;
-  logCli(root, { cmd: 'wfargs', sub: workflow, args, job: state.id, workflow, config: brief.config || config || null, mode: brief.mode || null, brief_hash: brief.input_hash || null });
-
-  const api = {
-    agent: (prompt, opts) => runAgent(ctx, prompt, opts),
-    phase: (m) => {
-      ctx.phases.push(String(m));
-      say(`phase: ${m}`);
-    },
-    log: (m) => {
-      ctx.notes.push(String(m));
-      say(String(m));
-    },
-  };
-  const t0 = Date.now();
-  let envelope;
-  try {
-    envelope = await execute(pluginPath('workflows', `${workflow}.js`), JSON.stringify(brief), api);
-  } catch (e) {
-    fail(`The ${workflow} workflow failed: ${e.message}`, 'workflow_failed', { agents: ctx.runs });
+  if (dryRun) {
+    let check = { ok: true };
+    try {
+      preflight(root, state, workflow, config);
+    } catch (e) {
+      check = { ok: false, code: e.code, message: e.message };
+    }
+    const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
+    const S = settings(root, state);
+    const ctx = { root, state, brief, settings: S, files: 0, scratch: path.join(root, '.factory', 'scratch', 'runner', state.id, '<run>') };
+    return { dry_run: true, job: state.id, workflow, config: brief.config || null, copilot: S.bin, max_parallel_agents: S.maxParallel, preflight: check, brief, agents: plannedAgents(ctx) };
   }
-  const file = path.join(root, '.factory', 'scratch', 'runs', `${state.id}-${workflow}${brief.config ? `-${brief.config}` : ''}-${Date.now()}.json`);
-  writeJson(file, envelope);
 
-  let rec;
+  const lock = acquireLock(root, state, { workflow, config: config || null });
   try {
-    rec = require('./record').apply(root, { jobId: state.id, envelope });
-  } catch (e) {
-    logCli(root, { cmd: 'record', sub: null, args: { file }, job: state.id, ok: false, code: e.code || 'internal', workflow: envelope && envelope.workflow, config: (envelope && envelope.config) || null, status: null });
-    throw e;
+    state = job.resolve(root, state.id);
+    const decision = preflight(root, state, workflow, config);
+    const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
+    const S = settings(root, state);
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
+    const ctx = {
+      root,
+      state,
+      brief,
+      settings: S,
+      runs: [],
+      phases: [],
+      notes: [],
+      files: 0,
+      unavailable: null,
+      scratch: path.join(root, '.factory', 'scratch', 'runner', state.id, `${stamp}-${workflow}${brief.config ? `-${brief.config}` : ''}-${process.pid}`),
+      decisionId: decision.id,
+      limit: limiter(S.maxParallel),
+      say,
+      note: (m) => {
+        ctx.notes.push(m);
+        say(m);
+      },
+    };
+
+    const args = {};
+    for (const [k, v] of Object.entries({ config, mode, scope, lanes, 'threat-model': threatModel, 'plan-critique': planCritique, 'accept-degraded': acceptDegraded || undefined })) if (v !== undefined && v !== null) args[k] = v;
+    logCli(root, { cmd: 'wfargs', sub: workflow, args, job: state.id, workflow, config: brief.config || config || null, mode: brief.mode || null, brief_hash: brief.input_hash || null });
+
+    const api = {
+      agent: (prompt, opts) => runAgent(ctx, prompt, opts),
+      phase: (m) => {
+        ctx.phases.push(String(m));
+        say(`phase: ${m}`);
+      },
+      log: (m) => {
+        ctx.notes.push(String(m));
+        say(String(m));
+      },
+    };
+    const t0 = Date.now();
+    let envelope;
+    try {
+      envelope = await execute(pluginPath('workflows', `${workflow}.js`), JSON.stringify(brief), api);
+    } catch (e) {
+      if (ctx.unavailable) copilotUnavailable(ctx);
+      fail(`The ${workflow} workflow failed: ${e.message}`, 'workflow_failed', { agents: ctx.runs });
+    }
+    if (ctx.unavailable) copilotUnavailable(ctx);
+    const file = path.join(root, '.factory', 'scratch', 'runs', `${state.id}-${workflow}${brief.config ? `-${brief.config}` : ''}-${Date.now()}.json`);
+    writeJson(file, envelope);
+
+    let rec;
+    try {
+      rec = require('./record').apply(root, { jobId: state.id, envelope });
+    } catch (e) {
+      logCli(root, { cmd: 'record', sub: null, args: { file }, job: state.id, ok: false, code: e.code || 'internal', workflow: envelope && envelope.workflow, config: (envelope && envelope.config) || null, status: null });
+      throw e;
+    }
+    logCli(root, { cmd: 'record', sub: null, args: { file }, job: state.id, workflow: envelope.workflow, config: envelope.config || null, status: rec.status || null });
+    // The recorded result is what to act on (its status, questions, critique, problems…);
+    // the workflow's own envelope status and summary are nested under `workflow`.
+    const { job: _j, workflow: _w, config: _c, ...result } = rec;
+    const out = {
+      job: state.id,
+      ...result,
+      workflow: { name: workflow, config: brief.config || null, mode: brief.mode || null, status: envelope.status, summary: envelope.summary, ms: Date.now() - t0, envelope_file: file, phases: ctx.phases, notes: ctx.notes },
+      decision_id: decision.id,
+      copilot: S.bin,
+      max_parallel_agents: S.maxParallel,
+      agents: ctx.runs,
+    };
+    const resultFile = file.replace(/\.json$/, '.result.json');
+    out.result_file = resultFile;
+    writeJson(resultFile, out);
+    return out;
+  } finally {
+    lock.release();
   }
-  logCli(root, { cmd: 'record', sub: null, args: { file }, job: state.id, workflow: envelope.workflow, config: envelope.config || null, status: rec.status || null });
-  return {
-    ...head,
-    status: envelope.status,
-    summary: envelope.summary,
-    ms: Date.now() - t0,
-    envelope_file: file,
-    phases: ctx.phases,
-    notes: ctx.notes,
-    agents: ctx.runs,
-    record: rec,
-  };
 }
 
-module.exports = { run, execute, extractJson, replyText, copilotArgs, modelId, settings, limiter, WORKFLOWS };
+// ---------------------------------------------------------------- printed summary
+
+const one = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
+
+// The default `factory run` output: the recorded result in a few lines (the full JSON is
+// in result_file, or printed with --json).
+function summaryText(r) {
+  const L = [];
+  L.push(`status: ${r.status}`);
+  if (r.message) L.push(`message: ${r.message}`);
+  if (r.next_gate) L.push(`next_gate: ${r.next_gate}`);
+  if (r.restatement) L.push(`restatement: ${one(r.restatement)}`);
+  if (r.park_reason) L.push(`park_reason: ${r.park_reason}`);
+  if (Array.isArray(r.questions) && r.questions.length) {
+    L.push(`questions (${r.questions.length})${r.intent_first ? ' — intent first: other questions wait' : ''}:`);
+    r.questions.forEach((q, i) => {
+      const opts = Array.isArray(q.options) && q.options.length ? ` | options: ${q.options.map(one).join(' / ')}` : '';
+      L.push(`  ${i + 1}. ${q.id ? `${q.id} ` : ''}${q.category ? `[${q.category}] ` : ''}${q.question}${q.why ? ` | why: ${q.why}` : ''}${opts}${q.default !== undefined && q.default !== null ? ` | default: ${one(q.default)}` : ''}`);
+    });
+  }
+  if (r.intent_first !== undefined) L.push(`intent_first: ${r.intent_first}`);
+  if (r.held) L.push(`held: ${r.held}`);
+  if (r.critique) {
+    const c = r.critique;
+    L.push(`critique: verdict ${c.verdict}${c.intent_confirmed === false ? ', intent NOT confirmed' : ''}${c.restatement ? ` | restatement: ${one(c.restatement)}` : ''}`);
+    for (const it of c.items || []) L.push(`  - ${one(it)}`);
+  }
+  for (const k of ['problems', 'doc_problems', 'errors', 'missing', 'degraded', 'confirmed', 'unverified']) {
+    if (Array.isArray(r[k]) && r[k].length) {
+      L.push(`${k}:`);
+      for (const p of r[k].slice(0, 20)) L.push(`  - ${one(p)}`);
+    }
+  }
+  if (Array.isArray(r.tasks) && r.tasks.length) {
+    L.push('tasks:');
+    for (const t of r.tasks) L.push(`  - ${t.id}: ${t.outcome}${t.attempts ? ` (${t.attempts} attempt(s))` : ''}${t.summary ? ` — ${t.summary}` : ''}`);
+  }
+  if (r.followup) L.push(`followup: ${r.followup}`);
+  const w = r.workflow || {};
+  const agents = r.agents || [];
+  const by = {};
+  for (const a of agents) by[a.outcome] = (by[a.outcome] || 0) + 1;
+  L.push(`workflow: ${w.name}${w.config ? ` --config ${w.config}` : ''} → ${w.status}${w.summary ? ` — ${w.summary}` : ''} (${((w.ms || 0) / 1000).toFixed(0)}s)`);
+  L.push(`agents: ${agents.length} (${Object.entries(by).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'})`);
+  for (const a of agents.filter((x) => x.outcome !== 'ok')) L.push(`  - ${a.label} (${a.agent_type}) ${a.outcome}${a.errors && a.errors.length ? `: ${String(a.errors[0]).slice(0, 160)}` : ''}`);
+  L.push(`full result: ${r.result_file} (or run with --json)`);
+  return L.join('\n');
+}
+
+module.exports = { run, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, WORKFLOWS };

@@ -55,8 +55,10 @@ Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config cl
            [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
            record --file <envelope.json | ->
            run <ground|fanout-judge|decompose|realize|reconcile> [--config c] [--mode m] [--scope s] [--lanes a,b] [--accept-degraded]
-               [--threat-model | --no-threat-model] [--plan-critique] [--dry-run]
+               [--threat-model | --no-threat-model] [--plan-critique] [--dry-run] [--json]
                runs the workflow on the Copilot CLI (one \`copilot -p --agent factory:<role>\` per agent) and records it;
+               only the workflow factory next asked for, one run per job at a time. Prints the recorded result
+               (status first; --json for the full JSON, the workflow's own status under "workflow");
                COPILOT_BIN, policy.copilot.flags, policy.limits.max_parallel_agents, policy.agents.model_ids
 Plan       plan validate · plan from-contract
 Tasks      task start <T> · task show <T> · task verify <T> · task state <T> blocked|exhausted [--reason]
@@ -82,11 +84,39 @@ function out(obj, opt) {
   else process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
 }
 
+// Inside a `factory run` agent (FACTORY_RUNNER=1) only what agents are briefed to run is
+// allowed: driving the job and every human-only verb belong to the main session and the
+// human. The guard hook blocks these by command text (hooks/guard-rules.js AGENT_ALLOWED,
+// same list); this is the same rule in the CLI itself, whatever way the command was built.
+const AGENT_ALLOWED = {
+  help: '*',
+  why: '*',
+  report: '*',
+  job: ['show', 'list'],
+  contract: ['show', 'check'],
+  plan: ['validate'],
+  task: ['start', 'show', 'verify'],
+  reconcile: ['run', 'continue', 'abort'],
+  doc: ['list', 'template', 'check', 'index'],
+  lessons: ['list', 'add'],
+  recipe: ['list', 'show', 'check', 'select'],
+  telemetry: ['report'],
+};
+
+function agentAllowed(cmd, sub) {
+  if (cmd === undefined) return true;
+  const ok = AGENT_ALLOWED[cmd];
+  return ok === '*' || (Array.isArray(ok) && ok.includes(sub));
+}
+
 function run(argv) {
   const { pos, opt } = parseArgs(argv);
   if (opt.root) process.env.FACTORY_ROOT = path.resolve(opt.root);
   const cmd = pos[0];
   const sub = pos[1];
+  if (process.env.FACTORY_RUNNER === '1' && !agentAllowed(cmd, sub)) {
+    fail(`"factory ${[cmd, sub].filter(Boolean).join(' ')}" is not for a factory agent: driving the job (next, run, record, ship, close …) is the main session's work and approvals are the human's. Do your role's task and reply with your JSON.`, 'agent_not_allowed');
+  }
   const R = () => requireRoot(opt.root);
   const J = opt.job;
   const tty = 'tty';
@@ -102,9 +132,11 @@ function run(argv) {
       return C('setup').doctor(opt.root || process.cwd());
     case 'shim':
       return C('setup').shim({ dir: opt.dir, force: Boolean(opt.force) });
-    case 'run':
-      // async: main() awaits it, prints the result and the record outcome
-      return C('runner').run(R(), {
+    case 'run': {
+      // async: main() awaits it. Prints the recorded result as a short summary (status first),
+      // or the full JSON with --json (--dry-run always prints JSON).
+      const runner = C('runner');
+      const p = runner.run(R(), {
         jobId: J,
         workflow: sub,
         config: opt.config,
@@ -116,6 +148,8 @@ function run(argv) {
         acceptDegraded: Boolean(opt['accept-degraded']),
         dryRun: Boolean(opt['dry-run']),
       });
+      return opt.json || opt['dry-run'] ? p : p.then((r) => runner.summaryText(r));
+    }
     case 'console':
       if (opt.serve) { C('console').runServe(R(), { port: opt.port, job: J, label: opt.label }); return LONG_RUNNING; } // prints its own URL once listening
       return C('console').run(R(), { out: opt.out, job: J, label: opt.label, data: opt.data });
@@ -417,4 +451,4 @@ function main(argv) {
   return finish(res, null);
 }
 
-module.exports = { main, run, parseArgs, findRoot };
+module.exports = { main, run, parseArgs, findRoot, AGENT_ALLOWED, agentAllowed };

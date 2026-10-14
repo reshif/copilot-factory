@@ -52,10 +52,11 @@ function cleanJob(root) {
   next(root);
   F.sh(root, `git merge -q --no-ff -m m factory/${J}`);
   F.reply(root, `merged ${F.sh(root, 'git rev-parse HEAD')}`);
+  next(root); // a local merge: factory next asks for factory ci verify first
+  F.cli(root, ['ci', 'verify']);
   next(root);
   F.cli(root, ['distill', 'done']);
   next(root);
-  F.cli(root, ['ci', 'verify']);
   assert.equal(F.cli(root, ['close']).status, 'closed');
   return J;
 }
@@ -97,7 +98,9 @@ test('driver fidelity (R7): acting at a gate, and skipping what the router asked
   F.cli(root, ['plan', 'from-contract']); // acting while the human hasn't approved
   F.reply(root, 'approve');
   assert.equal(next(root).workflow, 'ground');
-  next(root); // asked for ground, ran nothing, asked again
+  next(root); // asked again with nothing tried: the same decision (factory next is a query)
+  F.cli(root, ['answer', '--question', 'Which Node versions?', '--answer', '18+']); // did something else instead of ground
+  next(root); // …and asked again: a new decision, so the ground decision was skipped
   inspect(root, ['run', '--job', J]);
   const fds = I.report(root).findings;
   const waiting = fds.find((x) => x.rule === 'R7.acted_while_waiting');

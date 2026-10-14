@@ -86,6 +86,83 @@ function repeatKey(ctx, action) {
   );
 }
 
+// The key a routing decision is remembered by (state.last_decision).
+function decisionKey(result) {
+  return `${result.action}:${result.step || ''}:${result.scope || ''}:${(result.gate && result.gate.hash) || ''}`;
+}
+
+// Commands that only look: running them is not an attempt at the step factory next chose.
+const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'doc', 'report', 'recipe', 'telemetry', 'finalize', 'use', 'shim', 'task:show', 'lessons:list', 'distill:context']);
+const REFUSED_RUN = new Set(['not_waiting_for_workflow', 'run_in_progress', 'copilot_unavailable', 'bad_input']); // nothing was tried
+
+// Was anything tried under the decision in force (a workflow ran, a record or step command
+// ran, an agent ran)? A `factory next` with nothing tried since is a re-query, not a repeat.
+function attemptedSince(root, state) {
+  const id = state.last_decision_id;
+  if (!id) return true;
+  let lines;
+  try {
+    lines = require('fs').readFileSync(require('path').join(root, '.factory', 'log', 'events.jsonl'), 'utf8').split('\n');
+  } catch {
+    return true; // no log: be conservative and count it
+  }
+  for (const l of lines) {
+    if (!l || !l.includes(id)) continue;
+    let e;
+    try {
+      e = JSON.parse(l);
+    } catch {
+      continue;
+    }
+    if (e.decision_id !== id) continue;
+    if (e.event === 'agent_run') {
+      if (e.code === 'copilot_unavailable') continue; // Copilot could not start: nothing was tried
+      return true;
+    }
+    if (e.event !== 'cli') continue;
+    if (LOOKS.has(e.cmd) || LOOKS.has(`${e.cmd}:${e.sub}`)) continue;
+    if (e.cmd === 'run' && REFUSED_RUN.has(e.code)) continue;
+    if (e.cmd === 'wfargs' && e.via === 'run') continue; // a run that started counts by its agents and its record
+    return true;
+  }
+  return false;
+}
+
+// After "deny" at a gate, the step that produced the document runs again (with the reason
+// in its brief) instead of the unchanged document being presented again. Once that step
+// has run since the denial, the gate is shown even if the document came out the same.
+const PRODUCER = { H1: 'clarify', EH1: 'clarify', H2: 'decide', EH2: 'decide', HF: 'decide', H3: 'decompose', EH3: 'decompose' };
+
+function deniedReroute(ctx, gate) {
+  const { root, state } = ctx;
+  const from = PRODUCER[gate];
+  const producer = from && ctx.recipe.steps.find((s) => s.step === from);
+  if (!producer || producer.run.startsWith('cli:')) return null;
+  const hash = steps.gateHash(ctx, gate);
+  if (!hash) return null;
+  const denied = (state.denials || []).filter((d) => d.gate === gate && d.hash === hash).pop();
+  if (!denied) return null;
+  if (ledger.steps(root, state.id, from).some((e) => e.at > denied.at)) return null;
+  const why = denied.reason ? `: "${denied.reason}"` : '';
+  const how = producer.run.startsWith('skill:')
+    ? `Revise the ${from === 'clarify' ? 'contract' : 'document'} to address it, then run the ${from} step again.`
+    : `factory run ${producer.run.slice(9)}${producer.config ? ` --config ${producer.config}` : ''} redoes it; the reason is in its brief.`;
+  return { ...stepAction(ctx, producer), denied: { gate, reason: denied.reason || '', at: denied.at }, reason: `You denied ${gate}${why}. ${how}` };
+}
+
+// After a local merge the CI re-verify floor is still owed: route `factory ci verify`
+// before distill/close instead of letting close fail on it.
+function localReverify(ctx, s) {
+  const { state, recipe } = ctx;
+  const iH4 = recipe.steps.findIndex((x) => x.step === 'H4');
+  if (iH4 < 0 || recipe.steps.indexOf(s) <= iH4) return null;
+  if (!state.pr || !state.pr.merged || state.pr.mode === 'github') return null;
+  const fl = require('./floors').evaluate(ctx, 'full');
+  if (!fl.results.some((r) => r.floor === 'ci_reverify' && !r.ok)) return null;
+  // Part of finishing the merge step (H4); unlike a PR sync it counts toward the repeat guard.
+  return { step: 'H4', run: 'cli:ci verify', action: 'cli', command: `factory ci verify --job ${state.id}`, reason: 'Local merge recorded: re-verify the merge result (the CI re-verify floor).' };
+}
+
 // The chat reply the prompt hook last applied or refused (.factory/last-reply.json), shown
 // in `factory next` while no routing decision has been made since: Copilot may drop the
 // hook's own message (docs/research/hooks.md §5.3).
@@ -208,8 +285,17 @@ function route(root, jobId) {
     default: {
       const s = ctx.recipe.steps.find((x) => !steps.isDone(ctx, x));
       if (!s) return record(root, state, al, out({ action: 'done', reason: 'Every step is done.', rule: 'order.complete' }));
-      action = stepAction(ctx, s);
-      rule = 'order.next_step';
+      const ci = localReverify(ctx, s);
+      action = ci || stepAction(ctx, s);
+      rule = ci ? 'order.ci_reverify' : 'order.next_step';
+    }
+  }
+
+  if (action.action === 'gate') {
+    const re = deniedReroute(ctx, action.step);
+    if (re) {
+      action = re;
+      rule = 'gate.denied_revise';
     }
   }
 
@@ -255,9 +341,13 @@ function route(root, jobId) {
   }
 
   // Repeat guard: the same step from the same state twice in a row means no progress.
-  if (!['gate', 'wait'].includes(action.action) && action.step !== 'H4') {
+  if (!['gate', 'wait'].includes(action.action) && (action.step !== 'H4' || action.run === 'cli:ci verify')) {
     const key = repeatKey(ctx, action);
     state = job.load(root, state.id);
+    if (state.repeat && state.repeat.key === key && state.last_decision === decisionKey(action) && state.last_decision_id && !attemptedSince(root, state)) {
+      // Asked again with nothing tried and nothing changed: the same decision, not a new one.
+      return out({ ...action, rule, alignment: al.vector, first_failing: al.first_failing, decision_id: state.last_decision_id, requery: true });
+    }
     if (state.repeat && state.repeat.key === key) state.repeat.count += 1;
     else state.repeat = { key, count: 1 };
     if (state.repeat.count > L.repeat_guard) {
@@ -271,7 +361,7 @@ function route(root, jobId) {
 }
 
 function record(root, state, al, result) {
-  const key = `${result.action}:${result.step || ''}:${result.scope || ''}:${(result.gate && result.gate.hash) || ''}`;
+  const key = decisionKey(result);
   const fresh = job.load(root, state.id);
   const isRepeatWait = ['gate', 'wait', 'parked'].includes(result.action) && fresh.last_decision === key;
   if (!isRepeatWait) {

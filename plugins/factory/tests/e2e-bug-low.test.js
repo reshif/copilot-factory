@@ -153,7 +153,17 @@ test('bug@low: request to closed job, with a fix round and a local merge', () =>
   const sha = F.sh(root, 'git rev-parse HEAD');
   assert.match(F.reply(root, `merged ${sha}`).message, /Recorded merge/);
 
-  // distill, then close needs the CI re-verify floor
+  // a local merge still owes the CI re-verify floor: the router asks for it before distill
+  n = next(root);
+  assert.equal(n.action, 'cli');
+  assert.equal(n.command, `factory ci verify --job ${J}`);
+  assert.equal(n.rule, 'order.ci_reverify');
+  assert.equal(n.step, 'H4');
+  const blocked = F.cli(root, ['close']);
+  assert.equal(blocked.error, true);
+  assert.match(blocked.message, /ci_reverify/);
+  const ci = F.cli(root, ['ci', 'verify', '--job', J]);
+  assert.equal(ci.ok, true, JSON.stringify(ci));
   n = next(root);
   assert.equal(n.skill, 'distill');
   const dc = F.cli(root, ['distill', 'context']);
@@ -162,11 +172,6 @@ test('bug@low: request to closed job, with a fix round and a local merge', () =>
   F.cli(root, ['distill', 'done']);
   n = next(root);
   assert.match(n.command, /close/);
-  const blocked = F.cli(root, ['close']);
-  assert.equal(blocked.error, true);
-  assert.match(blocked.message, /ci_reverify/);
-  const ci = F.cli(root, ['ci', 'verify']);
-  assert.equal(ci.ok, true, JSON.stringify(ci));
   const closed = F.cli(root, ['close']);
   assert.equal(closed.status, 'closed', JSON.stringify(closed));
   n = next(root);
