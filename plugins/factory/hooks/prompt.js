@@ -7,10 +7,12 @@
 // Copilot may drop this hook's output: the reference says command-hook output is dropped,
 // the changelog (1.0.65) says additionalContext reaches the model (hooks.md §5.3). So the
 // outcome is ALSO written to .factory/last-reply.json, which `factory next` shows until the
-// next routing decision. A new prompt from the human also starts a new turn: the stop gate's
-// block counter is reset here. Not for continuation prompts: Copilot feeds every stop-gate
-// block reason back as a prompt, and Autopilot sends its own continuation text — resetting
-// on those meant the gate's cap of 3 never triggered (only Copilot's own limit of 8 did).
+// next routing decision. A new prompt from the human also starts a new turn: it is stamped in
+// .factory/turn.json ({ at, factory }) so the stop gate can tell factory work (/factory:…,
+// a factory reply) from a turn that only answers the user. Continuation prompts (stop-gate
+// block reasons Copilot feeds back, Autopilot's own text) are not a new turn: no stamp.
+// The stop gate's record of decisions it already blocked (.factory/stop-blocks.json) is
+// never reset here: it blocks at most once per routing decision, across turns.
 // In an agent process `factory run` started there is no human and no stop gate: nothing to do.
 
 const fs = require('fs');
@@ -27,19 +29,28 @@ function writeLastReply(root, rec) {
   }
 }
 
+// The human asked for factory work: a factory slash command or skill (/factory:start,
+// /factory:gate, "use the factory:start skill"), or `factory …` typed as a command.
+function isFactoryPrompt(prompt) {
+  const p = String(prompt || '').trim();
+  return /^\/factory[:\s-]/i.test(p) || /(^|\s)factory:(start|gate|ship|review|park|amend|clarify|intake|why|distill|console)\b/i.test(p) || /^factory\s+\w/i.test(p);
+}
+
+function writeTurn(root, rec) {
+  try {
+    fs.writeFileSync(path.join(root, '.factory', 'turn.json'), JSON.stringify(rec) + '\n');
+  } catch {
+    /* best effort: without it the stop gate treats the turn as not factory work */
+  }
+}
+
 safe((input) => {
   if (runnerAgent() || isContinuation(input.prompt)) return;
   const root0 = findRoot(input.cwd);
-  if (root0) {
-    try {
-      fs.rmSync(path.join(root0, '.factory', 'stop-blocks.json'), { force: true });
-    } catch {
-      /* best effort */
-    }
-  }
   const human = require('../cli/core/human');
   const parsed = human.parseReply(input.prompt);
   const miss = parsed ? null : human.nearMiss(input.prompt);
+  if (root0) writeTurn(root0, { at: new Date().toISOString(), session: input.sessionId || null, factory: Boolean(parsed || isFactoryPrompt(input.prompt)) });
   if (!parsed && !miss) return;
   const root = root0;
   if (!root) return;

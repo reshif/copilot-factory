@@ -1,34 +1,30 @@
 'use strict';
-// agentStop gate: the agent may not end its turn while an active change job owes floors
-// and nothing is waiting on the human.
-//
-// Copilot's agentStop payload carries no last assistant message (only transcriptPath,
-// stopReason, stop_hook_active; docs/research/hooks.md §4, §8 row 7), so the Claude-era
-// "done claim" check can't be the trigger. The rule is now (DESIGN-COPILOT "Stop gate"):
-// block when a job the session is on is `active`, not waiting on the human — no pending
-// gate, not parked, no unanswered clarify/ground questions, no "ask the user" record
-// result since the last `factory next`, last `factory next` action not wait/done/gate/
-// parked — and its floors (before_ship, or full once merged) are unmet.
-//
-// Best effort only: if a last message is available (a Claude-shaped payload, or a readable
-// JSONL transcript), a closing question to the user counts as waiting, and a "done" claim
-// sharpens the reason and adds the jobs it names. Never required. A "done" claim is also
-// blocked while the job waits on the human (a pending gate, a park, open questions) and
-// its floors are unmet — unless the message itself says what is pending (names the gate,
-// asks for the reply, says it is waiting): the agent is told to say it is waiting, not done.
-//
-// Runaway guard: Copilot ends the turn after 8 consecutive blocks (CL 1.0.72). We stop at
-// 3 in a row (.factory/stop-blocks.json), log stop_block_cap, and let the turn end. The
-// counter restarts when stop_hook_active is false (a fresh stop, not a continuation), on
-// every prompt from the human (prompt.js; not the block reasons Copilot feeds back as
-// prompts), and after 30 minutes.
+// agentStop gate: a nudge, not a wall. It blocks the end of a turn AT MOST ONCE per routing
+// decision, and only when it is sure the agent abandoned the step `factory next` gave it:
+//   - the job is active, a change job, and its floors (before_ship, or full once merged) are unmet;
+//   - the router assigned the agent a step (state.last_decision_id) and its last action is
+//     not wait / gate / parked / done / questions, and nothing is waiting on the human
+//     (pending gate, park, unanswered clarify/ground questions, a "needs the user" record);
+//   - no `factory run` is in progress for the job (a live run.lock);
+//   - nothing was attempted under that decision (any cli / wfargs / record / run / agent event
+//     carrying its decision_id counts: the agent is on it, or it failed in a way it reports);
+//   - this turn is factory work: the human's prompt was /factory:… or a factory reply, or a
+//     factory command ran during the turn (prompt.js stamps .factory/turn.json). A turn that
+//     only answered the user about something else is never blocked;
+//   - the turn's last message does not ask the user something (best effort only: Copilot's
+//     agentStop payload carries no message and the transcript is often not flushed yet);
+//   - the gate has not already blocked this decision (.factory/stop-blocks.json keeps the
+//     decision ids it blocked, across turns and continuations).
+// When unsure, it allows. Every block is logged as stop_block (the inspector and console read it).
 
 const fs = require('fs');
 const path = require('path');
 const { safe, emit, findRoot, STOP_MARK } = require('./lib');
 
-const MAX_BLOCKS = 3;
-const COUNTER_TTL_MS = 30 * 60 * 1000;
+const MAX_BLOCKS = 1; // per routing decision
+const WAIT_ACTIONS = new Set(['wait', 'gate', 'parked', 'done', 'questions']);
+// Commands that only look: running them is not an attempt at the assigned step.
+const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'doc', 'report', 'recipe', 'telemetry', 'use', 'shim']);
 
 const THING = '(?:job|feature|fix|bug ?fix|change|changes|work|implementation|task|pr|pull request|refactor|patch|migration|update)';
 const CLAIM = new RegExp([
@@ -55,10 +51,23 @@ function claims(msg) {
     });
 }
 
-// The turn ends on a question to the user: the agent is legitimately waiting.
+// The turn ends by asking the user something: the agent is legitimately waiting. Looks at
+// the last paragraph (markdown and trailing emoji stripped) for a question mark or a phrase
+// that hands the turn to the user.
+const ASK = /\?|\b(let me know|reply|respond|answer (?:the|these|this|my)|tell me|please (?:confirm|choose|pick|decide|review|approve|answer)|confirm (?:whether|that|if|which)|would you like|do you want|want me to|should i|shall i|which (?:one|option|do you)|your (?:call|decision|choice|go-ahead|answer|approval|input|review)|waiting (?:for|on) (?:you|your)|awaiting your|once you (?:approve|reply|confirm|decide)|approve or deny|approve\b.*\bdeny|\[y\/n\]|\(y\/n\)|y\/n)\b/i;
+
 function asksUser(msg) {
-  const lines = String(msg || '').trim().split(/\n+/).map((l) => l.trim()).filter(Boolean);
-  return lines.length > 0 && /\?\s*[*_`)"']*\s*$/.test(lines[lines.length - 1]);
+  const text = String(msg || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/[*_`>#]+/g, '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '')
+    .trim();
+  if (!text) return false;
+  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const last = paras[paras.length - 1] || '';
+  const lines = last.split('\n').map((l) => l.trim()).filter(Boolean);
+  const tail = lines.slice(-3).join('\n');
+  return ASK.test(tail);
 }
 
 // Text of an assistant entry in whatever JSONL shape the transcript uses (undocumented and
@@ -74,6 +83,15 @@ function textOf(e) {
   return null;
 }
 
+function isUserEntry(e) {
+  if (!e || typeof e !== 'object') return false;
+  const type = String(e.type || e.kind || '');
+  const role = String(e.role || (e.message && e.message.role) || '');
+  return type === 'user.message' || type === 'user' || role === 'user';
+}
+
+// The last assistant message of the CURRENT turn: an assistant entry after the last user
+// entry. null when the transcript has none yet (not flushed) or can't be read.
 function lastAssistantText(file) {
   try {
     if (!file) return null;
@@ -93,6 +111,7 @@ function lastAssistantText(file) {
       } catch {
         continue;
       }
+      if (isUserEntry(e)) return null; // the user spoke last: this turn's message isn't written yet
       const t = textOf(e);
       if (t && t.trim()) return t;
     }
@@ -102,50 +121,82 @@ function lastAssistantText(file) {
   return null;
 }
 
-// The message already tells the user what the job waits for: it names a gate or the reply
-// to send, or says it is waiting / parked. Then a "done" in it (e.g. "the contract is ready
-// for review") is not a false claim.
-function mentionsWait(msg, state) {
-  const m = String(msg || '');
-  if (state.pending_gate && new RegExp(`\\b${state.pending_gate.id}\\b`).test(m)) return true;
-  return /\b(?:approve|approval|deny|resume|reply|replies|waiting|waits|awaiting|parked|your (?:answer|decision|review|go-ahead|ok))\b/i.test(m);
+// Waits briefly for the current turn's message (Copilot may not have flushed it when the
+// first agentStop hook runs). Only called when the gate is about to block.
+function currentMessage(input, waitMs = 600) {
+  if (input.lastMessage) return input.lastMessage;
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const m = lastAssistantText(input.transcriptPath);
+    if (m || Date.now() >= until || !input.transcriptPath) return m;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
 }
 
-// Tail of the event log: the last `factory record` and `factory next` for a job.
-function lastCli(root, jobId) {
-  const out = { record: null, next: null };
+function readLog(root) {
   try {
     const f = path.join(root, '.factory', 'log', 'events.jsonl');
     const st = fs.statSync(f);
-    const len = Math.min(st.size, 512 * 1024);
+    const len = Math.min(st.size, 2 * 1024 * 1024);
     const fd = fs.openSync(f, 'r');
     const buf = Buffer.alloc(len);
     fs.readSync(fd, buf, 0, len, st.size - len);
     fs.closeSync(fd);
-    const lines = buf.toString('utf8').split('\n');
-    for (let i = lines.length - 1; i >= 0 && !(out.record && out.next); i--) {
-      let e;
+    const out = [];
+    for (const l of buf.toString('utf8').split('\n')) {
+      if (!l) continue;
       try {
-        e = JSON.parse(lines[i]);
+        out.push(JSON.parse(l));
       } catch {
-        continue;
+        /* a cut first line or a bad one */
       }
-      if (e.event !== 'cli' || e.job !== jobId) continue;
-      if (e.cmd === 'record' && !out.record) out.record = { ...e, i };
-      if (e.cmd === 'next' && !out.next) out.next = { ...e, i };
     }
+    return out;
   } catch {
-    /* no log yet */
+    return [];
+  }
+}
+
+// Tail of the event log: the last `factory record` and `factory next` for a job.
+function lastCli(log, jobId) {
+  const out = { record: null, next: null };
+  for (let i = log.length - 1; i >= 0 && !(out.record && out.next); i--) {
+    const e = log[i];
+    if (e.event !== 'cli' || e.job !== jobId) continue;
+    if (e.cmd === 'record' && !out.record) out.record = { ...e, i };
+    if (e.cmd === 'next' && !out.next) out.next = { ...e, i };
   }
   return out;
 }
 
-// Why the agent is legitimately waiting on the human, or null.
-function waitingOnHuman(root, state) {
+// Was the assigned step attempted? Any cli / wfargs / record / run / agent event under the
+// decision counts (a refused or failed attempt included: the agent reports those itself).
+function attempted(log, decisionId) {
+  return log.some((e) => e.decision_id === decisionId && (e.event === 'agent_run' || (e.event === 'cli' && !LOOKS.has(e.cmd))));
+}
+
+// Did a factory command run during this turn (since the human's prompt)?
+function factoryRanSince(log, at) {
+  const t0 = Date.parse(at || '');
+  if (!Number.isFinite(t0)) return false;
+  return log.some((e) => (e.event === 'cli' || e.event === 'agent_run') && Date.parse(e.ts) >= t0);
+}
+
+function runInProgress(root, id) {
+  try {
+    const lock = JSON.parse(fs.readFileSync(path.join(root, '.factory', 'jobs', id, 'run.lock'), 'utf8'));
+    return require('../cli/core/runner').lockAlive(lock);
+  } catch {
+    return false;
+  }
+}
+
+// Why the agent is legitimately waiting on the human (or on a run), or null.
+function waitingOnHuman(root, state, log = readLog(root)) {
   if (state.status !== 'active') return `job is ${state.status}`;
   if (state.pending_gate) return `waiting at ${state.pending_gate.id}`;
   const lastAction = String(state.last_decision || '').split(':')[0];
-  if (['wait', 'done', 'gate', 'parked'].includes(lastAction)) return `last factory next said ${lastAction}`;
+  if (WAIT_ACTIONS.has(lastAction)) return `last factory next said ${lastAction}`;
   const { readJson } = require('../cli/lib/util');
   const { jobPaths } = require('../cli/lib/paths');
   const ledger = require('../cli/core/ledger');
@@ -158,101 +209,101 @@ function waitingOnHuman(root, state) {
   const ground = ledger.lastStep(root, state.id, 'ground');
   const blocking = ground && !ground.ok && ground.detail ? (ground.detail.blocking || []).filter((q) => !answeredQs.has(q)) : [];
   if (blocking.length) return `${blocking.length} blocking question(s) from ground unanswered`;
-  const cli = lastCli(root, state.id);
+  const cli = lastCli(log, state.id);
   if (cli.record && ['needs_user', 'degraded', 'park'].includes(cli.record.status) && (!cli.next || cli.next.i < cli.record.i)) return `last factory record asked for the user (${cli.record.status})`;
   return null;
 }
 
-function counterFile(root) {
+// .factory/stop-blocks.json: { blocked: [decision ids the gate already blocked] }.
+function blocksFile(root) {
   return path.join(root, '.factory', 'stop-blocks.json');
 }
 
-function readCounter(root) {
+function readBlocked(root) {
   try {
-    const c = JSON.parse(fs.readFileSync(counterFile(root), 'utf8'));
-    if (!(Date.now() - Date.parse(c.at) < COUNTER_TTL_MS)) return 0;
-    return Number(c.count) || 0;
+    const c = JSON.parse(fs.readFileSync(blocksFile(root), 'utf8'));
+    return new Set(Array.isArray(c.blocked) ? c.blocked : []);
   } catch {
-    return 0;
+    return new Set();
   }
 }
 
-function writeCounter(root, count) {
+function writeBlocked(root, set) {
   try {
-    if (!count) fs.rmSync(counterFile(root), { force: true });
-    else fs.writeFileSync(counterFile(root), JSON.stringify({ count, at: new Date().toISOString() }) + '\n');
+    fs.writeFileSync(blocksFile(root), JSON.stringify({ blocked: [...set].slice(-200), at: new Date().toISOString() }) + '\n');
   } catch {
     /* best effort */
   }
 }
 
-if (require.main === module) safe((input) => {
-  // Agents started by `factory run` are their own sessions; their result goes through factory record, not this gate.
-  if (process.env.FACTORY_RUNNER === '1') return;
-  const cwd = input.cwd;
-  const root = findRoot(cwd);
-  if (!root) return;
-  const msg = input.lastMessage || lastAssistantText(input.transcriptPath) || '';
-  const claimed = claims(msg);
-  let count = input.stopHookActive === false ? 0 : readCounter(root);
+// prompt.js: what started this turn. { at, factory: bool } or null.
+function readTurn(root) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, '.factory', 'turn.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// Decides; returns { block: false, why } or { block: true, owed: [...], claimed }.
+function decide(input, root) {
   const job = require('../cli/core/job');
+  const steps = require('../cli/core/steps');
+  const floors = require('../cli/core/floors');
+  const cwd = input.cwd;
+  const log = readLog(root);
+  // Is this turn factory work at all?
+  const turn = readTurn(root);
+  const factoryTurn = Boolean(turn && turn.factory) || factoryRanSince(log, turn && turn.at);
+  if (!factoryTurn) return { block: false, why: 'not a factory turn' };
   const ids = new Set();
   const cur = job.current(root);
   if (cur) ids.add(cur);
   const wt = cwd.match(/\.factory[\\/]worktrees[\\/](J-\d+)/);
   if (wt) ids.add(wt[1]);
-  const named = new Set(claimed ? [...msg.matchAll(/\bJ-\d{4,}\b/g)].map((m) => m[0]) : []);
-  for (const id of named) ids.add(id);
-  const steps = require('../cli/core/steps');
-  const floors = require('../cli/core/floors');
-  const events = require('../cli/core/events');
+  const blockedBefore = readBlocked(root);
   const owed = [];
-  const falseDone = []; // "done" claimed while the job waits on the human
   for (const id of ids) {
     let state;
     try {
       state = job.load(root, id);
     } catch {
-      continue; // named but not a job here
-    }
-    if (!state || !['active', 'parked'].includes(state.status)) continue;
-    const ctx = steps.context(root, state, job.load);
-    if (ctx.recipe.outcome !== 'change') continue;
-    // Merging is the human's step: before it, only pre-ship floors can be owed by the agent.
-    const r = floors.evaluate(ctx, state.pr && state.pr.merged ? 'full' : 'before_ship');
-    if (r.ok) continue;
-    const waiting = waitingOnHuman(root, state);
-    if (waiting) {
-      // A claim that names jobs is about those jobs only.
-      if (claimed && !mentionsWait(msg, state) && (!named.size || named.has(id))) falseDone.push({ state, missing: r.missing, waiting });
       continue;
     }
+    if (!state || state.status !== 'active' || !state.last_decision_id) continue;
+    if (blockedBefore.has(state.last_decision_id)) continue; // at most once per decision
+    const ctx = steps.context(root, state, job.load);
+    if (ctx.recipe.outcome !== 'change') continue;
+    const r = floors.evaluate(ctx, state.pr && state.pr.merged ? 'full' : 'before_ship');
+    if (r.ok) continue;
+    if (waitingOnHuman(root, state, log)) continue;
+    if (runInProgress(root, id)) continue;
+    if (attempted(log, state.last_decision_id)) continue;
     owed.push({ state, missing: r.missing });
   }
-  // Ending on a question to the user is waiting too — unless it claims done.
-  if ((!owed.length && !falseDone.length) || (!claimed && asksUser(msg))) {
-    writeCounter(root, 0);
-    return;
-  }
-  const all = [...owed, ...falseDone];
-  if (count >= MAX_BLOCKS) {
-    for (const o of all) events.append(root, { event: 'stop_block_cap', job: o.state.id, missing: o.missing, blocks: count, decision_id: o.state.last_decision_id || null });
-    writeCounter(root, 0);
-    return;
-  }
-  count += 1;
-  writeCounter(root, count);
-  for (const o of all) events.append(root, { event: 'stop_block', job: o.state.id, missing: o.missing, claimed, blocks: count, decision_id: o.state.last_decision_id || null, ...(o.waiting ? { waiting: o.waiting } : {}) });
-  const parts = [];
-  if (owed.length) {
-    const list = owed.map((o) => `${o.state.id} (${o.missing.join(', ')})`).join('; ');
-    parts.push(`${claimed ? 'Not done' : 'Not finished'}: floors not met for ${list}, and nothing is waiting on the user. Run \`factory next\` (or the factory command from session start) and keep going. If you truly need the user, ask them one clear question and end your turn with it.`);
-  }
-  for (const o of falseDone) {
-    const waitFor = o.state.status === 'parked' ? 'them to reply "resume"' : o.state.pending_gate ? `${o.state.pending_gate.id} (their reply, e.g. "approve" or "deny <what must change>")` : 'their answer';
-    parts.push(`Not done: ${o.state.id} is not finished (floors not met: ${o.missing.join(', ')}) and is waiting on the user (${o.waiting}). Do not say it is done: tell the user it's waiting for ${waitFor}, then end your turn.`);
-  }
-  emit({ decision: 'block', reason: `${STOP_MARK} ${parts.join(' ')}` });
+  if (!owed.length) return { block: false, why: 'nothing owed' };
+  const msg = currentMessage(input) || '';
+  if (asksUser(msg)) return { block: false, why: 'asks the user' };
+  return { block: true, owed, claimed: claims(msg) };
+}
+
+if (require.main === module) safe((input) => {
+  // Agents started by `factory run` are their own sessions; their result goes through factory record, not this gate.
+  if (process.env.FACTORY_RUNNER === '1') return;
+  const root = findRoot(input.cwd);
+  if (!root) return;
+  const d = decide(input, root);
+  if (!d.block) return;
+  const events = require('../cli/core/events');
+  const blocked = readBlocked(root);
+  for (const o of d.owed) blocked.add(o.state.last_decision_id);
+  writeBlocked(root, blocked);
+  for (const o of d.owed) events.append(root, { event: 'stop_block', job: o.state.id, missing: o.missing, claimed: d.claimed, blocks: 1, decision_id: o.state.last_decision_id || null, step: String(o.state.last_decision || '').split(':').slice(0, 2).join(':') || null });
+  const list = d.owed.map((o) => {
+    const [action, step] = String(o.state.last_decision || '').split(':');
+    return `${o.state.id}: factory next asked for ${step || action || 'a step'} and it hasn't been started (floors not met: ${o.missing.join(', ')})`;
+  }).join('; ');
+  emit({ decision: 'block', reason: `${STOP_MARK} ${d.claimed ? 'Not done' : 'Not finished'} — ${list}. Do that step now (run \`factory next\` to see it), or if you need the user, ask them one clear question and end your turn. This reminder is shown once.` });
 });
 
-module.exports = { claims, asksUser, mentionsWait, lastAssistantText, waitingOnHuman, MAX_BLOCKS };
+module.exports = { claims, asksUser, lastAssistantText, waitingOnHuman, decide, MAX_BLOCKS };

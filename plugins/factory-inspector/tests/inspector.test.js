@@ -15,6 +15,14 @@ const { check: guardCheck } = require('../hooks/guard-rules');
 const PLUGIN = path.resolve(__dirname, '..');
 const BIN = path.join(PLUGIN, 'bin', 'factory-inspect');
 const next = (root) => F.cli(root, ['next']);
+// Waits (up to 20 s) for a background catch-up inspection to finish.
+function waitFor(cond) {
+  const until = Date.now() + 20000;
+  while (!cond()) {
+    if (Date.now() > until) throw new Error('timed out waiting for the background inspection');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+}
 const inspect = (root, args) => JSON.parse(spawnSync('node', [BIN, ...args], { cwd: root, encoding: 'utf8' }).stdout);
 
 // A complete, well-behaved bug@low job: what Claude should do, step by step.
@@ -236,25 +244,32 @@ test('hooks: after-close reports, session start mentions open findings, replies 
   assert.match(ctx(run('prompt.js', { prompt: 'ack finding F1' }, 'userPromptSubmitted')), /Applied: Finding F1 marked acknowledged/);
   for (const input of [{ toolName: 'bash', toolArgs: { command: 'factory-inspect mark F1 fixed' } }, { toolName: 'bash', toolArgs: '{"command":"factory-inspect mark F1 fixed"}' }, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'factory-inspect mark F1 fixed' } }]) {
     const denied = run('guard.js', input, 'preToolUse');
-    assert.equal(denied.status, 2, 'exit 2 denies');
+    assert.equal(denied.status, 0, 'a deny is the documented JSON on stdout, exit 0');
     assert.equal(JSON.parse(denied.stdout).permissionDecision, 'deny');
-    assert.match(JSON.parse(denied.stdout).permissionDecisionReason, /\[inspector guard\]/);
-    assert.match(denied.stderr, /\[inspector guard\]/);
+    assert.match(JSON.parse(denied.stdout).permissionDecisionReason, /^\[inspector guard\]/);
+    assert.equal(denied.stderr, '');
   }
   const ok = run('guard.js', { toolName: 'bash', toolArgs: { command: 'factory-inspect report' } }, 'preToolUse');
   assert.deepEqual([ok.status, ok.stdout], [0, '']);
   assert.equal(spawnSync('node', [path.join(PLUGIN, 'hooks', 'guard.js'), 'preToolUse'], { input: 'garbage', encoding: 'utf8' }).status, 0);
-  // the inspector's hooks.json: native Copilot format, no matchers, plugin-root env var
-  const H = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'hooks', 'hooks.json'), 'utf8'));
+  // the inspector's hooks.json: at the plugin root, native Copilot format, no matchers,
+  // a named launcher (timeout warnings show 80 characters) that always exits 0
+  assert.ok(!fs.existsSync(path.join(PLUGIN, 'hooks', 'hooks.json')));
+  const H = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'hooks.json'), 'utf8'));
   assert.equal(H.version, 1);
   assert.deepEqual(Object.keys(H.hooks).sort(), ['agentStop', 'postToolUse', 'preToolUse', 'sessionStart', 'userPromptSubmitted']);
   for (const [ev, list] of Object.entries(H.hooks)) for (const h of list) {
     assert.equal(h.type, 'command');
     assert.equal(h.matcher, undefined);
-    assert.match(h.bash, /\$\{PLUGIN_ROOT:-\$\{COPILOT_PLUGIN_ROOT:-\$CLAUDE_PLUGIN_ROOT\}\}/);
-    assert.match(h.bash, new RegExp(` ${ev}$`));
-    assert.ok(h.powershell && h.timeoutSec > 0);
+    assert.match(h.bash, /^H=inspector:[\w-]+; R=\$PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$COPILOT_PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$CLAUDE_PLUGIN_ROOT;/);
+    assert.doesNotMatch(h.bash + h.powershell, /\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}|\$\{[^}]*\$\{/);
+    assert.match(h.bash, new RegExp(` ${ev} \\|\\| echo "\\[\\$H\\] hook failed \\(exit \\$\\?\\); allowed" >&2; exit 0$`));
+    assert.match(h.powershell, /^\$h='inspector:[\w-]+'; .*; exit 0$/);
+    assert.ok(h.timeoutSec > 0);
   }
+  assert.ok(H.hooks.agentStop[0].timeoutSec <= 15, 'the end-of-turn catch-up is cheap: no inspection in the hook itself');
+  const viaLauncher = spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'factory-inspect mark F1 fixed' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, PLUGIN_ROOT: PLUGIN } });
+  assert.deepEqual([viaLauncher.status, JSON.parse(viaLauncher.stdout).permissionDecision], [0, 'deny']);
 });
 
 test('observe reads camelCase hook events and Copilot tool names; agents pair by type when starts carry no id', () => {
@@ -401,9 +416,12 @@ test('hooks: a job that ends outside the agent\'s shell is caught at the end of 
   assert.equal(stop().stdout, '', 'an active job is not inspected');
   F.reply(root, 'cancel job'); // applied by the factory's prompt hook: no shell call, no postToolUse
   assert.deepEqual(I.pending(root), [J]);
+  const t0 = Date.now();
   const r = stop();
   assert.deepEqual([r.status, r.stdout], [0, ''], 'agentStop never blocks and shows nothing (only decision/reason are honoured there)');
-  assert.deepEqual(I.pending(root), [], 'but the job was inspected');
+  assert.ok(Date.now() - t0 < 5000, 'the hook itself only checks what is pending');
+  waitFor(() => I.pending(root).length === 0 && !fs.existsSync(path.join(root, '.factory', 'inspect', 'catch-up.lock')));
+  assert.deepEqual(I.pending(root), [], 'but the job was inspected (in the background)');
   assert.equal(stop().stdout, '', 'nothing pending: silent');
   // the catch-up line is shown at the next session start, once
   assert.match(JSON.parse(run('session-start.js', {}, 'sessionStart').stdout).additionalContext, new RegExp(`inspected ${J}`));
@@ -474,8 +492,9 @@ test('hooks in an agent `factory run` started do nothing; the guard keeps agents
   }
   assert.deepEqual(I.pending(root), [J], 'no inspection ran inside the agent');
   const g = (command) => run('guard.js', { toolName: 'bash', toolArgs: { command } }, 'preToolUse');
-  for (const c of ['factory-inspect run', 'factory-inspect health', `node ${BIN} run --job ${J}`]) assert.equal(g(c).status, 2, c);
-  assert.equal(g('factory-inspect report').status, 0);
+  const denies = (r) => r.status === 0 && r.stdout !== '' && JSON.parse(r.stdout).permissionDecision === 'deny';
+  for (const c of ['factory-inspect run', 'factory-inspect health', `node ${BIN} run --job ${J}`]) assert.ok(denies(g(c)), c);
+  assert.deepEqual([g('factory-inspect report').status, g('factory-inspect report').stdout], [0, '']);
   // indirection, for everyone
   for (const c of [`I=${BIN}; node $I mark F1 --to fixed`, `echo mode | xargs node ${BIN}`, 'eval "factory-inspect ma""rk F1"']) assert.ok(guardCheck(c), c);
   assert.equal(guardCheck('factory-inspect report --status open'), null);
@@ -489,9 +508,36 @@ test('hooks: a catch-up line reaches the model on the next prompt, not a session
   const J = F.cli(root, ['job', 'new', '--title', 'Never mind', '--type', 'bug', '--risk', 'low']).job;
   F.reply(root, 'cancel job');
   assert.equal(run('catch-up.js', { stop_hook_active: false }, 'agentStop').stdout, '');
+  waitFor(() => I.pending(root).length === 0 && !fs.existsSync(path.join(root, '.factory', 'inspect', 'catch-up.lock')));
   const ctx = JSON.parse(run('prompt.js', { prompt: 'what now?' }, 'userPromptSubmitted').stdout).additionalContext;
   assert.match(ctx, new RegExp(`inspected ${J}`));
   assert.match(ctx, /Tell the user in one line/);
   assert.equal(run('prompt.js', { prompt: 'and now?' }, 'userPromptSubmitted').stdout, '', 'reported once');
   assert.doesNotMatch(JSON.parse(run('session-start.js', {}, 'sessionStart').stdout).additionalContext, new RegExp(`inspected ${J}`));
+});
+
+test('guard regressions: redirects to /dev/null, prose and patterns are not inspector writes or calls', () => {
+  for (const c of [
+    'ls .factory/inspect/ 2>/dev/null',
+    "jq '.findings | length' .factory/inspect/register.json > /tmp/n.txt",
+    'grep -c open .factory/inspect/register.json 2>&1',
+    'cat .factory/inspect/register.json >&2',
+    'grep -n "factory-inspect mark" $(git ls-files \'*.md\')',
+    'git commit -m "docs: factory-inspect mode examples"',
+    "echo 'Run factory-inspect mark F3 --status fixed when done'",
+    'gh pr create --body "then run factory-inspect mode all off"',
+    'factory-inspect report --status open 2>/dev/null | head',
+  ]) assert.equal(guardCheck(c), null, c);
+  for (const c of [
+    'factory-inspect mark F1 fixed',
+    'echo x > .factory/inspect/register.json',
+    'jq . x.json | tee .factory/inspect/config.json',
+    'rm -f .factory/inspect/register.json',
+    'sed -i s/open/fixed/ .factory/inspect/register.json',
+    `bash -c "factory-inspect mode all off"`,
+    `env X=1 node ${BIN} mark F2 fixed`,
+    'X=$(which factory-inspect); $X mark F1 fixed',
+    'echo "$(factory-inspect mode all off)"',
+  ]) assert.ok(guardCheck(c), c);
+  assert.equal(require('../hooks/shell.js').parse.toString(), require('../../factory/hooks/shell.js').parse.toString(), 'the shell reader is an identical copy of the factory\'s');
 });

@@ -2,8 +2,7 @@
 // Inspector hook plumbing for the GitHub Copilot CLI. Same input normaliser as the
 // factory's hooks (its own copy: the inspector imports nothing from the factory), same
 // flat output shapes (docs/research/hooks.md §5): deny = stdout {permissionDecision:'deny',
-// permissionDecisionReason} + exit 2 with the reason on stderr; context = top-level
-// additionalContext.
+// permissionDecisionReason}, exit 0; context = top-level additionalContext.
 
 const fs = require('fs');
 const path = require('path');
@@ -203,7 +202,7 @@ function traceError(inp, e) {
 
 // Hooks never break a session: any failure means "do nothing" — and leaves a trace.
 // fn gets the normalised input; the event name comes from the payload or argv[2].
-// Exit 2 only after a deny; a crash exits 0 (a non-zero preToolUse exit denies in Copilot).
+// Always exits 0: a deny is the JSON on stdout; a crash fails open (a non-zero preToolUse exit denies in Copilot).
 function safe(fn) {
   let inp = { cwd: process.cwd(), event: process.argv[2] || null };
   try {
@@ -213,21 +212,29 @@ function safe(fn) {
     if (process.env.FACTORY_HOOK_DEBUG) process.stderr.write(`inspector hook error: ${e.stack}\n`);
     traceError(inp, e);
   }
-  process.exit(process.exitCode === 2 ? 2 : 0);
+  process.exit(0);
 }
 
+// One JSON object on stdout, written synchronously (process.exit right after an async pipe
+// write could cut it short; output that doesn't parse is ignored by Copilot).
 function emit(obj) {
-  process.stdout.write(JSON.stringify(obj));
+  try {
+    fs.writeSync(1, JSON.stringify(obj));
+  } catch {
+    process.stdout.write(JSON.stringify(obj));
+  }
 }
 
 function context(text) {
   if (text) emit({ additionalContext: text });
 }
 
+// preToolUse deny, the documented way: {permissionDecision:'deny', permissionDecisionReason}
+// on stdout and exit 0 (Copilot CLI hooks reference; verified on CLI 1.0.97: the tool is
+// denied and the reason reaches the model). No exit 2 and nothing on stderr: exit 2 is the
+// CLI's warning channel and showed every deny as a hook error.
 function deny(reason) {
   emit({ permissionDecision: 'deny', permissionDecisionReason: reason });
-  process.stderr.write(`${reason}\n`);
-  process.exitCode = 2;
 }
 
 // Inside an agent process `factory run` started (FACTORY_RUNNER=1): the inspector's hooks

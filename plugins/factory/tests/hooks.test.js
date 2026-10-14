@@ -2,7 +2,8 @@
 // The hooks under the GitHub Copilot CLI: payloads in both casings (camelCase toolName/
 // toolArgs as a JSON string or object; PascalCase tool_name/tool_input), runtime tool names
 // (bash, view, create, edit, str_replace_editor, apply_patch, grep, glob), path vs
-// file_path, the flat output shapes and exit codes, the stop gate and the last-reply file.
+// file_path, the flat output shapes and exit codes (a deny is JSON on stdout, exit 0), the
+// stop gate (at most one block per routing decision) and the last-reply file.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -15,7 +16,7 @@ const lib = require('../hooks/lib');
 const hook = (name, input, event) => spawnSync('node', [path.join(F.PLUGIN, 'hooks', name), ...(event ? [event] : [])], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' });
 const events = (root) => fs.readFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const guard = (input) => hook('guard.js', input, 'preToolUse');
-const isDeny = (r) => r.status === 2 && JSON.parse(r.stdout).permissionDecision === 'deny' && /\[factory guard\]/.test(r.stderr);
+const isDeny = (r) => r.status === 0 && r.stdout !== '' && JSON.parse(r.stdout).permissionDecision === 'deny' && /^\[factory guard\]/.test(JSON.parse(r.stdout).permissionDecisionReason) && r.stderr === '';
 const isAllow = (r) => r.status === 0 && r.stdout === '';
 
 test('normaliser: both casings, runtime tool names, path fields, apply_patch bodies', () => {
@@ -47,7 +48,7 @@ test('normaliser: both casings, runtime tool names, path fields, apply_patch bod
   assert.equal(lib.normalise({}, 'agentStop').stopHookActive, undefined);
 });
 
-test('guard: Copilot deny = flat JSON on stdout + exit 2 + reason on stderr, both casings', () => {
+test('guard: Copilot deny = the documented flat JSON on stdout, exit 0, nothing on stderr; both casings', () => {
   const root = F.makeRepo();
   assert.ok(isDeny(guard({ toolName: 'bash', toolArgs: JSON.stringify({ command: 'git push --force' }), cwd: root })));
   assert.ok(isDeny(guard({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root })));
@@ -93,18 +94,28 @@ test('guard: reads through view / str_replace_editor view / grep / glob get the 
   assert.ok(isAllow(guard({ toolName: 'view', toolArgs: { path: '.env.example' }, cwd: root })));
 });
 
-test('hooks.json: native Copilot format, every event, plugin-root env var, no matchers', () => {
-  const H = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'hooks', 'hooks.json'), 'utf8'));
+test('hooks.json: at the plugin root, native Copilot format, named launchers that always exit 0', () => {
+  assert.ok(!fs.existsSync(path.join(F.PLUGIN, 'hooks', 'hooks.json')), 'one hooks file only: the plugin root one (VS Code reads only that for Copilot-format plugins)');
+  const H = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'hooks.json'), 'utf8'));
   assert.equal(H.version, 1);
   assert.deepEqual(Object.keys(H.hooks).sort(), ['agentStop', 'postToolUse', 'preToolUse', 'sessionStart', 'subagentStart', 'subagentStop', 'userPromptSubmitted']);
+  const ids = new Set();
   for (const [ev, list] of Object.entries(H.hooks)) {
     for (const h of list) {
       assert.equal(h.type, 'command');
       assert.equal(h.matcher, undefined, ev);
       assert.ok(h.timeoutSec > 0 && h.timeoutSec <= 30, ev);
-      assert.match(h.bash, /\$\{PLUGIN_ROOT:-\$\{COPILOT_PLUGIN_ROOT:-\$CLAUDE_PLUGIN_ROOT\}\}/);
-      assert.match(h.bash, new RegExp(`\\.js" ${ev}$`), 'passes the event name: camelCase payloads carry none');
-      assert.match(h.powershell, /\$env:PLUGIN_ROOT/);
+      // a short, distinct name first: Copilot's timeout warning shows only the first 80 characters
+      const id = h.bash.match(/^H=(factory:[\w-]+); /)[1];
+      assert.ok(!ids.has(id), id);
+      ids.add(id);
+      assert.ok(h.powershell.startsWith(`$h='${id}'; `), ev);
+      // flat root lookup: no nested ${…:-${…}} and no ${PLUGIN_ROOT} / ${CLAUDE_PLUGIN_ROOT} token VS Code would rewrite
+      assert.match(h.bash, /R=\$PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$COPILOT_PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$CLAUDE_PLUGIN_ROOT;/);
+      assert.doesNotMatch(h.bash + h.powershell, /\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}|\$\{[^}]*\$\{/);
+      assert.match(h.bash, new RegExp(`\\.js" ${ev} \\|\\| echo "\\[\\$H\\] hook failed \\(exit \\$\\?\\); allowed" >&2; exit 0$`), 'node, then exit 0 whatever happened');
+      assert.match(h.powershell, /; exit 0$/);
+      assert.doesNotMatch(h.bash, /\bexec node\b/);
       const script = h.bash.match(/hooks\/([\w-]+\.js)/)[1];
       assert.ok(fs.existsSync(path.join(F.PLUGIN, 'hooks', script)), script);
     }
@@ -112,10 +123,25 @@ test('hooks.json: native Copilot format, every event, plugin-root env var, no ma
   assert.equal(H.hooks.preToolUse[0].timeoutSec, 10, 'timeouts fail open: keep the guard short');
   // the bash command really runs the hook through the env var (and exits quietly without it)
   const root = F.makeRepo();
-  const run = (env) => spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env } });
-  assert.equal(run({ COPILOT_PLUGIN_ROOT: F.PLUGIN }).status, 2);
-  assert.equal(run({ PLUGIN_ROOT: F.PLUGIN }).status, 2);
-  assert.equal(run({}).status, 0);
+  const run = (env, bash = H.hooks.preToolUse[0].bash) => spawnSync('bash', ['-c', bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env } });
+  for (const env of [{ COPILOT_PLUGIN_ROOT: F.PLUGIN }, { PLUGIN_ROOT: F.PLUGIN }, { CLAUDE_PLUGIN_ROOT: F.PLUGIN }]) {
+    const r = run(env);
+    assert.equal(r.status, 0, JSON.stringify(env));
+    assert.equal(JSON.parse(r.stdout).permissionDecision, 'deny', JSON.stringify(env));
+  }
+  // a plugin root with a space in it
+  const spaced = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 'plug ')), 'my plugin');
+  fs.symlinkSync(F.PLUGIN, spaced);
+  assert.equal(JSON.parse(run({ PLUGIN_ROOT: spaced }).stdout).permissionDecision, 'deny');
+  assert.deepEqual([run({}).status, run({}).stdout], [0, '']);
+  // node crashing, killed or too old fails OPEN: exit 0, a warning, no deny
+  const fakeNodeDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'badnode-'));
+  for (const code of [1, 3, 137]) {
+    fs.writeFileSync(path.join(fakeNodeDir, 'node'), `#!/bin/sh\nexit ${code}\n`, { mode: 0o755 });
+    const r = run({ PLUGIN_ROOT: F.PLUGIN, PATH: `${fakeNodeDir}:${process.env.PATH}` });
+    assert.deepEqual([r.status, r.stdout], [0, ''], `node exit ${code}`);
+    assert.match(r.stderr, new RegExp(`\\[factory:guard\\] hook failed \\(exit ${code}\\); allowed`));
+  }
   // no node on PATH: every hook exits 0 with a warning (a non-zero preToolUse exit would deny every tool)
   const noNode = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nonode-'));
   for (const b of ['bash', 'dirname', 'cat']) {
@@ -125,11 +151,11 @@ test('hooks.json: native Copilot format, every event, plugin-root env var, no ma
   for (const [ev, list] of Object.entries(H.hooks)) {
     const r = spawnSync(path.join(noNode, 'bash'), ['-c', list[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: noNode, PLUGIN_ROOT: F.PLUGIN } });
     assert.equal(r.status, 0, ev);
-    assert.match(r.stderr, /node is not on PATH/, ev);
-    assert.ok(list[0].powershell.includes('if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine("['), ev);
+    assert.match(r.stderr, /^\[factory:[\w-]+\] node is not on PATH/, ev);
+    assert.ok(list[0].powershell.includes('if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine("[$h] node is not on PATH'), ev);
   }
   const missing = spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: process.env.PATH, PLUGIN_ROOT: '/nonexistent' } });
-  assert.deepEqual([missing.status, /not found; hook skipped/.test(missing.stderr)], [0, true]);
+  assert.deepEqual([missing.status, /^\[factory:guard\] hook script .* not found; hook skipped/.test(missing.stderr)], [0, true]);
   // postToolUse filters in-script what the Claude matcher used to
   const { shouldLog } = require('../hooks/activity');
   for (const t of ['bash', 'create', 'edit', 'apply_patch', 'task', 'web_fetch']) assert.ok(shouldLog(lib.normalise({ toolName: t, toolArgs: {} }, 'postToolUse')), t);
@@ -220,89 +246,135 @@ test('userPromptSubmitted: applies an exact reply, reports a refused one, writes
   assert.equal(events(root).filter((e) => e.event === 'reply_unparsed').length, 2);
 });
 
-// --- agentStop -------------------------------------------------------------------------
+// --- agentStop ---------------------------------------------------------------------------
 
 const stop = (root, extra = {}) => hook('stop.js', { cwd: root, transcriptPath: path.join(root, 'no-such-transcript.jsonl'), stopReason: 'end_turn', stop_hook_active: false, ...extra }, 'agentStop');
 const blocked = (r) => r.status === 0 && r.stdout !== '' && JSON.parse(r.stdout).decision === 'block';
+const prompt = (root, text) => hook('prompt.js', { prompt: text, cwd: root, sessionId: 's', timestamp: 1 }, 'userPromptSubmitted');
+const transcript = (root, ...entries) => {
+  const t = path.join(root, '.factory', 'scratch', 'transcript.jsonl');
+  fs.mkdirSync(path.dirname(t), { recursive: true });
+  fs.writeFileSync(t, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  return t;
+};
+const said = (text) => ({ type: 'assistant.message', data: { content: text } });
+const asked = (text) => ({ type: 'user.message', data: { content: text } });
 
-test('agentStop: blocks an active job with unmet floors and nothing waiting; capped at 3 in a row', () => {
+test('agentStop: blocks at most once per routing decision, across continuations and turns', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
-  F.cli(root, ['next']); // clarify: the agent's move
+  prompt(root, '/factory:start fix add');
+  const d = F.cli(root, ['next']); // clarify: the agent's move, and it ends its turn without it
   const r = stop(root);
   assert.ok(blocked(r));
   const out = JSON.parse(r.stdout);
   assert.deepEqual(Object.keys(out).sort(), ['decision', 'reason']);
-  assert.match(out.reason, new RegExp(`floors not met for ${J}`));
-  assert.ok(blocked(stop(root, { stop_hook_active: true })));
-  assert.ok(blocked(stop(root, { stop_hook_active: true })));
-  assert.equal(stop(root, { stop_hook_active: true }).stdout, '', 'cap: the fourth stop in a row ends the turn');
-  const ev = events(root);
-  assert.equal(ev.filter((e) => e.event === 'stop_block').length, 3);
-  assert.equal(ev.filter((e) => e.event === 'stop_block_cap').length, 1);
-  // a fresh stop (not a continuation) starts counting again
-  assert.ok(blocked(stop(root, { stop_hook_active: false })));
-  // and so does a new user prompt
-  assert.ok(blocked(stop(root, { stop_hook_active: true })));
-  assert.ok(blocked(stop(root, { stop_hook_active: true })));
-  hook('prompt.js', { prompt: 'keep going', cwd: root }, 'userPromptSubmitted');
-  assert.ok(!fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')));
-  assert.ok(blocked(stop(root, { stop_hook_active: true })));
-  // snake-case (PascalCase-registered) payloads work the same
-  assert.ok(blocked(hook('stop.js', { hook_event_name: 'Stop', cwd: root, transcript_path: '/nope', stop_reason: 'end_turn', stop_hook_active: false })));
+  assert.match(out.reason, /^\[factory stop gate\] Not finished — /);
+  assert.match(out.reason, new RegExp(`${J}: factory next asked for`));
+  assert.match(out.reason, /shown once/);
+  // the continuation, a fresh stop, a new human prompt: never again for this decision
+  assert.equal(stop(root, { stop_hook_active: true }).stdout, '');
+  assert.equal(stop(root, { stop_hook_active: false }).stdout, '');
+  prompt(root, '/factory:start');
+  assert.equal(stop(root).stdout, '', 'a new turn does not re-arm the same decision');
+  const ev = events(root).filter((e) => e.event === 'stop_block');
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].decision_id, d.decision_id);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.factory', 'stop-blocks.json'), 'utf8')).blocked, [d.decision_id]);
+  // snake-case (PascalCase-registered) payloads work the same; nothing to block here
+  assert.equal(hook('stop.js', { hook_event_name: 'Stop', cwd: root, transcript_path: '/nope', stop_reason: 'end_turn', stop_hook_active: false }).stdout, '');
+});
+
+test('agentStop: a turn that only answered the user is never blocked', () => {
+  const root = F.makeRepo();
+  F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  F.cli(root, ['next']);
+  // "what does src/add.js do?" — not a factory prompt, and no factory command ran this turn
+  prompt(root, 'what does src/add.js do?');
+  assert.equal(stop(root).stdout, '');
+  assert.equal(stop(root, { stop_hook_active: true }).stdout, '');
+  // no prompt stamp at all (unknown turn): allowed
+  fs.rmSync(path.join(root, '.factory', 'turn.json'));
+  assert.equal(stop(root).stdout, '');
+  // the same question, but the agent ran a factory command during the turn: factory work
+  prompt(root, 'what does src/add.js do?');
+  F.cli(root, ['next']);
+  assert.ok(blocked(stop(root)));
+  assert.equal(events(root).filter((e) => e.event === 'stop_block').length, 1);
+});
+
+test('agentStop: never blocks once the assigned step was attempted, or while a factory run is in progress', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  prompt(root, '/factory:start');
+  F.cli(root, ['next']);
+  // any non-looking factory command under the decision counts as an attempt (here: wfargs)
+  F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  assert.equal(stop(root).stdout, '', 'wfargs ran under the decision');
+  // a live run.lock: `factory run` is still working (e.g. backgrounded by the shell tool)
+  const root2 = F.makeRepo();
+  const J2 = F.cli(root2, ['job', 'new', '--title', 'y', '--type', 'bug', '--risk', 'low']).job;
+  prompt(root2, '/factory:start');
+  F.cli(root2, ['next']);
+  const lock = path.join(F.jobDir(root2, J2), 'run.lock');
+  const sleeper = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 20000)'], { stdio: 'ignore' });
+  try {
+    fs.writeFileSync(lock, JSON.stringify({ pid: sleeper.pid, host: require('os').hostname(), started_at: new Date().toISOString(), workflow: 'fanout-judge' }));
+    assert.equal(stop(root2).stdout, '', 'a factory run is in progress');
+  } finally {
+    sleeper.kill();
+  }
+  fs.writeFileSync(lock, JSON.stringify({ pid: 999999, host: require('os').hostname(), started_at: new Date().toISOString() }));
+  assert.ok(blocked(stop(root2)), 'a stale lock is no run');
 });
 
 test('agentStop: never blocks while the human is the one to act', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  prompt(root, '/factory:start');
+  // no routing decision yet (fresh job): nothing was assigned
+  assert.equal(stop(root).stdout, '', 'fresh job');
   // clarify asked the user a question: waiting
+  F.cli(root, ['next']);
   let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
   assert.equal(F.record(root, F.envelope(b, 'needs_user', { analysts: [], degraded: [], judge: { questions: [{ question: 'Floats too?', why: 'scope' }], dismissed: [] }, critique: null })).status, 'needs_user');
   assert.equal(stop(root).stdout, '', 'open clarify question');
   F.cli(root, ['answer', '--id', 'Q-1', '--answer', 'no']);
   assert.equal(stop(root).stdout, '', 'the record asked for the user and no factory next since');
   F.cli(root, ['next']);
-  assert.ok(blocked(stop(root)), 'answered and routed on: the agent owes the next step');
-  // a closing question to the user (from a message-bearing payload) is waiting too
-  assert.equal(stop(root, { last_assistant_message: 'I updated the contract. Should floats be supported too?' }).stdout, '');
+  // a closing question or hand-off to the user is waiting too (payload- or transcript-borne)
+  for (const m of ['I updated the contract. Should floats be supported too?', '1. Which database?\n2. Which env?\n\nLet me know and I will continue.', 'Please answer the questions above.', 'Should I go ahead? 🙂', 'Shall I continue? [y/n]', 'Want me to proceed? Let me know.', 'Q1…?\nQ2…?\n\nReply with your answers.', 'Dry run looks good: 1 integrator agent would run. Reply and I will start it.', 'Would you like me to start the clarify round now?', 'Waiting for your go-ahead.']) {
+    assert.equal(stop(root, { last_assistant_message: m }).stdout, '', m);
+    assert.equal(stop(root, { transcriptPath: transcript(root, asked('go'), said(m)) }).stdout, '', `transcript: ${m}`);
+  }
   // the H1 gate: waiting on the human
   b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
   F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
   assert.equal(F.cli(root, ['next']).action, 'gate');
   assert.equal(stop(root).stdout, '', 'pending gate');
+  assert.equal(stop(root, { last_assistant_message: 'All done! The fix is complete.' }).stdout, '', 'at a gate, even a "done" claim is not blocked');
   // parked: waiting on the human
   F.cli(root, ['park', '--reason', 'later']);
   assert.equal(stop(root).stdout, '');
   // no factory here at all
   assert.equal(stop(path.dirname(root)).stdout, '');
+  assert.equal(events(root).filter((e) => e.event === 'stop_block').length, 0);
 });
 
-test('agentStop: a done claim in a readable transcript names other jobs (best effort)', () => {
+test('agentStop: reads only the current turn\'s message from the transcript; a stale one is unknown', () => {
+  const { lastAssistantText } = require('../hooks/stop');
   const root = F.makeRepo();
-  const J1 = F.cli(root, ['job', 'new', '--title', 'one', '--type', 'bug', '--risk', 'low']).job;
-  F.cli(root, ['park', '--reason', 'later']);
-  const J2 = F.cli(root, ['job', 'new', '--title', 'two', '--type', 'bug', '--risk', 'low']).job;
-  F.cli(root, ['use', J2]);
+  assert.equal(lastAssistantText(transcript(root, asked('a'), said('old answer?'), asked('b'))), null, 'the user spoke last: this turn is not written yet');
+  assert.equal(lastAssistantText(transcript(root, asked('a'), said('first'), { type: 'tool.execution_complete', data: {} }, said('second'), 'not json')), 'second');
+  assert.equal(lastAssistantText(transcript(root, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'claude-shaped' }] } })), 'claude-shaped');
+  // a stale question from the previous turn does not excuse this one, and a "done" claim sharpens the reason
+  F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  prompt(root, '/factory:start');
   F.cli(root, ['next']);
-  F.cli(root, ['use', J1]);
-  const t = path.join(root, '.factory', 'scratch', 'transcript.jsonl');
-  fs.mkdirSync(path.dirname(t), { recursive: true });
-  fs.writeFileSync(t, [
-    JSON.stringify({ type: 'user.message', data: { content: 'finish it' } }),
-    JSON.stringify({ type: 'assistant.message', data: { content: `I have finished the work on ${J2}.` } }),
-    'not json',
-    JSON.stringify({ type: 'tool.execution_complete', data: {} }),
-  ].join('\n') + '\n');
-  assert.equal(stop(root).stdout, '', 'the current job is parked, and no transcript: nothing owed');
-  const out = JSON.parse(stop(root, { transcriptPath: t }).stdout);
-  assert.equal(out.decision, 'block');
-  assert.match(out.reason, /Not done/);
-  assert.match(out.reason, new RegExp(J2));
-  assert.doesNotMatch(out.reason, new RegExp(`${J1} \\(`));
-  // Claude-shaped transcript lines read too
-  fs.writeFileSync(t, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `The work on ${J2} is done.` }] } }) + '\n');
-  assert.ok(blocked(stop(root, { transcriptPath: t })));
+  const r = stop(root, { transcriptPath: transcript(root, asked('a'), said('Should I continue?'), asked('/factory:start'), said('All done! The fix is complete.')) });
+  assert.match(JSON.parse(r.stdout).reason, /^\[factory stop gate\] Not done — /);
 });
 
 test('stop: done-claim and question heuristics', () => {
@@ -310,7 +382,8 @@ test('stop: done-claim and question heuristics', () => {
   for (const m of ['The fix is now complete and ready to merge.', "I've completed the task.", 'Everything is done.', "That's done!", 'Shipped.', 'All done 🎉']) assert.ok(claims(m), m);
   for (const m of ['I drafted the contract; waiting for your answers.', 'Is the fix complete?', 'The fix is not done yet.', 'Once the job is done, I will open the PR.', "The task isn't finished: tests fail."]) assert.ok(!claims(m), m);
   assert.ok(asksUser('Done with step one.\n\nWhich database should I use?'));
-  assert.ok(!asksUser('Is this right? I went ahead anyway.'));
+  for (const m of ['Let me know which one.', 'Approve or deny the contract.', 'Should I run it', 'Waiting for you.', '**Do you want me to continue?**', 'Reply `approve` to go on.']) assert.ok(asksUser(m), m);
+  for (const m of ['I fixed the parser.\n\nNext I will run the tests.', 'Is it fast? Yes.\n\nI ran the benchmark and moved on.', '', null]) assert.ok(!asksUser(m), String(m));
 });
 
 test('agentStop: never gates an agent session started by factory run', () => {
@@ -338,10 +411,11 @@ test('agent sessions: a short role note at session start, no reply parsing, no c
   assert.match(note, /one JSON object/);
   assert.doesNotMatch(note, /Current job|factory:start/, 'never told to drive the job');
   // the prompt hook does nothing in an agent: no reply applied, the main session's counter kept
-  fs.writeFileSync(path.join(root, '.factory', 'stop-blocks.json'), JSON.stringify({ count: 2, at: new Date().toISOString() }));
+  fs.writeFileSync(path.join(root, '.factory', 'stop-blocks.json'), JSON.stringify({ blocked: ['J-0001-D0001'], at: new Date().toISOString() }));
   const r = agentHook('prompt.js', { prompt: 'cancel job', cwd: root }, 'userPromptSubmitted');
   assert.deepEqual([r.status, r.stdout], [0, '']);
-  assert.ok(fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')), 'the main session\'s stop counter survives an agent spawn');
+  assert.ok(fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')), 'the main session\'s stop record survives an agent spawn');
+  assert.ok(!fs.existsSync(path.join(root, '.factory', 'turn.json')), 'an agent prompt is no turn of the main session');
   assert.equal(F.cli(root, ['job', 'show']).status, 'active', 'a prompt in an agent is never a human reply');
   // activity lines carry the agent's role, not "main session"
   agentHook('activity.js', { toolName: 'bash', toolArgs: { command: 'npm test' }, cwd: root }, 'postToolUse');
@@ -417,57 +491,152 @@ test('guard: rg and glob `paths` (string or array) get the read rules', () => {
   assert.ok(isAllow(guard({ toolName: 'rg', toolArgs: { pattern: 'add', paths: ['src'] }, cwd: root })));
 });
 
-// --- stop gate: continuation prompts and false "done" at a gate ------------------------------
+// --- stop gate: continuation prompts ----------------------------------------------------------
 
-test('agentStop: block reasons and Autopilot continuations fed back as prompts do not reset the cap', () => {
+test('agentStop: block reasons and Autopilot continuations fed back as prompts are not a new turn', () => {
   const root = F.makeRepo();
   F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  prompt(root, '/factory:start');
+  const turn = fs.readFileSync(path.join(root, '.factory', 'turn.json'), 'utf8');
+  assert.equal(JSON.parse(turn).factory, true);
   F.cli(root, ['next']);
-  const reasons = [];
-  let r = stop(root, { stop_hook_active: false });
-  for (let i = 0; i < 5 && blocked(r); i++) {
-    const reason = JSON.parse(r.stdout).reason;
-    reasons.push(reason);
-    assert.match(reason, /^\[factory stop gate\] /);
-    // what Copilot does with a block: the reason becomes the next prompt
-    assert.equal(hook('prompt.js', { prompt: reason, cwd: root }, 'userPromptSubmitted').stdout, '');
-    r = stop(root, { stop_hook_active: true });
-  }
-  assert.equal(reasons.length, 3, 'the cap ends the loop after 3 blocks');
-  assert.equal(r.stdout, '');
-  assert.equal(events(root).filter((e) => e.event === 'stop_block_cap').length, 1);
-  // Autopilot's continuation text is not the human either
-  assert.ok(blocked(stop(root, { stop_hook_active: false })));
-  hook('prompt.js', { prompt: 'You have not yet marked the task as complete using the task_complete tool. Continue.', cwd: root }, 'userPromptSubmitted');
-  assert.ok(fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')));
-  // a real prompt from the human does reset it
-  hook('prompt.js', { prompt: 'keep going', cwd: root }, 'userPromptSubmitted');
-  assert.ok(!fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')));
-  assert.ok(lib.isContinuation(reasons[0]) && !lib.isContinuation('please continue'));
+  const r = stop(root);
+  assert.ok(blocked(r));
+  const reason = JSON.parse(r.stdout).reason;
+  // what Copilot does with a block: the reason becomes the next prompt — not the human, no new turn
+  assert.equal(prompt(root, reason).stdout, '');
+  prompt(root, 'You have not yet marked the task as complete using the task_complete tool. Continue.');
+  assert.equal(fs.readFileSync(path.join(root, '.factory', 'turn.json'), 'utf8'), turn, 'continuations keep the turn stamp');
+  assert.equal(stop(root, { stop_hook_active: true }).stdout, '');
+  assert.ok(lib.isContinuation(reason) && !lib.isContinuation('please continue'));
+  // a human prompt stamps a new turn; a factory reply counts as factory work, other text does not
+  prompt(root, 'please continue');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.factory', 'turn.json'), 'utf8')).factory, false);
+  prompt(root, 'resume');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.factory', 'turn.json'), 'utf8')).factory, true);
+  assert.ok(fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')), 'prompts never reset the blocked-decisions record');
 });
 
-test('agentStop: a false "done" at a pending gate is blocked; saying what is pending is not', () => {
+// --- guard: every false positive from the real-CLI reproduction is allowed ---------------------
+
+test('guard regressions: prose, patterns, messages, expansions and templates are not violations', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
-  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
-  assert.equal(F.cli(root, ['next']).action, 'gate');
-  const t = path.join(root, '.factory', 'scratch', 'transcript.jsonl');
-  fs.mkdirSync(path.dirname(t), { recursive: true });
-  const say = (text) => {
-    fs.writeFileSync(t, JSON.stringify({ type: 'assistant.message', data: { content: text } }) + '\n');
-    return stop(root, { transcriptPath: t });
-  };
-  assert.equal(stop(root).stdout, '', 'no readable message: plain waiting is never blocked');
-  const out = JSON.parse(say('All done! The fix is complete.').stdout);
-  assert.equal(out.decision, 'block');
-  assert.match(out.reason, /^\[factory stop gate\] Not done/);
-  assert.match(out.reason, new RegExp(`${J} is not finished`));
-  assert.match(out.reason, /tell the user it's waiting for H1/);
-  for (const ok of ['The contract is ready for review: reply "approve" or "deny <what must change>".', 'Done drafting. It is waiting at H1 for you.', 'I wrote the contract. Should I add floats?']) assert.equal(say(ok).stdout, '', ok);
-  // parked: same rule
-  F.cli(root, ['park', '--reason', 'later']);
-  assert.match(JSON.parse(say('Everything is done.').stdout).reason, /waiting for them to reply "resume"/);
-  assert.equal(say('Parked until you say resume.').stdout, '');
+  const { checkBash, checkContent, checkReadTool } = require('../hooks/guard-rules');
+  const pol = require('../cli/core/policy').load(root);
+  const B = path.join(F.PLUGIN, 'bin', 'factory');
+  const main = [
+    // the word "factory" next to a human-only verb, in data
+    'grep -rn "factory approve" docs/',
+    "grep -rn 'factory approve' docs/",
+    'git grep -n "factory approve"',
+    'grep -rn -e "factory approve" -e "factory deny" .',
+    'rg "factory resume" .',
+    'rg factory resume .',
+    'grep -rn factory\\ approve docs/',
+    "echo 'Next: reply resume, or run factory resume'",
+    'printf "%s\\n" "factory approve"',
+    "git log --oneline --grep 'factory merged'",
+    'gh pr create --title x --body "After CI, run factory approve to ship"',
+    'gh pr comment 3 --body "factory deny <reason> if it looks wrong"',
+    'git commit -F - <<EOF\nfeat: factory confirm wording\nEOF',
+    'cat > PR.md <<EOF\nAfter review run factory approve\nEOF',
+    'echo "$HOME" && grep -n "factory" README.md | grep cancel',
+    `node "${B}" record --file - <<EOF\n{"summary":"the factory deny path"}\nEOF`,
+    'git commit -m "docs: explain factory approve" && git push origin main',
+    `node "${B}" park --reason "factory resume later, after legal"`,
+    // commands that start with an expansion
+    '$HOME/.local/bin/ruff check .',
+    '"$VIRTUAL_ENV/bin/python" -m pytest',
+    '$PWD/scripts/x.sh',
+    "$env:PATH -split ';'",
+    '& "$env:ProgramFiles\\nodejs\\node.exe" --version',
+    '$env:NODE_ENV="test"; npm test',
+    // interpreters and factory paths in other commands, prose or read-only code
+    'npm run lint && node ./scripts/check.js .factory/project.json',
+    'git add -A && git commit -m "chore: ignore .factory/log" && python3 -V',
+    "python3 -c \"import os;print(os.listdir('.factory/jobs'))\"",
+    "python3 -c \"import json;[print(json.loads(l)['event']) for l in open('.factory/log/events.jsonl')]\"",
+    // git objects that are not secrets
+    'git show HEAD:.env.example',
+    'git show HEAD~1 -- .env.example',
+    'git show HEAD:docs/credentials-setup.md',
+    'git show HEAD:.env.sample && git show HEAD:config/.env.dist',
+    // flags that only look like -n / interactive shells
+    "git show --stat HEAD -n 1 --format='commit %H'",
+    'git commit -m wip; npm test -- -n 5',
+    'git log -n 3 --format=%s | grep commit',
+    'bash --version',
+    'sh --help',
+    // redirects and templates
+    'ls .factory/ 2>/dev/null; echo done >&2',
+    'cp .env.example .env.sample',
+    'cat .env.example .env.template',
+  ];
+  for (const c of main) assert.equal(checkBash(root, c, pol), null, `main session should allow: ${c}`);
+  // runner agents: the same data rules, plus a briefed doc check from a plugin path with a space
+  const spaced = `node "/c/Users/John Smith/.copilot/installed-plugins/copilot-factory/factory/bin/factory" --root "${root}"`;
+  const agent = [
+    `grep -rn "factory resume" ${path.join(root, '.factory', 'jobs', J, 'contract.md')}`,
+    `${spaced} doc check "${path.join(root, '.factory', 'jobs', J, 'adr-0001 with space.md')}" --job ${J}`,
+    `${spaced} doc check ${path.join(root, '.factory', 'jobs', J, 'adr-0001.md')} --job ${J}`,
+    `node "${B}" lessons add --job ${J} --text "x" --scope src --why "the deny path crashed when $HOME was unset"`,
+    `git -C .factory/worktrees/${J}-T1 commit -m "approve flow; resume after deny"`,
+  ];
+  for (const c of agent) assert.equal(checkBash(root, c, pol, { agent: true }), null, `agent should allow: ${c}`);
+  // writes and reads through the tools
+  assert.ok(isAllow(guard({ toolName: 'create', toolArgs: { path: '.env.example', file_text: 'A=' }, cwd: root })), 'create .env.example');
+  assert.ok(isAllow(guard({ toolName: 'create', toolArgs: { path: 'config/app.env.dist', file_text: 'A=' }, cwd: root })));
+  assert.equal(checkReadTool(root, 'Grep', { pattern: 'x', glob: '*.key*' }, null, root, pol), null, '*.key* also matches keyboard.js');
+  // source that merely mentions factory paths in comments or prose
+  assert.equal(checkContent('from os import path\n# see cli/core/ for details\n', '/r/src/importer.py'), null);
+  assert.equal(checkContent("const {readFileSync}=require('fs');// parses .factory/log/events.jsonl format\n", '/r/test/log.test.js'), null);
+  assert.equal(checkContent("// reads .factory/current\nconst x = require('./x');\nconst note = 'see .factory/jobs';\n", '/r/src/a.js'), null);
+  assert.ok(isAllow(guard({ toolName: 'create', toolArgs: { path: 'src/importer.py', file_text: 'from os import path\n# see cli/core/ for details\n' }, cwd: root })));
+});
+
+test('guard regressions: the real violations still deny, however they are typed', () => {
+  const root = F.makeRepo();
+  const { checkBash, checkContent, checkReadTool } = require('../hooks/guard-rules');
+  const pol = require('../cli/core/policy').load(root);
+  const B = path.join(F.PLUGIN, 'bin', 'factory');
+  const denied = [
+    `node "${B}" approve`,
+    `NODE_OPTIONS= node "${B}" --root . resume`,
+    `env FOO=1 node ${B} cancel`,
+    `sudo -u me factory abandon`,
+    `nice -n 5 factory waive AC1`,
+    `timeout 30 factory merged abc123`,
+    `exec factory confirm AC-1`,
+    `echo x; factory approve && echo y`,
+    `bash -c "factory approve"`,
+    `sh -lc 'node ${B} deny "no"'`,
+    `echo "$(factory approve)"`,
+    'echo `factory resume`',
+    `X=$(command -v factory); $X approve`,
+    `F=${B}; node "$F" approve`,
+    `echo approve | xargs node ${B}`,
+    `printf 'node ${B} approve' | bash`,
+    `find . -name x -exec node ${B} approve \;`,
+    `factory ci install`,
+    'git push --force-with-lease origin main',
+    'git commit -anm "x"',
+    'git config core.hooksPath /tmp/h',
+    'ln -sf ../../x .git/hooks/pre-commit',
+    'sed -i s/a/b/ .factory/jobs/J-0001/state.json',
+    'cp x.json .factory/policy.json',
+    'git show HEAD:.env.local',
+    'git show HEAD -- config/.npmrc',
+    'cat .env.production',
+    "node -e \"require('fs').writeFileSync('.factory/jobs/J-0001/state.json','{}')\"",
+    'cat ~/.config/software-factory/secret',
+    'bash -i',
+    'cp .env.example .env',
+  ];
+  for (const c of denied) assert.ok(checkBash(root, c, pol), `should deny: ${c}`);
+  assert.ok(checkReadTool(root, 'Grep', { pattern: 'x', glob: '.env*' }, null, root, pol));
+  assert.ok(checkReadTool(root, 'Grep', { pattern: 'x', glob: '**/*.pem' }, null, root, pol));
+  assert.ok(checkContent("const fs=require('fs');console.log(fs.readFileSync('.factory/current','utf8'))", '/r/scripts/status.js'));
+  // runner agents: driving the job, and scripts on job files
+  for (const c of [`node "${B}" next`, `node "${B}" plan from-contract`, `python3 -m json.tool .factory/jobs/J-0001/plan.json`, `ls | xargs node ${B} job show`]) assert.ok(checkBash(root, c, pol, { agent: true }), `agent should be denied: ${c}`);
 });

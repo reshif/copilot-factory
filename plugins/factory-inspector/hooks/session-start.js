@@ -2,12 +2,32 @@
 // sessionStart: say how to reach factory-inspect (a plugin's bin/ is not on PATH in
 // Copilot), inspect any job that ended while no session was watching, and report what
 // an earlier end-of-turn catch-up found. Output: top-level additionalContext (hooks.md §5.2).
+const fs = require('fs');
+const path = require('path');
 const { safe, context, cliCommand, takeUnreported, inAgent } = require('./lib');
+
+// `factory-inspect` resolves on PATH (`factory shim` links it next to `factory`): no prompt
+// for a path outside the workspace.
+function onPath(name) {
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    for (const ext of process.platform === 'win32' ? ['.cmd', '.exe', ''] : ['']) {
+      try {
+        if (dir) {
+          fs.accessSync(path.join(dir, name + ext), fs.constants.X_OK);
+          return true;
+        }
+      } catch {
+        /* next */
+      }
+    }
+  }
+  return false;
+}
 
 safe((input) => {
   if (inAgent()) return; // an agent `factory run` started: no inspections or reports there
   const cmd = cliCommand();
-  const parts = [`[inspector] Inspector CLI: ${cmd}. When a skill says to run \`factory-inspect …\` and it is not on PATH, run ${cmd} … instead.`];
+  const parts = [onPath('factory-inspect') ? '[inspector] Inspector CLI: `factory-inspect` is on PATH.' : `[inspector] Inspector CLI: ${cmd}. When a skill says to run \`factory-inspect …\` and it is not on PATH, run ${cmd} … instead.`];
   const { findRoot } = require('../inspector/io');
   const root = findRoot(input.cwd);
   if (root) {
