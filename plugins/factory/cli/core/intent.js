@@ -166,7 +166,10 @@ function merge(data, sc, round) {
   for (const v of sc.versions || []) {
     if (v && v.name && !out.versions.some((x) => x.name === v.name)) out.versions.push({ name: clip(v.name, 120), version: clip(v.version, 60), source: clip(v.source, 300) });
   }
-  if (sc.web) out.web = { enabled: Boolean(sc.web.enabled), reason: sc.web.reason || null, available: sc.web.available === undefined ? null : sc.web.available, search_mcp: sc.web.search_mcp || null };
+  if (sc.web) {
+    const known = sc.web.available === undefined || sc.web.available === null ? (data.web ? data.web.available : null) : sc.web.available;
+    out.web = { enabled: Boolean(sc.web.enabled), reason: sc.web.reason || null, available: known === undefined ? null : known, search_mcp: sc.web.search_mcp || null };
+  }
   out.rounds.push({
     round,
     at: nowIso(),
