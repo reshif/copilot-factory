@@ -187,7 +187,8 @@ function loops(job) {
 }
 
 // ---------------------------------------------------------------- R7 driver fidelity
-const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init']);
+// shim (a symlink on PATH) and console (a read-only snapshot / server) change no job state.
+const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console']);
 const MUTATING_IN_WAIT = new Set(['record', 'ship', 'task:start', 'task:verify', 'task:state', 'reconcile', 'verify', 'evidence', 'plan:from-contract', 'close', 'epic', 'amend', 'followup', 'distill:done', 'wfargs']);
 
 function cmdKey(e) {
@@ -242,6 +243,10 @@ function driverFidelity(job) {
     for (const e of evs) {
       const k = cmdKey(e);
       if (READ_ONLY.has(k) || READ_ONLY.has(e.cmd)) continue;
+      // `factory run` logs its own wfargs / agent_run / record lines, which are judged here;
+      // a `cmd: run` line is only written when the run failed before or around them, and a
+      // failed run changed nothing by itself (R13 counts repeated failures).
+      if (e.cmd === 'run') continue;
       if (exp.allowed.has(k) || exp.allowed.has(e.cmd)) continue;
       const mutating = MUTATING_IN_WAIT.has(k) || MUTATING_IN_WAIT.has(e.cmd);
       out.push(f({ rule: exp.quiet ? 'R7.acted_while_waiting' : 'R7.unexpected_command', class: 'deviation', severity: exp.quiet && mutating ? 'high' : 'medium', subject: `${job.id}:${d.id}:${k}`, job: job.id, summary: exp.quiet ? `Ran "factory ${e.cmd}${e.sub ? ` ${e.sub}` : ''}" while the job was at ${d.action} "${d.step || ''}" — nothing should change there.` : `Ran "factory ${e.cmd}${e.sub ? ` ${e.sub}` : ''}" while factory next had asked for ${d.action} "${d.step || d.skill || d.command}".`, evidence: [d.id, e.ts], question: 'Was this an improvisation the skills should describe, or a mistake?' }));
@@ -422,6 +427,15 @@ function jobHealth(job, L, now) {
   if (retries.length >= L.agent_retries_per_job) out.push(f({ rule: 'R14.agent_retries', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(retries, 'at'), summary: `${retries.length} agent retries in ${id} (limit ${L.agent_retries_per_job}): ${[...groupBy(retries, (a) => a.agent_type).entries()].map(([t, x]) => `${t} ×${x.length}`).join(', ')}.`, question: 'Are these prompts or schemas hard to satisfy first time?' }));
   const failed = runs.filter((a) => AGENT_FAILED.has(a.outcome));
   if (failed.length >= L.agent_failures_per_job) out.push(f({ rule: 'R14.agent_failures', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(failed, 'at'), summary: `${failed.length} agent runs in ${id} came back failed: ${[...groupBy(failed, (a) => `${a.agent_type} (${a.outcome})`).entries()].map(([t, x]) => `${t} ×${x.length}`).join(', ')}.`, question: 'Which role keeps failing, and why?' }));
+  // Agents `factory run` started (agent_run events): timeouts, crashes (non-zero exit) and a
+  // Copilot CLI that could not be started or used at all. The roster above only says "no result".
+  const agentRuns = job.events.filter((e) => e.event === 'agent_run');
+  const timeouts = agentRuns.filter((e) => e.outcome === 'timeout');
+  if (timeouts.length) out.push(f({ rule: 'R14.agent_timeouts', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(timeouts), summary: `${timeouts.length} agent run(s) in ${id} timed out: ${[...groupBy(timeouts, (a) => a.agent_type || a.role || 'agent').entries()].map(([t, x]) => `${t} ×${x.length}`).join(', ')}.`, evidence: timeouts.slice(0, 6).map((a) => a.label || a.agent_type || a.ts), question: 'Is the agent timeout (policy.limits.agent_timeout_seconds) too short for this work, or did the agent hang?' }));
+  const unavailable = [...agentRuns.filter((e) => e.code === 'copilot_unavailable' || e.outcome === 'copilot_unavailable' || /ENOENT|No authentication information found|not signed in/i.test((e.errors || []).join(' '))), ...cli.filter((e) => e.code === 'copilot_unavailable')];
+  const crashes = agentRuns.filter((e) => ['failed', 'crashed', 'error'].includes(e.outcome) && !unavailable.includes(e));
+  if (crashes.length >= L.agent_failures_per_job) out.push(f({ rule: 'R14.agent_crashes', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(crashes), summary: `${crashes.length} agent process(es) in ${id} exited with an error: ${[...groupBy(crashes, (a) => `${a.agent_type || a.role || 'agent'} (exit ${a.exit})`).entries()].map(([t, x]) => `${t} ×${x.length}`).join(', ')}.`, evidence: crashes.slice(0, 6).map((a) => norm((a.errors || [])[0] || a.label || '', 80)), question: 'What made these Copilot sessions fail (rate limit, model, permissions)?' }));
+  if (unavailable.length) out.push(f({ rule: 'R14.copilot_unavailable', class: 'gap', severity: 'high', subject: id, job: id, latest: latest(unavailable), summary: `factory run could not use the Copilot CLI in ${id} (${unavailable.length} time(s)): ${norm(String((unavailable[0].errors || [])[0] || unavailable[0].message || unavailable[0].code || ''), 100)}.`, question: 'Is copilot installed, on PATH (or COPILOT_BIN set) and signed in where factory run starts it?' }));
   const escalated = [];
   for (const [, items] of groupBy(runs, (a) => `${a.workflow}|${String(a.label || '').replace(/\s*(#\d+|\(retry\))$/, '')}`)) {
     escalated.push(...items.slice(1).filter((a) => a.model && a.model !== items[0].model));
@@ -453,7 +467,9 @@ function jobHealth(job, L, now) {
   }
   // R19 clarify: parked on unclear intent; questions over budget or re-asked
   const clarify = job.ledger.filter((e) => e.kind === 'step' && e.step === 'clarify' && e.detail);
-  const intentParks = clarify.filter((e) => e.ok === false && e.detail.intent_open);
+  // Only the park entry (record.js writes it with intent_open, questions 0 and no question
+  // ids); the ordinary needs_user round that asks an intent question is not a park.
+  const intentParks = clarify.filter((e) => e.ok === false && e.detail.intent_open && (e.detail.parked === true || (!Array.isArray(e.detail.question_ids) && !e.detail.questions)));
   if (intentParks.length) out.push(f({ rule: 'R19.intent_parked', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(intentParks, 'at'), summary: `${id} parked ${intentParks.length} time(s) because the intent was still unclear after ${Math.max(...intentParks.map((e) => e.detail.intent_rounds || 0))} intent round(s).`, question: 'Was the request too vague to start, or were the intent questions badly put?' }));
   const dropped = clarify.reduce((n, e) => n + (Number(e.detail.dropped) || 0), 0);
   if (dropped >= L.questions_dropped_per_job) out.push(f({ rule: 'R19.question_overrun', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(clarify.filter((e) => e.detail.dropped), 'at'), summary: `Clarify in ${id} proposed ${dropped} question(s) beyond the round budget or already asked; the CLI dropped them (limit ${L.questions_dropped_per_job}).`, question: 'Does the judge ignore the question budget or the never-re-ask list in its brief?' }));

@@ -30,6 +30,18 @@ const TOOLS = {
   bash: 'Bash',
   powershell: 'Bash',
   shell: 'Bash',
+  // Copilot's shell-session tools. write_bash / write_powershell type input into a running
+  // shell (docs: "Send input to a shell session"; CLI 1.0.62 says it is no longer supported,
+  // but the docs still list it): their input is checked as a command. read/stop/list only
+  // touch a session's output, under the Claude names for those (not guarded, not logged).
+  write_bash: 'Bash',
+  write_powershell: 'Bash',
+  read_bash: 'BashOutput',
+  read_powershell: 'BashOutput',
+  list_bash: 'BashOutput',
+  list_powershell: 'BashOutput',
+  stop_bash: 'KillShell',
+  stop_powershell: 'KillShell',
   view: 'Read',
   read: 'Read',
   read_file: 'Read',
@@ -148,7 +160,7 @@ function normalise(raw, argvEvent) {
     tool,
     runtimeTool,
     args,
-    command: tool === 'Bash' ? str(args.command, args.cmd, args.script) || '' : '',
+    command: tool === 'Bash' ? str(args.command, args.cmd, args.script, args.input, args.text, args.keys) || '' : '',
     file,
     files,
     content,
@@ -218,6 +230,13 @@ function deny(reason) {
   process.exitCode = 2;
 }
 
+// Inside an agent process `factory run` started (FACTORY_RUNNER=1): the inspector's hooks
+// load there too, since each agent is a full Copilot session. Inspections and reports are
+// the main session's business, so those hooks do nothing in an agent.
+function inAgent() {
+  return process.env.FACTORY_RUNNER === '1';
+}
+
 // The inspector's CLI as an absolute command: a plugin's bin/ is not on PATH in Copilot.
 function cliCommand() {
   return `node "${path.join(path.resolve(__dirname, '..'), 'bin', 'factory-inspect')}"`;
@@ -257,4 +276,4 @@ function takeUnreported(root) {
   }
 }
 
-module.exports = { safe, emit, context, deny, traceError, normalise, toolName, patchFiles, cliCommand, stashUnreported, takeUnreported, EVENTS, TOOLS };
+module.exports = { safe, emit, context, deny, traceError, normalise, toolName, patchFiles, cliCommand, inAgent, stashUnreported, takeUnreported, EVENTS, TOOLS };

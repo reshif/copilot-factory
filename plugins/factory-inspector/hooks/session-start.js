@@ -2,9 +2,10 @@
 // sessionStart: say how to reach factory-inspect (a plugin's bin/ is not on PATH in
 // Copilot), inspect any job that ended while no session was watching, and report what
 // an earlier end-of-turn catch-up found. Output: top-level additionalContext (hooks.md §5.2).
-const { safe, context, cliCommand, takeUnreported } = require('./lib');
+const { safe, context, cliCommand, takeUnreported, inAgent } = require('./lib');
 
 safe((input) => {
+  if (inAgent()) return; // an agent `factory run` started: no inspections or reports there
   const cmd = cliCommand();
   const parts = [`[inspector] Inspector CLI: ${cmd}. When a skill says to run \`factory-inspect …\` and it is not on PATH, run ${cmd} … instead.`];
   const { findRoot } = require('../inspector/io');

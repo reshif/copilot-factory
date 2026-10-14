@@ -1,21 +1,30 @@
 'use strict';
 // userPromptSubmitted: your replies about findings and inspection modes, applied as a
-// side effect before the agent acts. The additionalContext may be dropped by Copilot
-// (hooks.md §5.3); the change itself is in the register either way.
-const { safe, context } = require('./lib');
+// side effect before the agent acts; and what an end-of-turn catch-up inspection found
+// (catch-up.js runs at agentStop, whose output can't carry it). Copilot hands this hook's
+// additionalContext to the model (verified on CLI 1.0.97, though the reference says command
+// hook output is dropped, hooks.md §5.3), so the catch-up line reaches the user on the very
+// next prompt — including the stop gate's continuation prompt in the same turn — instead of
+// waiting for the next session start. If it were dropped, nothing is lost: the finding is
+// in the register, and a reply's change is applied either way.
+const { safe, context, inAgent, takeUnreported } = require('./lib');
 
 safe((input) => {
-  const main = require('../inspector/main');
-  const p = main.parseReply(input.prompt);
-  if (!p) return;
+  if (inAgent()) return; // an agent `factory run` started: no inspections or reports there
   const { findRoot } = require('../inspector/io');
   const root = findRoot(input.cwd);
   if (!root) return;
-  let msg;
-  try {
-    msg = `[inspector] Applied: ${main.applyReply(root, p).message}`;
-  } catch (e) {
-    msg = `[inspector] Not applied: ${e.message}`;
+  const lines = [];
+  const earlier = takeUnreported(root);
+  if (earlier.length) lines.push(`${earlier.join(' ')} Tell the user in one line; details with the factory-inspector:inspect skill.`);
+  const main = require('../inspector/main');
+  const p = main.parseReply(input.prompt);
+  if (p) {
+    try {
+      lines.push(`[inspector] Applied: ${main.applyReply(root, p).message}`);
+    } catch (e) {
+      lines.push(`[inspector] Not applied: ${e.message}`);
+    }
   }
-  context(msg);
+  context(lines.join('\n'));
 });
