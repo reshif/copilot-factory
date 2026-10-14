@@ -180,7 +180,7 @@ function approve(root, { jobId, gate, channel, via }) {
   state.pending_gate = null;
   if (pending.id === 'A') require('./amend').applyApproved(root, state);
   job.save(root, state);
-  log(root, state, 'approve', { gate: pending.id, hash: now });
+  log(root, state, 'approve', { channel, gate: pending.id, hash: now });
   return { job: state.id, gate: pending.id, hash: now, message: `Approved ${pending.id} for ${state.id} (hash ${now.slice(0, 12)}).` };
 }
 
@@ -196,7 +196,7 @@ function deny(root, { jobId, reason, channel }) {
     state.amendment.status = 'open';
   }
   job.save(root, state);
-  log(root, state, 'deny', { gate: pending.id, reason });
+  log(root, state, 'deny', { channel, gate: pending.id, reason });
   return { job: state.id, gate: pending.id, message: `Denied ${pending.id} for ${state.id}: ${reason || '(no reason given)'}. Copilot should revise it and present it again.` };
 }
 
@@ -230,7 +230,7 @@ function resume(root, { jobId, step, channel }) {
   state.park = null;
   state.pending_gate = null;
   job.save(root, state);
-  log(root, state, 'resume', { from, step });
+  log(root, state, 'resume', { channel, from, step });
   return { job: state.id, message: `Resumed ${state.id}${from ? ` (one more ${from} round allowed)` : ''}. Copilot continues with factory next.` };
 }
 
@@ -243,7 +243,7 @@ function stop(root, { jobId, kind, channel, reason }) {
   state.pending_gate = null;
   state.stopped = { at: nowIso(), reason: reason || '' };
   job.save(root, state);
-  log(root, state, kind, { reason });
+  log(root, state, kind, { channel, reason });
   return { job: state.id, message: `${state.id} ${kind}. Its files are kept under .factory/jobs/${state.id}.` };
 }
 
@@ -256,7 +256,7 @@ function waive(root, { jobId, floor, reason, channel }) {
   confirmTyped(channel, state.id, `waive ${floor}`);
   state.waivers[floor] = { reason, at: nowIso() };
   job.save(root, state);
-  log(root, state, 'waive', { floor, reason });
+  log(root, state, 'waive', { channel, floor, reason });
   return { job: state.id, message: `Waived ${floor} for ${state.id}: ${reason}` };
 }
 
@@ -279,7 +279,7 @@ function merged(root, { jobId, commit, channel }) {
   state.pr.merged_at = nowIso();
   state.pr.merged_via = channel;
   job.save(root, state);
-  log(root, state, 'merged', { commit: sha });
+  log(root, state, 'merged', { channel, commit: sha });
   return { job: state.id, message: `Recorded merge of ${state.id} at ${sha.slice(0, 12)}.` };
 }
 
@@ -291,7 +291,7 @@ function changeAssumption(root, { jobId, id, value, drop = false, channel }) {
   confirmTyped(channel, job.resolve(root, jobId).id, `${drop ? 'drop' : 'change'} ${id}`);
   const r = require('./intent').override(root, { jobId, id, value, drop, via: channel });
   const state = job.resolve(root, r.job);
-  log(root, state, drop ? 'drop_assumption' : 'change_assumption', { assumption: r.assumption, value: r.value ? r.value.slice(0, 200) : null, was: String(r.was || '').slice(0, 200) });
+  log(root, state, drop ? 'drop_assumption' : 'change_assumption', { channel, assumption: r.assumption, value: r.value ? r.value.slice(0, 200) : null, was: String(r.was || '').slice(0, 200) });
   return r;
 }
 
@@ -302,7 +302,7 @@ function confirmAc(root, { jobId, ac, channel }) {
   if (!ctx.b.fingerprint) fail('Nothing built yet to confirm against.', 'bad_input');
   confirmTyped(channel, state.id, `confirm ${String(ac).toUpperCase()}`);
   ledger.append(root, state.id, { kind: 'evidence', ac: ac.toUpperCase(), type: 'human', fingerprint: ctx.b.fingerprint, pass: true, source: `human:${channel}` });
-  log(root, state, 'confirm_ac', { ac });
+  log(root, state, 'confirm_ac', { channel, ac });
   return { job: state.id, message: `Confirmed ${ac.toUpperCase()} for ${state.id} on the current build. Run factory verify run to include it.` };
 }
 

@@ -405,6 +405,8 @@ function run(argv) {
   }
 }
 
+const HUMAN_CLI = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'assumption', 'reseal']);
+
 const PROSE = new Set(['reason', 'text', 'question', 'answer', 'title', 'note', 'by', 'check', 'label', 'why', 'value']);
 
 // One sealed line per command in .factory/log/events.jsonl, tied to the job and the
@@ -426,6 +428,9 @@ function logCommand(argv, res, err) {
     if (pos[0] === 'wfargs') Object.assign(extra, { workflow: r.workflow || pos[1] || null, config: r.config || opt.config || null, mode: r.mode || null, brief_hash: r.input_hash || null });
     if (pos[0] === 'record') Object.assign(extra, { workflow: r.workflow || null, config: r.config || null, status: r.status || null });
     if (pos[0] === 'next') Object.assign(extra, { action: r.action || null, step: r.step || null });
+    // A human-only command that went through came from a terminal the CLI accepted as yours
+    // (TTY, typed confirmation): the inspector reads it as a human action, not the driver's.
+    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1]))) extra.channel = 'tty';
     events.append(root, {
       event: 'cli',
       cmd: pos[0],
