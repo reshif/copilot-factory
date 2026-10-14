@@ -8,7 +8,7 @@ const path = require('path');
 const { FactoryError, fail, readText, writeJson } = require('./lib/util');
 const { requireRoot, findRoot, PLUGIN_ROOT } = require('./lib/paths');
 
-const BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve']);
+const BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -47,13 +47,17 @@ function readStdin() {
 
 const HELP = `factory — Software Factory CLI (plugin at ${PLUGIN_ROOT})
 
-Setup      init [--base <branch>] · doctor · ci install
+Setup      init [--base <branch>] · doctor · ci install · shim [--dir ~/.local/bin] [--force]   (links factory, factory-inspect onto PATH)
 Jobs       job new --title "…" --type <work type> --risk low|medium|high [--epic] · job show · job list · use <job>
 Routing    next · why [--format md] · finalize [--mode before_ship|full] [--check]
 Contract   contract show · contract check [--plan-fields] · answer --id Q-n | --question "…" --answer "…"
 Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config clarify|decide|challenge] [--mode m] [--scope s] [--lanes a,b]
            [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
            record --file <envelope.json | ->
+           run <ground|fanout-judge|decompose|realize|reconcile> [--config c] [--mode m] [--scope s] [--lanes a,b] [--accept-degraded]
+               [--threat-model | --no-threat-model] [--plan-critique] [--dry-run]
+               runs the workflow on the Copilot CLI (one \`copilot -p --agent factory:<role>\` per agent) and records it;
+               COPILOT_BIN, policy.copilot.flags, policy.limits.max_parallel_agents, policy.agents.model_ids
 Plan       plan validate · plan from-contract
 Tasks      task start <T> · task show <T> · task verify <T> · task state <T> blocked|exhausted [--reason]
 Build      reconcile run|continue|abort · verify run · evidence add <AC> --type diff|doc [--path p] [--note n]
@@ -96,6 +100,22 @@ function run(argv) {
       return C('setup').init(opt.root || process.cwd(), { baseBranch: opt.base });
     case 'doctor':
       return C('setup').doctor(opt.root || process.cwd());
+    case 'shim':
+      return C('setup').shim({ dir: opt.dir, force: Boolean(opt.force) });
+    case 'run':
+      // async: main() awaits it, prints the result and the record outcome
+      return C('runner').run(R(), {
+        jobId: J,
+        workflow: sub,
+        config: opt.config,
+        mode: opt.mode,
+        scope: opt.scope,
+        lanes: opt.lanes,
+        threatModel: opt['threat-model'] ? true : opt['no-threat-model'] ? false : undefined,
+        planCritique: opt['plan-critique'] ? true : undefined,
+        acceptDegraded: Boolean(opt['accept-degraded']),
+        dryRun: Boolean(opt['dry-run']),
+      });
     case 'console':
       if (opt.serve) { C('console').runServe(R(), { port: opt.port, job: J, label: opt.label }); return LONG_RUNNING; } // prints its own URL once listening
       return C('console').run(R(), { out: opt.out, job: J, label: opt.label, data: opt.data });
@@ -341,6 +361,7 @@ function logCommand(argv, res, err) {
   try {
     const { pos, opt } = parseArgs(argv);
     if (['help', 'console', undefined].includes(pos[0])) return; // console is read-only: it leaves no trace (doc is logged; the inspector counts it read-only)
+    if (pos[0] === 'run' && !err) return; // factory run logs its own wfargs, agent_run and record lines
     const root = findRoot(opt.root ? path.resolve(opt.root) : process.cwd());
     if (!root) return;
     const events = require('./core/events');
@@ -373,23 +394,27 @@ function logCommand(argv, res, err) {
 
 function main(argv) {
   const { opt } = parseArgs(argv);
-  let res = null;
-  let err = null;
+  const finish = (res, err) => {
+    if (err) {
+      if (err instanceof FactoryError) {
+        out({ error: true, code: err.code, message: err.message, details: err.details }, {});
+        process.exitCode = 1;
+      } else {
+        out({ error: true, code: 'internal', message: err.message, stack: String(err.stack).split('\n').slice(0, 6) }, {});
+        process.exitCode = 2;
+      }
+    } else if (typeof res === 'string') process.stdout.write(res + '\n');
+    else if (res !== LONG_RUNNING) out(res, opt);
+    logCommand(argv, err ? null : res, err);
+  };
+  let res;
   try {
     res = run(argv);
-    if (typeof res === 'string') process.stdout.write(res + '\n');
-    else if (res !== LONG_RUNNING) out(res, opt);
   } catch (e) {
-    err = e;
-    if (e instanceof FactoryError) {
-      out({ error: true, code: e.code, message: e.message, details: e.details }, {});
-      process.exitCode = 1;
-    } else {
-      out({ error: true, code: 'internal', message: e.message, stack: String(e.stack).split('\n').slice(0, 6) }, {});
-      process.exitCode = 2;
-    }
+    return finish(null, e);
   }
-  logCommand(argv, res, err);
+  if (res && typeof res.then === 'function') return res.then((r) => finish(r, null), (e) => finish(null, e)); // factory run
+  return finish(res, null);
 }
 
 module.exports = { main, run, parseArgs, findRoot };
