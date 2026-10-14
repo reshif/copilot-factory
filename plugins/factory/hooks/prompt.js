@@ -77,5 +77,7 @@ safe((input) => {
     }
   }
   writeLastReply(root, { at: new Date().toISOString(), text, ...rec });
-  context(msg);
+  // VS Code's Local harness can't add context on a prompt: the user sees this line instead.
+  const shown = rec.status === 'applied' ? `[factory] Applied your reply: ${rec.message}` : rec.status === 'refused' ? `[factory] Your reply was NOT applied: ${rec.message}` : `[factory] ${rec.message}`;
+  context(msg, shown);
 });

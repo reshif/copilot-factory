@@ -16,11 +16,45 @@ const { safe, findRoot, traceError, runnerAgent } = require('./lib');
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 const READS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead']);
+// Tools the normaliser knows that run no command.
+const KNOWN = new Set(['Task', 'Agent', 'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'BashOutput', 'KillShell']);
+// A tool we don't know whose name says it runs things (VS Code tasks, an extension's or an
+// MCP server's terminal tool): every command-like string argument is read as a command.
+// Any other unknown tool: only arguments named like a command. Content and prose fields
+// (explanation, description, content…) are never read; within a command, a factory verb
+// counts only in command position (shell.js), so `echo "factory approve"` is data.
+const RUNNER = /terminal|shell|exec|command|run|bash|powershell|pwsh|cmd|script|task|process|spawn/i;
+const RUNNER_ARG = /^(command|cmd|commands|commandLine|command_line|shellCommand|shell_command|script|code|input|line|keys|text|args|argv|arguments)$/i;
+const COMMAND_ARG = /^(command|cmd|commands|commandLine|command_line|shellCommand|shell_command|script)$/i;
+
+function commandArgs(input) {
+  const runner = RUNNER.test(String(input.runtimeTool || ''));
+  const keyOk = (k) => (runner ? RUNNER_ARG : COMMAND_ARG).test(k);
+  const out = [];
+  const visit = (obj, depth) => {
+    if (!obj || typeof obj !== 'object' || depth > 2) return;
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'string' && v && keyOk(k)) out.push(v);
+      else if (Array.isArray(v) && keyOk(k) && v.every((x) => typeof x === 'string')) out.push(v.join(' '));
+      else if (v && typeof v === 'object') visit(v, depth + 1);
+    }
+  };
+  visit(input.args, 0);
+  // {command: "factory", args: ["approve"]}: one command line
+  const a = input.args || {};
+  const cmd = typeof a.command === 'string' ? a.command : typeof a.cmd === 'string' ? a.cmd : null;
+  const rest = Array.isArray(a.args) ? a.args : Array.isArray(a.argv) ? a.argv : null;
+  if (cmd && rest && rest.every((x) => typeof x === 'string')) out.push([cmd, ...rest].join(' '));
+  return out;
+}
 
 safe((input) => {
   const tool = input.tool;
-  if (!WRITE_TOOLS.has(tool) && !READS.has(tool) && tool !== 'Bash') return;
-  const { checkWrite, checkReadTool, checkBash, checkContent, deny, loadPolicy } = require('./guard-rules');
+  if (!tool || KNOWN.has(tool)) return;
+  const unknown = !WRITE_TOOLS.has(tool) && !READS.has(tool) && tool !== 'Bash';
+  const commands = unknown ? commandArgs(input) : null;
+  if (unknown && !commands.length) return;
+  const { checkWrite, checkReadTool, checkBash, checkUnknownCommand, checkContent, deny, loadPolicy } = require('./guard-rules');
   const ti = input.args;
   const cwd = input.cwd;
   const abs = (p) => (path.isAbsolute(p) ? p : path.resolve(cwd, p));
@@ -29,7 +63,15 @@ safe((input) => {
   const root = findRoot(cwd, absFile && path.dirname(absFile), agent && agent.root);
   const policy = root ? loadPolicy(root) : require('../cli/core/policy').defaults();
   let why = null;
-  if (WRITE_TOOLS.has(tool)) {
+  if (unknown) {
+    for (const c of root ? commands : []) {
+      why = checkUnknownCommand(root, c, policy, { agent: Boolean(agent) });
+      if (why) {
+        why = `${why} (tool ${input.runtimeTool}: "${c.replace(/\s+/g, ' ').trim().slice(0, 117)}")`;
+        break;
+      }
+    }
+  } else if (WRITE_TOOLS.has(tool)) {
     // Every file the call writes: its path argument and every file an apply_patch body touches.
     for (const f of input.files) {
       why = checkWrite(root, abs(f.path), policy) || (root && f.content ? checkContent(f.content, abs(f.path)) : null);

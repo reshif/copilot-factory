@@ -6,10 +6,10 @@ This is a port of [claude-factory](https://github.com/reshif/claude-factory) (th
 
 | Plugin | Version | What it is |
 |---|---|---|
-| `factory` | 0.3.0 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 21 custom agents, recipes, templates and the console |
-| `factory-inspector` | 0.3.0 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R20) |
+| `factory` | 0.3.1 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 21 custom agents, recipes, templates and the console |
+| `factory-inspector` | 0.3.1 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R20) |
 
-0.3.0 adds **grounded intent**: clarify researches the repo and the web before it asks you anything (see [How a job runs](#grounded-intent-research-before-questions)).
+0.3.0 adds **grounded intent**: clarify researches the repo and the web before it asks you anything (see [How a job runs](#grounded-intent-research-before-questions)). 0.3.1 makes the hooks work in VS Code's Local harness as well as the Copilot one, says when chat replies aren't reaching the factory, asks you to type the job id when you approve from a terminal, and runs the distill lesson-writer through `factory distill write` (see [Use it in VS Code](#use-it-in-vs-code)).
 
 The version line started again at 0.1.0 for Copilot. It is separate from claude-factory's (0.10.0 / 0.2.0 at the time of the port).
 
@@ -161,7 +161,21 @@ VS Code's Copilot Chat can use the same plugins, but it needs three things the C
 
    Check the **Agent Plugins - Installed** view in the Extensions view: `factory` and `factory-inspector` should be listed and enabled.
 
-3. **Keep the Copilot CLI installed and signed in.** `factory run` starts each agent as a `copilot -p` process, so it needs the `copilot` command even when you drive the factory from VS Code. Use a chat session on the **Copilot** harness (it shares the CLI's runtime, hooks included); the **Local** harness uses a different hook format and isn't supported.
+3. **Keep the Copilot CLI installed and signed in.** `factory run` (and `factory distill write`) starts each agent as a `copilot -p` process, so it needs the `copilot` command even when you drive the factory from VS Code.
+
+4. **Pick the Copilot harness.** The harness is not the agent picker ("Agent" there is a role): it is the **Session Target**. Before the first prompt of a session, select **New Chat** (`+`), open the **Session Target** control and choose **Copilot**. The chat title's prefix (in the Agents window, the input box watermark) shows the harness of the current session; switching the model or the role doesn't change it. The Copilot harness runs the same hook runtime as the CLI.
+
+   **Local** works too when hooks run there: `chat.useHooks` on (the default), the folder trusted (Workspace Trust), and no policy restricting hooks to managed plugins. Every factory hook answers in both formats in one JSON object (the Copilot fields plus Local's `hookSpecificOutput`), each hook entry has the `command` field Local's own format uses, and the guard knows VS Code's tool names (`run_in_terminal`, `editFiles`/`replace_string_in_file`/`createFile`, `readFile`, `textSearch`, `fileSearch`, `runSubagent` …). Two Local limits: a prompt hook can't add context for the model there, so the outcome of a chat reply shows to you as a message and reaches Copilot through `factory next` (`last_reply`); and Local reports a custom agent's stop as a subagent stop, which the stop gate leaves alone.
+
+**Check that your chat replies reach the factory.** Approvals in chat (`approve`, `deny …`, `resume`) are applied by the prompt hook, before the model sees them. If the hooks don't run in your session, nothing is applied, and `factory next` says so once in a `notice` while it waits on you. To find out why:
+
+- the chat title prefix: is the session on the Copilot (or Local) harness?
+- **Chat: Configure Hooks** (Command Palette) lists the hook files the session loads: the factory's `hooks.json` should be there;
+- the **Output** panel, channel **GitHub Copilot Chat Hooks**, shows each hook run and its errors (the agent debug logs show the payloads);
+- `chat.useHooks` is on and the folder is trusted (**Workspaces: Manage Workspace Trust**);
+- in the Copilot CLI, `/plugin list` shows `factory` enabled and `/env` lists its hooks.
+
+Meanwhile, act from your own terminal (not the chat's): `factory approve H2 --job J-0007`, `factory deny --job J-0007 --reason "…"`, `factory resume`, … Each human-only command asks you to type the job id (a lesson's id for `lessons accept|reject`) on the terminal to confirm, for example `Type J-0007 to approve H2:`. There is no `--yes`. The command refuses to run in a shell that belongs to an agent (inside `factory run`, or where an agent harness marks its shell), and VS Code's tool confirmations ("Allow", Autopilot, auto-approve) are not a human channel: never let an agent run these for you.
 
 Then type `/factory:start <what you want>` in the chat. The same five commands appear as in the CLI: `/factory:start`, `/factory:why`, `/factory:console`, `/factory:review`, `/factory-inspector:inspect`. Each plugin's manifest is `plugin.json` at the plugin root, the location both the CLI and VS Code read (VS Code does not read `.github/plugin/plugin.json`, where versions before 0.2.1 kept it, which is why the commands didn't show up there).
 
@@ -319,7 +333,7 @@ Rule table and CLI: [`plugins/factory-inspector/README.md`](plugins/factory-insp
 
 ## Hooks
 
-Both plugins ship hooks in Copilot's own format, in `hooks.json` at the plugin root (the place both the Copilot CLI and VS Code read for this plugin format; `{ "version": 1, "hooks": { "<event>": [ … ] } }`, camelCase events). Every script reads its input through one normaliser that accepts Copilot's camelCase payloads (`toolName`, `toolArgs`) and the snake_case ones (`tool_name`, `tool_input`).
+Both plugins ship hooks in Copilot's own format, in `hooks.json` at the plugin root (the place both the Copilot CLI and VS Code read for this plugin format; `{ "version": 1, "hooks": { "<event>": [ … ] } }`, camelCase events). Every script reads its input through one normaliser that accepts Copilot's camelCase payloads (`toolName`, `toolArgs`), the snake_case ones (`tool_name`, `tool_input`, `hook_event_name`) VS Code's Local harness sends, and the tool names of the Copilot runtime and of VS Code. Every output carries both shapes in one JSON object: the Copilot CLI's flat fields and Local's `hookSpecificOutput` (a second hooks file is not an option: the Copilot runtime would run both and apply a reply twice). Each entry has `bash`, `powershell` and `command` (the same launcher as `bash`; the field Local's format uses).
 
 **They stay out of your way.** The guard denies only clear violations, and the stop gate nudges at most once; when a hook isn't sure, it allows. Every launcher starts with its name (`H=factory:guard; …`, so a timeout warning tells you which hook) and ends in `exit 0`: if `node` is missing, too old or crashes, the hook is off with a warning instead of denying every tool. A deny is the documented JSON on stdout (`permissionDecision: "deny"` and the reason, exit 0).
 
@@ -327,7 +341,7 @@ Both plugins ship hooks in Copilot's own format, in `hooks.json` at the plugin r
 |---|---|---|---|
 | factory | `sessionStart` | `session-start.js` | Tells Copilot about the current job and what's waiting, and how to run the CLI: `factory` if it's on your PATH, otherwise the absolute `node "<root>/bin/factory"` plus how to stop the permission prompts (`factory shim`, or `/add-dir <plugin root>`) |
 | factory | `userPromptSubmitted` | `prompt.js` | Applies your replies through the CLI and writes the outcome to `.factory/last-reply.json` (shown by `factory next` as `last_reply`); flags look-alikes as not applied. Notes in `.factory/turn.json` whether your message was factory work (`/factory:…` or a reply). Ignores the stop gate's and Autopilot's continuation prompts |
-| factory | `preToolUse` (shell, file reads and edits, search) | `guard.js` | Blocks writes to protected paths, recipes and policy, and reads of secrets (`.env`, keys, the seal key; `.env.example` and other templates are not secrets); keeps builders inside their task's allowed paths; blocks human-only commands however they're run (wrappers like `env`/`sudo`/`xargs`, `bash -c`, `eval`, `$(…)`, a variable or alias set to the CLI, an interactive shell); inside a `factory run` agent, allows only the factory commands that role is briefed for. Shell commands are read like a shell would: only what *runs* counts, so `grep "factory approve" docs/`, `echo`, commit messages, `gh --body`, heredocs and `$HOME/…` commands are fine |
+| factory | `preToolUse` (shell, file reads and edits, search) | `guard.js` | Blocks writes to protected paths, recipes and policy, and reads of secrets (`.env`, keys, the seal key; `.env.example` and other templates are not secrets); keeps builders inside their task's allowed paths; blocks human-only commands however they're run (wrappers like `env`/`sudo`/`xargs`, `bash -c`, `eval`, `$(…)`, a variable or alias set to the CLI, an interactive shell, or the command arguments of a terminal or MCP tool it doesn't know); inside a `factory run` agent, allows only the factory commands that role is briefed for. Shell commands are read like a shell would: only what *runs* counts, so `grep "factory approve" docs/`, `echo`, commit messages, `gh --body`, heredocs and `$HOME/…` commands are fine |
 | factory | `postToolUse`, `subagentStart` | `activity.js` | Appends a sealed line per event to `.factory/log/events.jsonl` |
 | factory | `subagentStop` | `subagent-stop.js` | Records that an agent finished |
 | factory | `agentStop` | `stop.js` | The stop gate: **at most once per routing decision**, it sends Copilot back when this turn was factory work and the step `factory next` assigned hasn't been started (job active, floors unmet, nothing waiting on you, no `factory run` in progress, not ending with a question to you). Reasons start with `[factory stop gate]`. Never for a turn that only answered you; off inside `factory run` agents |
@@ -453,6 +467,10 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (21 factory ag
 | `factory-inspect: command not found` in a session | The inspect skill falls back to the `[inspector] Inspector CLI:` command from session start. If there is none, check that `factory-inspector` is installed and enabled (`copilot plugin list`), then `/restart`. For your terminal, `factory shim` links it too |
 | `node …/bin/factory shim` fails with "Cannot find module" | The plugin isn't where the command looks. A marketplace added from a local folder runs from that folder (use `node <your clone>/plugins/factory/bin/factory shim`), and with `COPILOT_HOME` set the copies are under `$COPILOT_HOME/installed-plugins/`. `copilot plugin list --json` shows `source` and, for local installs, `installedFrom` |
 | VS Code: no `/factory:…` commands | Enable `chat.plugins.enabled` and reload the window; check **Agent Plugins - Installed** lists `factory`; update to 0.2.1 or later (earlier manifests were in `.github/plugin/`, which VS Code doesn't read); install from `reshif/copilot-factory`, not a local folder; use the Copilot harness. See "Use it in VS Code" |
+| VS Code: you replied `approve` in chat and nothing happened; `factory next` has a `notice` that chat replies aren't reaching the factory | The prompt hook isn't running in that session. Check the chat title prefix (Session Target: Copilot, or Local with hooks on), **Chat: Configure Hooks**, the **GitHub Copilot Chat Hooks** output channel, `chat.useHooks` and Workspace Trust; in the CLI, `/plugin list`. Meanwhile approve from your own terminal: `factory approve <gate> --job <J>` and type the job id when asked |
+| `factory approve` (or another human-only command) says `not_confirmed` | You typed something other than the job id (the lesson id for `lessons accept/reject`) at the `Type J-… to …:` prompt. Nothing was done; run it again |
+| `factory approve` says "This shell belongs to an agent" | It ran in a shell an agent harness marks as its own (for example `CLAUDECODE`, `COPILOT_AGENT_PROMPT`, `CODEX_SANDBOX` set), or inside `factory run`. Run it in a terminal of your own |
+| The inspector notes `R7.terminal_approvals` | Every human action in that job came from the terminal, none from a chat reply. Fine if you prefer the terminal; otherwise your chat replies may not reach the factory (see the row above) |
 | `/factory:start` isn't in the `/` menu | Restart the CLI after installing (`/restart`), and check `copilot skill list` shows the factory's skills |
 | `/factory:start` (or `/factory:why`, `/factory:console`, `/factory:review`, `/factory-inspector:inspect`) runs some other skill, or a factory skill is missing from `copilot skill list` | Copilot keeps only one skill per `name`, and a project skill (`.github/skills/<name>/`) or a personal skill wins over a plugin's, which is dropped without a warning. A skill of yours named `start`, `why`, `console`, `review` or `inspect` (or one of the step skills: `intake`, `clarify`, `gate`, `ship`, `distill`, `amend`, `park`) hides the factory's. `copilot skill list --json` shows which one won. Rename or remove yours, then `/restart` |
 | `factory init` stops with `no_git_identity` | git doesn't know your name and email yet. Run the two `git config --global` commands from the message, then `/factory:start` again |
@@ -502,7 +520,7 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (21 factory ag
 - [x] **Autopilot cannot approve gates.** Gates are applied only from your typed replies. Autopilot's and the stop gate's continuation prompts do pass through the reply hook, but their text never parses as a reply, and agents that run `factory approve` are refused. Hooks can't see the session mode (`sessionStart` carries no mode), but Autopilot's continuation prompt has a fixed text a hook can recognise.
 - [x] Found and fixed: a headless agent's call to the factory CLI (`node "<plugin root>/bin/factory" …`) is denied unless the plugin folder is an allowed path, because `-p` can't ask. `factory run` now passes `--add-dir <plugin root>`.
 - [x] Found and fixed: the `search` and `web` tool aliases are ignored by 1.0.97, although the docs list them. `grep`, `glob` and `web_fetch` work, so the agents list those too. `read`, `edit`, `execute`/`shell` and `agent` resolve as documented.
-- [x] Found and fixed: all 19 agents were offered to the main session for auto-delegation. Every factory role except the lesson-writer now sets `disable-model-invocation: true`; `--agent factory:<role>` still selects them.
+- [x] Found and fixed: all 19 agents were offered to the main session for auto-delegation. Every factory role now sets `disable-model-invocation: true` (the lesson-writer too since 0.3.1, when `factory distill write` started launching it with `--agent`); `--agent factory:<role>` still selects them.
 - [x] Found: skills are deduplicated by `name`, so a project or personal skill with the same name hides the factory's (see Troubleshooting). Agents are namespaced and aren't affected.
 
 **Verified signed in, on Copilot CLI 1.0.95** (`scripts/verify-copilot.sh` on a user's machine):
@@ -528,7 +546,9 @@ Hooks ([hooks](docs/research/hooks.md)):
 Surfaces ([surfaces-patterns](docs/research/surfaces-patterns.md)):
 - [ ] VS Code: with `chat.plugins.enabled`, the CLI-installed plugins appear under **Agent Plugins - Installed** and `/factory:start` shows in Copilot Chat (fixed in 0.2.1: the manifest moved to the plugin root, which VS Code reads).
 - [ ] The GitHub Copilot app and VS Code's Copilot harness behave like the CLI (they share its runtime per the docs; hook coverage in the app is not documented).
-- [ ] Subagent depth and concurrency defaults (4 vs 6; plan-based caps), which matter only for the `distill` skill's single lesson-writer subagent.
+- [ ] VS Code Local harness (0.3.1): the plugin's Copilot-format `hooks.json` is mapped (which of `bash` / `command` Local runs is undocumented; both hold the same launcher), `PLUGIN_ROOT` or `CLAUDE_PLUGIN_ROOT` reaches the launcher, the exact tool ids in payloads (`run_in_terminal` vs `runInTerminal`, edit tools' argument names) match the normaliser's map, and a chat `approve` is applied. Check with the agent debug logs and the **GitHub Copilot Chat Hooks** output.
+- [ ] The typed confirmation on a real Windows console (`CONIN$`).
+- [x] Subagent depth and concurrency defaults no longer matter: since 0.3.1 the lesson-writer runs as a `copilot -p` process (`factory distill write`), not a subagent.
 - [ ] Windows: `factory run` resolves an npm-installed `copilot.cmd` to its Node loader and runs a WinGet `copilot.exe` directly, and prompts go through files to stay under Windows' command-line limit. Not yet run on Windows.
 
 ## Known limits

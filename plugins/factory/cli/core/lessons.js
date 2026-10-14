@@ -66,6 +66,7 @@ function decide(root, { id, accept, reason, channel }) {
   const l = doc.lessons.find((x) => x.id === id);
   if (!l) fail(`Lesson ${id} not found`, 'bad_input');
   if (l.status !== 'proposed') fail(`Lesson ${id} is already ${l.status}`, 'bad_input');
+  require('./human').confirmTyped(channel, l.id, `${accept ? 'accept' : 'reject'} it`);
   l.status = accept ? 'accepted' : 'rejected';
   l.decided_at = nowIso();
   l.reason = reason || '';
@@ -79,6 +80,7 @@ function promote(root, { id, check, channel }) {
   const doc = load(root);
   const l = doc.lessons.find((x) => x.id === id);
   if (!l || l.status !== 'accepted') fail(`Lesson ${id} must exist and be accepted`, 'bad_input');
+  require('./human').confirmTyped(channel, l.id, `promote it to the check "${check}"`);
   l.status = 'promoted';
   l.check = check;
   save(root, doc);

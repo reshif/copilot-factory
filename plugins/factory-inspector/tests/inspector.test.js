@@ -231,7 +231,8 @@ test('hooks: after-close reports, session start mentions open findings, replies 
   const run = (hook, input, event) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook), ...(event ? [event] : [])], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
   const ctx = (r) => JSON.parse(r.stdout).additionalContext;
   const after = run('after-close.js', { toolName: 'bash', toolArgs: JSON.stringify({ command: `factory close --job ${J}` }), toolResult: { resultType: 'success', textResultForLlm: '{}' } }, 'postToolUse');
-  assert.deepEqual(Object.keys(JSON.parse(after.stdout)), ['additionalContext']);
+  assert.deepEqual(Object.keys(JSON.parse(after.stdout)), ['additionalContext', 'hookSpecificOutput']);
+  assert.deepEqual(JSON.parse(after.stdout).hookSpecificOutput, { hookEventName: 'PostToolUse', additionalContext: ctx(after) }, 'VS Code Local shape in the same object');
   assert.match(ctx(after), /inspected J-0001; no new findings/);
   assert.equal(run('after-close.js', { toolName: 'bash', toolArgs: { command: 'git status' } }, 'postToolUse').stdout, '');
   assert.equal(run('after-close.js', { toolName: 'view', toolArgs: { path: 'factory close' } }, 'postToolUse').stdout, '', 'only shell calls');
@@ -265,11 +266,35 @@ test('hooks: after-close reports, session start mentions open findings, replies 
     assert.doesNotMatch(h.bash + h.powershell, /\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}|\$\{[^}]*\$\{/);
     assert.match(h.bash, new RegExp(` ${ev} \\|\\| echo "\\[\\$H\\] hook failed \\(exit \\$\\?\\); allowed" >&2; exit 0$`));
     assert.match(h.powershell, /^\$h='inspector:[\w-]+'; .*; exit 0$/);
+    assert.equal(h.command, h.bash, 'VS Code Local\'s cross-platform field: the same launcher');
     assert.ok(h.timeoutSec > 0);
   }
   assert.ok(H.hooks.agentStop[0].timeoutSec <= 15, 'the end-of-turn catch-up is cheap: no inspection in the hook itself');
   const viaLauncher = spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'factory-inspect mark F1 fixed' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, PLUGIN_ROOT: PLUGIN } });
   assert.deepEqual([viaLauncher.status, JSON.parse(viaLauncher.stdout).permissionDecision], [0, 'deny']);
+});
+
+test('hooks under VS Code\'s Local harness: snake_case payloads, VS Code tool names, both output shapes', () => {
+  const root = F.makeRepo();
+  const J = cleanJob(root);
+  const run = (hook, input) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook)], { input: JSON.stringify({ cwd: root, session_id: 'vs1', timestamp: 't', ...input }), encoding: 'utf8' });
+  const after = JSON.parse(run('after-close.js', { hook_event_name: 'PostToolUse', tool_name: 'run_in_terminal', tool_input: { command: `factory close --job ${J}`, explanation: 'x', isBackground: false }, tool_response: '{}' }).stdout);
+  assert.match(after.additionalContext, /inspected J-0001/);
+  assert.equal(after.hookSpecificOutput.hookEventName, 'PostToolUse');
+  const s = JSON.parse(run('session-start.js', { hook_event_name: 'SessionStart', source: 'new' }).stdout);
+  assert.deepEqual(s.hookSpecificOutput, { hookEventName: 'SessionStart', additionalContext: s.additionalContext });
+  fs.appendFileSync(path.join(F.jobDir(root, J), 'ledger.jsonl'), '{"forged":true}\n');
+  inspect(root, ['run', '--all']);
+  const p = JSON.parse(run('prompt.js', { hook_event_name: 'UserPromptSubmit', prompt: 'ack finding F1' }).stdout);
+  assert.match(p.systemMessage, /Applied: Finding F1 marked acknowledged/, 'Local shows the user a systemMessage');
+  const d = JSON.parse(run('guard.js', { hook_event_name: 'PreToolUse', tool_name: 'run_in_terminal', tool_input: { command: 'factory-inspect mark F1 fixed' } }).stdout);
+  assert.deepEqual(d.hookSpecificOutput, { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.permissionDecisionReason });
+  assert.equal(d.permissionDecision, 'deny');
+  // a command runner the guard doesn't know: its command arguments, command position only
+  assert.equal(JSON.parse(run('guard.js', { hook_event_name: 'PreToolUse', tool_name: 'mcp_shell_exec', tool_input: { command: 'factory-inspect mode bug@low off' } }).stdout).permissionDecision, 'deny');
+  for (const [tool_name, tool_input] of [['mcp_shell_exec', { command: 'factory-inspect report' }], ['mcp_shell_exec', { command: 'echo factory-inspect mark F1 fixed' }], ['replace_string_in_file', { filePath: 'notes.md', oldString: 'a', newString: 'factory-inspect mark F1 fixed' }]]) {
+    assert.equal(run('guard.js', { hook_event_name: 'PreToolUse', tool_name, tool_input }).stdout, '', JSON.stringify(tool_input));
+  }
 });
 
 test('observe reads camelCase hook events and Copilot tool names; agents pair by type when starts carry no id', () => {
@@ -595,6 +620,36 @@ test('R20 grounded intent: a researchable question still asked (with its reason)
   assert.match(I.report(root).findings.find((x) => x.rule === 'R1.seals' && x.job === J).summary, /intent-evidence\.json/);
 });
 
+test('R7: human verbs from the user\'s own terminal are not driver deviations; one low note per job instead', () => {
+  const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
+  const cli = (h, d, extra) => ({ event: 'cli', ts: at(h), job: 'J-0003', decision_id: d, ok: true, ...extra });
+  const decisions = [{ id: 'J-0003-D0001', ts: at(1), action: 'gate', step: 'H1' }, { id: 'J-0003-D0002', ts: at(3), action: 'workflow', workflow: 'ground', step: 'ground' }, { id: 'J-0003-D0003', ts: at(5), action: 'parked', step: 'P' }, { id: 'J-0003-D0004', ts: at(7), action: 'workflow', workflow: 'ground', step: 'ground' }];
+  const job = {
+    id: 'J-0003', state: { status: 'active' }, lock: null, ledger: [],
+    decisions: [...decisions, { ts: at(1.5), job: 'J-0003', action: 'human.approve', gate: 'H1', channel: 'tty' }, { ts: at(5.5), job: 'J-0003', action: 'human.resume', channel: 'tty' }],
+    events: [
+      cli(1.5, 'J-0003-D0001', { cmd: 'approve', sub: 'H1', channel: 'tty' }),
+      cli(2, 'J-0003-D0002', { cmd: 'wfargs', workflow: 'ground' }), cli(2.1, 'J-0003-D0002', { cmd: 'record', workflow: 'ground' }),
+      cli(5.5, 'J-0003-D0003', { cmd: 'resume', channel: 'tty' }),
+      cli(5.6, 'J-0003-D0003', { cmd: 'lessons', sub: 'accept', arg: 'L1', channel: 'tty' }),
+      cli(6, 'J-0003-D0004', { cmd: 'wfargs', workflow: 'ground' }), cli(6.1, 'J-0003-D0004', { cmd: 'record', workflow: 'ground' }),
+    ],
+  };
+  let found = rules.driverFidelity(job);
+  assert.deepEqual(found.map((x) => x.rule), ['R7.terminal_approvals'], JSON.stringify(found.map((x) => x.summary)));
+  assert.equal(found[0].severity, 'low');
+  assert.match(found[0].summary, /came from the terminal \(approve H1, resume, lessons accept/);
+  assert.match(found[0].question, /Chat: Configure Hooks/);
+  // a refused attempt (an agent trying) is still a deviation
+  job.events.push(cli(1.6, 'J-0003-D0001', { cmd: 'approve', ok: false, code: 'human_only' }));
+  found = rules.driverFidelity(job);
+  assert.ok(found.some((x) => x.rule === 'R7.acted_while_waiting' && /approve/.test(x.summary)));
+  job.events.pop();
+  // chat replies reached the factory too: no note
+  job.decisions.push({ ts: at(6.5), job: 'J-0003', action: 'human.approve', gate: 'H3', channel: 'chat' });
+  assert.deepEqual(rules.driverFidelity(job), []);
+});
+
 test('R20 from synthetic records: web off is low severity; limits and quiet jobs; R7 skips human assumption commands; R3 accepts an override as a rewind cause', () => {
   const { LIMITS } = require('../inspector/config');
   const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
@@ -618,7 +673,7 @@ test('R20 from synthetic records: web off is low severity; limits and quiet jobs
   // R7: factory intent show (read-only) and factory assumption change (a human action) at a gate
   const cli = (h, d, extra) => ({ event: 'cli', ts: at(h), job: 'J-0002', decision_id: d, ok: true, ...extra });
   const g = { ...job, decisions: [{ id: 'J-0002-D0001', ts: at(1), action: 'gate', step: 'H1' }, { id: 'J-0002-D0002', ts: at(3), action: 'skill', skill: 'clarify', step: 'clarify' }], events: [cli(1.1, 'J-0002-D0001', { cmd: 'intent', sub: 'show' }), cli(1.2, 'J-0002-D0001', { cmd: 'assumption', sub: 'change', arg: 'A-1' })] };
-  assert.deepEqual(rules.driverFidelity(g).filter((x) => x.rule !== 'R7.not_done'), []);
+  assert.deepEqual(rules.driverFidelity(g).filter((x) => !['R7.not_done', 'R7.terminal_approvals'].includes(x.rule)), []);
   // R3: H1 → clarify after "change A-n" is explained
   const recipe = { id: 'standard@medium', steps: [{ step: 'clarify', run: 'skill:clarify' }, { step: 'H1', run: 'gate' }, { step: 'ground', run: 'workflow:ground' }] };
   const rw = { ...job, lock: { recipe }, decisions: [{ id: 'D1', ts: at(1), action: 'skill', step: 'clarify' }, { id: 'D2', ts: at(2), action: 'gate', step: 'H1' }, { ts: at(2.5), action: 'human.change_assumption', assumption: 'A-1' }, { id: 'D3', ts: at(3), action: 'skill', step: 'clarify', rule: 'recipe.next' }] };

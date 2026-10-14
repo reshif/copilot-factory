@@ -729,6 +729,15 @@ function checkBash(root, cmd, policy, opts = {}) {
   }
 }
 
+// A command handed to a tool the guard doesn't know (a VS Code, extension or MCP command
+// runner): only the factory-CLI rules apply here, read with the same command-position logic
+// as Bash: a human-only verb, and for a factory agent driving the job. Everything else about
+// such a tool is its own harness's business.
+function checkUnknownCommand(root, cmd, policy, opts = {}) {
+  const why = checkBash(root, cmd, policy, opts);
+  return why && /is a human-only action|is not for a factory agent|never through xargs/.test(why) ? why : null;
+}
+
 // Files an agent writes may not carry code that reaches into factory internals: a string
 // literal naming them on the same line as a require/import/open/read/write call. Comments
 // and prose that merely mention a factory path are fine.
@@ -754,4 +763,4 @@ function normalise(cmd) {
   return parse(cmd).map((c) => c.words.map((w) => w.text).join(' ')).join('; ');
 }
 
-module.exports = { checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
+module.exports = { checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };

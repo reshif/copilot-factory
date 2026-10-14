@@ -225,6 +225,52 @@ test('human-only actions refuse the agent path', () => {
   for (const t of ['please continue', 'approve', 'what does the approve gate check in this repo for us today', 'hello']) assert.equal(human.nearMiss(t), null, t);
 });
 
+test('terminal human actions: a typed confirmation, no bypass, agent shells refused, one test-only seam', () => {
+  const root = F.makeRepo();
+  const { spawnSync } = require('child_process');
+  const human = require('../cli/core/human');
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !human.AGENT_ENV.some(([a]) => a === k)));
+  const cli = (args, env = {}) => {
+    const r = spawnSync('node', [F.BIN, ...args], { cwd: root, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '', ...env } });
+    return JSON.parse(r.stdout);
+  };
+  const token = human.testToken();
+  const status = () => F.cli(root, ['job', 'show']).status;
+  // without a terminal and without the seam: refused, as before
+  assert.equal(cli(['cancel']).code, 'human_only');
+  assert.equal(cli(['cancel'], { FACTORY_TEST_HUMAN: 'guess', FACTORY_TEST_HUMAN_INPUT: J }).code, 'human_only', 'the seam needs the token');
+  assert.equal(cli(['cancel'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: J, FACTORY_RUNNER: '1' }).code, 'agent_not_allowed', 'never in a factory agent');
+  assert.equal(human.agentContext({ CLAUDECODE: '1' }), 'CLAUDECODE');
+  assert.equal(human.agentContext({ FACTORY_RUNNER: '0' }), null);
+  assert.match(cli(['cancel'], { CLAUDECODE: '1' }).message, /belongs to an agent \(CLAUDECODE is set\)/);
+  // the wrong id typed: nothing happens; --yes is no bypass
+  const wrong = cli(['cancel', '--yes'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: 'y' });
+  assert.equal(wrong.code, 'not_confirmed');
+  assert.equal(status(), 'active');
+  assert.equal(cli(['cancel'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: ` ${J.toLowerCase()} ` }).job, J, 'the id, case and spaces aside');
+  assert.equal(status(), 'cancelled');
+  // lessons are confirmed by their own id
+  F.cli(root, ['lessons', 'add', '--text', 'Run the linter before review', '--scope', 'review']);
+  assert.equal(cli(['lessons', 'accept', 'L1'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: J }).code, 'not_confirmed');
+  assert.equal(cli(['lessons', 'accept', 'L1'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: 'L1' }).lesson.status, 'accepted');
+  // chat replies need no confirmation: the reply is the human's own words
+  const J2 = F.cli(root, ['job', 'new', '--title', 'y', '--type', 'bug', '--risk', 'low']).job;
+  assert.match(F.reply(root, `abandon job ${J2}`).message, /abandoned/);
+  // a real terminal (util-linux script gives the command a pty and types our stdin into it)
+  const hasScript = spawnSync('script', ['--version'], { encoding: 'utf8' }).status === 0;
+  if (hasScript && process.platform === 'linux') {
+    const J3 = F.cli(root, ['job', 'new', '--title', 'z', '--type', 'bug', '--risk', 'low']).job;
+    const pty = (typed) => spawnSync('script', ['-qec', `node "${F.BIN}" cancel`, '/dev/null'], { cwd: root, input: `${typed}\n`, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '' }, timeout: 20000 });
+    const no = pty('J-9999');
+    assert.match(no.stdout, new RegExp(`Type ${J3} to cancel it: `));
+    assert.match(no.stdout, /not_confirmed/);
+    assert.equal(F.cli(root, ['job', 'show', '--job', J3]).status, 'active');
+    assert.match(pty(J3).stdout, new RegExp(`${J3} cancelled`));
+    assert.equal(F.cli(root, ['job', 'show', '--job', J3]).status, 'cancelled');
+  }
+});
+
 test('an open GitHub PR alternates sync and wait instead of busy-looping', () => {
   const root = F.makeRepo();
   const { J } = toProve(root);

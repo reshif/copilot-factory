@@ -54,7 +54,8 @@ test('guard: Copilot deny = the documented flat JSON on stdout, exit 0, nothing 
   assert.ok(isDeny(guard({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root })));
   assert.ok(isDeny(guard({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push --force' }, cwd: root })));
   const out = JSON.parse(guard({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root }).stdout);
-  assert.deepEqual(Object.keys(out).sort(), ['permissionDecision', 'permissionDecisionReason']);
+  assert.deepEqual(Object.keys(out).sort(), ['hookSpecificOutput', 'permissionDecision', 'permissionDecisionReason']);
+  assert.deepEqual(out.hookSpecificOutput, { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: out.permissionDecisionReason }, 'the VS Code Local shape in the same object');
   assert.ok(isAllow(guard({ toolName: 'bash', toolArgs: { command: 'git status' }, cwd: root })));
   assert.ok(isAllow(guard({ toolName: 'view', toolArgs: { path: 'src/add.js' }, cwd: root })));
   assert.equal(hook('guard.js', 'not json', 'preToolUse').status, 0, 'a broken input never blocks');
@@ -110,6 +111,9 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
       assert.ok(!ids.has(id), id);
       ids.add(id);
       assert.ok(h.powershell.startsWith(`$h='${id}'; `), ev);
+      // VS Code's Local harness: `command` is its cross-platform field; the same POSIX launcher
+      // (the Copilot runtime prefers bash/powershell when they are present).
+      assert.equal(h.command, h.bash, ev);
       // flat root lookup: no nested ${…:-${…}} and no ${PLUGIN_ROOT} / ${CLAUDE_PLUGIN_ROOT} token VS Code would rewrite
       assert.match(h.bash, /R=\$PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$COPILOT_PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$CLAUDE_PLUGIN_ROOT;/);
       assert.doesNotMatch(h.bash + h.powershell, /\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}|\$\{[^}]*\$\{/);
@@ -183,7 +187,8 @@ test('activity: postToolUse and subagent events land in the log with normalised 
 test('sessionStart: the absolute CLI command always, the current job when there is one', () => {
   const root = F.makeRepo();
   const bare = JSON.parse(hook('session-start.js', { source: 'startup', cwd: root }, 'sessionStart').stdout);
-  assert.deepEqual(Object.keys(bare), ['additionalContext']);
+  assert.deepEqual(Object.keys(bare), ['additionalContext', 'hookSpecificOutput']);
+  assert.deepEqual(bare.hookSpecificOutput, { hookEventName: 'SessionStart', additionalContext: bare.additionalContext });
   assert.ok(bare.additionalContext.includes(`node "${path.join(F.PLUGIN, 'bin', 'factory')}"`));
   assert.match(bare.additionalContext, /not on PATH/);
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
@@ -268,7 +273,8 @@ test('agentStop: blocks at most once per routing decision, across continuations 
   const r = stop(root);
   assert.ok(blocked(r));
   const out = JSON.parse(r.stdout);
-  assert.deepEqual(Object.keys(out).sort(), ['decision', 'reason']);
+  assert.deepEqual(Object.keys(out).sort(), ['decision', 'hookSpecificOutput', 'reason']);
+  assert.deepEqual(out.hookSpecificOutput, { hookEventName: 'Stop', decision: 'block', reason: out.reason });
   assert.match(out.reason, /^\[factory stop gate\] Not finished — /);
   assert.match(out.reason, new RegExp(`${J}: factory next asked for`));
   assert.match(out.reason, /shown once/);
@@ -447,6 +453,135 @@ test('agent sessions: the guard denies driving the job and human commands, allow
   assert.equal(deny.agent_type, 'factory:tester');
   // the stop gate never blocks an agent (see also below), and the brief's doc check is not an "inline script"
   assert.ok(isAllow(guard({ toolName: 'bash', toolArgs: { command: `${R} doc check "${path.join(root, '.factory', 'jobs', J, 'adr-0001.md')}" --job ${J}` }, cwd: root })));
+});
+
+test('factory next: a notice when chat replies are not reaching the factory (dead prompt hook), once per wait', () => {
+  const toH1 = (root, J) => {
+    fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+    F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+    return F.cli(root, ['next']);
+  };
+  const job = (root) => F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  // the prompt hook never ran in this repo: said at the first wait, once
+  let root = F.makeRepo();
+  let J = job(root);
+  F.cli(root, ['next']);
+  let n = toH1(root, J);
+  assert.equal(n.step, 'H1');
+  assert.match(n.notice, /Chat replies aren't reaching the factory: no chat prompt has ever reached/);
+  for (const re of [/Chat: Configure Hooks/, /GitHub Copilot Chat Hooks/, /chat\.useHooks/, /Workspace Trust/, /\/plugin list/, /Session Target/, new RegExp(`factory approve H1 --job ${J}`), /type the job id/]) assert.match(n.notice, re);
+  assert.equal(F.cli(root, ['next']).notice, undefined, 'once per wait');
+  // hooks ran before the gate, then nothing since it opened: said on the next look
+  root = F.makeRepo();
+  J = job(root);
+  prompt(root, '/factory:start fix add');
+  F.cli(root, ['next']);
+  n = toH1(root, J);
+  assert.equal(n.notice, undefined, 'the first presentation of a gate is not a symptom');
+  n = F.cli(root, ['next']);
+  assert.match(n.notice, /since it started waiting on H1/);
+  assert.equal(F.cli(root, ['next']).notice, undefined);
+  // a prompt arrived after the gate opened: the hook works, no notice
+  root = F.makeRepo();
+  J = job(root);
+  prompt(root, '/factory:start fix add');
+  F.cli(root, ['next']);
+  toH1(root, J);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  prompt(root, 'what does the contract say about negatives?');
+  assert.equal(F.cli(root, ['next']).notice, undefined);
+  assert.equal(F.cli(root, ['next']).notice, undefined);
+  // not a wait on the human: never
+  assert.equal(require('../cli/core/reply-watch').humanWait({ job: J, action: 'skill', skill: 'clarify' }), null);
+  assert.ok(require('../cli/core/reply-watch').humanWait({ job: J, action: 'parked', reason: 'r' }));
+});
+
+// --- VS Code Local harness ------------------------------------------------------------------
+
+// Local payloads: snake_case, hook_event_name, VS Code tool names (no argv event: Local maps
+// the camelCase registration but sends its own event name).
+const local = (name, event, extra) => hook(name, { timestamp: '2026-10-14T00:00:00Z', hook_event_name: event, session_id: 'vs1', ...extra });
+
+test('VS Code Local: tool names map to the rules\' names, with their path and command fields', () => {
+  const n = (tool_name, tool_input) => lib.normalise({ hook_event_name: 'PreToolUse', tool_name, tool_input, tool_use_id: 't1' });
+  const t = n('run_in_terminal', { command: 'npm test', explanation: 'run tests', isBackground: false });
+  assert.deepEqual([t.event, t.tool, t.command, t.toolUseId], ['PreToolUse', 'Bash', 'npm test', 't1']);
+  for (const name of ['runInTerminal', 'execute/runInTerminal', 'run_in_terminal']) assert.equal(n(name, { command: 'ls' }).tool, 'Bash', name);
+  for (const [name, input, tool, file] of [
+    ['editFiles', { filePath: 'src/a.js', newString: 'x' }, 'Edit', 'src/a.js'],
+    ['replace_string_in_file', { filePath: 'src/a.js', oldString: 'a', newString: 'b' }, 'Edit', 'src/a.js'],
+    ['insert_edit_into_file', { filePath: 'src/b.js', code: 'y', explanation: 'e' }, 'Edit', 'src/b.js'],
+    ['createFile', { filePath: 'src/c.js', content: 'z' }, 'Write', 'src/c.js'],
+    ['create_file', { filePath: 'src/c.js', content: 'z' }, 'Write', 'src/c.js'],
+    ['readFile', { filePath: 'src/a.js', startLine: 1, endLine: 9 }, 'Read', 'src/a.js'],
+    ['read_file', { filePath: 'src/a.js' }, 'Read', 'src/a.js'],
+    ['textSearch', { query: 'x' }, 'Grep', null],
+    ['grep_search', { query: 'x', includePattern: '*.pem' }, 'Grep', null],
+    ['fileSearch', { query: '**/*.js' }, 'Glob', null],
+    ['file_search', { query: '**/*.js' }, 'Glob', null],
+    ['runSubagent', { prompt: 'p', description: 'd' }, 'Task', null],
+  ]) {
+    const r = n(name, input);
+    assert.deepEqual([r.tool, r.file], [tool, file], name);
+  }
+  assert.equal(n('insert_edit_into_file', { filePath: 'b.js', code: 'y' }).content, 'y');
+  assert.equal(n('grep_search', { query: 'x', includePattern: '*.pem' }).args.glob, '*.pem', 'includePattern is the Grep glob filter');
+  const multi = n('multi_replace_string_in_file', { explanation: 'e', replacements: [{ filePath: 'a.js', oldString: 'a', newString: 'b' }, { filePath: '.factory/current', oldString: 'c', newString: 'd' }] });
+  assert.deepEqual([multi.tool, multi.files.map((f) => f.path)], ['MultiEdit', ['a.js', '.factory/current']]);
+});
+
+test('VS Code Local: every output carries both shapes in one object', () => {
+  const root = F.makeRepo();
+  // PreToolUse deny: flat Copilot fields + hookSpecificOutput
+  const d = JSON.parse(local('guard.js', 'PreToolUse', { cwd: root, tool_name: 'run_in_terminal', tool_input: { command: 'factory approve', explanation: 'x', isBackground: false }, tool_use_id: 't1' }).stdout);
+  assert.equal(d.permissionDecision, 'deny');
+  assert.deepEqual(d.hookSpecificOutput, { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.permissionDecisionReason });
+  assert.match(d.permissionDecisionReason, /human-only/);
+  // writes and reads through VS Code's tools get the same rules
+  assert.ok(isDeny(local('guard.js', 'PreToolUse', { cwd: root, tool_name: 'replace_string_in_file', tool_input: { filePath: '.factory/policy.json', oldString: 'a', newString: 'b' } })));
+  assert.ok(isDeny(local('guard.js', 'PreToolUse', { cwd: root, tool_name: 'multi_replace_string_in_file', tool_input: { replacements: [{ filePath: 'src/add.js', oldString: 'a', newString: 'b' }, { filePath: '.factory/current', oldString: 'a', newString: 'b' }] } })));
+  assert.ok(isDeny(local('guard.js', 'PreToolUse', { cwd: root, tool_name: 'createFile', tool_input: { filePath: '.git/hooks/pre-commit', content: 'x' } })));
+  assert.ok(isAllow(local('guard.js', 'PreToolUse', { cwd: root, tool_name: 'createFile', tool_input: { filePath: 'src/new.js', content: 'module.exports = 1;' } })));
+  assert.ok(isAllow(local('guard.js', 'PreToolUse', { cwd: root, tool_name: 'run_in_terminal', tool_input: { command: 'npm test', explanation: 'x', isBackground: false } })));
+  // SessionStart: additionalContext both ways
+  const s = JSON.parse(local('session-start.js', 'SessionStart', { cwd: root, source: 'new' }).stdout);
+  assert.deepEqual(s.hookSpecificOutput, { hookEventName: 'SessionStart', additionalContext: s.additionalContext });
+  // UserPromptSubmit: Local shows only systemMessage to the user; the reply is applied either way
+  const p = JSON.parse(local('prompt.js', 'UserPromptSubmit', { cwd: root, prompt: 'approve' }).stdout);
+  assert.match(p.additionalContext, /NOT applied/);
+  assert.match(p.systemMessage, /^\[factory\] Your reply was NOT applied: /);
+  assert.equal(p.hookSpecificOutput, undefined);
+  assert.ok(fs.existsSync(path.join(root, '.factory', 'turn.json')), 'the prompt stamp is written in Local too');
+  // Stop: block both ways; a custom agent's stop reported as SubagentStop is not gated
+  F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  local('prompt.js', 'UserPromptSubmit', { cwd: root, prompt: '/factory:start fix add' });
+  F.cli(root, ['next']);
+  assert.equal(local('stop.js', 'SubagentStop', { cwd: root, agent_id: 'a1', agent_type: 'builder', stop_hook_active: false }).stdout, '');
+  const b = JSON.parse(local('stop.js', 'Stop', { stop_hook_active: false, cwd: root }).stdout);
+  assert.equal(b.decision, 'block');
+  assert.deepEqual(b.hookSpecificOutput, { hookEventName: 'Stop', decision: 'block', reason: b.reason });
+  assert.deepEqual(Object.keys(lib.blockOutput('r', 'SubagentStop')).sort(), ['decision', 'reason'], 'SubagentStop reads the top-level fields');
+});
+
+test('VS Code Local: human-only verbs through a command runner the guard does not know', () => {
+  const root = F.makeRepo();
+  const g = (tool_name, tool_input) => local('guard.js', 'PreToolUse', { cwd: root, tool_name, tool_input });
+  const B = path.join(F.PLUGIN, 'bin', 'factory');
+  // runners we don't know: their command-like arguments are read as commands
+  assert.ok(isDeny(g('mcp_terminal_execute', { command: 'factory approve H2' })));
+  assert.ok(isDeny(g('run_task', { script: `node "${B}" resume` })));
+  assert.ok(isDeny(g('mcp__shell__run', { command: 'factory', args: ['lessons', 'accept', 'L1'] })));
+  assert.ok(isDeny(g('some_ext_runner', { input: { commandLine: 'cd x && factory waive F1' } })));
+  assert.ok(isDeny(g('create_and_run_task', { task: { label: 'x', command: 'factory cancel' } })));
+  assert.ok(isDeny(g('some_mcp_tool', { cmd: 'factory deny H1 "no"' })), 'a command field on any unknown tool');
+  // mentions are data: command position only, and content / prose fields are not commands
+  assert.ok(isAllow(g('mcp_terminal_execute', { command: 'echo "reply factory approve in chat"' })));
+  assert.ok(isAllow(g('mcp_terminal_execute', { command: 'npm test', explanation: 'then the user runs factory approve' })));
+  assert.ok(isAllow(g('some_mcp_tool', { content: 'factory approve', text: 'factory approve' })), 'not a runner: only command-named fields');
+  assert.ok(isAllow(g('replace_string_in_file', { filePath: 'README.md', oldString: 'a', newString: 'factory approve' })), 'edit content that mentions a verb');
+  assert.ok(isAllow(g('mcp_terminal_execute', { command: 'git push --force' })), 'for an unknown runner, only the factory-CLI rules apply');
+  assert.ok(isAllow(g('runSubagent', { prompt: 'run factory approve', description: 'x' })));
 });
 
 // --- guard bypasses -------------------------------------------------------------------------

@@ -1,8 +1,23 @@
 'use strict';
 // Human-only actions. They are reachable two ways and no other:
 //   1. your own chat reply, applied by the UserPromptSubmit hook before the model sees it
-//   2. the `factory` CLI from a real terminal (stdin and stdout are TTYs)
+//   2. the `factory` CLI from a real terminal (stdin and stdout are TTYs), confirmed by
+//      typing the job (or lesson) id on the terminal itself (/dev/tty; CONIN$ on Windows)
 // The PreToolUse guard also blocks agents from running these subcommands.
+//
+// A TTY is not proof of a human: VS Code's Local harness runs agent commands in the
+// integrated terminal, and tool approvals there can be automatic (Allow all, Autopilot,
+// auto-approve settings). So the terminal path also refuses:
+//   - an agent `factory run` started (FACTORY_RUNNER=1);
+//   - an environment that shows an agent's shell (best effort, see AGENT_ENV: variables
+//     some agent harnesses set for the commands they run; absence proves nothing);
+// and asks for the typed confirmation, which an agent's one-shot command can't give (it
+// raises the bar; it is not proof either). There is no --yes.
+//
+// Tests run without a terminal through one seam: FACTORY_TEST_HUMAN set to an HMAC of a
+// fixed label under the seal secret (which the guard keeps agents from reading), honoured
+// only when stdin or stdout is NOT a terminal and never in a factory agent; the "typed"
+// text then comes from FACTORY_TEST_HUMAN_INPUT.
 
 const { nowIso, fail, sha256, readJson } = require('../lib/util');
 const { pluginPath } = require('../lib/paths');
@@ -15,10 +30,107 @@ const policyMod = require('./policy');
 
 const GATE_IDS = ['H1', 'H2', 'H3', 'HF', 'HS', 'EH1', 'EH2', 'EH3', 'A'];
 
+// Variables agent harnesses set in the shells they run commands in (best effort: a harness
+// that sets none is not detected; the user's own terminal sets none of these).
+const AGENT_ENV = [
+  ['FACTORY_RUNNER', '1'], // an agent `factory run` started
+  ['CLAUDECODE', null], // Claude Code's Bash tool
+  ['COPILOT_AGENT_PROMPT', null], // Copilot cloud agent
+  ['CODEX_SANDBOX', null], // Codex
+  ['CODEX_SANDBOX_NETWORK_DISABLED', null],
+  ['GEMINI_CLI', null], // Gemini CLI
+];
+
+function agentContext(env = process.env) {
+  for (const [k, v] of AGENT_ENV) if (env[k] !== undefined && env[k] !== '' && (v === null || env[k] === v)) return k;
+  return null;
+}
+
+const TEST_LABEL = 'factory test human seam v1';
+
+function testToken() {
+  const crypto = require('crypto');
+  const fs = require('fs');
+  const key = fs.readFileSync(require('../lib/seal').secretFile(), 'utf8').trim();
+  return crypto.createHmac('sha256', key).update(TEST_LABEL).digest('hex');
+}
+
+// The test seam: never in a terminal, never in a factory agent, only with the right token.
+function testSeam() {
+  const t = process.env.FACTORY_TEST_HUMAN;
+  if (!t || (process.stdin.isTTY && process.stdout.isTTY) || process.env.FACTORY_RUNNER === '1') return false;
+  try {
+    const want = testToken();
+    return want.length === t.length && require('crypto').timingSafeEqual(Buffer.from(want), Buffer.from(t));
+  } catch {
+    return false;
+  }
+}
+
+const HUMAN_MSG = 'This is a human-only action. Reply in chat (e.g. "approve") or run it from your own terminal.';
+
 function requireHumanChannel(channel) {
   if (channel === 'chat') return;
-  if (channel === 'tty' && process.stdin.isTTY && process.stdout.isTTY) return;
-  fail('This is a human-only action. Reply in chat (e.g. "approve") or run it from your own terminal.', 'human_only');
+  if (channel === 'tty') {
+    if (testSeam()) return; // never in a factory agent (FACTORY_RUNNER=1), see testSeam
+    const agent = agentContext();
+    if (agent) fail(`${HUMAN_MSG} This shell belongs to an agent (${agent} is set), so it does not count as your terminal.`, 'human_only');
+    if (process.stdin.isTTY && process.stdout.isTTY) return;
+  }
+  fail(HUMAN_MSG, 'human_only');
+}
+
+// One line typed on the controlling terminal, read synchronously (the CLI is synchronous).
+function readTty(question) {
+  const fs = require('fs');
+  const win = process.platform === 'win32';
+  let inFd;
+  let outFd;
+  try {
+    inFd = fs.openSync(win ? '\\\\.\\CONIN$' : '/dev/tty', win ? 'r' : 'r+');
+    outFd = win ? fs.openSync('\\\\.\\CONOUT$', 'w') : inFd;
+  } catch {
+    fail(`${HUMAN_MSG} (No terminal to confirm on.)`, 'human_only');
+  }
+  try {
+    fs.writeSync(outFd, question);
+    const buf = Buffer.alloc(1);
+    let line = '';
+    for (;;) {
+      let n;
+      try {
+        n = fs.readSync(inFd, buf, 0, 1, null);
+      } catch (e) {
+        if (e.code === 'EAGAIN') {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+          continue;
+        }
+        throw e;
+      }
+      if (n === 0) break;
+      const c = buf.toString('latin1');
+      if (c === '\n' || c === '\r') break;
+      if (line.length < 200) line += c;
+    }
+    return line;
+  } finally {
+    try {
+      fs.closeSync(inFd);
+      if (outFd !== inFd) fs.closeSync(outFd);
+    } catch {
+      /* closed */
+    }
+  }
+}
+
+// The terminal path's typed confirmation: the user types `expected` (a job or lesson id).
+// Chat replies need none: the reply itself is the human's words.
+function confirmTyped(channel, expected, action) {
+  if (channel !== 'tty') return;
+  const typed = testSeam() ? String(process.env.FACTORY_TEST_HUMAN_INPUT || '') : readTty(`Type ${expected} to ${action}: `);
+  if (typed.trim().toUpperCase() !== String(expected).toUpperCase()) {
+    fail(`Not confirmed: you typed "${typed.trim().slice(0, 40)}", not ${expected}. Nothing was done.`, 'not_confirmed');
+  }
 }
 
 function log(root, state, action, extra = {}) {
@@ -63,11 +175,12 @@ function approve(root, { jobId, gate, channel, via }) {
   if (!now || now !== pending.hash) {
     fail(`The ${pending.id} document changed after it was presented (or is still being drafted). Ask Copilot to present it again, then approve.`, 'stale_gate');
   }
+  confirmTyped(channel, state.id, `approve ${pending.id}`);
   state.approvals[pending.id] = { hash: now, at: nowIso(), via: via || channel, snapshot: snapshot(root, state, pending.id, now) };
   state.pending_gate = null;
   if (pending.id === 'A') require('./amend').applyApproved(root, state);
   job.save(root, state);
-  log(root, state, 'approve', { gate: pending.id, hash: now });
+  log(root, state, 'approve', { channel, gate: pending.id, hash: now });
   return { job: state.id, gate: pending.id, hash: now, message: `Approved ${pending.id} for ${state.id} (hash ${now.slice(0, 12)}).` };
 }
 
@@ -77,12 +190,13 @@ function deny(root, { jobId, reason, channel }) {
   const pending = state.pending_gate;
   if (!pending || pending.id === 'P') fail(`${state.id} has no gate waiting.`, 'no_gate');
   if (!String(reason || '').trim()) fail(`Say what must change: reply "deny <what must change>" (for example "deny cover negative numbers too"). Nothing was denied; ${pending.id} is still waiting.`, 'needs_reason');
+  confirmTyped(channel, state.id, `deny ${pending.id}`);
   state.denials.push({ gate: pending.id, hash: pending.hash, at: nowIso(), reason: reason || '' });
   if (pending.id === 'A') {
     state.amendment.status = 'open';
   }
   job.save(root, state);
-  log(root, state, 'deny', { gate: pending.id, reason });
+  log(root, state, 'deny', { channel, gate: pending.id, reason });
   return { job: state.id, gate: pending.id, message: `Denied ${pending.id} for ${state.id}: ${reason || '(no reason given)'}. Copilot should revise it and present it again.` };
 }
 
@@ -90,6 +204,7 @@ function resume(root, { jobId, step, channel }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
   if (state.status !== 'parked') fail(`${state.id} is not parked (status: ${state.status}).`, 'not_parked');
+  confirmTyped(channel, state.id, 'resume it');
   const from = state.park && state.park.from;
   // One more round of whatever ran out.
   const L = state.policy.limits;
@@ -115,7 +230,7 @@ function resume(root, { jobId, step, channel }) {
   state.park = null;
   state.pending_gate = null;
   job.save(root, state);
-  log(root, state, 'resume', { from, step });
+  log(root, state, 'resume', { channel, from, step });
   return { job: state.id, message: `Resumed ${state.id}${from ? ` (one more ${from} round allowed)` : ''}. Copilot continues with factory next.` };
 }
 
@@ -123,11 +238,12 @@ function stop(root, { jobId, kind, channel, reason }) {
   requireHumanChannel(channel);
   if (!['cancelled', 'abandoned'].includes(kind)) fail('kind must be cancelled or abandoned', 'bad_input');
   const state = job.resolve(root, jobId);
+  confirmTyped(channel, state.id, kind === 'cancelled' ? 'cancel it' : 'abandon it');
   state.status = kind;
   state.pending_gate = null;
   state.stopped = { at: nowIso(), reason: reason || '' };
   job.save(root, state);
-  log(root, state, kind, { reason });
+  log(root, state, kind, { channel, reason });
   return { job: state.id, message: `${state.id} ${kind}. Its files are kept under .factory/jobs/${state.id}.` };
 }
 
@@ -137,9 +253,10 @@ function waive(root, { jobId, floor, reason, channel }) {
   if (!doc.waivable.includes(floor)) fail(`"${floor}" cannot be waived. Waivable: ${doc.waivable.join(', ')}`, 'not_waivable');
   if (!reason) fail('A waiver needs a reason.', 'bad_input');
   const state = job.resolve(root, jobId);
+  confirmTyped(channel, state.id, `waive ${floor}`);
   state.waivers[floor] = { reason, at: nowIso() };
   job.save(root, state);
-  log(root, state, 'waive', { floor, reason });
+  log(root, state, 'waive', { channel, floor, reason });
   return { job: state.id, message: `Waived ${floor} for ${state.id}: ${reason}` };
 }
 
@@ -156,12 +273,13 @@ function merged(root, { jobId, commit, channel }) {
   }
   if (!git.isAncestor(root, state.pr.head || state.branch, sha)) fail(`${commit} does not contain the shipped job branch.`, 'bad_input');
   if (!git.isAncestor(root, sha, state.base_branch)) fail(`${commit} is not on ${state.base_branch}.`, 'bad_input');
+  confirmTyped(channel, state.id, `record its merge at ${sha.slice(0, 12)}`);
   state.pr.merged = true;
   state.pr.merge_commit = sha;
   state.pr.merged_at = nowIso();
   state.pr.merged_via = channel;
   job.save(root, state);
-  log(root, state, 'merged', { commit: sha });
+  log(root, state, 'merged', { channel, commit: sha });
   return { job: state.id, message: `Recorded merge of ${state.id} at ${sha.slice(0, 12)}.` };
 }
 
@@ -170,9 +288,10 @@ function merged(root, { jobId, commit, channel }) {
 // old text can't be approved, and after H1 it is drift (amend). Counted as overridden.
 function changeAssumption(root, { jobId, id, value, drop = false, channel }) {
   requireHumanChannel(channel);
+  confirmTyped(channel, job.resolve(root, jobId).id, `${drop ? 'drop' : 'change'} ${id}`);
   const r = require('./intent').override(root, { jobId, id, value, drop, via: channel });
   const state = job.resolve(root, r.job);
-  log(root, state, drop ? 'drop_assumption' : 'change_assumption', { assumption: r.assumption, value: r.value ? r.value.slice(0, 200) : null, was: String(r.was || '').slice(0, 200) });
+  log(root, state, drop ? 'drop_assumption' : 'change_assumption', { channel, assumption: r.assumption, value: r.value ? r.value.slice(0, 200) : null, was: String(r.was || '').slice(0, 200) });
   return r;
 }
 
@@ -181,8 +300,9 @@ function confirmAc(root, { jobId, ac, channel }) {
   const state = job.resolve(root, jobId);
   const ctx = steps.context(root, state, job.load);
   if (!ctx.b.fingerprint) fail('Nothing built yet to confirm against.', 'bad_input');
+  confirmTyped(channel, state.id, `confirm ${String(ac).toUpperCase()}`);
   ledger.append(root, state.id, { kind: 'evidence', ac: ac.toUpperCase(), type: 'human', fingerprint: ctx.b.fingerprint, pass: true, source: `human:${channel}` });
-  log(root, state, 'confirm_ac', { ac });
+  log(root, state, 'confirm_ac', { channel, ac });
   return { job: state.id, message: `Confirmed ${ac.toUpperCase()} for ${state.id} on the current build. Run factory verify run to include it.` };
 }
 
@@ -269,4 +389,4 @@ function applyReply(root, parsed, channel = 'chat') {
   }
 }
 
-module.exports = { snapshot, GATE_IDS, requireHumanChannel, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { snapshot, GATE_IDS, requireHumanChannel, confirmTyped, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };

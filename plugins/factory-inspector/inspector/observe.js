@@ -19,14 +19,15 @@ function jobIds(root) {
 // agent_type, agent_id); Copilot runtime tool names (bash, edit, create, view, apply_patch …)
 // read as Bash/Edit/Write/Read. A copy is normalised: seals were checked on the raw line.
 const EVENT_NAMES = { sessionstart: 'SessionStart', userpromptsubmitted: 'UserPromptSubmit', userpromptsubmit: 'UserPromptSubmit', pretooluse: 'PreToolUse', posttooluse: 'PostToolUse', posttoolusefailure: 'PostToolUseFailure', subagentstart: 'SubagentStart', subagentstop: 'SubagentStop', agentstop: 'Stop', stop: 'Stop', sessionend: 'SessionEnd' };
-const TOOL_NAMES = { bash: 'Bash', powershell: 'Bash', view: 'Read', create: 'Write', edit: 'Edit', str_replace_editor: 'Edit', apply_patch: 'Edit', grep: 'Grep', rg: 'Grep', glob: 'Glob', web_fetch: 'WebFetch', web_search: 'WebSearch', task: 'Task', ask_user: 'AskUserQuestion', update_todo: 'TodoWrite' };
+// Tool names: the hooks' own map (Copilot runtime and VS Code Local names, hooks/lib.js).
+const { toolName } = require('../hooks/lib');
 
 function normEvent(rec) {
   if (!rec || typeof rec !== 'object') return rec;
   const e = { ...rec };
   if (typeof e.event === 'string' && EVENT_NAMES[e.event.toLowerCase()]) e.event = EVENT_NAMES[e.event.toLowerCase()];
   const tool = e.tool || e.tool_name || e.toolName;
-  if (tool) e.tool = TOOL_NAMES[tool] || tool;
+  if (tool) e.tool = toolName(tool, null) || tool;
   if (!e.agent_type) e.agent_type = e.agent_name || e.agentName || e.agentType || e.agent_type || null;
   if (!e.agent_id) e.agent_id = e.agentId || e.agent_id || null;
   return e;

@@ -182,6 +182,8 @@ function decide(root, jobId) {
   const r = route(root, jobId);
   const reply = lastReply(root, before.id, before.last_decision_id);
   if (reply) r.last_reply = reply;
+  const notice = require('./reply-watch').notice(root, r);
+  if (notice) r.notice = notice;
   return r;
 }
 

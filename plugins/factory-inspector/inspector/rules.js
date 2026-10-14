@@ -194,6 +194,14 @@ const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'h
 // Human actions run from the user's own terminal, not driver commands: `factory assumption
 // change|drop` (the guard blocks agents from it). Judged by their human.* decision (R20), not R7.
 const HUMAN_ACTIONS = new Set(['assumption']);
+// The human-only verbs. One that went through (ok, channel tty: the CLI accepted the terminal
+// as the user's, with the typed confirmation) is the user acting, a legitimate channel: not a
+// driver deviation. A refused attempt (human_only) is still judged: that was an agent trying.
+const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'lessons:accept', 'lessons:reject', 'lessons:promote']);
+
+function humanFromTerminal(e) {
+  return e.event === 'cli' && e.ok !== false && (HUMAN_VERBS.has(cmdKey(e)) || HUMAN_VERBS.has(e.cmd));
+}
 const MUTATING_IN_WAIT = new Set(['record', 'ship', 'task:start', 'task:verify', 'task:state', 'reconcile', 'verify', 'evidence', 'plan:from-contract', 'close', 'epic', 'amend', 'followup', 'distill:done', 'wfargs']);
 
 function cmdKey(e) {
@@ -211,7 +219,7 @@ function expectationsFor(d) {
   if (d.action === 'skill') {
     if (d.skill === 'clarify') return wf('fanout-judge', 'clarify');
     if (d.skill === 'ship') return { required: [(e) => e.cmd === 'ship'], requiredLabel: 'factory ship', allowed: new Set(['report', 'ship', 'pr', 'ci']) };
-    if (d.skill === 'distill') return { required: [(e) => cmdKey(e) === 'distill:done'], requiredLabel: 'factory distill done', allowed: new Set(['distill:done', 'lessons:add']) };
+    if (d.skill === 'distill') return { required: [(e) => cmdKey(e) === 'distill:done'], requiredLabel: 'factory distill done', allowed: new Set(['distill:write', 'distill:done', 'lessons:add']) };
     if (d.skill === 'amend') return { required: [(e) => e.cmd === 'amend'], requiredLabel: 'factory amend start/submit', allowed: new Set(['amend']) };
     return { required: [], allowed: new Set() };
   }
@@ -247,7 +255,7 @@ function driverFidelity(job) {
     }
     for (const e of evs) {
       const k = cmdKey(e);
-      if (READ_ONLY.has(k) || READ_ONLY.has(e.cmd) || HUMAN_ACTIONS.has(e.cmd)) continue;
+      if (READ_ONLY.has(k) || READ_ONLY.has(e.cmd) || HUMAN_ACTIONS.has(e.cmd) || humanFromTerminal(e)) continue;
       // `factory run` logs its own wfargs / agent_run / record lines, which are judged here;
       // a `cmd: run` line is only written when the run failed before or around them, and a
       // failed run changed nothing by itself (R13 counts repeated failures).
@@ -257,6 +265,17 @@ function driverFidelity(job) {
       out.push(f({ rule: exp.quiet ? 'R7.acted_while_waiting' : 'R7.unexpected_command', class: 'deviation', severity: exp.quiet && mutating ? 'high' : 'medium', subject: `${job.id}:${d.id}:${k}`, job: job.id, summary: exp.quiet ? `Ran "factory ${e.cmd}${e.sub ? ` ${e.sub}` : ''}" while the job was at ${d.action} "${d.step || ''}" — nothing should change there.` : `Ran "factory ${e.cmd}${e.sub ? ` ${e.sub}` : ''}" while factory next had asked for ${d.action} "${d.step || d.skill || d.command}".`, evidence: [d.id, e.ts], question: 'Was this an improvisation the skills should describe, or a mistake?' }));
     }
   });
+  // One note per job when the user acted from the terminal and never through a chat reply:
+  // fine, but often the sign that chat replies don't reach the factory (the prompt hook
+  // isn't running: VS Code harness, hooks off, untrusted folder).
+  const fromTty = cli.filter(humanFromTerminal);
+  const human = job.decisions.filter((d) => /^human\./.test(String(d.action || '')));
+  const viaTty = human.filter((d) => d.channel === 'tty');
+  const viaChat = human.filter((d) => d.channel === 'chat');
+  if ((fromTty.length || viaTty.length) && !viaChat.length) {
+    const verbs = [...new Set(fromTty.map((e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}`).concat(viaTty.map((d) => String(d.action).replace(/^human\./, ''))))].slice(0, 5);
+    out.push(f({ rule: 'R7.terminal_approvals', class: 'gap', severity: 'low', subject: `${job.id}:terminal`, job: job.id, summary: `The human actions in ${job.id} came from the terminal (${verbs.join(', ')}), none from a chat reply. That is a legitimate channel, but chat replies may not be reaching the factory (the prompt hook not running).`, evidence: [...fromTty.map((e) => e.ts), ...viaTty.map((d) => d.ts)].filter(Boolean).slice(0, 6), question: 'Do chat replies like "approve" work in this setup? If not, check the hooks (README: Use it in VS Code — harness, Chat: Configure Hooks, the "GitHub Copilot Chat Hooks" output, chat.useHooks, Workspace Trust; /plugin list in the CLI).' }));
+  }
   return out;
 }
 

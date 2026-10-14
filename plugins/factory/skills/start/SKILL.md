@@ -23,7 +23,7 @@ You run the factory loop. **The `factory` CLI decides every next step; you carry
 ## 2. The loop
 Repeat until you reach a stop point:
 
-1. Run `factory next` for this step. Running it again from the same state is harmless (it returns the same decision, with `requery: true`), but don't poll it: run it when a step is finished or the user has replied. If its output has `last_reply`, first tell the user in one line what happened to their last reply (applied, or not applied and why), using its message. Then read `action`:
+1. Run `factory next` for this step. Running it again from the same state is harmless (it returns the same decision, with `requery: true`), but don't poll it: run it when a step is finished or the user has replied. If its output has `last_reply`, first tell the user in one line what happened to their last reply (applied, or not applied and why), using its message. If it has `notice` (chat replies aren't reaching the factory: the prompt hook isn't running), show it to the user as it is, once — the CLI gives it once per wait — including the terminal command they can run instead; don't repeat it on later turns. Then read `action`:
 
 | action | what you do |
 |---|---|

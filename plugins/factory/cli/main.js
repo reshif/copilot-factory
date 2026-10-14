@@ -69,7 +69,7 @@ Change     amend start --reason "…" [--by who] · amend submit · park --reaso
 Epic       epic spawn · epic gate
 Docs       doc list · doc template <type> · doc check [<file>] [--type t] [--job J] · doc index
            (templates/docs: adr, no-adr, recommendation, threat-model, contracts, findings, ship-report, lessons, index)
-Learning   distill context · distill done · lessons list · lessons add --text "…" --scope "glob,…" [--why "…"]
+Learning   distill context · distill write · distill done · lessons list · lessons add --text "…" --scope "glob,…" [--why "…"]
            telemetry report [--since 30] [--format md] · recipe list|show <id>|check|select --type t --risk r [--epic]
 Console    console [--out file.html] [--job J] [--label "…"] [--data data.json]   (read-only page of every job)
            console --serve [--port 4477] [--job J]   (the same page, live: updates as Copilot works)
@@ -326,7 +326,8 @@ function run(argv) {
     case 'distill':
       if (sub === 'context') return C('lifecycle').distillContext(R(), { jobId: J });
       if (sub === 'done') return C('lifecycle').distillDone(R(), { jobId: J });
-      return fail('distill context | done', 'bad_input');
+      if (sub === 'write') return C('runner').distillWrite(R(), { jobId: J }); // async: main() awaits it
+      return fail('distill context | write | done', 'bad_input');
     case 'lessons': {
       const l = C('lessons');
       if (sub === 'list') return l.load(R());
@@ -396,11 +397,15 @@ function run(argv) {
     }
     case 'reseal':
       C('human').requireHumanChannel(tty);
-      return C('job').reseal(R(), J || C('job').current(R()));
+      const id = J || C('job').current(R());
+      if (id) C('human').confirmTyped(tty, id, 'reseal it');
+      return C('job').reseal(R(), id);
     default:
       return fail(`Unknown command "${cmd}". Run factory help.`, 'bad_input');
   }
 }
+
+const HUMAN_CLI = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'assumption', 'reseal']);
 
 const PROSE = new Set(['reason', 'text', 'question', 'answer', 'title', 'note', 'by', 'check', 'label', 'why', 'value']);
 
@@ -423,6 +428,9 @@ function logCommand(argv, res, err) {
     if (pos[0] === 'wfargs') Object.assign(extra, { workflow: r.workflow || pos[1] || null, config: r.config || opt.config || null, mode: r.mode || null, brief_hash: r.input_hash || null });
     if (pos[0] === 'record') Object.assign(extra, { workflow: r.workflow || null, config: r.config || null, status: r.status || null });
     if (pos[0] === 'next') Object.assign(extra, { action: r.action || null, step: r.step || null });
+    // A human-only command that went through came from a terminal the CLI accepted as yours
+    // (TTY, typed confirmation): the inspector reads it as a human action, not the driver's.
+    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1]))) extra.channel = 'tty';
     events.append(root, {
       event: 'cli',
       cmd: pos[0],
