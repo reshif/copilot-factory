@@ -8,6 +8,7 @@ Floors are the steps no recipe may omit, per risk level ([`policy/floors.json`](
 | Floor | Low | Medium | High | Met when |
 |---|:-:|:-:|:-:|---|
 | `contract_approved` | ✅ | ✅ | ✅ | H1 (EH1) approved for the current contract hash (risk is part of it) |
+| `intent_grounded` | advisory | ✅ | ✅ | every outside-world claim the contract relies on is confirmed evidence or an open question: each `E-n` cited in Intent, Constraints and `## Assumptions (evidence-backed)` exists in `intent-evidence.json` (web evidence confirmed by the verifier, repo evidence not contradicted or unverified), each URL cited there is the source of confirmed evidence, and every medium- or high-impact world unknown is confirmed, asked, answered or dismissed. Checked when clarify is recorded and by `factory contract check`; at low risk only a warning. Jobs whose `recipe.lock.json` predates this floor are exempt |
 | `isolation` | ✅ | ✅ | ✅ | every task's latest evidence passed in its own worktree, on the tree its branch has now |
 | `prove` | ✅ | ✅ | ✅ | a passing `factory verify run` bound to the current fingerprint |
 | `challenge:code` | ✅ | ✅ | ✅ | the code lane passed on the current fingerprint |

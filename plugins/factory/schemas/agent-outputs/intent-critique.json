@@ -1,7 +1,11 @@
-{ "type": "object", "required": ["verdict", "intent_confirmed", "restatement", "items"], "properties": {
+{ "type": "object", "required": ["verdict", "intent_confirmed", "restatement", "items", "researchable_questions"], "properties": {
   "verdict": { "enum": ["approve", "revise"] },
   "intent_confirmed": { "type": "boolean" },
   "restatement": { "type": "object", "required": ["problem", "outcome"], "properties": {
     "problem": { "type": "string" }, "who": { "type": "string" }, "outcome": { "type": "string" }, "success": { "type": "string" } } },
   "items": { "type": "array", "items": { "type": "object", "required": ["issue", "severity"], "properties": {
-    "issue": { "type": "string" }, "severity": { "enum": ["blocker", "major", "minor"] }, "suggestion": { "type": "string" } } } } } }
+    "issue": { "type": "string" }, "severity": { "enum": ["blocker", "major", "minor"] }, "suggestion": { "type": "string" } } } },
+  "researchable_questions": { "type": "array", "items": { "type": "object", "required": ["question", "kind"], "properties": {
+    "question": { "type": "string" }, "kind": { "enum": ["repo", "world"] }, "why": { "type": "string" }, "unknown": { "type": "string" } } } },
+  "ungrounded_claims": { "type": "array", "items": { "type": "object", "required": ["claim"], "properties": {
+    "claim": { "type": "string" }, "section": { "type": "string" } } } } } }

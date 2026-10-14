@@ -51,6 +51,7 @@ Setup      init [--base <branch>] · doctor · ci install · shim [--dir ~/.loca
 Jobs       job new --title "…" --type <work type> --risk low|medium|high [--epic] · job show · job list · use <job>
 Routing    next · why [--format md] · finalize [--mode before_ship|full] [--check]
 Contract   contract show · contract check [--plan-fields] · answer --id Q-n | --question "…" --answer "…"
+Intent     intent show   (clarify's research: unknowns, cited evidence, evidence-backed assumptions, grounding problems)
 Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config clarify|decide|challenge] [--mode m] [--scope s] [--lanes a,b]
            [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
            record --file <envelope.json | ->
@@ -75,6 +76,7 @@ Console    console [--out file.html] [--job J] [--label "…"] [--data data.json
 Human only (your terminal, or reply in chat):
            approve [gate] · deny --reason "…" · resume [step] · cancel · abandon · waive <floor> --reason "…"
            merged <commit> · confirm <AC> · lessons accept|reject <L> · lessons promote <L> --check "cmd" · reseal
+           assumption change <A-n> --value "…" · assumption drop <A-n>   (chat: change A-3 <value> · drop A-3)
 Global     --root <repo> · --job <J-0001>`;
 
 const LONG_RUNNING = Symbol('long-running'); // the command reports for itself (console --serve)
@@ -94,6 +96,7 @@ const AGENT_ALLOWED = {
   report: '*',
   job: ['show', 'list'],
   contract: ['show', 'check'],
+  intent: ['show'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
   reconcile: ['run', 'continue', 'abort'],
@@ -195,11 +198,19 @@ function run(argv) {
       if (sub === 'show') return parsed;
       if (sub === 'check') {
         const problems = c.problems(parsed, { requirePlanFields: Boolean(opt['plan-fields']) });
+        // Floor intent_grounded: cited evidence must hold (medium/high: a problem; low: a warning).
+        const grounded = C('intent').groundedProblems(root, state, { parsed });
+        const warnings = [];
+        if (state.risk === 'low') warnings.push(...grounded.map((x) => `intent_grounded (advisory at low risk): ${x}`));
+        else problems.push(...grounded.map((x) => `Not grounded: ${x}`));
         if (problems.length) process.exitCode = 1;
-        return { job: state.id, ok: problems.length === 0, problems };
+        return { job: state.id, ok: problems.length === 0, problems, ...(warnings.length ? { warnings } : {}) };
       }
       return fail('contract show | check', 'bad_input');
     }
+    case 'intent':
+      if (sub !== 'show') fail('intent show', 'bad_input');
+      return C('intent').show(R(), J);
     case 'answer':
       return C('record').answer(R(), { jobId: J, id: opt.id, question: opt.question, answer: opt.answer });
     case 'wfargs': {
@@ -379,6 +390,10 @@ function run(argv) {
       return C('human').merged(R(), { jobId: J, commit: sub, channel: tty });
     case 'confirm':
       return C('human').confirmAc(R(), { jobId: J, ac: sub, channel: tty });
+    case 'assumption': {
+      if (!['change', 'drop'].includes(sub) || !pos[2]) fail('assumption change <A-n> --value "…" | assumption drop <A-n>', 'bad_input');
+      return C('human').changeAssumption(R(), { jobId: J, id: pos[2], value: opt.value || pos.slice(3).join(' '), drop: sub === 'drop', channel: tty });
+    }
     case 'reseal':
       C('human').requireHumanChannel(tty);
       return C('job').reseal(R(), J || C('job').current(R()));
@@ -387,7 +402,7 @@ function run(argv) {
   }
 }
 
-const PROSE = new Set(['reason', 'text', 'question', 'answer', 'title', 'note', 'by', 'check', 'label', 'why']);
+const PROSE = new Set(['reason', 'text', 'question', 'answer', 'title', 'note', 'by', 'check', 'label', 'why', 'value']);
 
 // One sealed line per command in .factory/log/events.jsonl, tied to the job and the
 // routing decision in force, so an auditor can check Claude did what factory next said.

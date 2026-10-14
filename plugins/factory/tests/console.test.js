@@ -19,12 +19,13 @@ const instructions = (prompt) => {
 async function clarify(root) {
   const brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify'], { allowFail: false });
   const { result } = await H.run(path.join(F.PLUGIN, 'workflows', 'fanout-judge.js'), JSON.stringify(brief), (prompt, opts) => {
+    if (opts.agentType === 'factory:intent-mapper') return { unknowns: [] };
     if (opts.agentType === 'factory:intent-analyst') return { focus: 'x', questions: [] };
     if (opts.agentType === 'factory:judge') return { questions: [], dismissed: [] };
     if (opts.agentType === 'factory:god-eye') return { verdict: 'approve', items: [] };
     throw new Error(`unexpected ${opts.agentType}: ${instructions(prompt).slice(0, 80)}`);
   });
-  assert.ok(Array.isArray(result.agents) && result.agents.length === 6, 'the envelope carries the roster (intent gate + 3 angles, judge, God Eye)');
+  assert.ok(Array.isArray(result.agents) && result.agents.length === 7, 'the envelope carries the roster (intent mapper, intent gate + 3 angles, judge, God Eye)');
   return F.record(root, result);
 }
 
@@ -56,7 +57,7 @@ test('console: steps, timeline and the agents per step, read-only', async () => 
   const ag = ledger.find((e) => e.kind === 'agents');
   assert.ok(ag && ag.seal, 'agents entry is sealed');
   assert.equal(ag.workflow, 'fanout-judge');
-  assert.deepEqual([...new Set(ag.agents.map((a) => a.agent_type))].sort(), ['factory:god-eye', 'factory:intent-analyst', 'factory:judge']);
+  assert.deepEqual([...new Set(ag.agents.map((a) => a.agent_type))].sort(), ['factory:god-eye', 'factory:intent-analyst', 'factory:intent-mapper', 'factory:judge']);
   assert.match(ag.decision_id, /^J-\d+-D\d+$/);
 
   const before = snapshot(root);

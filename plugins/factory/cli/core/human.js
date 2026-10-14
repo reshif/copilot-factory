@@ -165,6 +165,17 @@ function merged(root, { jobId, commit, channel }) {
   return { job: state.id, message: `Recorded merge of ${state.id} at ${sha.slice(0, 12)}.` };
 }
 
+// "change A-3 <value>" / "drop A-3": override an evidence-backed assumption. The contract
+// section is rewritten, so its hash changes like any contract edit: an H1 presented with the
+// old text can't be approved, and after H1 it is drift (amend). Counted as overridden.
+function changeAssumption(root, { jobId, id, value, drop = false, channel }) {
+  requireHumanChannel(channel);
+  const r = require('./intent').override(root, { jobId, id, value, drop, via: channel });
+  const state = job.resolve(root, r.job);
+  log(root, state, drop ? 'drop_assumption' : 'change_assumption', { assumption: r.assumption, value: r.value ? r.value.slice(0, 200) : null, was: String(r.was || '').slice(0, 200) });
+  return r;
+}
+
 function confirmAc(root, { jobId, ac, channel }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
@@ -192,12 +203,16 @@ function parseReply(text) {
   if ((m = t.match(new RegExp(`^waive(?:\\s+${J})?\\s+([a-z_:]+)\\s+(.+)$`, 'i')))) return { cmd: 'waive', jobId: m[1] && m[1].toUpperCase(), floor: m[2], reason: m[3].trim() };
   if ((m = t.match(new RegExp(`^merged(?:\\s+${J})?\\s+([0-9a-f]{7,40})$`, 'i')))) return { cmd: 'merged', jobId: m[1] && m[1].toUpperCase(), commit: m[2] };
   if ((m = t.match(new RegExp(`^confirm\\s+((?:E-)?AC-\\d+)(?:\\s+${J})?$`, 'i')))) return { cmd: 'confirm', ac: m[1], jobId: m[2] && m[2].toUpperCase() };
+  if ((m = t.match(new RegExp(`^change(?:\\s+${J})?\\s+(A-\\d+)(?:\\s*[:=\u2014\u2013-]\\s*|\\s+(?:to\\s+)?)(\\S.*)$`, 'i')))) return { cmd: 'change_assumption', jobId: m[1] && m[1].toUpperCase(), id: m[2].toUpperCase(), value: m[3].trim() };
+  if ((m = t.match(new RegExp(`^drop(?:\\s+${J})?\\s+(A-\\d+)(?:\\s+${J})?$`, 'i')))) return { cmd: 'drop_assumption', jobId: (m[1] || m[3]) && (m[1] || m[3]).toUpperCase(), id: m[2].toUpperCase() };
   return null;
 }
 
 // The exact forms, for "that was not applied" hints.
-const REPLY_FORMS = ['approve [J-0001] [H1]', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] <sha>', 'confirm AC-1 [J-0001]', 'accept lesson L4', 'reject lesson L4 [reason]'];
+const REPLY_FORMS = ['approve [J-0001] [H1]', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] <sha>', 'confirm AC-1 [J-0001]', 'change [J-0001] A-3 <new value>', 'drop [J-0001] A-3', 'accept lesson L4', 'reject lesson L4 [reason]'];
 const VERBS = ['approve', 'approved', 'deny', 'denied', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'merge', 'confirm', 'accept', 'reject', 'lgtm'];
+// Common words: only a near miss when the message is about an assumption id ("change A3 x", "drop a-3 now").
+const ASSUMPTION_VERBS = ['change', 'drop'];
 
 function editDistance(a, b) {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
@@ -214,6 +229,9 @@ function nearMiss(text) {
   const words = t.split(/\s+/);
   if (words.length > 6) return null;
   const w = words[0].toLowerCase().replace(/[^a-z]/g, '');
+  const aid = words.slice(1, 3).some((x) => /^a-?\d+[.:,]?$/i.test(x));
+  const av = ASSUMPTION_VERBS.find((v) => v === w || editDistance(v, w) <= 1);
+  if (av) return aid ? { word: words[0], verb: av, forms: REPLY_FORMS } : null;
   if (w.length < 4) return null;
   const verb = VERBS.find((v) => v === w || (v.length >= 5 && editDistance(v, w) <= (v.length >= 7 ? 2 : 1)));
   return verb ? { word: words[0], verb, forms: REPLY_FORMS } : null;
@@ -242,9 +260,13 @@ function applyReply(root, parsed, channel = 'chat') {
       return merged(root, { jobId: parsed.jobId, commit: parsed.commit, channel });
     case 'confirm':
       return confirmAc(root, { jobId: parsed.jobId, ac: parsed.ac, channel });
+    case 'change_assumption':
+      return changeAssumption(root, { jobId: parsed.jobId, id: parsed.id, value: parsed.value, channel });
+    case 'drop_assumption':
+      return changeAssumption(root, { jobId: parsed.jobId, id: parsed.id, drop: true, channel });
     default:
       fail(`Unknown reply command ${parsed.cmd}`);
   }
 }
 
-module.exports = { snapshot, GATE_IDS, requireHumanChannel, approve, deny, resume, stop, waive, merged, confirmAc, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { snapshot, GATE_IDS, requireHumanChannel, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };

@@ -12,6 +12,7 @@
     ],
     "medium": [
       "@low",
+      "intent_grounded",
       "ground",
       "design_record",
       "design_critique",

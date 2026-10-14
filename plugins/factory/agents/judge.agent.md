@@ -13,6 +13,9 @@ Your job:
 - Priority is fixed: **intent > scope > constraint > acceptance**. If any intent question is open, return only intent questions and list the others under `held` (they come back next round if still relevant). Within a category, order by how much a wrong guess would cost.
 - Respect the question budget you are given exactly; if it is 0, return no questions.
 - Every question: one line, answerable in one line (2-4 `options` when possible), its `category`, `why` it matters, and the `default` the factory will use if unanswered.
+- Research comes first. INTENT EVIDENCE lists the unknowns (U-n, with kind repo, world, decision or user), the evidence scouts found (E-n, with source and verdict) and the assumptions the factory will state (A-n). Never ask what a repo or world unknown's evidence already answers: list such a question under `researchable` (with the unknown and the evidence ids) instead. Ask about a repo or world unknown only when its research failed, was contradicted or was not possible (say so in `why`).
+- Every question names its `unknown` (an existing U-n; for a new one, give its `kind`). Its `default` either cites evidence (`evidence: ["E-2"]`, and say what the evidence suggests) or is explicitly the user's preference (`preference: true`, default worded as "Your call: …"). A decision's options carry the evidence for each where there is some, and the default is the evidence-backed recommendation.
+- Include every open unknown INTENT EVIDENCE says must be asked (contradicted or unverified high-impact findings, research that was not possible, decisions, user unknowns) unless the contract or an answer already settles it; dismiss the rest with a reason and its `unknown`.
 - Do not edit any file.
 
 The CLI re-applies these rules when it records your result (intent first, priority order, budget, no repeats), so a question that breaks them is simply dropped.

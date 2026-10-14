@@ -17,6 +17,16 @@ const INTENT_FIELDS = [
   { key: 'success', label: 'Success signal', re: /^success(\s+signal)?$/, required: true, hint: 'how we would know it worked, observably' },
 ];
 
+// The evidence-backed assumptions are written by the CLI from intent research
+// (jobs/<J>/intent-evidence.json): one line each, "- A-1: <statement> (evidence: E-2, E-5)".
+// The human overrides one with the reply "change A-3 <value>" (the line becomes
+// "- A-3: <value> (overridden by user)") or removes it with "drop A-3".
+const GROUNDED_HEADING = '## Assumptions (evidence-backed)';
+const GROUNDED_KEY = 'assumptions (evidence-backed)';
+const GROUNDED_COMMENT = '<!-- Written by the factory from intent research (intent-findings.md); do not edit by hand. Reply "change A-n <new value>" or "drop A-n" to override one. -->';
+const ID_E = /\bE-\d+\b/g;
+const URL_RE = /https?:\/\/[^\s)>\]`'"]+/g;
+
 function intentLines(values = {}) {
   return INTENT_FIELDS.map((f) => `- ${f.label}: ${values[f.key] && !isPlaceholder(values[f.key]) ? values[f.key] : `<${f.hint}>`}`);
 }
@@ -52,6 +62,9 @@ ${intentLines().join('\n')}
 ## Verify commands
 <!-- Commands that prove the criteria. One per line: - \`npm test -- auth\` (${ac}-1) -->
 - \`<command>\` (${ac}-1)
+
+${GROUNDED_HEADING}
+${GROUNDED_COMMENT}
 
 ## Assumptions
 - <anything assumed rather than confirmed>
@@ -104,6 +117,32 @@ function parseIntent(lines) {
   return out;
 }
 
+// "A-1: statement (evidence: E-2, E-5)" | "A-3: value (overridden by user)" -> object, or null.
+function parseGroundedLine(it) {
+  const m = String(it).match(/^(A-\d+)\s*:\s*(.*)$/i);
+  if (!m) return null;
+  let statement = m[2].trim();
+  let meta = '';
+  const p = statement.match(/\s*\(([^()]*)\)\s*$/);
+  if (p) {
+    meta = p[1];
+    statement = statement.slice(0, p.index).trim();
+  }
+  return { id: m[1].toUpperCase(), statement, evidence: [...new Set(meta.match(ID_E) || [])], overridden: /overridden by user/i.test(meta), raw: it };
+}
+
+function groundedLines(lines) {
+  return items(lines).map((it) => parseGroundedLine(it) || { id: null, statement: it, evidence: [], overridden: false, raw: it });
+}
+
+// Evidence ids and URLs cited on a section's lines (Intent, Constraints): what the
+// intent_grounded floor checks against the job's intent evidence.
+function citations(sectionName, lines) {
+  return items(lines)
+    .map((it) => ({ section: sectionName, text: it, evidence: [...new Set(it.match(ID_E) || [])], urls: [...new Set(it.match(URL_RE) || [])] }))
+    .filter((c) => c.evidence.length || c.urls.length);
+}
+
 function parse(text) {
   const s = sections(text);
   const title = (String(text || '').match(/^#\s+(.+)$/m) || [])[1] || '';
@@ -139,7 +178,32 @@ function parse(text) {
     allowedPaths,
     verifyCommands,
     assumptions: items(s.assumptions),
+    groundedPresent: s[GROUNDED_KEY] !== undefined,
+    groundedAssumptions: groundedLines(s[GROUNDED_KEY]),
+    citations: [...citations('Intent', s.intent), ...citations('Constraints', s.constraints)],
   };
+}
+
+// Replace (or add, before "## Assumptions") the evidence-backed Assumptions section.
+// lines: ["- A-1: … (evidence: E-2)", …]. With no lines and no section, the text is unchanged.
+function setGrounded(text, lines) {
+  const src = String(text || '');
+  const body = [GROUNDED_HEADING, GROUNDED_COMMENT, ...lines].join('\n');
+  const all = src.split('\n');
+  const start = all.findIndex((l) => /^##\s+assumptions \(evidence-backed\)\s*$/i.test(l));
+  if (start !== -1) {
+    let end = all.findIndex((l, i) => i > start && /^##\s+/.test(l));
+    if (end === -1) end = all.length;
+    const tail = all.slice(end);
+    const next = [...all.slice(0, start), ...body.split('\n'), ...(tail.length ? [''] : []), ...tail];
+    while (tail.length === 0 && next.length && next[next.length - 1] === '') next.pop();
+    const out = next.join('\n') + (tail.length ? '' : '\n');
+    return out;
+  }
+  if (!lines.length) return src;
+  const at = all.findIndex((l) => /^##\s+assumptions\s*$/i.test(l));
+  if (at !== -1) return [...all.slice(0, at), ...body.split('\n'), '', ...all.slice(at)].join('\n');
+  return `${src.replace(/\n*$/, '\n')}\n${body}\n`;
 }
 
 function intentProblems(intent, requireIntent) {
@@ -158,6 +222,17 @@ function problems(parsed, { requirePlanFields = false, requireIntent = true } = 
     if (isPlaceholder(ac.text)) p.push(`${ac.id} is still a placeholder`);
     for (const t of ac.evidence) if (!EVIDENCE_TYPES.includes(t)) p.push(`${ac.id}: unknown evidence type "${t}" (use ${EVIDENCE_TYPES.join(', ')})`);
   }
+  const gids = [];
+  for (const a of parsed.groundedAssumptions || []) {
+    if (!a.id) {
+      p.push(`Assumptions (evidence-backed): "${a.raw.slice(0, 80)}" is not "- A-n: <statement> (evidence: E-n)"`);
+      continue;
+    }
+    gids.push(a.id);
+    if (isPlaceholder(a.statement) || !a.statement) p.push(`${a.id} has no statement`);
+    else if (!a.overridden && !a.evidence.length) p.push(`${a.id} cites no evidence: write "(evidence: E-n)" or ask the user instead`);
+  }
+  if (new Set(gids).size !== gids.length) p.push('Duplicate evidence-backed assumption ids');
   if (requirePlanFields) {
     if (!parsed.allowedPaths.length) p.push('Allowed paths is empty (needed to build straight from the contract)');
     const runnable = parsed.acs.filter((a) => a.evidence.some((t) => t === 'test' || t === 'run'));
@@ -175,4 +250,4 @@ function hash(root, state) {
   return sha256(`${text}\n--factory--\nwork_type=${state.work_type}\nrisk=${state.risk}\nepic=${Boolean(state.epic)}`);
 }
 
-module.exports = { EVIDENCE_TYPES, INTENT_FIELDS, intentLines, template, parse, problems, read, hash, isPlaceholder };
+module.exports = { EVIDENCE_TYPES, INTENT_FIELDS, GROUNDED_HEADING, GROUNDED_COMMENT, intentLines, template, parse, parseGroundedLine, problems, read, hash, isPlaceholder, setGrounded };
