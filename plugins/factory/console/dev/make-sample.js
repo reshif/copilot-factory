@@ -9,11 +9,12 @@
 //   FACTORY_SECRET_FILE=<scratch-dir>/secret factory console --root <root> --out c.html --data d.json
 //
 // Jobs it leaves behind:
-//   J-0001 standard@medium  Rate-limit the public search API — full run: clarify questions and
-//          answers, H1 denied once, a researcher retried, a design revision, a planner round
-//          that failed validation, a builder retry on a stronger model, a guard denial, a
-//          confirmed security finding and fix round, a review re-run for a missing lane,
-//          local ship, merge, a lesson, close.                                  → closed
+//   J-0001 standard@medium  Rate-limit the public search API — full run: research first (repo
+//          and web scouts, a verifier), clarify questions and answers, H1 denied once, an
+//          evidence-backed assumption overridden (change A-2), a researcher retried, a design
+//          revision, a planner round that failed validation, a builder retry on a stronger
+//          model, a guard denial, a confirmed security finding and fix round, a review re-run
+//          for a missing lane, local ship, merge, a lesson, close.             → closed
 //   J-0002 bug@low          Fix CSV export dropping the last row              → waiting at H1
 //   J-0003 feature@low      Add a /health endpoint — H1 approved this morning, proof failed,
 //          verify-fix round, review running now                    → active
@@ -543,6 +544,7 @@ const J1PLAN = {
 
 function sc1(J) {
   let denied = false;
+  let changed = false;
   return {
     intentMap: [
       DEFAULT_INTENT_MAP[0],
@@ -575,6 +577,13 @@ function sc1(J) {
         ok(reply('deny Also cover anonymous callers — no API key means limit by IP'), 'deny');
         wait(between(4, 8) * M);
         writeContract(J, contract(C1v3));
+        return 'handled';
+      }
+      if (n.step === 'H1' && !changed) {
+        // You override one evidence-backed assumption: clarify re-checks, H1 comes back.
+        changed = true;
+        human(6, 12);
+        ok(reply('change A-2 Node 22: the service moves to it before this ships'), 'change A-2');
         return 'handled';
       }
       return null;

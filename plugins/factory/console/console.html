@@ -777,6 +777,16 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; 
 .para p b.y { color: var(--signal); font-weight: 600; }
 .para p .bad { color: var(--stop); }
 .para p .ok { color: var(--track); }
+.para .evid { margin: 8px 0 2px; padding: 6px 0 2px 12px; border-left: 2px solid var(--rule-2); max-width: 74ch; font-size: 13px; line-height: 1.5; }
+.para .evid p { margin: 0 0 4px; font-size: 13px; line-height: 1.5; }
+.para .evid .eh { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 8px 0 3px; }
+.para .evid ul { margin: 0 0 4px; padding-left: 16px; }
+.para .evid li { margin: 1px 0; }
+.para .evid li.unv { color: var(--signal); }
+.para .evid .src { color: var(--muted); font-size: 12px; }
+.para .evid .src code { font-size: 11.5px; word-break: break-all; }
+.para .evid b.y { color: var(--signal); font-weight: 600; }
+.para .evid .bad { color: var(--stop); }
 .mnote { grid-column: 2; font-size: 12.5px; line-height: 1.45; padding: 9px 11px; border-radius: 6px; background: var(--stop-soft); border-left: 3px solid var(--stop); margin: 4px 0 12px; }
 .mnote b { font: 600 11px var(--mono); display: block; margin-bottom: 3px; }
 @media (max-width: 1180px) { .mnote { grid-column: 1; margin-left: 18px; } }
@@ -1143,10 +1153,12 @@ dialog.dlg::backdrop { background: rgba(4, 8, 7, .55); backdrop-filter: blur(2px
 <script>
 // ===================================================================== definitions
 const AGENTS = {
+  'intent-mapper': ['Clarify', 'Lists the unknowns before anyone asks you anything: repo, world, decision or yours, with their impact.', ['Read', 'Grep', 'Glob'], false],
+  'verifier': ['Clarify', 'Re-opens each high-impact or web finding, checks the quote, date and version; confirmed, contradicted or unverified.', ['Read', 'Grep', 'Glob', 'Bash', 'WebFetch'], false],
   'intent-analyst': ['Clarify', 'Reads the draft contract from one angle and asks only what the repo can\'t answer.', ['Read', 'Grep', 'Glob', 'Bash'], false],
   'judge': ['Clarify', 'Merges the analysts\' questions, dismisses with reasons, never re-asks.', ['Read'], false],
   'god-eye': ['Critique', 'Cold reviewer of the contract, design or plan. Approves only what someone could act on without asking.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'researcher': ['Ground', 'Grounds one topic; every claim is cited or marked UNVERIFIED.', ['Read', 'Grep', 'Glob', 'Bash', 'WebFetch', 'WebSearch'], false],
+  'researcher': ['Ground', 'Grounds one topic, or scouts clarify\'s unknowns (repo: file:line; web: fetched docs, quoted); every claim is cited or marked UNVERIFIED.', ['Read', 'Grep', 'Glob', 'Bash', 'WebFetch'], false],
   'option-generator': ['Decide', 'Proposes one design optimised for one prior, without hedging.', ['Read', 'Grep', 'Glob', 'Bash'], false],
   'threat-modeler': ['Decide', 'Writes the threat model before the design is decided.', ['Read', 'Grep', 'Glob', 'Bash', 'Write'], true],
   'architect': ['Decide', 'Decides from findings, options and threats; writes the ADR or no-adr note.', ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit'], true],
@@ -1191,15 +1203,15 @@ const STAGES = [
         detail: { what: 'Creates the job branch, the contract template and a sealed snapshot of the rulebook the job promises to follow.', cmds: ['factory job new --title … --type … --risk …'], outputs: ['state.json (sealed)', 'recipe.lock.json (sealed rulebook)', 'contract.md template', 'branch factory/J-0007'] } },
     ] },
   { id: 'contract', name: 'Contract', sub: 'skill: clarify · workflow: fanout-judge', gapAfter: 50,
-    what: 'The request becomes an outcome contract: a goal, acceptance criteria with evidence types, allowed paths and verify commands. Agents only ask what the repo can\'t answer; you approve the exact text.',
+    what: 'The request becomes an outcome contract: a goal, acceptance criteria with evidence types, allowed paths and verify commands. Research comes first, so agents only ask what neither the repo nor the documentation can answer; you approve the exact text.',
     nodes: [
       { id: 'skill-clarify', type: 'skill', title: 'factory:clarify', sub: 'Copilot drafts contract.md from your request and the repo', step: 'clarify',
         detail: { what: 'Fills every section, answers what the repo can answer, and runs factory contract check before any agent sees it.', skills: ['factory:clarify'], cmds: ['factory contract check'], outputs: ['contract.md draft'] } },
       { id: 'wf-clarify', type: 'workflow', title: 'fanout-judge · clarify', step: 'clarify',
-        groups: [[P('analyst · intent (gate)', 'agent', 'intent-analyst')], [P('analyst · ambiguity', 'agent', 'intent-analyst'), P('analyst · constraints', 'agent', 'intent-analyst'), P('analyst · testability', 'agent', 'intent-analyst')], [P('judge', 'agent', 'judge')], [P('god-eye · intent', 'agent', 'god-eye')]],
-        detail: { what: 'The intent analyst runs first and alone: can it restate the problem, who has it, the outcome and the signal that proves it? While the intent is open, the other three analysts are held back. Then ambiguity, constraints and testability read the contract in parallel. The judge merges, prioritises (intent, scope, constraint, acceptance), gives every question an id (Q-n) and never re-asks. Only when no questions are left does God Eye read it cold.', agents: ['intent-analyst', 'judge', 'god-eye'], cmds: ['factory run fanout-judge --config clarify'], outputs: ['questions for you, or an approved contract'], floors: 'contract_approved' } },
-      { id: 'you-answer', type: 'you', title: 'You answer questions', sub: 'Q-n questions, intent first; at most 5, then 3', step: 'clarify',
-        detail: { what: 'Your answers go into the contract and the round runs again. Rounds are capped; a contract that won\'t converge parks.', you: ['answers in chat'] } },
+        groups: [[P('intent map', 'agent', 'intent-mapper')], [P('scout · repo', 'agent', 'researcher'), P('scout · web', 'agent', 'researcher')], [P('verify evidence', 'agent', 'verifier')], [P('analyst · intent (gate)', 'agent', 'intent-analyst')], [P('analyst · ambiguity', 'agent', 'intent-analyst'), P('analyst · constraints', 'agent', 'intent-analyst'), P('analyst · testability', 'agent', 'intent-analyst')], [P('judge', 'agent', 'judge')], [P('god-eye · intent', 'agent', 'god-eye')]],
+        detail: { what: 'Research first (the scout phase): the intent mapper lists the unknowns (repo, world, decision, yours) and their impact; repo scouts answer repo unknowns with file:line quotes, web scouts fetch the docs for the versions the repo uses, within the risk budget; the verifier re-opens high-impact and web findings. Confirmed findings become evidence-backed assumptions (A-n) in the contract, stated, not asked. Then the intent analyst runs first and alone: can it restate the problem, who has it, the outcome and the signal that proves it? While the intent is open, the other three analysts are held back. Then ambiguity, constraints and testability read the contract in parallel. The judge merges, prioritises (intent, scope, constraint, acceptance), drops what research answered, gives every question an id (Q-n) and never re-asks. Only when no questions are left does God Eye read it cold; a question research could answer goes back to the scouts.', agents: ['intent-mapper', 'researcher', 'verifier', 'intent-analyst', 'judge', 'god-eye'], cmds: ['factory run fanout-judge --config clarify', 'factory intent show'], outputs: ['intent-findings.md + intent-evidence.json (sealed)', '## Assumptions (evidence-backed) in the contract', 'questions for you, or an approved contract'], floors: 'contract_approved · intent_grounded (medium, high)' } },
+      { id: 'you-answer', type: 'you', title: 'You answer questions', sub: 'What was found, what is assumed, then only your questions', step: 'clarify',
+        detail: { what: 'One screen: what research found (source, date, verdict), what the factory assumes (A-n, with evidence), then only the questions research could not answer, intent first, at most 5 then 3, each default citing evidence or marked your call. Your answers go into the contract and the round runs again. Rounds are capped; a contract that won\'t converge parks.', you: ['answers in chat', 'change A-n <value>', 'drop A-n'] } },
       { id: 'gate-H1', type: 'gate', title: 'H1 · You approve the contract', step: 'H1', alt: 'EH1',
         detail: { what: 'Approval is bound to the contract\'s hash, and risk is part of that hash. Change it later and the router sends you to an amendment.', you: ['approve', 'deny <what must change>'], floors: 'contract_approved' } },
     ],
@@ -1878,7 +1890,7 @@ const ORDER = ['request', 'contract', 'design', 'plan', 'build', 'verify', 'ship
 const STAGE_NAME = { request: 'Request', contract: 'Contract', design: 'Ground & design', plan: 'Plan', build: 'Build', verify: 'Prove & challenge', ship: 'Ship', learn: 'Learn & close' };
 const STEP_INFO = {
   request: ['Request', 'You asked; the CLI opened the job and chose the recipe by rule.'],
-  clarify: ['Clarify', 'Copilot drafts the contract; analysts ask only what the repo can\'t answer; God Eye reads it cold.'],
+  clarify: ['Clarify', 'Copilot drafts the contract; scouts research the repo and the docs first; analysts ask only what research can\'t answer; God Eye reads it cold.'],
   H1: ['H1 · contract', 'You approve the outcome contract. The approval is bound to its hash.'],
   EH1: ['EH1 · contracts', 'You approve the epic\'s contract.'],
   ground: ['Ground', 'Researchers in parallel; every claim cited or marked UNVERIFIED.'],
@@ -2235,6 +2247,7 @@ function rowLines(job, row) {
     switch (it.type) {
       case 'agents': add(i, `${it.workflow ? `${it.workflow}${it.config ? ` · ${it.config}` : ''}${it.mode ? ` (${it.mode})` : ''}` : 'agents seen by the hooks'} · ${it.runs} agent run${it.runs === 1 ? '' : 's'} · ${fmtDur(Date.parse(it.t) - t0)}`, 'wf', { agents: it.agents }); break;
       case 'result': {
+        if (it.research && it.research.unknowns) { const x = it.research; add(i, `◎ ${x.scouts || x.verifiers ? `${x.unknowns} unknowns · ${x.confirmed}/${x.evidence} confirmed` : 'research reused'} · ${x.assumptions} assumed${(x.asked || []).length ? ` · ${x.asked.length} asked` : ''}${x.web === 'off' ? ' · web off' : x.web === 'unavailable' ? ' · no web' : ''}`, 'wf'); }
         add(i, `${it.ok ? '✓' : it.outcome === 'ask' ? '?' : '✕'} ${it.text}`, it.ok ? 'ok' : it.outcome === 'ask' ? 'ask' : 'bad');
         for (const f of (it.findings || []).filter((x) => x.status === 'confirmed' || x.status === 'unverified').slice(0, 3)) add(i, `⚑ ${f.id} · ${f.severity} · ${f.status}: ${f.summary}`, f.status === 'confirmed' ? 'bad find' : 'ask find');
         break;
@@ -2247,6 +2260,8 @@ function rowLines(job, row) {
         else if (it.action === 'merged') add(i, `⇢ You merged${it.commit ? ` ${it.commit}` : ''} · after ${wait}`, 'you');
         else if (it.action === 'resume') add(i, `▶ You resumed the job${row.kind === 'resume' ? '' : ''}`, 'you');
         else if (it.action === 'cancelled' || it.action === 'abandoned') add(i, `${it.reason || ''}`, 'you bad');
+        else if (it.action === 'change_assumption') add(i, `✎ You overrode ${it.assumption || 'an assumption'}${it.value ? `: ${it.value}` : ''}`, 'you');
+        else if (it.action === 'drop_assumption') add(i, `✎ You dropped ${it.assumption || 'an assumption'}`, 'you');
         else add(i, `You: ${it.action}${it.reason ? ` — ${it.reason}` : ''}`, 'you');
         break;
       }
@@ -2740,8 +2755,8 @@ function describe(it, job = LV.job) {
     }
     case 'human': {
       const g = it.gate || stepName(it.step);
-      const t = { approve: `You approved ${g}${it.via ? ` (${it.via})` : ''}`, deny: `You asked for changes at ${g}`, merged: `You merged${it.commit ? ` ${it.commit}` : ''}`, resume: 'You resumed the job', waive: 'You waived a floor', confirm_ac: 'You confirmed a criterion', cancelled: 'You cancelled the job', abandoned: 'You abandoned the job' }[it.action] || `You: ${it.action}`;
-      return [t, it.reason || ''];
+      const t = { approve: `You approved ${g}${it.via ? ` (${it.via})` : ''}`, deny: `You asked for changes at ${g}`, merged: `You merged${it.commit ? ` ${it.commit}` : ''}`, resume: 'You resumed the job', waive: 'You waived a floor', confirm_ac: 'You confirmed a criterion', cancelled: 'You cancelled the job', abandoned: 'You abandoned the job', change_assumption: `You overrode ${it.assumption || 'an assumption'}`, drop_assumption: `You dropped ${it.assumption || 'an assumption'}` }[it.action] || `You: ${it.action}`;
+      return [t, it.reason || (it.action === 'change_assumption' ? `${it.value || ''}${it.was ? ` (research said: ${it.was})` : ''}` : it.action === 'drop_assumption' ? it.was || '' : '')];
     }
     case 'result': return [`${stepName(it.step || it.raw_step)}: ${it.ok ? 'passed' : it.outcome === 'ask' ? 'needs you' : 'not passed'}`, it.text];
     case 'agents': return [`${it.workflow ? `${it.workflow}${it.config ? ` · ${it.config}` : ''}` : 'Agents (seen by the hooks)'} ran ${it.runs} agent run${it.runs === 1 ? '' : 's'}`, it.from === 'hooks' ? 'Seen through the hooks (no roster in the envelope)' : `Workflow status: ${it.status}`];
@@ -3924,6 +3939,32 @@ function agentsProse(agents) {
   const fam = (mm) => ({ opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' })[modelFamily(mm)] || mm;
   return cs.map((c) => `${c.n > 1 ? `${c.n}× ` : ''}${c.role}${c.models.length ? ` on ${c.models.map(fam).join(' then ')}` : ''}${c.retries ? ` (${c.retries} retr${c.retries === 1 ? 'y' : 'ies'})` : ''}${c.fails ? ` (${c.fails} failed)` : ''}`).join(', ');
 }
+// Grounded intent in the Story: what clarify's scout phase researched, found and assumed.
+// Only confirmed findings (and repo evidence) read as fact; the others say what they are.
+const VERDICT_WORD = { confirmed: 'confirmed', contradicted: 'contradicted by another source', unverified: 'not verified', unchecked: 'repo, not re-checked' };
+function researchHtml(x) {
+  const pl = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const web = x.web === 'off' ? ' Web research is off for this repository.' : x.web === 'unavailable' ? ' The scouts had no web access, so world facts were not verified.' : '';
+  const reused = !x.scouts && !x.verifiers;
+  const kinds = Object.entries(x.by_kind || {}).map(([k, n]) => `${n} ${k}`).join(', ');
+  const H = [`<p class="lead"><b>${reused ? 'Research.' : 'Research first.'}</b> ${reused
+    ? `Reused the earlier research: ${pl(x.unknowns, 'unknown')}, ${pl(x.evidence, 'finding')} (${x.confirmed} confirmed); nothing new to look up.`
+    : `The intent mapper listed ${pl(x.unknowns, 'unknown')}${kinds ? ` (${esc(kinds)})` : ''}; ${pl(x.scouts, 'scout')} researched them${x.verifiers ? ' and the verifier re-checked the findings' : ''}: ${pl(x.evidence, 'finding')}, ${x.confirmed} confirmed.`}${web}${(x.degraded || []).length ? ` <span class="bad">Degraded: ${esc(x.degraded.join(', '))}.</span>` : ''}</p>`];
+  const fs = (x.findings || []).filter((f) => f.claim);
+  if (fs.length && !reused) {
+    H.push(`<div class="eh">What it found</div><ul>${fs.map((f) => {
+      const fact = f.verdict === 'confirmed' || f.verdict === 'unchecked';
+      return `<li${fact ? '' : ' class="unv"'}><b>${esc(f.id)}</b> ${fact ? esc(f.claim) : `“${esc(f.claim)}” — ${esc(VERDICT_WORD[f.verdict] || f.verdict || 'unchecked')}, not stated as fact`} <span class="src"><code>${esc(f.source)}</code>${f.retrieved_at ? ` · ${esc(f.retrieved_at)}` : ''}${fact ? ` · ${esc(VERDICT_WORD[f.verdict])}${f.confidence ? `, ${esc(f.confidence)}` : ''}` : ''}</span></li>`;
+    }).join('')}</ul>`);
+  }
+  const as = x.assumptions_list || [];
+  if (reused && as.some((a) => a.overridden)) H.push(`<ul>${as.filter((a) => a.overridden).map((a) => `<li class="ovr"><b>${esc(a.id)}</b> <s>${esc(a.statement)}</s> <b class="y">overridden by you${a.value ? `: “${esc(a.value)}”` : ''}</b></li>`).join('')}</ul>`);
+  if (as.length && !reused) H.push(`<div class="eh">Assumed, not asked</div><ul>${as.map((a) => a.overridden ? `<li class="ovr"><b>${esc(a.id)}</b> <s>${esc(a.statement)}</s> <b class="y">overridden by you${a.value ? `: “${esc(a.value)}”` : ''}</b></li>` : `<li><b>${esc(a.id)}</b> ${esc(a.statement)} <span class="src">evidence ${esc((a.evidence || []).join(', '))}</span></li>`).join('')}</ul>`);
+  const asked = x.asked || [];
+  if (asked.length) H.push(`<p>Asked you ${asked.length === 1 ? 'one question' : `${asked.length} questions`}: ${asked.map((q) => `${esc(q.id)}${q.researchable ? ` <span class="bad">(research could not settle it: ${esc(q.reason)})</span>` : q.evidence && q.evidence.length ? ` (default backed by ${esc(q.evidence.join(', '))})` : ' (your call)'}`).join(', ')}.</p>`);
+  if (x.researchable_dropped) H.push(`<p>${pl(x.researchable_dropped, 'question')} research had already answered ${x.researchable_dropped === 1 ? 'was' : 'were'} not asked.</p>`);
+  return `<div class="evid">${H.join('')}</div>`;
+}
 function renderStory() {
   const job = LV.job;
   const items = LV.items;
@@ -3946,6 +3987,7 @@ function renderStory() {
     const def = job.steps.find((s) => s.id === row.step);
     const gate = def && (def.human || def.kind === 'gate') && row.kind === 'stop';
     const S = [];
+    const RS = [];
     const it0 = items[row.first];
     if (row.kind === 'start') S.push(`You asked for <span class="q">“${esc(job.title)}”</span>. It was filed as ${esc(job.work_type || 'work')} at <b>${esc(job.risk)}</b> risk${job.risk_proposed && job.risk_proposed !== job.risk ? ` (proposed ${esc(job.risk_proposed)})` : ''}, so the CLI chose the <code>${esc(job.recipe)}</code> recipe by rule.`);
     else if (row.kind === 'stop') {
@@ -3963,7 +4005,7 @@ function renderStory() {
       const after = fmtDur(Date.parse(it.t) - tm);
       switch (it.type) {
         case 'agents': S.push(`${esc(it.workflow ? `${it.workflow}${it.config ? ` (${it.config})` : ''}` : 'The hooks saw')} ran ${it.runs} agent run${it.runs === 1 ? '' : 's'}: ${esc(agentsProse(it.agents))}, done ${esc(after)} in.`); break;
-        case 'result': S.push(it.ok ? `<span class="ok">✓ ${esc(it.text)}.</span>` : it.outcome === 'ask' ? `<b class="y">? ${esc(it.text)}.</b>` : `<span class="bad">✕ ${esc(it.text)}.</span>`); for (const f of (it.findings || []).filter((x) => x.status === 'confirmed')) S.push(`<span class="bad">Confirmed ${esc(f.severity)} finding ${esc(f.id)}: ${esc(f.summary)}.</span>`); break;
+        case 'result': if (it.research && it.research.unknowns) RS.push(researchHtml(it.research)); S.push(it.ok ? `<span class="ok">✓ ${esc(it.text)}.</span>` : it.outcome === 'ask' ? `<b class="y">? ${esc(it.text)}.</b>` : `<span class="bad">✕ ${esc(it.text)}.</span>`); for (const f of (it.findings || []).filter((x) => x.status === 'confirmed')) S.push(`<span class="bad">Confirmed ${esc(f.severity)} finding ${esc(f.id)}: ${esc(f.summary)}.</span>`); break;
         case 'human': {
           const g = it.gate || stepName(it.step);
           if (it.action === 'approve') S.push(`<b class="y">You approved ${esc(g)}</b>${it.via ? ` (${esc(it.via)})` : ''}, ${esc(after)} after it was put to you.`);
@@ -3971,6 +4013,8 @@ function renderStory() {
           else if (it.action === 'merged') S.push(`<b class="y">You merged it</b>${it.commit ? ` at <code>${esc(it.commit)}</code>` : ''}, ${esc(after)} after the pull request was ready.`);
           else if (it.action === 'resume') { const pk = rows[r - 1] && rows[r - 1].kind === 'park' ? Date.parse(items[rows[r - 1].first].t) : null; S.push(`<b class="y">You resumed the job</b>${pk ? ` after ${esc(fmtDur(Date.parse(it.t) - pk))} parked` : ''}.`); }
           else if (it.action === 'cancelled' || it.action === 'abandoned') S.push(`<b class="y">You ${esc(it.action === 'cancelled' ? 'cancelled' : 'abandoned')} the job</b>${it.reason ? `: <span class="q">“${esc(it.reason)}”</span>` : ''}.`);
+          else if (it.action === 'change_assumption') S.push(`<b class="y">You overrode ${esc(it.assumption || 'an assumption')}</b>${it.value ? `: <span class="q">“${esc(it.value)}”</span>` : ''}${it.was ? ` (research said: ${esc(it.was)})` : ''}, so the contract changed and clarify checked it again.`);
+          else if (it.action === 'drop_assumption') S.push(`<b class="y">You dropped ${esc(it.assumption || 'an assumption')}</b>${it.was ? ` (${esc(it.was)})` : ''}, so the contract changed.`);
           else S.push(`<b class="y">You: ${esc(it.action)}</b>${it.reason ? ` — ${esc(it.reason)}` : ''}.`);
           break;
         }
@@ -3987,7 +4031,7 @@ function renderStory() {
     if (nextT && row.kind === 'stop' && gate && !row.items.some((i) => items[i].type === 'human')) S.push(`It waited ${esc(fmtDur(nextT - tm))} for you.`);
     const cls = `para${row.back || row.kind === 'amend' ? ' rtn' : ''}${row.kind === 'park' ? ' park' : ''}${gate ? ' gate you' : ''}`;
     const ret = row.back ? `<span class="rt2">${esc(tags[0] || 'back')}</span>` : row.kind === 'amend' ? '<span class="rt2">amendment</span>' : '';
-    out.push(`<article class="${cls}" data-i="${row.first}"><div class="ph"><h4>${esc(title)}</h4>${ret}<span class="tm">${esc(fmtDate(first.t))} · +${esc(fmtDur(tm - t0))}${nextT ? ` · ${esc(fmtDur(nextT - tm))} here` : ''}</span></div><p>${S.filter(Boolean).join(' ')}</p></article>`);
+    out.push(`<article class="${cls}" data-i="${row.first}"><div class="ph"><h4>${esc(title)}</h4>${ret}<span class="tm">${esc(fmtDate(first.t))} · +${esc(fmtDur(tm - t0))}${nextT ? ` · ${esc(fmtDur(nextT - tm))} here` : ''}</span></div><p>${S.filter(Boolean).join(' ')}</p>${RS.join('')}</article>`);
     for (const f of anchored.get(r) || []) out.push(`<aside class="mnote"><b>⚑ Inspector ${esc(f.id)} · ${esc(f.severity)} · ${esc(f.status)}</b>${esc(f.summary)}${f.question ? `<br><span style="color:var(--muted)">${esc(f.question)}</span>` : ''}</aside>`);
   });
   $('#jt-story').innerHTML = `<div class="story">${out.join('')}</div>`;
