@@ -388,7 +388,7 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 - [x] `copilot skill list` shows all 11 factory skills and `inspect`, with their descriptions.
 - [x] Every flag `factory run` passes exists in `copilot --help`: `-p`, `-s`, `--agent`, `--model`, `--output-format json` (JSONL), `--no-ask-user`, `--allow-all-tools`, `--add-dir`, `--session-id`, `--plugin-dir`, `-C`. Reasoning effort is `--reasoning-effort` (the `--effort` alias in the docs is not in this build's help).
 
-**Needs checking while signed in to Copilot.** Without a login the CLI stops at authentication before it resolves agents or runs hooks, so these remain open (from the research reports in [`docs/research/`](docs/research/)):
+**Needs checking while signed in to Copilot.** Run `bash scripts/verify-copilot.sh` on your machine: it checks the plugins and skills, makes one short headless `--agent factory:researcher` call in a throwaway repo (a few premium requests), checks the JSON output shape `factory run` reads, whether the plugin hooks fire inside `copilot -p`, and whether the guard blocks a write to `.factory/policy.json`, then writes `copilot-verify-*/report.md`. Without a login the CLI stops at authentication before it resolves agents or runs hooks, so these remain open (from the research reports in [`docs/research/`](docs/research/)):
 
 Packaging and invocation ([plugins-cli](docs/research/plugins-cli.md), [agents-skills](docs/research/agents-skills.md)):
 - [ ] `/agent` lists the 19 agents. Plugin agents in `agents/` load as `*.agent.md` files (the docs disagree about `.md` vs `.agent.md`; we chose `.agent.md`).
