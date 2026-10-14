@@ -1,11 +1,10 @@
 'use strict';
-// Agents may run inspections and read reports; marking findings and changing modes are yours.
-const { safe, emit } = require('./lib');
-const { check } = require('./guard-rules');
+// preToolUse: agents may run inspections and read reports; marking findings and changing
+// modes are yours. Registered without a matcher (hooks.md §6): only shell calls are checked.
+const { safe, deny } = require('./lib');
 
 safe((input) => {
-  if (input.tool_name !== 'Bash') return;
-  const why = check(input.tool_input && input.tool_input.command);
-  if (why) emit({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `[inspector guard] ${why}` } });
+  if (input.tool !== 'Bash') return;
+  const why = require('./guard-rules').check(input.command);
+  if (why) deny(`[inspector guard] ${why}`);
 });
-

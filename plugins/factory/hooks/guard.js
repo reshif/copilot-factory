@@ -1,28 +1,36 @@
 'use strict';
-// PreToolUse guard: see guard-rules.js for what is denied and why.
+// preToolUse guard: see guard-rules.js for what is denied and why. Registered without a
+// matcher (Copilot's tool-name list is incomplete and VS Code's Local harness ignores
+// matchers, hooks.md §6), so it filters by the normalised tool name itself and returns
+// before loading anything for tools it doesn't guard. A timeout fails OPEN in Copilot
+// (hooks.md §5.1): the hot path stays small and requires are lazy.
 
 const path = require('path');
 const { safe, findRoot, traceError } = require('./lib');
-const { checkWrite, checkReadTool, checkBash, checkContent, deny, loadPolicy, READ_TOOLS } = require('./guard-rules');
+
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+const READS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead']);
 
 safe((input) => {
-  const tool = input.tool_name;
-  const ti = input.tool_input || {};
-  const cwd = input.cwd || process.cwd();
-  const filePath = ti.file_path || ti.notebook_path || ti.path || null;
-  const absFile = filePath ? (path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath)) : null;
+  const tool = input.tool;
+  if (!WRITE_TOOLS.has(tool) && !READS.has(tool) && tool !== 'Bash') return;
+  const { checkWrite, checkReadTool, checkBash, checkContent, deny, loadPolicy } = require('./guard-rules');
+  const ti = input.args;
+  const cwd = input.cwd;
+  const abs = (p) => (path.isAbsolute(p) ? p : path.resolve(cwd, p));
+  const absFile = input.file ? abs(input.file) : null;
   const root = findRoot(cwd, absFile && path.dirname(absFile));
   const policy = root ? loadPolicy(root) : require('../cli/core/policy').defaults();
   let why = null;
-  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool) && absFile) {
-    why = checkWrite(root, absFile, policy);
-    if (!why && root) {
-      const text = [ti.content, ti.new_string, ti.new_source, ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e.new_string) : [])].filter(Boolean).join('\n');
-      why = checkContent(text, absFile);
+  if (WRITE_TOOLS.has(tool)) {
+    // Every file the call writes: its path argument and every file an apply_patch body touches.
+    for (const f of input.files) {
+      why = checkWrite(root, abs(f.path), policy) || (root && f.content ? checkContent(f.content, abs(f.path)) : null);
+      if (why) break;
     }
-  }
-  else if (READ_TOOLS.has(tool)) why = checkReadTool(root, tool, ti, absFile, cwd, policy);
-  else if (tool === 'Bash' && root) why = checkBash(root, ti.command, policy);
+    if (!why && root && input.isPatch && !input.files.length) why = 'Could not tell which files this patch touches; use the edit or create tool on one file at a time.';
+  } else if (READS.has(tool)) why = checkReadTool(root, tool, ti, absFile, cwd, policy);
+  else if (tool === 'Bash' && root) why = checkBash(root, input.command, policy);
   if (why) {
     deny(why);
     try {

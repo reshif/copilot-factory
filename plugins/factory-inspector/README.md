@@ -5,7 +5,7 @@ An independent auditor for the Software Factory. It answers two questions about 
 1. **Was the intended recipe the one used?**
 2. **Did the factory behave the way that recipe says?** That covers the order of steps, gates, the evidence chain and caps, and whether Claude did what `factory next` told it to.
 
-It also finds **ambiguities**: places where the rules left room and someone had to improvise. And it watches the factory's **health**: every issue the factory reports about itself — hooks that failed, guard denials, blocked "done" claims, refused replies, CLI failures and crashes, stale or degraded workflow results, agent failures, retries and escalations, agents that never stopped, parks, idle jobs, slow gates. Each finding goes into a register for you to decide on.
+It also finds **ambiguities**: places where the rules left room and someone had to improvise. And it watches the factory's **health**: every issue the factory reports about itself — hooks that failed, guard denials, blocked stops, refused replies, CLI failures and crashes, stale or degraded workflow results, agent failures, retries and escalations, agents that never stopped, parks, idle jobs, slow gates. Each finding goes into a register for you to decide on.
 
 It never blocks, approves or changes a job, a recipe or a policy.
 
@@ -31,9 +31,9 @@ The inspector has its own implementations of three things: seal verification, re
 | R7 driver fidelity | deviation | Claude didn't run what `factory next` asked for, ran something else, or changed things while waiting at a gate |
 | R8 consistency | ambiguity / deviation | The same failing check routed by different rules under the same rulebook; identical inputs picking different recipes |
 | R9 friction | ambiguity | Repeated patterns across jobs (3+ by default): the same guard denial, refused replies, refused workflow results, caps you nearly always resume past, the same floor waived, denials clustering at one gate, a step repeating with no progress |
-| R10 hook errors | gap | A factory hook failed (`hook_error`; high for the guard, Stop and prompt hooks, which enforce nothing while failing); the inspector's own hooks failed (`.factory/inspect/hook-errors.jsonl`) |
+| R10 hook errors | gap | A factory hook failed (`hook_error`; high for the guard, stop and prompt hooks, which enforce nothing while failing); the inspector's own hooks failed (`.factory/inspect/hook-errors.jsonl`) |
 | R11 log integrity | gap | Lines in `events.jsonl`, `decisions.jsonl` or a ledger that aren't JSON at all (a crashed or concurrent write) |
-| R12 hook pushback | ambiguity | Per job, over a limit: guard denials, blocked "done" claims, refused replies, look-alike replies that weren't applied |
+| R12 hook pushback | ambiguity | Per job, over a limit: guard denials, blocked stops (agentStop), refused replies, look-alike replies that weren't applied |
 | R13 CLI failures | gap / ambiguity | A `factory` command crashed (internal error, factory-wide); the same command failing with the same code again and again in a job; workflow results thrown away as stale |
 | R14 workflows and agents | ambiguity | Workflow errors; steps that went on degraded (agents with no result after a retry); agent retries, failures and model escalations over a limit; the same step recorded as failed again and again |
 | R15 orphaned agents | gap | Agents that started and never reported stopping (after the job ended, or after a time limit) |
@@ -52,7 +52,13 @@ The inspector has its own implementations of three things: seal verification, re
 | `/factory-inspector:inspect active` | Also inspect the jobs still running, as they stand now (issues happen mid-job) |
 | `/factory-inspector:inspect health` | The factory-wide health summary |
 
-It also runs on its own whenever a job ends (closed, cancelled or abandoned) and adds one line to the conversation: right after Claude runs `factory close`/`cancel`/`abandon`; at the end of the turn when the job ended some other way (a `cancel job` reply, a command in your own terminal); and at session start for anything that ended while no session was open, after which it says how many findings are open. The end-of-turn check reads only each job's `state.json`, so it costs nothing when nothing is pending.
+It also runs on its own whenever a job ends (closed, cancelled or abandoned), through its GitHub Copilot CLI hooks (`hooks/hooks.json`, native format: camelCase events, no matchers, run through `$PLUGIN_ROOT`):
+- **postToolUse** (shell calls only): right after the agent runs `factory close`/`cancel`/`abandon`, it inspects and adds one line to the tool result (`additionalContext`).
+- **agentStop**: at the end of the turn, when a job ended some other way (a `cancel job` reply, a command in your own terminal), it inspects it. It never blocks, and Copilot shows nothing from this event except a block, so the result goes to the register and the one-line summary waits for the next session start (or the next close report). This check reads only each job's `state.json`, so it costs nothing when nothing is pending.
+- **sessionStart**: gives the agent the absolute `factory-inspect` command (a plugin's `bin/` is not on PATH), inspects anything that ended while no session was open, reports the earlier end-of-turn results, and says how many findings are open.
+- **userPromptSubmitted** applies your replies below as a side effect; **preToolUse** denies agents the human-only commands (deny = flat `permissionDecision` JSON plus exit 2).
+
+All hooks read Copilot payloads in either casing (`toolName`/`toolArgs` or `tool_name`/`tool_input`) and Copilot tool names (`bash`, `edit`, `create`, `view`, `apply_patch`…), through their own copy of the factory's input normaliser — the inspector imports no factory code. The inspector reads the factory's activity lines the same way: camelCase event names and Copilot tool names count as their Claude-era equivalents, and since Copilot's `subagentStart` carries no agent id, a start is paired with a stop of the same agent type.
 
 **Your replies:** `ack finding F3` · `fixed finding F3` · `wontfix finding F3 <why>` · `inspect mode <recipe|all> on|off|sample <N>`
 

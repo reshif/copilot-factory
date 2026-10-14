@@ -10,12 +10,13 @@
 // Prose inside --reason/--text/--question/--answer/-m and quoted heredocs is data, not a command.
 
 const path = require('path');
-const { emit, findRoot, realpath } = require('./lib');
+const { realpath, deny: denyOut } = require('./lib');
 
 const JOB_DOCS = /^(contract\.md|threat-model\.md|no-adr\.md|recommendation\.md|adr-\d+[^/]*\.md|contracts\.md|contracts\.json|plan\.json|slices\.json)$/;
 
+// Copilot preToolUse deny: flat JSON on stdout + exit 2 with the reason on stderr (lib.deny).
 function deny(reason) {
-  emit({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `[factory guard] ${reason}` } });
+  denyOut(`[factory guard] ${reason}`);
 }
 
 function loadPolicy(root) {

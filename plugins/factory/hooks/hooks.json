@@ -1,26 +1,62 @@
 {
-  "description": "Software Factory enforcement: agents propose, the CLI and these hooks decide.",
+  "version": 1,
+  "description": "Software Factory enforcement for the GitHub Copilot CLI: agents propose, the CLI and these hooks decide. Native Copilot format (camelCase events, flat outputs); no matchers — each script filters by the normalised tool name.",
   "hooks": {
-    "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js\"", "timeout": 10 } ] }
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/session-start.js\" ] || exit 0; exec node \"$R/hooks/session-start.js\" sessionStart",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/session-start.js\")) { exit 0 }; node \"$r/hooks/session-start.js\" sessionStart; exit $LASTEXITCODE",
+        "timeoutSec": 10
+      }
     ],
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt.js\"", "timeout": 30 } ] }
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/prompt.js\" ] || exit 0; exec node \"$R/hooks/prompt.js\" userPromptSubmitted",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/prompt.js\")) { exit 0 }; node \"$r/hooks/prompt.js\" userPromptSubmitted; exit $LASTEXITCODE",
+        "timeoutSec": 30
+      }
     ],
-    "PreToolUse": [
-      { "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|Read|Grep|Glob|NotebookRead", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.js\"", "timeout": 15 } ] }
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/guard.js\" ] || exit 0; exec node \"$R/hooks/guard.js\" preToolUse",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/guard.js\")) { exit 0 }; node \"$r/hooks/guard.js\" preToolUse; exit $LASTEXITCODE",
+        "timeoutSec": 10
+      }
     ],
-    "PostToolUse": [
-      { "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Task|Agent|WebFetch|WebSearch", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.js\"", "timeout": 10 } ] }
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/activity.js\" ] || exit 0; exec node \"$R/hooks/activity.js\" postToolUse",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/activity.js\")) { exit 0 }; node \"$r/hooks/activity.js\" postToolUse; exit $LASTEXITCODE",
+        "timeoutSec": 10
+      }
     ],
-    "SubagentStart": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.js\"", "timeout": 10 } ] }
+    "subagentStart": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/activity.js\" ] || exit 0; exec node \"$R/hooks/activity.js\" subagentStart",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/activity.js\")) { exit 0 }; node \"$r/hooks/activity.js\" subagentStart; exit $LASTEXITCODE",
+        "timeoutSec": 10
+      }
     ],
-    "SubagentStop": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.js\"", "timeout": 15 } ] }
+    "subagentStop": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/subagent-stop.js\" ] || exit 0; exec node \"$R/hooks/subagent-stop.js\" subagentStop",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/subagent-stop.js\")) { exit 0 }; node \"$r/hooks/subagent-stop.js\" subagentStop; exit $LASTEXITCODE",
+        "timeoutSec": 15
+      }
     ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.js\"", "timeout": 30 } ] }
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/stop.js\" ] || exit 0; exec node \"$R/hooks/stop.js\" agentStop",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/stop.js\")) { exit 0 }; node \"$r/hooks/stop.js\" agentStop; exit $LASTEXITCODE",
+        "timeoutSec": 30
+      }
     ]
   }
 }

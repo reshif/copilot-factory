@@ -6,7 +6,7 @@
 
 const path = require('path');
 const { findRoot, nowIso } = require('./io');
-const { observe, isRouting } = require('./observe');
+const { observe, isRouting, openAgents } = require('./observe');
 const rules = require('./rules');
 const model = require('./model');
 const register = require('./register');
@@ -137,11 +137,7 @@ function health(root, { now = nowIso() } = {}) {
   const failed = cli.filter((e) => e.ok === false);
   const ledger = jobs.flatMap((j) => j.ledger);
   const runs = ledger.filter((e) => e.kind === 'agents').flatMap((e) => e.agents || []);
-  const open = new Map();
-  for (const e of ev) {
-    if (e.event === 'SubagentStart' && e.agent_id) open.set(e.agent_id, e);
-    if (e.event === 'SubagentStop' && e.agent_id) open.delete(e.agent_id);
-  }
+  const open = openAgents(ev);
   const hoursSince = (t) => (Date.parse(now) - Date.parse(t)) / 36e5;
   const idle = jobs
     .filter((j) => j.state && j.state.status === 'active' && !j.state.pending_gate)
@@ -171,7 +167,7 @@ function health(root, { now = nowIso() } = {}) {
     replies: { refused: by((e) => e.event === 'reply_refused').length, unparsed: by((e) => e.event === 'reply_unparsed').length },
     cli: { runs: cli.length, failed: failed.length, crashes: failed.filter((e) => e.code === 'internal').length, by_code: top(failed, (e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}: ${e.code || 'error'}`, 6) },
     records: { stale: cli.filter((e) => e.cmd === 'record' && e.status === 'stale').length, degraded: cli.filter((e) => e.cmd === 'record' && e.status === 'degraded').length, workflow_errors: ledger.filter((e) => e.kind === 'error').length },
-    agents: { runs: runs.length, retries: runs.filter((a) => a.retry || /#([2-9]|\d{2,})$/.test(a.label || '')).length, failed: runs.filter((a) => rules.AGENT_FAILED.has(a.outcome)).length, started: by((e) => e.event === 'SubagentStart').length, not_stopped: open.size },
+    agents: { runs: runs.length, retries: runs.filter((a) => a.retry || /#([2-9]|\d{2,})$/.test(a.label || '')).length, failed: runs.filter((a) => rules.AGENT_FAILED.has(a.outcome)).length, started: by((e) => e.event === 'SubagentStart').length, not_stopped: open.length },
     parks: obs.decisions.filter((d) => d.action === 'parked').length,
     resumes: obs.decisions.filter((d) => d.action === 'human.resume').length,
     idle_jobs: idle,
