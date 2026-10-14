@@ -96,7 +96,11 @@ test('factory run --dry-run prints the brief and the copilot commands, maps mode
   assert.equal(flagOf(cmd, '--agent'), 'factory:judge');
   assert.equal(flagOf(cmd, '--model'), 'claude-opus-5.5');
   assert.equal(flagOf(cmd, '--output-format'), 'json');
-  for (const f of ['-s', '--no-ask-user', '--allow-all-tools', '--session-id']) assert.ok(cmd.includes(f), f);
+  for (const f of ['-s', '--no-ask-user', '--session-id']) assert.ok(cmd.includes(f), f);
+  assert.ok(!cmd.includes('--allow-all-tools'), 'no blanket pre-approval: each role gets its own --allow-tool / --deny-tool');
+  assert.deepEqual(judge.tools, ['read']);
+  assert.ok(cmd.includes('--deny-tool=shell') && cmd.includes('--deny-tool=write') && cmd.includes('--deny-tool=url'), 'the judge only reads');
+  assert.ok(!cmd.some((a) => a.startsWith('--allow-tool=')), 'nothing pre-approved for a read-only, shell-less role');
   assert.equal(flagOf(cmd, '--plugin-dir'), F.PLUGIN, 'policy.copilot.flags, with {plugin_root} filled in');
   const dirs = cmd.map((a, i) => (a === '--add-dir' ? cmd[i + 1] : null)).filter(Boolean);
   assert.deepEqual(dirs, [root, F.PLUGIN], 'the project and the plugin (bin/factory) are always added: -p cannot ask for path permissions');
@@ -321,7 +325,11 @@ test('factory shim links factory and factory-inspect into a directory; doctor ch
   assert.equal(d.checks.find((c) => c.name === 'copilot allow-all').level, 'warning');
   fs.writeFileSync(path.join(dir, 'settings.json'), '// jsonc\n{ "askUser": false, "permissions": { "disableBypassPermissionsMode": "disable" }, }\n');
   d = doc({ COPILOT_BIN: FAKE, COPILOT_ALLOW_ALL: '' });
-  assert.ok(d.checks.some((c) => c.name === 'copilot allow-all flags' && c.level === 'warning'));
+  assert.ok(d.checks.some((c) => c.name === 'copilot allow-all flags' && c.ok), 'per-role --allow-tool is not suppressed by the setting');
+  fs.mkdirSync(path.join(root, '.factory'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ copilot: { permissions: 'allow-all' } }));
+  d = doc({ COPILOT_BIN: FAKE, COPILOT_ALLOW_ALL: '' });
+  assert.ok(d.checks.some((c) => c.name === 'copilot allow-all flags' && c.level === 'warning'), 'allow-all mode is suppressed by it');
   assert.ok(d.checks.some((c) => c.name === 'copilot askUser' && c.level === 'warning'));
 });
 
@@ -572,6 +580,58 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
     assert.match(r.message, /All required lanes pass/);
   });
   assert.equal(F.cli(root, ['next']).skill, 'ship');
+  // Every process got exactly its role's pre-approvals (no --allow-all-tools anywhere).
+  const flagsOf = (argv, f) => argv.filter((a) => a.startsWith(`${f}=`)).map((a) => a.slice(f.length + 1));
+  const seen = new Set();
+  for (const c of h.log()) {
+    const role = c.agent.replace('factory:', '');
+    seen.add(role);
+    assert.ok(!c.argv.includes('--allow-all-tools'), `${role}: no blanket pre-approval`);
+    const p = runner.toolPermissions(role, runner.agentTools(role), {});
+    assert.deepEqual(flagsOf(c.argv, '--allow-tool'), p.allow, `${role}: --allow-tool`);
+    assert.deepEqual(flagsOf(c.argv, '--deny-tool'), p.deny, `${role}: --deny-tool`);
+  }
+  for (const r of ['builder', 'tester', 'code-reviewer', 'finding-verifier', 'integrator', 'researcher', 'judge', 'verifier']) assert.ok(seen.has(r), `${r} ran`);
+  const argvOf = (role) => h.log().find((c) => c.agent === `factory:${role}`).argv;
+  const builder = argvOf('builder');
+  assert.deepEqual(flagsOf(builder, '--allow-tool'), ['shell', 'write'], 'the builder edits and runs tests in its worktree');
+  assert.ok(flagsOf(builder, '--deny-tool').includes('shell(git push:*)') && !flagsOf(builder, '--deny-tool').includes('shell(git commit:*)'), 'it commits on its task branch, never pushes');
+  const reviewer = argvOf('code-reviewer');
+  assert.deepEqual(flagsOf(reviewer, '--allow-tool'), ['shell'], 'a reviewer may run commands…');
+  for (const d of ['write', 'url', 'memory', 'shell(git commit:*)', 'shell(touch:*)', 'shell(sed -i:*)']) assert.ok(flagsOf(reviewer, '--deny-tool').includes(d), `…but not ${d}`);
+  assert.deepEqual(flagsOf(argvOf('researcher'), '--allow-tool'), ['shell', 'url'], 'web roles get url');
+  assert.deepEqual(flagsOf(argvOf('judge'), '--allow-tool'), [], 'the judge only reads');
+});
+
+test('tool permissions follow the tools: list of each agent; policy adds patterns or restores allow-all', () => {
+  const dir = path.join(F.PLUGIN, 'agents');
+  for (const f of fs.readdirSync(dir)) {
+    const role = f.replace(/\.agent\.md$/, '');
+    const tools = runner.agentTools(role);
+    assert.ok(tools.length > 0, `${role}: tools read from its frontmatter`);
+    const p = runner.toolPermissions(role, tools, {});
+    const shell = tools.includes('execute');
+    const write = tools.includes('edit');
+    const web = tools.includes('web') || tools.includes('web_fetch');
+    assert.equal(p.allow.includes('shell'), shell, `${role}: shell pre-approved iff execute`);
+    assert.equal(p.deny.includes('shell'), !shell, `${role}: shell denied iff no execute`);
+    assert.equal(p.allow.includes('write'), write, `${role}: write iff edit`);
+    assert.equal(p.deny.includes('write'), !write, `${role}: write denied for read-only roles`);
+    assert.equal(p.allow.includes('url'), web, `${role}: url iff web`);
+    assert.equal(p.deny.includes('url'), !web);
+    assert.ok(p.deny.includes('memory'));
+    if (shell) assert.ok(p.deny.includes('shell(git push)') && p.deny.includes('shell(git push:*)'), `${role}: never pushes`);
+    if (shell && !write) assert.ok(p.deny.includes('shell(git commit:*)') && p.deny.includes('shell(rm:*)'), `${role}: read-only shell can't change the repo`);
+    for (const a of p.allow) assert.ok(!p.deny.includes(a), `${role}: ${a} is not both allowed and denied`);
+    const args = runner.copilotArgs({ prompt: 'x', agentType: `factory:${role}`, root: '/r', flags: [], permissions: p });
+    assert.ok(!args.includes('--allow-all-tools'));
+    assert.deepEqual(args.filter((a) => a.startsWith('--allow-tool=')).length, p.allow.length);
+  }
+  const extra = runner.toolPermissions('builder', ['read', 'edit', 'execute'], { allow_tools: { builder: ['url(http://localhost:3000)'], '*': [] }, deny_tools: { '*': ['shell(docker:*)'] } });
+  assert.ok(extra.allow.includes('url(http://localhost:3000)') && extra.deny.includes('shell(docker:*)'));
+  const legacy = runner.toolPermissions('judge', ['read'], { permissions: 'allow-all' });
+  const largs = runner.copilotArgs({ prompt: 'x', agentType: 'factory:judge', root: '/r', flags: [], permissions: legacy });
+  assert.ok(largs.includes('--allow-all-tools'), 'policy.copilot.permissions "allow-all" is the old behaviour');
 });
 
 test('standard@medium through factory run: decide with --threat-model, H2, decompose with --plan-critique, H3', () => {
@@ -701,7 +761,8 @@ test('distill write: runs the lesson-writer through copilot -p like factory run,
   const [call] = h.log();
   assert.equal(call.agent, 'factory:lesson-writer');
   assert.equal(call.model, 'claude-haiku-5.5', 'policy.agents.models → model_ids, as in factory run');
-  for (const f of ['--output-format', '-s', '--no-ask-user', '--allow-all-tools', '--session-id']) assert.ok(call.argv.includes(f), f);
+  for (const f of ['--output-format', '-s', '--no-ask-user', '--session-id']) assert.ok(call.argv.includes(f), f);
+  assert.ok(!call.argv.includes('--allow-all-tools'));
   const dirs = call.argv.filter((a, i) => call.argv[i - 1] === '--add-dir');
   assert.ok(dirs.includes(path.resolve(F.PLUGIN)), 'the plugin root, as in factory run');
   assert.equal(dirs.length, 2, 'the project and the plugin');

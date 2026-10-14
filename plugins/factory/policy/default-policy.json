@@ -102,6 +102,9 @@
   },
   "copilot": {
     "flags": [],
+    "permissions": "per-role",
+    "allow_tools": {},
+    "deny_tools": {},
     "agent_timeout_seconds": 1800,
     "resume_for_retry": true
   },
