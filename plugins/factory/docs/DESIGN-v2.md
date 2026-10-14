@@ -1,5 +1,7 @@
 # Software Factory — Grounded Orchestrator (Design v2)
 
+> **Historical design (Claude Code era, before the Copilot port).** It was written for claude-factory, where Claude Code's Workflow tool ran the workflows and a `SubagentStop` output gate and a `Stop` gate enforced the rules. In the Copilot port, `factory run` runs the workflows, the `subagentStop` hook only logs, and the stop gate (`agentStop`) works from job state. For the shipped Copilot behaviour see [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/COPILOT.md](../../../docs/COPILOT.md).
+
 **Status:** final draft for build decision · **Date:** 2026-10-14 · **Base:** Software Factory v0.7.5
 **Supersedes:** the "pattern-learning orchestrator" draft (v1), revised after four independent reviews (buildability, learning soundness, ROI, safety).
 

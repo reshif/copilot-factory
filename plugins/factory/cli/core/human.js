@@ -61,7 +61,7 @@ function approve(root, { jobId, gate, channel, via }) {
     }
   }
   if (!now || now !== pending.hash) {
-    fail(`The ${pending.id} document changed after it was presented (or is still being drafted). Ask Claude to present it again, then approve.`, 'stale_gate');
+    fail(`The ${pending.id} document changed after it was presented (or is still being drafted). Ask Copilot to present it again, then approve.`, 'stale_gate');
   }
   state.approvals[pending.id] = { hash: now, at: nowIso(), via: via || channel, snapshot: snapshot(root, state, pending.id, now) };
   state.pending_gate = null;
@@ -82,7 +82,7 @@ function deny(root, { jobId, reason, channel }) {
   }
   job.save(root, state);
   log(root, state, 'deny', { gate: pending.id, reason });
-  return { job: state.id, gate: pending.id, message: `Denied ${pending.id} for ${state.id}: ${reason || '(no reason given)'}. Claude should revise and present it again.` };
+  return { job: state.id, gate: pending.id, message: `Denied ${pending.id} for ${state.id}: ${reason || '(no reason given)'}. Copilot should revise it and present it again.` };
 }
 
 function resume(root, { jobId, step, channel }) {
@@ -115,7 +115,7 @@ function resume(root, { jobId, step, channel }) {
   state.pending_gate = null;
   job.save(root, state);
   log(root, state, 'resume', { from, step });
-  return { job: state.id, message: `Resumed ${state.id}${from ? ` (one more ${from} round allowed)` : ''}. Claude continues with factory next.` };
+  return { job: state.id, message: `Resumed ${state.id}${from ? ` (one more ${from} round allowed)` : ''}. Copilot continues with factory next.` };
 }
 
 function stop(root, { jobId, kind, channel, reason }) {

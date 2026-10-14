@@ -1059,7 +1059,7 @@ dialog.dlg::backdrop { background: rgba(4, 8, 7, .55); backdrop-filter: blur(2px
 
       <!-- RECIPE MAP -->
       <section id="view-plan" aria-label="Recipe map" hidden>
-        <p class="lede">The same factory as a floor plan, for any recipe: each bay is a stage with the skills Claude follows, the workflows that put agents together, the CLI steps that decide and record, and the gates where you decide. Click anything to see what it does.</p>
+        <p class="lede">The same factory as a floor plan, for any recipe: each bay is a stage with the skills Copilot follows, the workflows that put agents together, the CLI steps that decide and record, and the gates where you decide. Click anything to see what it does.</p>
         <div class="toolbar">
           <div class="picker" id="picker" role="group" aria-label="Recipe"></div>
           <div class="tools-row">
@@ -1087,7 +1087,7 @@ dialog.dlg::backdrop { background: rgba(4, 8, 7, .55); backdrop-filter: blur(2px
           <aside class="panel side" id="side" aria-live="polite"></aside>
         </div>
         <div class="legend">
-          <span><span class="sw" style="border-color: var(--skill)"></span>skill: instructions Claude follows</span>
+          <span><span class="sw" style="border-color: var(--skill)"></span>skill: instructions Copilot follows</span>
           <span><span class="sw" style="border-color: var(--track)"></span>workflow and its agents</span>
           <span><span class="sw" style="border-color: var(--track); border-style: dashed"></span>read-only agent</span>
           <span><span class="sw" style="border-color: var(--live)"></span>factory CLI: decides and records</span>
@@ -1179,12 +1179,12 @@ const P = (label, kind, role, gate) => ({ label, kind, role, gate });
 
 const STAGES = [
   { id: 'request', name: 'Request', sub: 'skills: start · intake', gapAfter: 50,
-    what: 'You ask for something. Claude follows the start skill: it reads the repo, proposes a work type, a risk and job or epic, asks you one question, and the CLI creates the job and picks the recipe by rule.',
+    what: 'You ask for something. Copilot follows the start skill: it reads the repo, proposes a work type, a risk and job or epic, asks you one question, and the CLI creates the job and picks the recipe by rule.',
     nodes: [
       { id: 'you-request', type: 'you', title: 'You submit a request', sub: '/factory:start fix the rounding in invoice totals',
         detail: { what: 'The only entry point. Everything after this is chosen by the router, never improvised.', you: ['/factory:start <request>'] } },
       { id: 'skill-start', type: 'skill', title: 'factory:start', sub: 'The driver loop: run factory next, do what it says, repeat',
-        detail: { what: 'Claude\'s instructions for the whole run. It never picks the next step itself: it runs factory next and carries out the action (a workflow, a CLI command, a skill, a gate, a wait).', skills: ['factory:start'], cmds: ['factory doctor', 'factory init (first time)', 'factory next'] } },
+        detail: { what: 'Copilot\'s instructions for the whole run. It never picks the next step itself: it runs factory next and carries out the action (a workflow, a CLI command, a skill, a gate, a wait).', skills: ['factory:start'], cmds: ['factory doctor', 'factory init (first time)', 'factory next'] } },
       { id: 'skill-intake', type: 'skill', title: 'factory:intake', sub: 'Classify work type, propose risk, job or epic; one question to you',
         detail: { what: 'Reads the repo briefly, proposes a work type and risk with reasons, decides job or epic, and asks you one confirming question.', skills: ['factory:intake'], you: ['confirm or change type, risk, job vs epic'] } },
       { id: 'cli-new', type: 'cli', title: 'factory job new', sub: 'Recipe chosen by rule from work type + risk; policy can only raise risk',
@@ -1193,11 +1193,11 @@ const STAGES = [
   { id: 'contract', name: 'Contract', sub: 'skill: clarify · workflow: fanout-judge', gapAfter: 50,
     what: 'The request becomes an outcome contract: a goal, acceptance criteria with evidence types, allowed paths and verify commands. Agents only ask what the repo can\'t answer; you approve the exact text.',
     nodes: [
-      { id: 'skill-clarify', type: 'skill', title: 'factory:clarify', sub: 'Claude drafts contract.md from your request and the repo', step: 'clarify',
+      { id: 'skill-clarify', type: 'skill', title: 'factory:clarify', sub: 'Copilot drafts contract.md from your request and the repo', step: 'clarify',
         detail: { what: 'Fills every section, answers what the repo can answer, and runs factory contract check before any agent sees it.', skills: ['factory:clarify'], cmds: ['factory contract check'], outputs: ['contract.md draft'] } },
       { id: 'wf-clarify', type: 'workflow', title: 'fanout-judge · clarify', step: 'clarify',
         groups: [[P('analyst · intent (gate)', 'agent', 'intent-analyst')], [P('analyst · ambiguity', 'agent', 'intent-analyst'), P('analyst · constraints', 'agent', 'intent-analyst'), P('analyst · testability', 'agent', 'intent-analyst')], [P('judge', 'agent', 'judge')], [P('god-eye · intent', 'agent', 'god-eye')]],
-        detail: { what: 'The intent analyst runs first and alone: can it restate the problem, who has it, the outcome and the signal that proves it? While the intent is open, the other three analysts are held back. Then ambiguity, constraints and testability read the contract in parallel. The judge merges, prioritises (intent, scope, constraint, acceptance), gives every question an id (Q-n) and never re-asks. Only when no questions are left does God Eye read it cold.', agents: ['intent-analyst', 'judge', 'god-eye'], cmds: ['factory wfargs fanout-judge --config clarify', 'factory record'], outputs: ['questions for you, or an approved contract'], floors: 'contract_approved' } },
+        detail: { what: 'The intent analyst runs first and alone: can it restate the problem, who has it, the outcome and the signal that proves it? While the intent is open, the other three analysts are held back. Then ambiguity, constraints and testability read the contract in parallel. The judge merges, prioritises (intent, scope, constraint, acceptance), gives every question an id (Q-n) and never re-asks. Only when no questions are left does God Eye read it cold.', agents: ['intent-analyst', 'judge', 'god-eye'], cmds: ['factory run fanout-judge --config clarify'], outputs: ['questions for you, or an approved contract'], floors: 'contract_approved' } },
       { id: 'you-answer', type: 'you', title: 'You answer questions', sub: 'Q-n questions, intent first; at most 5, then 3', step: 'clarify',
         detail: { what: 'Your answers go into the contract and the round runs again. Rounds are capped; a contract that won\'t converge parks.', you: ['answers in chat'] } },
       { id: 'gate-H1', type: 'gate', title: 'H1 · You approve the contract', step: 'H1', alt: 'EH1',
@@ -1210,10 +1210,10 @@ const STAGES = [
     nodes: [
       { id: 'wf-ground', type: 'workflow', title: 'ground', step: 'ground',
         groups: [[P('researcher · codebase', 'agent', 'researcher'), P('researcher · interfaces', 'agent', 'researcher'), P('researcher · history', 'agent', 'researcher'), P('researcher · external', 'agent', 'researcher')], [P('CLI · findings.md', 'cli')]],
-        detail: { what: 'Probes run in parallel and retry once. Every claim is file:line, command output or URL, or it is marked UNVERIFIED. A blocking unknown comes to you as a question.', agents: ['researcher'], cmds: ['factory wfargs ground', 'factory record', 'factory answer'], outputs: ['findings.md'], floors: 'ground (medium and high)' } },
+        detail: { what: 'Probes run in parallel and retry once. Every claim is file:line, command output or URL, or it is marked UNVERIFIED. A blocking unknown comes to you as a question.', agents: ['researcher'], cmds: ['factory run ground', 'factory answer'], outputs: ['findings.md'], floors: 'ground (medium and high)' } },
       { id: 'wf-decide', type: 'workflow', title: 'fanout-judge · decide', step: 'decide',
         groups: [[P('options · smallest', 'agent', 'option-generator'), P('options · robust', 'agent', 'option-generator'), P('options · repo-like', 'agent', 'option-generator'), P('threat-modeler', 'agent', 'threat-modeler', 'threat')], [P('architect', 'agent', 'architect')], [P('god-eye · design', 'agent', 'god-eye'), P('architect · revise', 'agent', 'architect')]],
-        detail: { what: 'Three generators each optimise for a different prior so the architect sees real alternatives. At high risk a threat modeler works alongside them. The architect writes the ADR (or explains why none is needed); God Eye critiques and the architect revises, up to two rounds.', agents: ['option-generator', 'threat-modeler', 'architect', 'god-eye'], cmds: ['factory wfargs fanout-judge --config decide', 'factory record'], outputs: ['adr-001-*.md or no-adr.md', 'threat-model.md (high risk)', 'critiques/design.json'], floors: 'design record + critique (medium+), threat model (high)' } },
+        detail: { what: 'Three generators each optimise for a different prior so the architect sees real alternatives. At high risk a threat modeler works alongside them. The architect writes the ADR (or explains why none is needed); God Eye critiques and the architect revises, up to two rounds.', agents: ['option-generator', 'threat-modeler', 'architect', 'god-eye'], cmds: ['factory run fanout-judge --config decide'], outputs: ['adr-001-*.md or no-adr.md', 'threat-model.md (high risk)', 'critiques/design.json'], floors: 'design record + critique (medium+), threat model (high)' } },
       { id: 'art-adr', type: 'artifact', title: 'ADR · threat model · critique', step: 'decide',
         detail: { what: 'The design record, bound to its hash. Editing it later sends the job back through decide.', outputs: ['adr-001-*.md', 'threat-model.md', 'critiques/design.json'] } },
       { id: 'gate-H2', type: 'gate', title: 'H2 · You approve the design', step: 'H2', alt: 'EH2', also: ['HF'],
@@ -1224,7 +1224,7 @@ const STAGES = [
     nodes: [
       { id: 'wf-decompose', type: 'workflow', title: 'decompose', step: 'decompose', except: ['bug@low'],
         groups: [[P('planner', 'agent', 'planner')], [P('CLI · plan validate', 'cli')], [P('god-eye · plan', 'agent', 'god-eye')]],
-        detail: { what: 'The planner writes plan.json and runs factory plan validate until it passes (at most three rounds). The CLI computes the waves. At low risk God Eye critiques the plan and can approve H3 for you. Epics use the slicer instead.', agents: ['planner', 'slicer', 'god-eye'], cmds: ['factory wfargs decompose', 'factory plan validate', 'factory record'], outputs: ['plan.json with waves', 'slices.json (epic)'], floors: 'plan validated (medium+)' } },
+        detail: { what: 'The planner writes plan.json and runs factory plan validate until it passes (at most three rounds). The CLI computes the waves. At low risk God Eye critiques the plan and can approve H3 for you. Epics use the slicer instead.', agents: ['planner', 'slicer', 'god-eye'], cmds: ['factory run decompose', 'factory plan validate'], outputs: ['plan.json with waves', 'slices.json (epic)'], floors: 'plan validated (medium+)' } },
       { id: 'cli-fromcontract', type: 'cli', title: 'factory plan from-contract', sub: 'One task, T1, straight from the contract', step: 'decompose', only: ['bug@low'],
         detail: { what: 'The bug fast path skips planning: the contract\'s allowed paths and verify commands become one task.', cmds: ['factory plan from-contract'], outputs: ['plan.json (T1)'] } },
       { id: 'art-plan', type: 'artifact', title: 'plan.json · waves', sub: '[T1, T2] then [T3]', step: 'decompose',
@@ -1237,10 +1237,10 @@ const STAGES = [
     nodes: [
       { id: 'wf-realize', type: 'workflow', title: 'realize · wave by wave', step: 'realize',
         groups: [[P('builder · T1', 'agent', 'builder'), P('builder · T2', 'agent', 'builder')], [P('tester · T1', 'agent', 'tester'), P('tester · T2', 'agent', 'tester')], [P('builder · T3', 'agent', 'builder')], [P('tester · T3', 'agent', 'tester')]],
-        detail: { what: 'Each builder runs factory task start (its own worktree and branch), works only inside its allowed paths and commits. The tester runs factory task verify, which runs the verify commands and records evidence bound to that exact tree. Failures retry up to the task\'s limit, with an optional stronger model; a blocked task skips only its dependents.', agents: ['builder', 'tester'], cmds: ['factory wfargs realize', 'factory task start T1', 'factory task verify T1', 'factory record'], outputs: ['task branches factory/J-0007-T1…', 'evidence/*.json'], floors: 'isolation (all risks)' } },
+        detail: { what: 'Each builder runs factory task start (its own worktree and branch), works only inside its allowed paths and commits. The tester runs factory task verify, which runs the verify commands and records evidence bound to that exact tree. Failures retry up to the task\'s limit, with an optional stronger model; a blocked task skips only its dependents.', agents: ['builder', 'tester'], cmds: ['factory run realize', 'factory task start T1', 'factory task verify T1'], outputs: ['task branches factory/J-0007-T1…', 'evidence/*.json'], floors: 'isolation (all risks)' } },
       { id: 'wf-reconcile', type: 'workflow', title: 'reconcile', step: 'reconcile',
         groups: [[P('integrator', 'agent', 'integrator')], [P('CLI · reconcile run', 'cli')]],
-        detail: { what: 'The CLI merges task branches in dependency order. The integrator may resolve only textual conflicts inside the tasks\' scopes; a behavioural conflict aborts and parks the job.', agents: ['integrator'], cmds: ['factory reconcile run', 'factory reconcile continue', 'factory reconcile abort'], outputs: ['job branch factory/J-0007', 'build fingerprint'] } },
+        detail: { what: 'The CLI merges task branches in dependency order. The integrator may resolve only textual conflicts inside the tasks\' scopes; a behavioural conflict aborts and parks the job.', agents: ['integrator'], cmds: ['factory run reconcile', 'factory reconcile run', 'factory reconcile continue', 'factory reconcile abort'], outputs: ['job branch factory/J-0007', 'build fingerprint'] } },
       { id: 'cli-children', type: 'cli', title: 'factory epic spawn', sub: 'Each slice runs as its own job, in order', step: 'children', only: ['epic'],
         detail: { what: 'Epic only: slices become child jobs with their own recipes. Tree depth is capped at 2. The epic waits until every slice has merged.', cmds: ['factory epic spawn', 'factory use J-…'] } },
       { id: 'art-build', type: 'artifact', title: 'Job branch · fingerprint', sub: 'Everything later is bound to this exact build',
@@ -1253,7 +1253,7 @@ const STAGES = [
         detail: { what: 'Runs every task command, the contract\'s commands and the project checks on the integrated build, then maps results to acceptance criteria. Human-evidence criteria wait for "confirm AC-n".', cmds: ['factory verify run'], outputs: ['evidence: AC → proof'], floors: 'prove (all risks)' } },
       { id: 'wf-challenge', type: 'workflow', title: 'fanout-judge · challenge', step: 'challenge',
         groups: [[P('code-reviewer', 'agent', 'code-reviewer', 'lane:code'), P('test-reviewer', 'agent', 'test-reviewer', 'lane:tests'), P('security-reviewer', 'agent', 'security-reviewer', 'lane:security'), P('ux-reviewer', 'agent', 'ux-reviewer', 'lane:ux'), P('epic-reviewer', 'agent', 'epic-reviewer', 'lane:conformance')], [P('finding-verifier', 'agent', 'finding-verifier')], [P('CLI · lane verdicts', 'cli')]],
-        detail: { what: 'One reviewer per required lane. Each blocker or major finding goes to an independent verifier. The CLI, not the reviewers, decides each lane\'s verdict, and from round 2 a new major on unchanged code becomes a minor follow-up.', agents: ['code-reviewer', 'test-reviewer', 'security-reviewer', 'ux-reviewer', 'finding-verifier', 'epic-reviewer'], cmds: ['factory wfargs fanout-judge --config challenge', 'factory record'], outputs: ['reviews/round-N/scoreboard.json'], floors: 'code lane (all), tests + security (medium+), all lanes before merge (high)' } },
+        detail: { what: 'One reviewer per required lane. Each blocker or major finding goes to an independent verifier. The CLI, not the reviewers, decides each lane\'s verdict, and from round 2 a new major on unchanged code becomes a minor follow-up.', agents: ['code-reviewer', 'test-reviewer', 'security-reviewer', 'ux-reviewer', 'finding-verifier', 'epic-reviewer'], cmds: ['factory run fanout-judge --config challenge'], outputs: ['reviews/round-N/scoreboard.json'], floors: 'code lane (all), tests + security (medium+), all lanes before merge (high)' } },
       { id: 'art-review', type: 'artifact', title: 'Scoreboard', sub: 'Lanes pass · minor findings go into the report', step: 'challenge',
         detail: { what: 'Confirmed blocker or major findings send the job back to Build for a fix round on the owning tasks only.', outputs: ['scoreboard.json'] } },
     ],
@@ -1284,13 +1284,13 @@ const STAGES = [
         detail: { what: 'Nothing is learned without you.', you: ['accept lesson L5', 'reject lesson L5 <why>'] } },
       { id: 'cli-close', type: 'cli', title: 'factory close', sub: 'Every floor on the final build; worktrees removed', step: 'close',
         detail: { what: 'Refuses to close unless every floor for the job\'s risk is met on the final build, including CI re-verify and your merge.', cmds: ['factory close'] } },
-      { id: 'inspector', type: 'cli', title: 'Inspector audits the job', sub: 'Optional plugin: right recipe? did Claude follow the router?',
+      { id: 'inspector', type: 'cli', title: 'Inspector audits the job', sub: 'Optional plugin: right recipe? did Copilot follow the router?',
         detail: { what: 'An independent plugin reads the sealed rulebook and logs and reports deviations and ambiguities for you to decide on. It never blocks.', cmds: ['factory-inspect run', '/factory-inspector:inspect'] } },
     ] },
 ];
 
 const ROUTER = ['1 contract approved', '2 no drift', '3 floors so far', '4 no confirmed finding', '5 criteria proven', '6 no stale proof'];
-const ENFORCE = ['guard hook on every tool call', 'your replies applied by hook', 'Stop hook: no false "done"', 'sealed state · ledger · decisions', 'event log → inspector'];
+const ENFORCE = ['guard hook on every tool call', 'your replies applied by hook', 'stop gate: no stopping while work is owed', 'sealed state · ledger · decisions', 'event log → inspector'];
 
 // ===================================================================== helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -1624,7 +1624,7 @@ function showNode(n) {
   const kind = n.type === 'agentnode' ? 'agent' : n.type;
   const parts = [`<div><span class="kindtag k-${kind}">${kind === 'cli' ? 'factory cli' : kind}</span> <span class="label">stage ${STAGES.indexOf(st) + 1} · ${esc(st.name)}</span></div>`, `<h3>${esc(n.title)}</h3>`, `<p>${esc(d.what || '')}</p>`];
   if (d.agents) parts.push(`<div class="label">Agents it puts together</div>${agentRows(d.agents)}`);
-  if (d.skills) parts.push(`<div class="label">Skills Claude follows</div><div class="chips">${d.skills.map((s) => `<span class="chip skill">${esc(s)}</span>`).join('')}</div>`);
+  if (d.skills) parts.push(`<div class="label">Skills Copilot follows</div><div class="chips">${d.skills.map((s) => `<span class="chip skill">${esc(s)}</span>`).join('')}</div>`);
   if (d.cmds) parts.push(`<div class="label">Commands</div><div class="chips">${d.cmds.map((s) => `<span class="chip cli">${esc(s)}</span>`).join('')}</div>`);
   if (d.you) parts.push(`<div class="label">Your part</div><div class="chips">${d.you.map((s) => `<span class="chip you">${esc(s)}</span>`).join('')}</div>`);
   if (d.outputs) parts.push(`<div class="label">Produces</div><div class="chips">${d.outputs.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}</div>`);
@@ -1878,7 +1878,7 @@ const ORDER = ['request', 'contract', 'design', 'plan', 'build', 'verify', 'ship
 const STAGE_NAME = { request: 'Request', contract: 'Contract', design: 'Ground & design', plan: 'Plan', build: 'Build', verify: 'Prove & challenge', ship: 'Ship', learn: 'Learn & close' };
 const STEP_INFO = {
   request: ['Request', 'You asked; the CLI opened the job and chose the recipe by rule.'],
-  clarify: ['Clarify', 'Claude drafts the contract; analysts ask only what the repo can\'t answer; God Eye reads it cold.'],
+  clarify: ['Clarify', 'Copilot drafts the contract; analysts ask only what the repo can\'t answer; God Eye reads it cold.'],
   H1: ['H1 · contract', 'You approve the outcome contract. The approval is bound to its hash.'],
   EH1: ['EH1 · contracts', 'You approve the epic\'s contract.'],
   ground: ['Ground', 'Researchers in parallel; every claim cited or marked UNVERIFIED.'],
@@ -2751,7 +2751,7 @@ function describe(it, job = LV.job) {
     case 'guard': return [`Guard blocked ${it.who || 'a tool call'}`, `${it.text}${it.target ? ` — command: ${it.target}` : ''}`];
     case 'refused': return ['A reply was refused', it.text];
     case 'hook_error': return ['A hook failed', it.text];
-    case 'stop_block': return ['Stop hook: not done yet', it.text];
+    case 'stop_block': return ['Stop gate: not done yet', it.text];
     case 'unparsed': return ['A reply was not understood', it.text];
     case 'amend': return [it.phase === 'start' ? `Amendment ${it.id || ''} started`.replace('  ', ' ') : it.phase === 'submit' ? 'Amendment submitted' : 'Amendment applied', it.text];
     case 'spawn': return [`Follow-up ${it.job} opened`, it.text];
@@ -3341,7 +3341,7 @@ function boardEmpty(host) {
   ROWS.clear(); GHEAD.clear();
   host.innerHTML = !DATA
     ? `<div class="bempty"><h2>No factory data in this page</h2><p>This is the console's template. Run <code>factory console</code> in a repository that uses the factory: it writes <code>.factory/console.html</code> with every job. Or run <code>factory console --serve</code> to watch them live.</p><div class="reply"><code>factory console --serve</code><button type="button" class="copy" data-copy="factory console --serve">Copy</button></div><p>Meanwhile the recipe map shows the whole factory.</p><button type="button" class="tbtn" data-go="plan">Open the recipe map</button></div>`
-    : `<div class="bempty"><h2>No jobs on the floor yet</h2><p>Start one in Claude Code. ${LIVE.on ? 'It appears here as soon as the CLI writes it.' : 'Then run <code>factory console</code> again, or <code>factory console --serve</code> to watch it live.'}</p><div class="reply"><code>/factory:start &lt;what you want&gt;</code><button type="button" class="copy" data-copy="/factory:start ">Copy</button></div><button type="button" class="tbtn" data-go="plan">Open the recipe map</button></div>`;
+    : `<div class="bempty"><h2>No jobs on the floor yet</h2><p>Start one in the Copilot CLI. ${LIVE.on ? 'It appears here as soon as the CLI writes it.' : 'Then run <code>factory console</code> again, or <code>factory console --serve</code> to watch it live.'}</p><div class="reply"><code>/factory:start &lt;what you want&gt;</code><button type="button" class="copy" data-copy="/factory:start ">Copy</button></div><button type="button" class="tbtn" data-go="plan">Open the recipe map</button></div>`;
   bindCopies(host);
   host.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.go)));
 }
@@ -3906,7 +3906,7 @@ function nowCard(job) {
   if (m.bucket === 'turn') {
     const g = m.gate || job.pending_gate && job.pending_gate.id;
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--sig-amber)"></i>Now · your turn</div>`);
-    parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in Claude Code:</p>`);
+    parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
     else parts.push('<p>Answer the questions in chat; the round runs again with your answers.</p>');
   } else if (m.bucket === 'parked') {
