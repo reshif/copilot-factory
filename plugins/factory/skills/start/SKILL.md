@@ -9,7 +9,7 @@ You run the factory loop. **The `factory` CLI decides every next step; you carry
 
 ## The `factory` command
 - Run it as `factory …`. Every command prints JSON.
-- If `factory` is not found, use the absolute command the factory gave you at session start (it looks like `node "<plugin root>/bin/factory"`) wherever these skills say `factory …`. Tell the user once that running that command with `shim` (for example `node "<plugin root>/bin/factory" shim`) in their own terminal puts `factory` and `factory-inspect` on their PATH.
+- If `factory` is not found, use the absolute command the factory gave you at session start (it looks like `node "<plugin root>/bin/factory"`) wherever these skills say `factory …`. Copilot asks the user to approve each of those (the plugin folder is outside the workspace). Tell the user once: running that command with `shim` (for example `node "<plugin root>/bin/factory" shim`) in their own terminal puts `factory` and `factory-inspect` on their PATH, which ends the prompts; or they can allow the folder with `/add-dir <plugin root>`.
 - Never run the factory in **Autopilot** mode, and never suggest it: Autopilot answers questions and permission prompts by itself, and every gate here belongs to the user. If the session is in Autopilot, tell the user to switch back to interactive mode and stop.
 
 ## 0. Setup (once per repo)
