@@ -16,4 +16,5 @@ user-invocable: false
 7. On confirmation run:
    `factory job new --title "<short title>" --type <type> --risk <risk> [--epic]`
    Tell the user the job id and the recipe the CLI chose (one line). If `risk_raised_by_policy` is true, say so. Write the confirmed restatement into the contract's **Intent** section (Problem, Who, Outcome) straight away.
+   Write only what the user said and what you read in the repo: facts about libraries, vendors or standards are researched by clarify's scouts, with sources.
 8. Return to the start skill loop (`factory next`).
