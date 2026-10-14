@@ -231,7 +231,8 @@ test('hooks: after-close reports, session start mentions open findings, replies 
   const run = (hook, input, event) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook), ...(event ? [event] : [])], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
   const ctx = (r) => JSON.parse(r.stdout).additionalContext;
   const after = run('after-close.js', { toolName: 'bash', toolArgs: JSON.stringify({ command: `factory close --job ${J}` }), toolResult: { resultType: 'success', textResultForLlm: '{}' } }, 'postToolUse');
-  assert.deepEqual(Object.keys(JSON.parse(after.stdout)), ['additionalContext']);
+  assert.deepEqual(Object.keys(JSON.parse(after.stdout)), ['additionalContext', 'hookSpecificOutput']);
+  assert.deepEqual(JSON.parse(after.stdout).hookSpecificOutput, { hookEventName: 'PostToolUse', additionalContext: ctx(after) }, 'VS Code Local shape in the same object');
   assert.match(ctx(after), /inspected J-0001; no new findings/);
   assert.equal(run('after-close.js', { toolName: 'bash', toolArgs: { command: 'git status' } }, 'postToolUse').stdout, '');
   assert.equal(run('after-close.js', { toolName: 'view', toolArgs: { path: 'factory close' } }, 'postToolUse').stdout, '', 'only shell calls');
@@ -265,11 +266,35 @@ test('hooks: after-close reports, session start mentions open findings, replies 
     assert.doesNotMatch(h.bash + h.powershell, /\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}|\$\{[^}]*\$\{/);
     assert.match(h.bash, new RegExp(` ${ev} \\|\\| echo "\\[\\$H\\] hook failed \\(exit \\$\\?\\); allowed" >&2; exit 0$`));
     assert.match(h.powershell, /^\$h='inspector:[\w-]+'; .*; exit 0$/);
+    assert.equal(h.command, h.bash, 'VS Code Local\'s cross-platform field: the same launcher');
     assert.ok(h.timeoutSec > 0);
   }
   assert.ok(H.hooks.agentStop[0].timeoutSec <= 15, 'the end-of-turn catch-up is cheap: no inspection in the hook itself');
   const viaLauncher = spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'factory-inspect mark F1 fixed' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, PLUGIN_ROOT: PLUGIN } });
   assert.deepEqual([viaLauncher.status, JSON.parse(viaLauncher.stdout).permissionDecision], [0, 'deny']);
+});
+
+test('hooks under VS Code\'s Local harness: snake_case payloads, VS Code tool names, both output shapes', () => {
+  const root = F.makeRepo();
+  const J = cleanJob(root);
+  const run = (hook, input) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook)], { input: JSON.stringify({ cwd: root, session_id: 'vs1', timestamp: 't', ...input }), encoding: 'utf8' });
+  const after = JSON.parse(run('after-close.js', { hook_event_name: 'PostToolUse', tool_name: 'run_in_terminal', tool_input: { command: `factory close --job ${J}`, explanation: 'x', isBackground: false }, tool_response: '{}' }).stdout);
+  assert.match(after.additionalContext, /inspected J-0001/);
+  assert.equal(after.hookSpecificOutput.hookEventName, 'PostToolUse');
+  const s = JSON.parse(run('session-start.js', { hook_event_name: 'SessionStart', source: 'new' }).stdout);
+  assert.deepEqual(s.hookSpecificOutput, { hookEventName: 'SessionStart', additionalContext: s.additionalContext });
+  fs.appendFileSync(path.join(F.jobDir(root, J), 'ledger.jsonl'), '{"forged":true}\n');
+  inspect(root, ['run', '--all']);
+  const p = JSON.parse(run('prompt.js', { hook_event_name: 'UserPromptSubmit', prompt: 'ack finding F1' }).stdout);
+  assert.match(p.systemMessage, /Applied: Finding F1 marked acknowledged/, 'Local shows the user a systemMessage');
+  const d = JSON.parse(run('guard.js', { hook_event_name: 'PreToolUse', tool_name: 'run_in_terminal', tool_input: { command: 'factory-inspect mark F1 fixed' } }).stdout);
+  assert.deepEqual(d.hookSpecificOutput, { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.permissionDecisionReason });
+  assert.equal(d.permissionDecision, 'deny');
+  // a command runner the guard doesn't know: its command arguments, command position only
+  assert.equal(JSON.parse(run('guard.js', { hook_event_name: 'PreToolUse', tool_name: 'mcp_shell_exec', tool_input: { command: 'factory-inspect mode bug@low off' } }).stdout).permissionDecision, 'deny');
+  for (const [tool_name, tool_input] of [['mcp_shell_exec', { command: 'factory-inspect report' }], ['mcp_shell_exec', { command: 'echo factory-inspect mark F1 fixed' }], ['replace_string_in_file', { filePath: 'notes.md', oldString: 'a', newString: 'factory-inspect mark F1 fixed' }]]) {
+    assert.equal(run('guard.js', { hook_event_name: 'PreToolUse', tool_name, tool_input }).stdout, '', JSON.stringify(tool_input));
+  }
 });
 
 test('observe reads camelCase hook events and Copilot tool names; agents pair by type when starts carry no id', () => {

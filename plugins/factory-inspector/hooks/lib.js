@@ -1,8 +1,8 @@
 'use strict';
 // Inspector hook plumbing for the GitHub Copilot CLI. Same input normaliser as the
 // factory's hooks (its own copy: the inspector imports nothing from the factory), same
-// flat output shapes (docs/research/hooks.md §5): deny = stdout {permissionDecision:'deny',
-// permissionDecisionReason}, exit 0; context = top-level additionalContext.
+// output shapes: flat Copilot fields plus VS Code Local's hookSpecificOutput in one object
+// (see context/deny below), always exit 0.
 
 const fs = require('fs');
 const path = require('path');
@@ -62,6 +62,53 @@ const TOOLS = {
   update_todo: 'TodoWrite',
   task: 'Task',
   agent: 'Task',
+  // VS Code's Local harness sends its own tool names (agents/reference/tools-reference.md
+  // lists the #references; hook payloads carry the tool's id, which the docs leave to the
+  // agent debug logs). Both spellings are mapped: the reference name (runInTerminal) and
+  // the id Copilot Chat registers (run_in_terminal). Best effort: an unknown name passes
+  // through, and the guard still checks command-like arguments of unknown runners.
+  runinterminal: 'Bash',
+  run_in_terminal: 'Bash',
+  runcommand: 'Bash',
+  run_command: 'Bash',
+  terminal: 'Bash',
+  runterminalcommand: 'Bash',
+  run_terminal_command: 'Bash',
+  editfiles: 'Edit',
+  edit_files: 'Edit',
+  insertedit: 'Edit',
+  insert_edit: 'Edit',
+  insert_edit_into_file: 'Edit',
+  replacestring: 'Edit',
+  replace_string: 'Edit',
+  replace_string_in_file: 'Edit',
+  multireplacestring: 'MultiEdit',
+  multi_replace_string: 'MultiEdit',
+  multi_replace_string_in_file: 'MultiEdit',
+  editnotebook: 'NotebookEdit',
+  edit_notebook_file: 'NotebookEdit',
+  createfile: 'Write',
+  create_file: 'Write',
+  readfile: 'Read',
+  readnotebookcelloutput: 'Read',
+  read_notebook_cell_output: 'Read',
+  textsearch: 'Grep',
+  text_search: 'Grep',
+  grep_search: 'Grep',
+  findtextinfiles: 'Grep',
+  filesearch: 'Glob',
+  file_search: 'Glob',
+  findfiles: 'Glob',
+  listdirectory: 'Glob',
+  list_dir: 'Glob',
+  list_directory: 'Glob',
+  runsubagent: 'Task',
+  run_subagent: 'Task',
+  fetch: 'WebFetch',
+  fetch_webpage: 'WebFetch',
+  manage_todo_list: 'TodoWrite',
+  todos: 'TodoWrite',
+  askquestions: 'AskUserQuestion',
 };
 
 function toolName(raw, args) {
@@ -73,7 +120,9 @@ function toolName(raw, args) {
     if (args.command === 'create') return 'Write';
     return 'Edit';
   }
-  return TOOLS[name] || TOOLS[name.toLowerCase()] || name;
+  // VS Code tool references may arrive qualified by their tool set (execute/runInTerminal).
+  const bare = name.includes('/') ? name.split('/').pop() : name;
+  return TOOLS[name] || TOOLS[name.toLowerCase()] || TOOLS[bare.toLowerCase()] || name;
 }
 
 function parseArgs(x, runtimeTool) {
@@ -138,16 +187,27 @@ function normalise(raw, argvEvent) {
   const rawArgs = r.toolArgs !== undefined ? r.toolArgs : r.tool_input !== undefined ? r.tool_input : r.toolInput;
   const args = parseArgs(rawArgs, runtimeTool);
   const tool = toolName(runtimeTool, args);
-  const file = str(args.file_path, args.filePath, args.path, args.notebook_path, args.notebookPath, args.file);
+  const file = str(args.file_path, args.filePath, args.path, args.notebook_path, args.notebookPath, args.file, args.uri, args.dirPath);
+  // VS Code's multi-file edits: replacements / edits / files arrays, one path each.
+  const many = [args.replacements, args.edits, args.files].filter(Array.isArray).flat().filter((e) => e && typeof e === 'object');
+  // Copilot's rg and glob search `paths`: one directory or an array of them.
+  const searchPaths = (Array.isArray(args.paths) ? args.paths : [args.paths]).filter((x) => typeof x === 'string' && x);
   // apply_patch: the patch is the argument (input / patch / a raw string), never a path.
   const isPatchTool = /patch/i.test(String(runtimeTool || ''));
   const patch = tool === 'Edit' || tool === 'Write' || isPatchTool ? patchFiles(str(args.input, args.patch, args.diff, typeof rawArgs === 'string' ? rawArgs : null)) : [];
-  const content = [args.content, args.file_text, args.new_string, args.new_str, args.newString, args.new_source, ...(Array.isArray(args.edits) ? args.edits.map((e) => e && (e.new_string || e.newString)) : [])]
+  const content = [args.content, args.file_text, args.new_string, args.new_str, args.newString, args.new_source, args.newCode, args.code, ...many.map((e) => e.new_string || e.newString || e.content || e.code)]
     .filter((x) => typeof x === 'string' && x)
     .join('\n');
   const files = [];
   if (file) files.push({ path: file, content, op: null });
+  for (const x of [args.files, args.filePaths].filter(Array.isArray).flat()) if (typeof x === 'string' && x && x !== file) files.push({ path: x, content: '', op: null });
+  for (const e of many) {
+    const p = str(e.file_path, e.filePath, e.path);
+    if (p && p !== file) files.push({ path: p, content: [e.new_string, e.newString, e.content, e.code].filter((x) => typeof x === 'string' && x).join('\n'), op: null });
+  }
   for (const p of patch) files.push(p);
+  // VS Code's textSearch filters files with includePattern: the same role as Grep's glob.
+  if (tool === 'Grep' && args.glob === undefined && typeof args.includePattern === 'string') args.glob = args.includePattern;
   return {
     raw: r,
     event,
@@ -159,9 +219,11 @@ function normalise(raw, argvEvent) {
     tool,
     runtimeTool,
     args,
-    command: tool === 'Bash' ? str(args.command, args.cmd, args.script, args.input, args.text, args.keys) || '' : '',
+    command: tool === 'Bash' ? str(args.command, args.cmd, args.commandLine, args.command_line, args.script, args.input, args.text, args.keys) || '' : '',
+    toolUseId: str(r.tool_use_id, r.toolUseId, r.toolCallId),
     file,
     files,
+    searchPaths,
     content,
     isPatch: isPatchTool || patch.length > 0,
     agent: str(r.agentName, r.agent_name, r.agent_type, r.agentType),
@@ -207,6 +269,7 @@ function safe(fn) {
   let inp = { cwd: process.cwd(), event: process.argv[2] || null };
   try {
     inp = normalise(input(), process.argv[2]);
+    current.event = inp.event;
     fn(inp);
   } catch (e) {
     if (process.env.FACTORY_HOOK_DEBUG) process.stderr.write(`inspector hook error: ${e.stack}\n`);
@@ -225,16 +288,33 @@ function emit(obj) {
   }
 }
 
-function context(text) {
-  if (text) emit({ additionalContext: text });
+// Outputs carry both harness shapes in one object, like the factory's hooks/lib.js:
+// flat fields for the Copilot CLI / VS Code Copilot harness, hookSpecificOutput for VS Code's
+// Local harness (agents/reference/hooks-reference.md), systemMessage on a prompt hook (Local
+// shows it to the user; it can't add context there).
+const current = { event: null };
+const CONTEXT_EVENTS = new Set(['SessionStart', 'PostToolUse', 'SubagentStart', 'PreToolUse']);
+
+function contextOutput(text, event = current.event, userMessage = null) {
+  const out = { additionalContext: text };
+  if (CONTEXT_EVENTS.has(event)) out.hookSpecificOutput = { hookEventName: event, additionalContext: text };
+  if (event === 'UserPromptSubmit') out.systemMessage = userMessage || text;
+  return out;
+}
+
+function context(text, userMessage = null) {
+  if (text) emit(contextOutput(text, current.event, userMessage));
 }
 
 // preToolUse deny, the documented way: {permissionDecision:'deny', permissionDecisionReason}
-// on stdout and exit 0 (Copilot CLI hooks reference; verified on CLI 1.0.97: the tool is
-// denied and the reason reaches the model). No exit 2 and nothing on stderr: exit 2 is the
-// CLI's warning channel and showed every deny as a hook error.
+// on stdout and exit 0 (Copilot CLI hooks reference; verified on CLI 1.0.97), plus Local's
+// hookSpecificOutput. No exit 2 and nothing on stderr.
+function denyOutput(reason) {
+  return { permissionDecision: 'deny', permissionDecisionReason: reason, hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
+}
+
 function deny(reason) {
-  emit({ permissionDecision: 'deny', permissionDecisionReason: reason });
+  emit(denyOutput(reason));
 }
 
 // Inside an agent process `factory run` started (FACTORY_RUNNER=1): the inspector's hooks
@@ -283,4 +363,4 @@ function takeUnreported(root) {
   }
 }
 
-module.exports = { safe, emit, context, deny, traceError, normalise, toolName, patchFiles, cliCommand, inAgent, stashUnreported, takeUnreported, EVENTS, TOOLS };
+module.exports = { safe, emit, context, deny, contextOutput, denyOutput, traceError, normalise, toolName, patchFiles, cliCommand, inAgent, stashUnreported, takeUnreported, EVENTS, TOOLS };

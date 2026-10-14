@@ -19,7 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safe, emit, findRoot, STOP_MARK } = require('./lib');
+const { safe, block, findRoot, STOP_MARK } = require('./lib');
 
 const MAX_BLOCKS = 1; // per routing decision
 const WAIT_ACTIONS = new Set(['wait', 'gate', 'parked', 'done', 'questions']);
@@ -290,6 +290,9 @@ function decide(input, root) {
 if (require.main === module) safe((input) => {
   // Agents started by `factory run` are their own sessions; their result goes through factory record, not this gate.
   if (process.env.FACTORY_RUNNER === '1') return;
+  // VS Code's Local harness reports a custom agent's stop as SubagentStop when it runs as a
+  // subagent: only the main agent's stop is gated.
+  if (input.event === 'SubagentStop') return;
   const root = findRoot(input.cwd);
   if (!root) return;
   const d = decide(input, root);
@@ -303,7 +306,7 @@ if (require.main === module) safe((input) => {
     const [action, step] = String(o.state.last_decision || '').split(':');
     return `${o.state.id}: factory next asked for ${step || action || 'a step'} and it hasn't been started (floors not met: ${o.missing.join(', ')})`;
   }).join('; ');
-  emit({ decision: 'block', reason: `${STOP_MARK} ${d.claimed ? 'Not done' : 'Not finished'} — ${list}. Do that step now (run \`factory next\` to see it), or if you need the user, ask them one clear question and end your turn. This reminder is shown once.` });
+  block(`${STOP_MARK} ${d.claimed ? 'Not done' : 'Not finished'} — ${list}. Do that step now (run \`factory next\` to see it), or if you need the user, ask them one clear question and end your turn. This reminder is shown once.`);
 });
 
 module.exports = { claims, asksUser, lastAssistantText, waitingOnHuman, decide, MAX_BLOCKS };
