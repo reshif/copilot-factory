@@ -85,13 +85,29 @@ copilot plugin install factory-inspector@copilot-factory   # optional, recommend
 
 Run `/plugin` (or `copilot plugin list`) to check that both are listed with the versions above. The docs say plugin agents and skills are available as soon as they are installed. If they don't show up, restart the CLI (`/restart`).
 
-**Put `factory` on your PATH.** Copilot does not put a plugin's `bin/` on the PATH. Inside a session, the factory's session-start hook gives Copilot the absolute command (`node "<plugin root>/bin/factory"`), so the skills work without it. For your own terminal (`factory console --serve` and the human-only commands), run this once:
+**Put `factory` and `factory-inspect` on your PATH.** Copilot does not put a plugin's `bin/` on the PATH. Inside a session, each plugin's session-start hook gives Copilot the absolute command (`node "<plugin root>/bin/factory"`, `node "<plugin root>/bin/factory-inspect"`), so the skills work without it. For your own terminal (`factory console --serve`, `factory-inspect report`, and the human-only commands), run this once:
 
 ```bash
 node ~/.copilot/installed-plugins/copilot-factory/factory/bin/factory shim
 ```
 
-It links `factory` and `factory-inspect` into `~/.local/bin`. Make sure that directory is on your PATH.
+`factory shim` links both commands into `~/.local/bin` (`--dir <folder>` for another place; `--force` replaces old links, e.g. from claude-factory). The inspector link needs the `factory-inspector` plugin installed. If `~/.local/bin` is not on your PATH yet, add it and open a new terminal:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # or ~/.zshrc
+```
+
+Or link them by hand:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf ~/.copilot/installed-plugins/copilot-factory/factory/bin/factory ~/.local/bin/factory
+ln -sf ~/.copilot/installed-plugins/copilot-factory/factory-inspector/bin/factory-inspect ~/.local/bin/factory-inspect
+```
+
+Check: `factory help | head -1` and `factory-inspect help | head -1` each print a line, and `readlink -f "$(command -v factory-inspect)"` points into `~/.copilot/installed-plugins/copilot-factory/`.
+
+**First run in a folder.** `/start` (the first time, via `factory init`) sets up the folder: if it isn't a git repository yet it runs `git init` and makes an **empty** first commit (your files are left untracked), keeps `.factory/` out of git, and adds a commit-msg hook. It refuses your home folder itself, so open Copilot in a project folder. If git doesn't know your name and email yet, it tells you the two `git config --global` commands to run first.
 
 **Trust the repository.** When the Copilot CLI asks whether to trust the folder, say yes. Hooks, skills and agents need it.
 
@@ -388,21 +404,25 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 - [x] `copilot skill list` shows all 11 factory skills and `inspect`, with their descriptions.
 - [x] Every flag `factory run` passes exists in `copilot --help`: `-p`, `-s`, `--agent`, `--model`, `--output-format json` (JSONL), `--no-ask-user`, `--allow-all-tools`, `--add-dir`, `--session-id`, `--plugin-dir`, `-C`. Reasoning effort is `--reasoning-effort` (the `--effort` alias in the docs is not in this build's help).
 
-**Needs checking while signed in to Copilot.** Run `bash scripts/verify-copilot.sh` on your machine: it checks the plugins and skills, makes one short headless `--agent factory:researcher` call in a throwaway repo (a few premium requests), checks the JSON output shape `factory run` reads, whether the plugin hooks fire inside `copilot -p`, and whether the guard blocks a write to `.factory/policy.json`, then writes `copilot-verify-*/report.md`. Without a login the CLI stops at authentication before it resolves agents or runs hooks, so these remain open (from the research reports in [`docs/research/`](docs/research/)):
+**Verified signed in, on Copilot CLI 1.0.95** (`scripts/verify-copilot.sh` on a user's machine):
+- [x] `copilot -p … --agent factory:researcher` runs headless (plugin agent ids are `factory:<role>`).
+- [x] `--output-format json` carries `assistant.message` events, which is what `factory run` reads, and the agent's final JSON object comes through.
+- [x] Plugin hooks fire inside `copilot -p` processes (`postToolUse` activity logged), with no hook errors.
+- [x] `/start` runs the factory's start skill in an interactive session.
+- [x] `sessionStart` `additionalContext` reaches the model: in a session Copilot ran the factory by the absolute `node "…/installed-plugins/copilot-factory/factory/bin/factory"` command that only the hook provides.
+
+**Still to check while signed in.** Run `bash scripts/verify-copilot.sh` (it makes two short headless calls in a throwaway repo — a few premium requests — and writes `copilot-verify-*/report.md`): its guard probe now uses the builder agent, so the protected write is really attempted. The rest come from the research reports in [`docs/research/`](docs/research/):
 
 Packaging and invocation ([plugins-cli](docs/research/plugins-cli.md), [agents-skills](docs/research/agents-skills.md)):
 - [ ] `/agent` lists the 19 agents. Plugin agents in `agents/` load as `*.agent.md` files (the docs disagree about `.md` vs `.agent.md`; we chose `.agent.md`).
-- [ ] Plugin agent ids are `factory:<role>`, and `copilot -p … --agent factory:<role>` works headless (the only source is the 1.0.81 changelog).
-- [ ] How plugin skills are invoked: `/start`, `/factory/start` (the current reference), or `/factory:start` (older changelog entries and VS Code). Which wins when a built-in command has the same name (`/review`).
+- [x] Plugin skills are invoked as `/start` (verified on CLI 1.0.95). Still open: which wins when a built-in command has the same name (`/review`).
 - [ ] The `tools` aliases restrict agents as expected, and `web` gives the researcher web search as well as fetch (the CLI documents `web_fetch` but no web-search tool).
 - [ ] The model ids in `model_ids` are accepted by `--model` on your plan, and Auto mode doesn't override them.
 - [ ] Plan limits on concurrent sessions and rate limits at `max_parallel_agents` processes.
 
 Hooks ([hooks](docs/research/hooks.md)):
-- [ ] Plugin hooks load and fire in `copilot -p` agent processes (the docs only cover repo hooks in `-p`). If they don't, the guard does not protect files inside `factory run` agents.
 - [ ] The exact `toolArgs` / `tool_input` keys for `create`, `edit`, `str_replace_editor`, `apply_patch` and `view` (path and content fields).
 - [ ] Whether a command hook's `additionalContext` on `userPromptSubmitted` reaches the model (the reference says no, the 1.0.65 changelog says yes). The factory doesn't rely on it.
-- [ ] `sessionStart` `additionalContext` (the absolute `factory` command) reaches the model.
 - [ ] `agentStop` block with `stop_hook_active` behaves as documented, including the limit of 8 blocks in a row.
 - [ ] Whether the session mode (Autopilot) is visible to hooks, so a hook could warn about it.
 

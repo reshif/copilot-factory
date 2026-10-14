@@ -13,7 +13,7 @@ You run the factory loop. **The `factory` CLI decides every next step; you carry
 - Never run the factory in **Autopilot** mode, and never suggest it: Autopilot answers questions and permission prompts by itself, and every gate here belongs to the user. If the session is in Autopilot, tell the user to switch back to interactive mode and stop.
 
 ## 0. Setup (once per repo)
-- Run `factory doctor`. If it says not initialized, run `factory init` and tell the user in one line what it set up (`.factory/` kept out of git, a commit-msg hook that adds `Factory-Job` trailers).
+- Run `factory doctor`. If it says not initialized, run `factory init` and tell the user in one line what it set up (`.factory/` kept out of git, a commit-msg hook that adds `Factory-Job` trailers, and — when the folder wasn't a git repository yet — `git init` with an empty first commit). If it fails with `no_git_identity`, give the user the two `git config` commands from the message and stop; if it refuses the home folder, ask them to open Copilot in a project folder.
 - If doctor reports errors (no commits, no git identity), tell the user how to fix them and stop.
 
 ## 1. New request or continue?

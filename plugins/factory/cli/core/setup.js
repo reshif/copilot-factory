@@ -12,12 +12,34 @@ const job = require('./job');
 
 const HOOK_MARK = '# installed by software-factory';
 
+// A folder that isn't a repository yet becomes one, and an empty repository gets an empty
+// first commit — never your files: nothing is staged. Home and / are refused, so a stray
+// /start can't turn your whole home folder into a repository.
+function ensureRepo(cwd, created) {
+  const dir = path.resolve(cwd);
+  if (!git.isRepo(dir)) {
+    if (dir === path.resolve(require('os').homedir()) || dir === path.parse(dir).root) {
+      fail(`${dir} is your home or root folder; cd into a project folder (or create one) and run factory init there.`, 'no_git');
+    }
+    if (!git.ok(dir, ['init', '-b', 'main'])) git.run(dir, ['init']);
+    created.push(path.join(dir, '.git'));
+  }
+  const root = git.toplevel(dir);
+  if (!git.hasCommits(root)) {
+    const who = (k) => git.run(root, ['config', k], { allowFail: true }).stdout;
+    if (!who('user.name') || !who('user.email')) {
+      fail('git needs your name and email for the first commit: git config --global user.name "Your Name" && git config --global user.email you@example.com — then run factory init again.', 'no_git_identity');
+    }
+    git.run(root, ['commit', '--allow-empty', '-q', '-m', 'Initial commit (factory init)']);
+    created.push('first commit (empty)');
+  }
+  return root;
+}
+
 function init(cwd, { baseBranch } = {}) {
-  if (!git.isRepo(cwd)) fail('Not a git repository. Run git init and make a first commit, then factory init.', 'no_git');
-  const root = git.toplevel(cwd);
-  if (!git.hasCommits(root)) fail('The repository has no commits yet. Make a first commit, then run factory init.', 'no_commits');
-  const p = project(root);
   const created = [];
+  const root = ensureRepo(cwd, created);
+  const p = project(root);
   if (!exists(p.projectFile)) {
     writeJson(p.projectFile, { version: 1, created_at: nowIso(), base_branch: baseBranch || git.currentBranch(root) });
     created.push(p.projectFile);

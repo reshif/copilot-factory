@@ -408,8 +408,28 @@ test('doctor reports readiness', () => {
   const d = F.cli(root, ['doctor']);
   assert.equal(d.ready, true, JSON.stringify(d.checks.filter((c) => !c.ok)));
   assert.ok(d.checks.some((c) => c.name === 'remote' && c.level === 'warning'));
-  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'nogit-'));
-  assert.equal(F.cli(bare, ['init']).code, 'no_git');
+});
+
+test('init: a plain folder becomes a repository with an empty first commit; your files are not committed', () => {
+  const { spawnSync } = require('child_process');
+  const run = (cwd, env = {}) => JSON.parse(spawnSync('node', [F.BIN, 'init'], { cwd, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', ...env } }).stdout);
+  const git = (cwd, args) => spawnSync('git', args, { cwd, encoding: 'utf8' }).stdout.trim();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nogit-'));
+  fs.writeFileSync(path.join(dir, 'notes.txt'), 'mine\n');
+  const r = run(dir);
+  assert.ok(!r.error, JSON.stringify(r));
+  assert.equal(git(dir, ['rev-list', '--count', 'HEAD']), '1');
+  assert.equal(git(dir, ['ls-tree', '-r', '--name-only', 'HEAD']), '', 'the first commit is empty');
+  assert.match(git(dir, ['status', '--porcelain']), /notes\.txt/, 'your file is left untracked');
+  assert.ok(fs.existsSync(path.join(dir, '.factory', 'project.json')));
+  // no identity: a clear message; run init again after git config and it finishes
+  const anon = fs.mkdtempSync(path.join(os.tmpdir(), 'noid-'));
+  const noId = { HOME: anon, GIT_CONFIG_GLOBAL: path.join(anon, 'none'), GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: '', GIT_COMMITTER_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_EMAIL: '', EMAIL: '' };
+  const proj = path.join(anon, 'proj');
+  fs.mkdirSync(proj);
+  assert.equal(run(proj, noId).code, 'no_git_identity');
+  // never the home folder itself
+  assert.equal(run(anon, { HOME: anon }).code, 'no_git');
 });
 
 test('spike: grounded recommendation, HF gate, close without shipping code', () => {
