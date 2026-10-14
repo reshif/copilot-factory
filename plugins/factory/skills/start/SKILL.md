@@ -13,7 +13,7 @@ You run the factory loop. **The `factory` CLI decides every next step; you carry
 - Never run the factory in **Autopilot** mode, and never suggest it: Autopilot answers questions and permission prompts by itself, and every gate here belongs to the user. If the session is in Autopilot, tell the user to switch back to interactive mode and stop.
 
 ## 0. Setup (once per repo)
-- Run `factory doctor`. If it says not initialized, run `factory init` and tell the user in one line what it set up (`.factory/` kept out of git, a commit-msg hook that adds `Factory-Job` trailers, and — when the folder had no git history yet — `git init` if needed and a first commit of the folder's files, leaving anything that looks like a secret untracked). If it fails with `no_git_identity`, give the user the two `git config` commands from the message and stop; if it refuses the home folder, ask them to open Copilot in a project folder.
+- Run `factory doctor`. If it says not initialized, run `factory init` and tell the user in one line what it set up (`.factory/` kept out of git, a commit-msg hook that adds `Factory-Job` trailers, and — when the folder had no git history yet — `git init` if needed and a first commit of the folder's existing files, respecting `.gitignore`). If its output lists `left_untracked` files (they look like secrets, so they were not committed), name them and suggest the user adds them to `.gitignore`. If it fails with `no_git_identity`, give the user the two `git config` commands from the message and stop; if it fails with `home_folder`, ask them to open Copilot in a project folder and stop.
 - If doctor reports errors (for example no git identity), tell the user how to fix them and stop.
 
 ## 1. New request or continue?
@@ -23,7 +23,7 @@ You run the factory loop. **The `factory` CLI decides every next step; you carry
 ## 2. The loop
 Repeat until you reach a stop point:
 
-1. Run `factory next` **once** for this step. Don't run it again just to check where things stand: every call is a routing decision, and repeated calls from the same state count as no progress and can park the job. If its output has `last_reply`, first tell the user in one line what happened to their last reply (applied, or not applied and why), using its message. Then read `action`:
+1. Run `factory next` for this step. Running it again from the same state is harmless (it returns the same decision, with `requery: true`), but don't poll it: run it when a step is finished or the user has replied. If its output has `last_reply`, first tell the user in one line what happened to their last reply (applied, or not applied and why), using its message. Then read `action`:
 
 | action | what you do |
 |---|---|
@@ -41,17 +41,17 @@ Repeat until you reach a stop point:
 ## 3. Running a workflow
 1. Run `factory run <workflow>` with the fields `factory next` gave you (leave out the ones it didn't give, or gave as null):
    `factory run <workflow> [--config <config>] [--mode <mode>] [--scope <scope>] [--lanes a,b] [--threat-model | --no-threat-model] [--plan-critique]`
-   It builds the brief, starts each agent of the workflow as its own Copilot process (`copilot -p --agent factory:<role>`), checks every agent's JSON against its schema, records the result with `factory record`, and prints a short summary of the recorded result (`--json` prints the full record; you rarely need it). **Never** write a brief or an envelope yourself, never start the factory's agents yourself, and never fan the work out with subagents or `/fleet`: `factory run` is the only way a workflow runs.
-2. **It takes a long time** — several minutes, and 30 or more for a big build. Tell the user in one line that it is running. Run it **once**, in the foreground, with the longest timeout your shell tool allows. Don't poll it, don't run other factory commands while it runs, and **never start a second `factory run`**. If the shell tool hands control back while the command is still running, keep waiting for that same command's output in the same shell session; don't start it again.
-3. Act on the printed top-level `status`. It is the status of the **recorded** result, which is what counts (the workflow's own summary is nested under `workflow`; don't act on that):
+   It builds the brief, starts each agent of the workflow as its own Copilot process (`copilot -p --agent factory:<role>`), checks every agent's JSON against its schema, records the result with `factory record`, and prints a short text summary of the recorded result, starting with a `status: <x>` line (`--json` prints the same as JSON; you rarely need it). **Never** write a brief or an envelope yourself, never start the factory's agents yourself, and never fan the work out with subagents or `/fleet`: `factory run` is the only way a workflow runs.
+2. **It takes a long time** — several minutes, and 30 or more for a big build. Tell the user in one line that it is running. Run it **once**, in the foreground, with the longest timeout your shell tool allows. Don't poll it, don't run other factory commands while it runs, and **never start a second `factory run`**. If the shell tool hands control back while the command is still running, keep waiting for that same command's output in the same shell session and read it when it ends; don't start it again.
+3. Act on the `status` line (top-level `status` = the recorded result) and the fields after it (questions, critique, problems, restatement, message) — never on `workflow.status`, which is only the workflow's own summary:
    - `ok` / `fix` / `retry` / `stale` / `error` / `park` → go back to the loop. Nothing for the user here: `factory next` handles retries, fix rounds and parking.
    - `needs_user` with `questions` → ask the user exactly those questions, in that order, as one numbered list (for clarify: id, options and default on each line; intent questions come alone, first), then **stop**. Never add, reword into several, or re-ask questions. When they answer: for clarify, record each with `factory answer --id Q-n --answer "…"` and put the answers into the contract (the **clarify** skill); for ground, record each with `factory answer --question "…" --answer "…"`. Then continue the loop.
    - `needs_user` with `critique` or `problems` (clarify) → follow the **clarify** skill.
-   - `degraded` → ask the user: re-run, or go on without the missing angle. Stop. If they choose to go on, write the missing angle under Assumptions in the contract and run the same `factory run` command again with `--accept-degraded` added.
+   - `degraded` → ask the user: re-run, or go on without the missing angle. Stop. If they choose to go on, write the missing angle under Assumptions in the contract and run the same `factory run` command again with `--accept-degraded` added (that re-run is allowed under the same routing decision).
 4. If `factory run` refuses or fails instead of printing a result, read its `code`:
-   - `not_waiting_for_workflow` → the job isn't waiting for this workflow (a gate is pending, it is parked, or the route moved on). Run `factory next` once and follow it.
-   - `run_in_progress` → another `factory run` is already going for this job. Don't start a second one: tell the user it's still running and wait for it to finish, then run `factory next`.
-   - `copilot_unavailable` → the `copilot` command is missing or not signed in, so no agent can start. Tell the user, with the fix from the message (install the Copilot CLI, or sign in with `copilot login`), and **stop**.
+   - `not_waiting_for_workflow` → the job isn't waiting for this workflow (`details.reason`: `not_asked`, `gate_pending`, `parked` or `already_recorded`). Run `factory next` and follow it.
+   - `run_in_progress` → another `factory run` is already going for this job. Never start a second one: tell the user it's still running, wait for it, read its output, then run `factory next`.
+   - `copilot_unavailable` → no agent can start (`why`: `not_found` — the Copilot CLI isn't installed or on PATH; `not_signed_in` — sign in with `copilot login`). Tell the user, with the fix, and **stop**.
    - Anything else → show the user the message and run `factory next`.
    Never do the workflow's work by hand.
 
