@@ -1,6 +1,6 @@
 ---
 name: review
-description: "Monthly factory review (about 30 minutes) — read the telemetry per recipe, decide which steps cost much and change little, and propose recipe or floor changes for the user to make. Use when the user asks for the factory review, types /factory/review, or asks how the factory is doing. (Copilot's own /review command is the built-in code review, not this skill.)"
+description: "Monthly factory review (about 30 minutes) — read the telemetry per recipe, decide which steps cost much and change little, and propose recipe or floor changes for the user to make. Use when the user asks for the factory review, types /factory:review, or asks how the factory is doing. (Copilot's own /review command is the built-in code review, not this skill.)"
 argument-hint: "[days to look back, default 30]"
 ---
 # Monthly factory review

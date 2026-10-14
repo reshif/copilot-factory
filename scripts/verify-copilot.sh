@@ -87,4 +87,4 @@ $FACTORY run fanout-judge --config clarify --dry-run > "$OUT/run-dry.json" 2>&1 
 
 echo "" >> "$REPORT"
 echo "Files: $OUT" | tee -a "$REPORT"
-echo "Manual checks left: in an interactive 'copilot' session in $REPO run /agent (expect 19 factory agents) and /start (or /factory/start)." | tee -a "$REPORT"
+echo "Manual checks left: in an interactive 'copilot' session in $REPO run /agent (expect 19 factory agents) and /factory:start." | tee -a "$REPORT"

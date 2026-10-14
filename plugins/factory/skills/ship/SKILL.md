@@ -9,7 +9,7 @@ user-invocable: false
    - With a GitHub remote and an authenticated `gh`, it pushes the job branch and opens a PR whose body is the completion report (templates/docs/ship-report.md: what changed, AC → evidence, design record, risk, rollout and rollback). It also refreshes the job's `docs-index.md` (contract → design → plan → evidence traceability).
    - Otherwise it prepares a **local** merge.
 2. Tell the user, briefly:
-   - GitHub: the PR link; that CI (`factory-gate`) re-verifies on the merge result; that they review and merge on GitHub and then say "continue" (or run `/start`).
+   - GitHub: the PR link; that CI (`factory-gate`) re-verifies on the merge result; that they review and merge on GitHub and then say "continue" (or run `/factory:start`).
    - Local: the exact commands from the `next` field (`git checkout <base> && git merge --no-ff <branch>`), and that they reply **`merged <commit>`** afterwards.
 3. **Stop** and wait.
 

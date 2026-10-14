@@ -6,8 +6,8 @@ This is a port of [claude-factory](https://github.com/reshif/claude-factory) (th
 
 | Plugin | Version | What it is |
 |---|---|---|
-| `factory` | 0.1.1 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 19 custom agents, recipes, templates and the console |
-| `factory-inspector` | 0.1.0 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R19) |
+| `factory` | 0.1.2 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 19 custom agents, recipes, templates and the console |
+| `factory-inspector` | 0.1.1 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R19) |
 
 The version line started again at 0.1.0 for Copilot. It is separate from claude-factory's (0.10.0 / 0.2.0 at the time of the port).
 
@@ -23,7 +23,7 @@ config:
     wrappingWidth: 520
 ---
 flowchart TB
-  you(["<b>You</b> · /start &lt;request&gt; in the Copilot CLI · then reply approve · deny · resume · merged"]):::human
+  you(["<b>You</b> · /factory:start &lt;request&gt; in the Copilot CLI · then reply approve · deny · resume · merged"]):::human
 
   skills["<b>Skills</b> · Copilot follows them<br/>start drives the loop · intake · clarify · gate · ship · distill"]
   hooks["<b>Hooks</b> · run by the Copilot CLI<br/>reply hook applies your replies · guard · stop gate · activity log"]
@@ -107,7 +107,7 @@ ln -sf ~/.copilot/installed-plugins/copilot-factory/factory-inspector/bin/factor
 
 Check: `factory help | head -1` and `factory-inspect help | head -1` each print a line, and `readlink -f "$(command -v factory-inspect)"` points into `~/.copilot/installed-plugins/copilot-factory/`.
 
-**First run in a folder.** `/start` (the first time, via `factory init`) sets up the folder: if it isn't a git repository yet it runs `git init` and makes an **empty** first commit (your files are left untracked), keeps `.factory/` out of git, and adds a commit-msg hook. It refuses your home folder itself, so open Copilot in a project folder. If git doesn't know your name and email yet, it tells you the two `git config --global` commands to run first.
+**First run in a folder.** `/factory:start` (the first time, via `factory init`) sets up the folder: if it isn't a git repository yet it runs `git init` and makes an **empty** first commit (your files are left untracked), keeps `.factory/` out of git, and adds a commit-msg hook. It refuses your home folder itself, so open Copilot in a project folder. If git doesn't know your name and email yet, it tells you the two `git config --global` commands to run first.
 
 **Trust the repository.** When the Copilot CLI asks whether to trust the folder, say yes. Hooks, skills and agents need it.
 
@@ -140,14 +140,14 @@ In any git repository with at least one commit, inside the Copilot CLI:
 
 | You type | What happens |
 |---|---|
-| `/start <what you want>` | Intake: Copilot reads the repo, restates your intent in one line, proposes work type, risk and job-vs-epic, and asks you **one** question to confirm all of it. The CLI creates the job and picks the recipe; then the loop runs until it needs you. |
-| `/start` | Continue the current job. |
-| `/why [job]` | Every routing decision for the job and the rule behind it. |
-| `/console [job]` | The console (below). |
-| "run the factory review" | Monthly 30-minute telemetry review (the `review` skill). Copilot's built-in `/review` is its code reviewer, so ask in words or try `/factory/review`. |
-| `/inspect [job\|all\|active\|status\|health]` | Run the inspector and walk through its findings. |
+| `/factory:start <what you want>` | Intake: Copilot reads the repo, restates your intent in one line, proposes work type, risk and job-vs-epic, and asks you **one** question to confirm all of it. The CLI creates the job and picks the recipe; then the loop runs until it needs you. |
+| `/factory:start` | Continue the current job. |
+| `/factory:why [job]` | Every routing decision for the job and the rule behind it. |
+| `/factory:console [job]` | The console (below). |
+| `/factory:review` | Monthly 30-minute telemetry review. (Copilot's built-in `/review` is its own code reviewer, a different command.) |
+| `/factory-inspector:inspect [job\|all\|active\|status\|health]` | Run the inspector and walk through its findings. |
 
-Plugin skills are invoked by their own name (`/start`). If another plugin or a project skill also has a skill called `start`, the CLI documents plugin-qualified names: `/factory/start`, `/factory/why`, `/factory-inspector/inspect`. You can also just ask ("continue the factory job"), because the skill descriptions let Copilot pick them up.
+Copilot lists plugin skills under the plugin's name: `/factory:start`, `/factory:why`, `/factory:console`, `/factory:review` and `/factory-inspector:inspect` (verified on CLI 1.0.95). The other seven skills (intake, clarify, gate, ship, distill, amend, park) are steps the start skill runs for you, so they are hidden from the menu, as in claude-factory.
 
 The first run initialises the repo (`factory init`): a `.factory/` folder kept out of git via `.git/info/exclude`, and a `commit-msg` hook that adds `Factory-Job` / `Factory-Task` trailers on factory branches. Each job gets a branch `factory/J-0001` and each task its own git worktree under `.factory/worktrees/`.
 
@@ -201,7 +201,7 @@ The contract starts with an **Intent** section: problem, who, outcome, why now, 
 | `spike` | spike | clarify → H1 → ground → decide (recommendation) → HF → close |
 | `epic` | `--epic` | contracts freeze first, then each slice runs as its own job with its own recipe |
 
-**Routing.** `factory next` checks, in order: contract approved → no drift from what you approved → floors met so far → no confirmed serious finding → every criterion proven → evidence still matches the build. The first that fails decides (clarify, amendment, the missing floor step, a fix round, a verify-fix round, prove again); if all pass, the recipe's next undone step runs. Loops are capped and **park** for you when a cap is hit. Every decision is a line in `.factory/log/decisions.jsonl`; `/why` shows them.
+**Routing.** `factory next` checks, in order: contract approved → no drift from what you approved → floors met so far → no confirmed serious finding → every criterion proven → evidence still matches the build. The first that fails decides (clarify, amendment, the missing floor step, a fix round, a verify-fix round, prove again); if all pass, the recipe's next undone step runs. Loops are capped and **park** for you when a cap is hit. Every decision is a line in `.factory/log/decisions.jsonl`; `/factory:why` shows them.
 
 **Workflows.** When `factory next` says `workflow`, the skill runs `factory run <workflow>` with the fields it was given (`--config`, `--mode`, `--scope`, `--lanes`, `--threat-model`/`--no-threat-model`, `--plan-critique`, and `--accept-degraded` when you chose to go on without a failed analyst). `factory run` executes the same workflow scripts as claude-factory (`workflows/*.js`) in a Node runtime that provides their agent API. Each agent call becomes one non-interactive Copilot process: `copilot -p <prompt> --agent factory:<role> --model <id> …`. Builders run in their task's worktree. Calls run in parallel up to `limits.max_parallel_agents`. Each agent must return one JSON object; the runner validates it against the agent's schema and asks once for a correction. The result goes through `factory record` and `factory run` prints the record result. `factory run --dry-run` shows what would run without starting Copilot.
 
@@ -234,7 +234,7 @@ Details: [`DOCS.md`](plugins/factory/docs/DOCS.md).
 
 ## The console: watch the factory work
 
-Run `factory console`, or `/console` in the Copilot CLI, then open `.factory/console.html`. Or run `factory console --serve` and open the URL it prints: the same page, kept current as the agents work. Either way it reads `.factory/` and writes only the page. It checks seals only when this machine already has the factory key, and never creates one.
+Run `factory console`, or `/factory:console` in the Copilot CLI, then open `.factory/console.html`. Or run `factory console --serve` and open the URL it prints: the same page, kept current as the agents work. Either way it reads `.factory/` and writes only the page. It checks seals only when this machine already has the factory key, and never creates one.
 
 ![The board: every job as a dense row, grouped by what needs you](plugins/factory/console/dev/screenshots/board-dark.png)
 
@@ -266,7 +266,7 @@ Run `factory console`, or `/console` in the Copilot CLI, then open `.factory/con
 
 - **Per job (R1–R9):** forged records, the wrong recipe, steps out of order, gates approved without being shown, review on an unproven build, loops past caps, the agent not doing what `factory next` said, the same situation routed differently, recurring friction.
 - **Factory health (R10–R19):** hook failures, torn log lines, repeated guard denials / blocked "done" claims / refused replies, CLI failures and crashes, degraded workflows and agent retries, agents that never stopped, repeated parks, idle jobs, slow gate replies, and clarify parking on an unclear intent or overrunning its question budget. Thresholds live in `.factory/inspect/config.json` (`limits`, `rules_off`).
-- **When it runs:** whenever a job ends (closed, cancelled or abandoned), however it ended: right after Copilot runs the command, at the end of the turn if you ended it with a chat reply, or at the next session start if you ended it from your terminal. On demand with `/inspect` (`active` also covers running jobs). Once a recipe has a long clean streak it suggests sampling, then off.
+- **When it runs:** whenever a job ends (closed, cancelled or abandoned), however it ended: right after Copilot runs the command, at the end of the turn if you ended it with a chat reply, or at the next session start if you ended it from your terminal. On demand with `/factory-inspector:inspect` (`active` also covers running jobs). Once a recipe has a long clean streak it suggests sampling, then off.
 
 Rule table and CLI: [`plugins/factory-inspector/README.md`](plugins/factory-inspector/README.md).
 
@@ -332,7 +332,7 @@ git branch --list 'factory/*' | xargs -r git branch -D    # review the list firs
 rm -rf .factory
 ```
 
-Then `/start <request>` initialises the repo again. Keep `~/.config/software-factory/secret` (the seal key) unless you want old seals to stop verifying.
+Then `/factory:start <request>` initialises the repo again. Keep `~/.config/software-factory/secret` (the seal key) unless you want old seals to stop verifying.
 
 ## Repository layout
 
@@ -385,13 +385,13 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 | Symptom | Fix |
 |---|---|
 | `factory: command not found` in a session | The skills fall back to the absolute command from the session-start note. In your terminal, run `node ~/.copilot/installed-plugins/copilot-factory/factory/bin/factory shim` and make sure `~/.local/bin` is on your PATH |
-| `/start` runs something else | Another skill with the same name wins the bare name. Use `/factory/start` |
+| `/factory:start` isn't in the `/` menu | Restart the CLI after installing (`/restart`), and check `copilot skill list` shows the factory's skills |
 | `/plugin` shows an old version | `copilot plugin marketplace update copilot-factory`, then `copilot plugin update factory` (and the inspector), then `/restart` |
 | `factory run` fails to start agents | Check that `copilot` is on the PATH (or set `COPILOT_BIN`), that you are logged in, and that `copilot -p "hi" --agent factory:researcher` works in the repo. `factory run --dry-run` shows the commands |
-| An agent's result is rejected | The runner asks once for a correction, then records the agent as failed. The workflow goes on degraded or retries per its rules; `/why` and the console show which agent and why |
+| An agent's result is rejected | The runner asks once for a correction, then records the agent as failed. The workflow goes on degraded or retries per its rules; `/factory:why` and the console show which agent and why |
 | Your `approve` was ignored | It must be the whole message. `factory next` shows `last_reply` with the reason and the accepted forms |
 | Copilot keeps going when you wanted it to stop | That is the stop gate: the job has steps left and nothing waits on you. Say what you want instead, or `cancel job` |
-| A job is parked | `/why` shows why; reply `resume` for one more round, or `deny` / `cancel job` |
+| A job is parked | `/factory:why` shows why; reply `resume` for one more round, or `deny` / `cancel job` |
 | Hooks don't seem to run | Trust the folder, check `/env`, and check `disableAllHooks` isn't set in `.github/copilot/settings.json` or `.claude/settings.json` |
 | The console doesn't update | Use `factory console --serve` (a written file is a snapshot); the LED shows live / reconnecting / snapshot |
 
@@ -408,14 +408,14 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 - [x] `copilot -p … --agent factory:researcher` runs headless (plugin agent ids are `factory:<role>`).
 - [x] `--output-format json` carries `assistant.message` events, which is what `factory run` reads, and the agent's final JSON object comes through.
 - [x] Plugin hooks fire inside `copilot -p` processes (`postToolUse` activity logged), with no hook errors.
-- [x] `/start` runs the factory's start skill in an interactive session.
+- [x] `/factory:start` runs the factory's start skill in an interactive session.
 - [x] `sessionStart` `additionalContext` reaches the model: in a session Copilot ran the factory by the absolute `node "…/installed-plugins/copilot-factory/factory/bin/factory"` command that only the hook provides.
 
 **Still to check while signed in.** Run `bash scripts/verify-copilot.sh` (it makes two short headless calls in a throwaway repo — a few premium requests — and writes `copilot-verify-*/report.md`): its guard probe now uses the builder agent, so the protected write is really attempted. The rest come from the research reports in [`docs/research/`](docs/research/):
 
 Packaging and invocation ([plugins-cli](docs/research/plugins-cli.md), [agents-skills](docs/research/agents-skills.md)):
 - [ ] `/agent` lists the 19 agents. Plugin agents in `agents/` load as `*.agent.md` files (the docs disagree about `.md` vs `.agent.md`; we chose `.agent.md`).
-- [x] Plugin skills are invoked as `/start` (verified on CLI 1.0.95). Still open: which wins when a built-in command has the same name (`/review`).
+- [x] Plugin skills appear as `/factory:start`, `/factory:why`, `/factory:console`, `/factory:review`, `/factory-inspector:inspect` (verified on CLI 1.0.95).
 - [ ] The `tools` aliases restrict agents as expected, and `web` gives the researcher web search as well as fetch (the CLI documents `web_fetch` but no web-search tool).
 - [ ] The model ids in `model_ids` are accepted by `--model` on your plan, and Auto mode doesn't override them.
 - [ ] Plan limits on concurrent sessions and rate limits at `max_parallel_agents` processes.

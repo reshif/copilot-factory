@@ -1,6 +1,6 @@
 ---
 name: console
-description: "Open the Factory Console, a read-only operations floor for every factory job. It has a board grouped by what needs the user, a line map of all jobs on one time axis, a live feed of everything that happens, and each job as a flow canvas (stages across, time down, every return trip, retry, park, amendment, cancel and abandon, which agents ran on which model, inspector findings) and as a readable story. Use when the user types /console (or /factory/console) or asks to see, show, watch or visualise the factory, its jobs, or what the agents did."
+description: "Open the Factory Console, a read-only operations floor for every factory job. It has a board grouped by what needs the user, a line map of all jobs on one time axis, a live feed of everything that happens, and each job as a flow canvas (stages across, time down, every return trip, retry, park, amendment, cancel and abandon, which agents ran on which model, inspector findings) and as a readable story. Use when the user types /factory:console or asks to see, show, watch or visualise the factory, its jobs, or what the agents did."
 argument-hint: "[job id, e.g. J-0003 — optional, to open that job first]"
 ---
 # Factory Console
@@ -8,7 +8,7 @@ argument-hint: "[job id, e.g. J-0003 — optional, to open that job first]"
 1. Run `factory console`. It reads `.factory/` without changing anything and writes `.factory/console.html`. Add `--job <id>` only if the user gave a job id and wants a page for that one job; otherwise include every job. The page opens on the board, with the jobs waiting for the user at the top.
 2. Tell the user the path from the JSON's `written` field and that they can open it in a browser. If the session can show files to the user, send it. To open a particular job, add `#J-0003` (or that job's id) to the end of the file's URL.
 3. In two or three lines, summarise the `jobs` list from the JSON: which jobs wait for them (`waiting`), which are running, parked or closed.
-   - If `integrity` is `tampered`, say plainly that some records fail their seal and suggest `/why <job id>` for that job.
+   - If `integrity` is `tampered`, say plainly that some records fail their seal and suggest `/factory:why <job id>` for that job.
    - If `integrity` is `not_checked`, say this machine has no factory key, so seals were not checked.
 
 The page shows:

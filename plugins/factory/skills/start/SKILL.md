@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Run the Software Factory: turn a request into a verified, merged change through an approved contract, evidence and human gates. Use when the user types /start (or /factory/start), asks the factory to build, fix or change something, or wants to continue the current factory job."
+description: "Run the Software Factory: turn a request into a verified, merged change through an approved contract, evidence and human gates. Use when the user types /factory:start, asks the factory to build, fix or change something, or wants to continue the current factory job."
 argument-hint: "[what you want built or fixed, or leave empty to continue the current job]"
 ---
 # Software Factory: driver
@@ -17,7 +17,7 @@ You run the factory loop. **The `factory` CLI decides every next step; you carry
 - If doctor reports errors (no commits, no git identity), tell the user how to fix them and stop.
 
 ## 1. New request or continue?
-- If the user gave a request (the text after `/start`, or their message) and there is no active job for it: follow the **intake** skill to create the job.
+- If the user gave a request (the text after `/factory:start`, or their message) and there is no active job for it: follow the **intake** skill to create the job.
 - Otherwise continue the current job.
 
 ## 2. The loop

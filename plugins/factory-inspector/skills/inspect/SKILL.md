@@ -1,6 +1,6 @@
 ---
 name: inspect
-description: "Audit the Software Factory — check whether jobs ran the recipe they were meant to, in the declared order, with valid gates and evidence, and whether the Copilot agent did what the router said; check the factory's health (hook errors, guard denials, blocked done claims, refused replies, CLI failures, stale or degraded workflows, agent failures, parks, idle jobs); then walk the user through open findings (deviations, ambiguities, gaps). Use when the user types /inspect (or /factory-inspector/inspect), asks if the factory is behaving, or asks about inspector findings, modes or streaks."
+description: "Audit the Software Factory — check whether jobs ran the recipe they were meant to, in the declared order, with valid gates and evidence, and whether the Copilot agent did what the router said; check the factory's health (hook errors, guard denials, blocked done claims, refused replies, CLI failures, stale or degraded workflows, agent failures, parks, idle jobs); then walk the user through open findings (deviations, ambiguities, gaps). Use when the user types /factory-inspector:inspect, asks if the factory is behaving, or asks about inspector findings, modes or streaks."
 argument-hint: "[job id | all | active | health | status]"
 ---
 # Inspect the factory

@@ -44,15 +44,15 @@ The inspector has its own implementations of three things: seal verification, re
 
 ## Use
 
-If another skill is also called `inspect`, use the plugin-qualified name `/factory-inspector/inspect`, or just ask Copilot to run the inspector.
+If another skill is also called `inspect`, use the plugin-qualified name `/factory-inspector:inspect`, or just ask Copilot to run the inspector.
 
 | | |
 |---|---|
-| `/inspect` | Inspect closed jobs not yet inspected, then walk through open findings |
-| `/inspect J-0007` | One job, plus its timeline |
-| `/inspect status` | Modes, clean streaks, suggestions |
-| `/inspect active` | Also inspect the jobs still running, as they stand now (issues happen mid-job) |
-| `/inspect health` | The factory-wide health summary |
+| `/factory-inspector:inspect` | Inspect closed jobs not yet inspected, then walk through open findings |
+| `/factory-inspector:inspect J-0007` | One job, plus its timeline |
+| `/factory-inspector:inspect status` | Modes, clean streaks, suggestions |
+| `/factory-inspector:inspect active` | Also inspect the jobs still running, as they stand now (issues happen mid-job) |
+| `/factory-inspector:inspect health` | The factory-wide health summary |
 
 It also runs on its own whenever a job ends (closed, cancelled or abandoned), through its GitHub Copilot CLI hooks (`hooks/hooks.json`, native format: camelCase events, no matchers, run through `$PLUGIN_ROOT`):
 - **postToolUse** (shell calls only): right after the agent runs `factory close`/`cancel`/`abandon`, it inspects and adds one line to the tool result (`additionalContext`).

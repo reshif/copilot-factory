@@ -50,7 +50,7 @@ const AGENT_FIELDS = new Set(['name', 'description', 'tools', 'model', 'models',
 const TOOL_ALIASES = new Set(['read', 'search', 'edit', 'execute', 'web', 'agent', 'todo']);
 const SKILL_FIELDS = new Set(['name', 'description', 'argument-hint', 'allowed-tools', 'user-invocable', 'disable-model-invocation', 'license']);
 // Words that only make sense in Claude Code.
-const CLAUDE_ONLY = [/\bClaude\b/, /Workflow tool/, /Agent tool/, /\bBash tool\b/, /\$ARGUMENTS/, /run_in_background/, /subagent_type/, /\/factory:[a-z]/, /\/factory-inspector:[a-z]/];
+const CLAUDE_ONLY = [/\bClaude\b/, /Workflow tool/, /Agent tool/, /\bBash tool\b/, /\$ARGUMENTS/, /run_in_background/, /subagent_type/];
 
 const PLUGINS = [
   { name: 'factory', dir: PLUGIN },
@@ -156,7 +156,7 @@ test('factory: every agent role the workflows and skills start has an agent file
     for (const m of fs.readFileSync(path.join(PLUGIN, 'workflows', f), 'utf8').matchAll(/factory:([a-z]+(?:-[a-z]+)*)/g)) roles.add(m[1]);
   }
   for (const d of fs.readdirSync(path.join(PLUGIN, 'skills'))) {
-    for (const m of fs.readFileSync(path.join(PLUGIN, 'skills', d, 'SKILL.md'), 'utf8').matchAll(/factory:([a-z]+(?:-[a-z]+)*)/g)) roles.add(m[1]);
+    for (const m of fs.readFileSync(path.join(PLUGIN, 'skills', d, 'SKILL.md'), 'utf8').matchAll(/(?<![/\w-])factory:([a-z]+(?:-[a-z]+)*)/g)) roles.add(m[1]);
   }
   roles.delete('role'); // the generic "factory:<role>" in prose
   assert.ok(roles.size >= 15, `found the roles (${[...roles].join(', ')})`);

@@ -14,7 +14,7 @@ const HOOK_MARK = '# installed by software-factory';
 
 // A folder that isn't a repository yet becomes one, and an empty repository gets an empty
 // first commit — never your files: nothing is staged. Home and / are refused, so a stray
-// /start can't turn your whole home folder into a repository.
+// /factory:start can't turn your whole home folder into a repository.
 function ensureRepo(cwd, created) {
   const dir = path.resolve(cwd);
   if (!git.isRepo(dir)) {
