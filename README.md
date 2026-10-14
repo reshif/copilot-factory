@@ -6,8 +6,8 @@ This is a port of [claude-factory](https://github.com/reshif/claude-factory) (th
 
 | Plugin | Version | What it is |
 |---|---|---|
-| `factory` | 0.2.0 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 19 custom agents, recipes, templates and the console |
-| `factory-inspector` | 0.2.0 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R19) |
+| `factory` | 0.2.1 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 19 custom agents, recipes, templates and the console |
+| `factory-inspector` | 0.2.1 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R19) |
 
 The version line started again at 0.1.0 for Copilot. It is separate from claude-factory's (0.10.0 / 0.2.0 at the time of the port).
 
@@ -136,6 +136,30 @@ readlink -f "$(command -v factory)"                         # the factory on you
 ```
 
 `COPILOT_HOME` moves `~/.copilot`, and the marketplace cache moves under it too (`$COPILOT_HOME/.cache/copilot/marketplaces/`). `COPILOT_CACHE_HOME` moves the cache on its own. Install metadata, including each installed plugin's folder (`installedPlugins[].cache_path`), is in `~/.copilot/config.json`. A marketplace added from a local folder is loaded live from that folder, so it has no copy under `installed-plugins/`.
+
+### Use it in VS Code
+
+VS Code's Copilot Chat can use the same plugins, but it needs three things the CLI doesn't:
+
+1. **Turn agent plugins on.** They are off by default in VS Code. Open Settings and enable **Chat › Plugins: Enabled**, or add this to your user `settings.json`, then run **Developer: Reload Window**:
+
+   ```json
+   "chat.plugins.enabled": true
+   ```
+
+2. **Install the plugins.** Either way works:
+   - **From the CLI (simplest).** Install them with `copilot plugin install … @copilot-factory` as above. VS Code automatically picks up plugins the CLI installed from a marketplace (they live in `~/.copilot/installed-plugins/copilot-factory/`). A marketplace added from a *local folder* is loaded live and not copied there, so VS Code won't see it; add the marketplace as `reshif/copilot-factory`.
+   - **From VS Code.** Add the marketplace to your settings and install from the **Extensions** view (search `@agentPlugins`) or the chat's **gear › Plugins**:
+
+     ```json
+     "chat.plugins.marketplaces": ["reshif/copilot-factory"]
+     ```
+
+   Check the **Agent Plugins - Installed** view in the Extensions view: `factory` and `factory-inspector` should be listed and enabled.
+
+3. **Keep the Copilot CLI installed and signed in.** `factory run` starts each agent as a `copilot -p` process, so it needs the `copilot` command even when you drive the factory from VS Code. Use a chat session on the **Copilot** harness (it shares the CLI's runtime, hooks included); the **Local** harness uses a different hook format and isn't supported.
+
+Then type `/factory:start <what you want>` in the chat. The same five commands appear as in the CLI: `/factory:start`, `/factory:why`, `/factory:console`, `/factory:review`, `/factory-inspector:inspect`. Each plugin's manifest is `plugin.json` at the plugin root, the location both the CLI and VS Code read (VS Code does not read `.github/plugin/plugin.json`, where versions before 0.2.1 kept it, which is why the commands didn't show up there).
 
 ## Use
 
@@ -343,7 +367,7 @@ Then `/factory:start <request>` initialises the repo again. Keep `~/.config/soft
 .github/plugin/marketplace.json     the marketplace: copilot-factory
 docs/                               DESIGN-COPILOT.md (port decisions) · COPILOT.md (Claude → Copilot mapping) · research/
 plugins/factory/
-  .github/plugin/plugin.json        plugin manifest (legacy format; version)
+  plugin.json                       plugin manifest (legacy Copilot format; version; read by the CLI and VS Code)
   skills/                           start · intake · clarify · gate · ship · distill · amend · park · why · console · review
   agents/                           19 custom agents (<role>.agent.md): intent-analyst, judge, god-eye, researcher,
                                     option-generator, threat-modeler, architect, planner, slicer, builder, tester, integrator,
@@ -360,7 +384,7 @@ plugins/factory/
   docs/                             ARCHITECTURE · RECIPES · FLOORS · DOCS · DESIGN-v2 (Claude-era design history)
   tests/                            end-to-end, unit and packaging tests
 plugins/factory-inspector/
-  .github/plugin/plugin.json        plugin manifest
+  plugin.json                       plugin manifest
   inspector/                        observe · rules (R1–R19) · register · config · io
   hooks/ · skills/inspect/ · bin/factory-inspect · tests/
 ```
@@ -390,6 +414,7 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 | `factory: command not found` in a session | The skills fall back to the absolute command from the session-start note. In your terminal, run `factory shim` from the plugin folder (see [Where the plugins live](#install)) and make sure `~/.local/bin` is on your PATH |
 | `factory-inspect: command not found` in a session | The inspect skill falls back to the `[inspector] Inspector CLI:` command from session start. If there is none, check that `factory-inspector` is installed and enabled (`copilot plugin list`), then `/restart`. For your terminal, `factory shim` links it too |
 | `node …/bin/factory shim` fails with "Cannot find module" | The plugin isn't where the command looks. A marketplace added from a local folder runs from that folder (use `node <your clone>/plugins/factory/bin/factory shim`), and with `COPILOT_HOME` set the copies are under `$COPILOT_HOME/installed-plugins/`. `copilot plugin list --json` shows `source` and, for local installs, `installedFrom` |
+| VS Code: no `/factory:…` commands | Enable `chat.plugins.enabled` and reload the window; check **Agent Plugins - Installed** lists `factory`; update to 0.2.1 or later (earlier manifests were in `.github/plugin/`, which VS Code doesn't read); install from `reshif/copilot-factory`, not a local folder; use the Copilot harness. See "Use it in VS Code" |
 | `/factory:start` isn't in the `/` menu | Restart the CLI after installing (`/restart`), and check `copilot skill list` shows the factory's skills |
 | `/factory:start` (or `/factory:why`, `/factory:console`, `/factory:review`, `/factory-inspector:inspect`) runs some other skill, or a factory skill is missing from `copilot skill list` | Copilot keeps only one skill per `name`, and a project skill (`.github/skills/<name>/`) or a personal skill wins over a plugin's, which is dropped without a warning. A skill of yours named `start`, `why`, `console`, `review` or `inspect` (or one of the step skills: `intake`, `clarify`, `gate`, `ship`, `distill`, `amend`, `park`) hides the factory's. `copilot skill list --json` shows which one won. Rename or remove yours, then `/restart` |
 | `factory init` stops with `no_git_identity` | git doesn't know your name and email yet. Run the two `git config --global` commands from the message, then `/factory:start` again |
@@ -452,6 +477,7 @@ Hooks ([hooks](docs/research/hooks.md)):
 - [ ] The exact `toolArgs` / `tool_input` keys for `create`, `edit`, `str_replace_editor`, `apply_patch` and `view` (path and content fields) from a real model's tool calls.
 
 Surfaces ([surfaces-patterns](docs/research/surfaces-patterns.md)):
+- [ ] VS Code: with `chat.plugins.enabled`, the CLI-installed plugins appear under **Agent Plugins - Installed** and `/factory:start` shows in Copilot Chat (fixed in 0.2.1: the manifest moved to the plugin root, which VS Code reads).
 - [ ] The GitHub Copilot app and VS Code's Copilot harness behave like the CLI (they share its runtime per the docs; hook coverage in the app is not documented).
 - [ ] Subagent depth and concurrency defaults (4 vs 6; plan-based caps), which matter only for the `distill` skill's single lesson-writer subagent.
 - [ ] Windows: `factory run` resolves an npm-installed `copilot.cmd` to its Node loader and runs a WinGet `copilot.exe` directly, and prompts go through files to stay under Windows' command-line limit. Not yet run on Windows.

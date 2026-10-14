@@ -77,7 +77,7 @@ test('marketplace manifest: copilot-factory, documented fields, sources that exi
     assert.equal(typeof entry.source, 'string');
     const dir = path.join(REPO, entry.source);
     assert.ok(fs.existsSync(dir), `${entry.name}: source ${entry.source} exists`);
-    const manifest = readJson(path.join(dir, '.github', 'plugin', 'plugin.json'));
+    const manifest = readJson(path.join(dir, 'plugin.json'));
     assert.equal(manifest.name, entry.name, 'entry name matches the plugin manifest');
     assert.equal(manifest.version, entry.version, `${entry.name}: marketplace version matches plugin.json`);
     assert.ok(entry.description && entry.description.length <= 1024);
@@ -89,7 +89,7 @@ test('marketplace manifest: copilot-factory, documented fields, sources that exi
 
 for (const p of PLUGINS) {
   test(`${p.name}: legacy plugin manifest with documented fields, version matches package.json`, () => {
-    const manifest = readJson(path.join(p.dir, '.github', 'plugin', 'plugin.json'));
+    const manifest = readJson(path.join(p.dir, 'plugin.json'));
     assert.ok(!('$schema' in manifest), 'legacy format: no Agent Plugins $schema');
     for (const k of Object.keys(manifest)) assert.ok(LEGACY_PLUGIN_FIELDS.has(k), `plugin.json field ${k} is documented`);
     assert.equal(manifest.name, p.name);
@@ -98,8 +98,9 @@ for (const p of PLUGINS) {
     assert.ok(SEMVER.test(manifest.version));
     assert.ok(manifest.author && manifest.author.name);
     assert.equal(readJson(path.join(p.dir, 'package.json')).version, manifest.version);
-    // Manifests found earlier in the lookup order would shadow this one.
-    for (const earlier of [['.plugin', 'plugin.json'], ['plugin.json']]) assert.ok(!fs.existsSync(path.join(p.dir, ...earlier)), `no ${earlier.join('/')}`);
+    // The manifest sits at the plugin root: the one location both the Copilot CLI and VS Code
+    // read (VS Code does not look in .github/plugin/). Nothing may shadow or duplicate it.
+    for (const other of [['.plugin', 'plugin.json'], ['.github', 'plugin', 'plugin.json'], ['.claude-plugin', 'plugin.json']]) assert.ok(!fs.existsSync(path.join(p.dir, ...other)), `no ${other.join('/')}`);
   });
 
   test(`${p.name}: every skill has valid frontmatter and Copilot wording`, () => {
