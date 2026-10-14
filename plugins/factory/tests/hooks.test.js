@@ -455,6 +455,48 @@ test('agent sessions: the guard denies driving the job and human commands, allow
   assert.ok(isAllow(guard({ toolName: 'bash', toolArgs: { command: `${R} doc check "${path.join(root, '.factory', 'jobs', J, 'adr-0001.md')}" --job ${J}` }, cwd: root })));
 });
 
+test('factory next: a notice when chat replies are not reaching the factory (dead prompt hook), once per wait', () => {
+  const toH1 = (root, J) => {
+    fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+    F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+    return F.cli(root, ['next']);
+  };
+  const job = (root) => F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  // the prompt hook never ran in this repo: said at the first wait, once
+  let root = F.makeRepo();
+  let J = job(root);
+  F.cli(root, ['next']);
+  let n = toH1(root, J);
+  assert.equal(n.step, 'H1');
+  assert.match(n.notice, /Chat replies aren't reaching the factory: no chat prompt has ever reached/);
+  for (const re of [/Chat: Configure Hooks/, /GitHub Copilot Chat Hooks/, /chat\.useHooks/, /Workspace Trust/, /\/plugin list/, /Session Target/, new RegExp(`factory approve H1 --job ${J}`), /type the job id/]) assert.match(n.notice, re);
+  assert.equal(F.cli(root, ['next']).notice, undefined, 'once per wait');
+  // hooks ran before the gate, then nothing since it opened: said on the next look
+  root = F.makeRepo();
+  J = job(root);
+  prompt(root, '/factory:start fix add');
+  F.cli(root, ['next']);
+  n = toH1(root, J);
+  assert.equal(n.notice, undefined, 'the first presentation of a gate is not a symptom');
+  n = F.cli(root, ['next']);
+  assert.match(n.notice, /since it started waiting on H1/);
+  assert.equal(F.cli(root, ['next']).notice, undefined);
+  // a prompt arrived after the gate opened: the hook works, no notice
+  root = F.makeRepo();
+  J = job(root);
+  prompt(root, '/factory:start fix add');
+  F.cli(root, ['next']);
+  toH1(root, J);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  prompt(root, 'what does the contract say about negatives?');
+  assert.equal(F.cli(root, ['next']).notice, undefined);
+  assert.equal(F.cli(root, ['next']).notice, undefined);
+  // not a wait on the human: never
+  assert.equal(require('../cli/core/reply-watch').humanWait({ job: J, action: 'skill', skill: 'clarify' }), null);
+  assert.ok(require('../cli/core/reply-watch').humanWait({ job: J, action: 'parked', reason: 'r' }));
+});
+
 // --- VS Code Local harness ------------------------------------------------------------------
 
 // Local payloads: snake_case, hook_event_name, VS Code tool names (no argv event: Local maps
