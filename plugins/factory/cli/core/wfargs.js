@@ -404,6 +404,8 @@ function realize(root, state, ctx, action) {
         : '';
     tasks[t.id] = {
       id: t.id,
+      // Where this task's builder and tester work (`factory run` starts them there).
+      worktree: wt,
       depends_on: t.depends_on || [],
       retry_limit: t.retry_limit || state.policy.limits.retry_limit,
       // Builders may move to a stronger model on retries (policy.agents.builder_escalation).

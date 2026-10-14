@@ -163,6 +163,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       (hookAgents[k] = hookAgents[k] || []).push({ agent_type: e.agent_type, ms: Date.parse(e.ts) - Date.parse(s.ts) });
       delete started[e.agent_id];
     }
+    // `factory run` (Copilot) times each agent process itself: one agent_run per agent() call.
+    if (e.event === 'agent_run') (hookAgents[e.decision_id || 'none'] = hookAgents[e.decision_id || 'none'] || []).push({ agent_type: e.agent_type, label: e.label, ms: e.ms });
   }
   const runningNow = [];
   const staleNow = [];
@@ -215,7 +217,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       const step = ids.has(stepOfDecision[e.decision_id]) ? stepOfDecision[e.decision_id] : null;
       const timed = (hookAgents[e.decision_id] || []).slice();
       const agents = (e.agents || []).map((a) => {
-        const i = timed.findIndex((x) => x.agent_type === a.agent_type);
+        let i = timed.findIndex((x) => x.label && x.label === a.label);
+        if (i < 0) i = timed.findIndex((x) => !x.label && x.agent_type === a.agent_type);
         const ms = i >= 0 ? timed.splice(i, 1)[0].ms : null;
         return { label: short(a.label, 100), role: roleOf(a.agent_type), model: a.model || null, retry: Boolean(a.retry), outcome: a.outcome || null, ms };
       });
@@ -230,7 +233,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
   for (const [did, list] of Object.entries(hookAgents)) {
     if (covered.has(did) || did === 'none') continue;
     const step = stepOfDecision[did];
-    const last = events.filter((e) => e.decision_id === did && e.event === 'SubagentStop').pop();
+    const last = events.filter((e) => e.decision_id === did && (e.event === 'SubagentStop' || e.event === 'agent_run')).pop();
     if (!last) continue;
     push({ t: last.ts, type: 'agents', step: ids.has(step) ? step : null, decision_id: did, from: 'hooks', runs: list.length, agents: list.map((a) => ({ label: roleOf(a.agent_type), role: roleOf(a.agent_type), model: null, retry: false, outcome: null, ms: a.ms })) });
   }

@@ -68,6 +68,7 @@
     "max_parallel_tasks": 4,
     "max_parallel_research": 4,
     "max_parallel_lanes": 4,
+    "max_parallel_agents": 4,
     "max_tree_depth": 2,
     "repeat_guard": 2,
     "max_agent_runs_per_job": 400,
@@ -82,6 +83,16 @@
   },
   "agents": {
     "models": {},
+    "model_ids": {
+      "opus": "claude-opus-5.5",
+      "sonnet": "claude-sonnet-5.5",
+      "haiku": "claude-haiku-5.5"
+    },
     "builder_escalation": []
+  },
+  "copilot": {
+    "flags": [],
+    "agent_timeout_seconds": 1800,
+    "resume_for_retry": true
   }
 }

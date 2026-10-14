@@ -91,6 +91,29 @@ The contract opens with an **Intent** section (`- Problem:`, `- Who:`, `- Outcom
 
 Every asked question is kept in `state.question_log` (id, round, category, question, default).
 
+### Running workflows on Copilot (`cli/core/runner.js`)
+
+The Copilot CLI has no Workflow tool, so `factory run <ground|fanout-judge|decompose|realize|reconcile> [--config …] [--mode …] [--scope …] [--lanes …] [--accept-degraded] [--threat-model|--no-threat-model] [--plan-critique] [--dry-run]` does the whole round trip in one command:
+
+1. **Brief.** Built by the same code as `factory wfargs` (same flags, same instruction files under `.factory/scratch/briefs/`). Realize briefs also carry each task's `worktree`.
+2. **Script.** The unchanged `workflows/<wf>.js` runs in Node with an emulated Workflow API: top-level `await`/`return`, `args` (the brief as a JSON string), `agent()`, `pipeline()`, `parallel()`, `phase()` and `log()`. `Date`, `Math.random` and `require` throw.
+3. **Agents.** Each `agent(prompt, {agentType, schema, model, label})` spawns one headless Copilot session:
+   `copilot -p <prompt> --agent factory:<role> [--model <id>] --output-format json -s --no-ask-user --allow-all-tools [--add-dir <root>] --session-id <uuid> [policy.copilot.flags]`.
+   - The binary is `$COPILOT_BIN` (default `copilot`). A `.js` path runs with Node, which is how the tests use `tests/helpers/fake-copilot.js`.
+   - Builders and testers (`build T1 #n`, `test T1`) start in their task worktree, which is created first if it is missing. They also get `--add-dir <project root>` so they can read the job folder. Every other agent starts at the project root.
+   - The child gets `FACTORY_RUNNER=1`, `FACTORY_JOB` and `FACTORY_AGENT_ROLE`, so hooks can tell a runner agent from your own session.
+   - Concurrency is capped at `policy.limits.max_parallel_agents` (default 4) across the whole run. Each process times out after `policy.copilot.agent_timeout_seconds` (default 1800).
+   - Prompts over 96 KiB go through a file in `.factory/scratch/runner/`.
+4. **Models.** The brief still carries aliases: `policy.agents.models` maps a role to an alias, and `builder_escalation` lists aliases. `policy.agents.model_ids` maps each alias to a Copilot id; the defaults (`opus` → `claude-opus-5.5`, `sonnet` → `claude-sonnet-5.5`, `haiku` → `claude-haiku-5.5`) come from the CLI reference's "Supported models" table. An unknown alias is passed through as a model id, and no alias means no `--model`. A `model:` in an agent's frontmatter beats `--model` in Copilot, so agents must not pin one if escalation is to work.
+5. **Replies.** The answer is the last top-level `assistant.message` in the JSONL output (or plain stdout). It is parsed as one JSON object (the whole text, then a fenced block, then the last balanced `{…}`) and validated against the item's schema with `cli/lib/schema.js`.
+   - Every prompt ends with a strict "reply with only one JSON object matching this schema" block.
+   - A reply that does not match gets one corrective turn in the same session (`--session-id`; `policy.copilot.resume_for_retry: false` re-sends the whole prompt instead).
+   - Still invalid, a non-zero exit, or a timeout returns `null`, the same as a failed agent, so the workflow's own retry, degraded and park rules apply unchanged.
+6. **Record.** The envelope is saved to `.factory/scratch/runs/` and passed to `record.apply` in-process. The result is printed with the agent list (label, model, model id, ms, exit, retry, outcome). Progress lines (phases, one per agent) go to stderr.
+7. **Logs.** `events.jsonl` gets the same sealed `cli` lines as the manual path (`wfargs`, then `record`, both marked `via: "run"`, so the inspector's driver-fidelity rule holds). It also gets one sealed `agent_run` line per `agent()` call: role, agent type, alias, model id, cwd, ms, exit, retry, spawns and outcome. The console uses these for per-agent wall time, matched to the roster by label.
+
+`--dry-run` builds the brief and prints it with the first-attempt command for every agent it names, without spawning anything. `factory doctor` reports whether the Copilot CLI is present (`--version`). It warns when `COPILOT_ALLOW_ALL` or `COPILOT_PLAN_THEN_AUTOPILOT` is set, and when `~/.copilot/settings.json` sets `askUser: false` or a `permissions.disableBypassPermissionsMode` that would suppress `--allow-all-tools`. `factory shim [--dir ~/.local/bin] [--force]` symlinks `factory` and `factory-inspect` into a PATH directory, because Copilot doesn't put a plugin's `bin/` on PATH.
+
 ## 6. Hooks
 
 | Hook | Script | Does |

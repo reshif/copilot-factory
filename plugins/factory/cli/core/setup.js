@@ -1,5 +1,5 @@
 'use strict';
-// factory init and factory doctor.
+// factory init, factory doctor and factory shim.
 
 const fs = require('fs');
 const path = require('path');
@@ -70,10 +70,82 @@ function doctor(cwd) {
     const cur = job.current(root);
     add('current job', true, cur || '(none)');
   }
+  copilotChecks(add);
   const rc = recipes.checkAll();
   for (const [id, errs] of Object.entries(rc)) add(`recipe ${id}`, errs.length === 0, errs.length ? errs.join('; ') : 'valid');
   const ready = checks.every((c) => c.ok || c.level !== 'error');
   return { ready, checks };
 }
 
-module.exports = { init, doctor };
+// The Copilot CLI that \`factory run\` drives, and settings that would let a session
+// answer the human gates by itself (allow-all, autopilot).
+function readJsonc(file) {
+  try {
+    const t = fs.readFileSync(file, 'utf8').replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, str) => str || '');
+    return JSON.parse(t.replace(/,(\s*[}\]])/g, '$1'));
+  } catch {
+    return null;
+  }
+}
+
+function copilotChecks(add) {
+  const bin = process.env.COPILOT_BIN || 'copilot';
+  const [file, args] = /\.c?js$/.test(bin) ? [process.execPath, [bin, '--version']] : [bin, ['--version']];
+  const v = spawnSync(file, args, { encoding: 'utf8', timeout: 20000 });
+  const version = `${v.stdout || ''}`.trim().split('\n')[0];
+  add('copilot cli', v.status === 0, v.status === 0 ? `${bin}: ${version}` : `${bin} not found or failing: install the GitHub Copilot CLI (or set COPILOT_BIN). factory run needs it`, 'warning');
+  const allowAll = String(process.env.COPILOT_ALLOW_ALL || '').trim();
+  if (allowAll && !/^(0|false|no|off)$/i.test(allowAll)) add('copilot allow-all', false, `COPILOT_ALLOW_ALL=${allowAll} is set: every tool runs without asking in your sessions. Human gates still need your reply, but unset it for factory work`, 'warning');
+  const plan = String(process.env.COPILOT_PLAN_THEN_AUTOPILOT || '').trim();
+  if (plan && !/^(0|false|no|off)$/i.test(plan)) add('copilot autopilot', false, `COPILOT_PLAN_THEN_AUTOPILOT=${plan} is set: autopilot answers its own questions, so it would approve factory gates. Unset it`, 'warning');
+  const home = process.env.COPILOT_HOME || path.join(require('os').homedir(), '.copilot');
+  const st = readJsonc(path.join(home, 'settings.json'));
+  if (st) {
+    const perm = st.permissions || {};
+    if (perm.disableBypassPermissionsMode === 'disable' || perm.disableBypassPermissionsMode === 'allow-auto-only') add('copilot allow-all flags', false, `permissions.disableBypassPermissionsMode is "${perm.disableBypassPermissionsMode}": factory run passes --allow-all-tools to its agents, which this setting suppresses, so headless agents may stall on permissions`, 'warning');
+    if (st.askUser === false) add('copilot askUser', false, `${path.join(home, 'settings.json')} sets askUser: false: sessions work without asking you anything, so factory questions and gates can be skipped. Remove it for factory work`, 'warning');
+  }
+}
+
+// Links bin/factory and the inspector's bin/factory-inspect into a PATH directory:
+// Copilot does not put a plugin's bin/ on PATH. Harmless (symlinks only), so not human-only.
+function shim({ dir, force = false } = {}) {
+  const target = path.resolve(dir || path.join(require('os').homedir(), '.local', 'bin'));
+  mkdirp(target);
+  const bins = [
+    ['factory', pluginPath('bin', 'factory')],
+    ['factory-inspect', path.join(pluginPath(), '..', 'factory-inspector', 'bin', 'factory-inspect')],
+  ];
+  const linked = [];
+  const skipped = [];
+  for (const [name, src] of bins) {
+    const real = path.resolve(src);
+    if (!exists(real)) {
+      skipped.push({ name, reason: `${real} not found (is the plugin installed next to factory?)` });
+      continue;
+    }
+    const dest = path.join(target, name);
+    let st = null;
+    try {
+      st = fs.lstatSync(dest);
+    } catch {
+      st = null;
+    }
+    if (st && !st.isSymbolicLink() && !force) {
+      skipped.push({ name, reason: `${dest} exists and is not a symlink (use --force to replace it)` });
+      continue;
+    }
+    if (st) fs.rmSync(dest, { force: true });
+    fs.symlinkSync(real, dest);
+    try {
+      fs.chmodSync(real, 0o755);
+    } catch {
+      /* read-only install: the mode is already right */
+    }
+    linked.push({ name, link: dest, to: real });
+  }
+  const onPath = (process.env.PATH || '').split(path.delimiter).map((p) => path.resolve(p)).includes(target);
+  return { dir: target, linked, skipped, on_path: onPath, ...(onPath ? {} : { hint: `${target} is not on your PATH: add  export PATH="${target}:$PATH"  to your shell profile` }) };
+}
+
+module.exports = { init, doctor, shim };

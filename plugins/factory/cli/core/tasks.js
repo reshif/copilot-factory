@@ -28,6 +28,16 @@ function ensureJobWorktree(root, state) {
   return wt;
 }
 
+// The task's branch and worktree, created if missing. No state changes: `factory run`
+// uses it to start a builder inside its worktree before the builder runs `task start`.
+function prepareWorktree(root, state, taskId) {
+  const branch = steps.taskBranch(state, taskId);
+  const wt = taskWorktree(root, state.id, taskId);
+  if (!git.branchExists(root, branch)) git.run(root, ['branch', branch, state.branch]);
+  if (!exists(path.join(wt, '.git'))) git.run(root, ['worktree', 'add', wt, branch]);
+  return wt;
+}
+
 function start(root, jobId, taskId) {
   const state = job.resolve(root, jobId);
   const { task } = planTask(root, state, taskId);
@@ -37,8 +47,7 @@ function start(root, jobId, taskId) {
   for (const d of task.depends_on || []) {
     if (!steps.taskDone(ctx, d)) fail(`${taskId} depends on ${d}, which is not done yet`, 'dependency_not_done');
   }
-  if (!git.branchExists(root, branch)) git.run(root, ['branch', branch, state.branch]);
-  if (!exists(path.join(wt, '.git'))) git.run(root, ['worktree', 'add', wt, branch]);
+  prepareWorktree(root, state, taskId);
   for (const d of task.depends_on || []) {
     const db = steps.taskBranch(state, d);
     if (!git.isAncestor(root, db, branch)) {
@@ -157,4 +166,4 @@ function setState(root, jobId, taskId, value, reason) {
   return { job: state.id, task: taskId, state: value };
 }
 
-module.exports = { start, show, verify, setState, ensureJobWorktree, planTask };
+module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree };
