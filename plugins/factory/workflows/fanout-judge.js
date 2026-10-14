@@ -157,7 +157,7 @@ function sortUnknowns() {
     else if (u.kind === 'decision') res = u.impact === 'low' && !evs.length ? 'deferred' : 'question'
     else if (good.length) res = 'assumption'
     else if (u.impact === 'low' && !evs.length) res = 'deferred'
-    else if (u.resolution === 'pending' && !u.researched) res = 'pending'
+    else if (u.resolution === 'pending' && !u.researched && !evs.length) res = 'pending'
     else res = 'question'
     if (res === 'question' && evs.length && !good.length && !u.note) {
       u.note = evs.some((e) => e.verdict === 'contradicted') ? `sources disagree (${evs.map((e) => `${e.id} ${e.verdict}`).join(', ')})` : `research did not confirm it (${evs.map((e) => `${e.id} ${e.verdict}`).join(', ')})`
@@ -231,7 +231,7 @@ async function research(list, why) {
       scout.evidence.push(ev)
       fresh.push(ev)
     }
-    for (const r of o.unresolved || []) {
+    for (const r of p.kind === 'web' && o.web_available === false ? [] : o.unresolved || []) {
       const u = p.unknowns.find((x) => x.id === r.unknown)
       if (u && !scout.evidence.some((e) => e.unknown === u.id)) u.note = `research found nothing conclusive: ${r.reason}`
     }
@@ -336,6 +336,14 @@ function groundQuestions(list) {
   }
   return { keep, researchable, fresh }
 }
+// Repo and world unknowns research could not settle are asked even if the judge left them
+// out (web off, no web access, unverified, contradicted, budget spent), saying why.
+function mustAsk(questions, dismissed) {
+  const covered = new Set([...(questions || []).map((q) => String(q.unknown || '').toUpperCase()), ...(dismissed || []).map((d) => String(d.unknown || '').toUpperCase())])
+  return scout.unknowns
+    .filter((u) => ['repo', 'world'].includes(u.kind) && u.impact !== 'low' && u.resolution === 'question' && !u.question_id && !covered.has(u.id))
+    .map((u) => ({ question: u.draft.endsWith('?') ? u.draft : `Is this right: ${u.draft}?`, category: 'constraint', why: `Research could not settle it: ${u.note || 'no confirmed evidence'}.`, default: 'None: answer needed', unknown: u.id, kind: u.kind, evidence: u.evidence, preference: !u.evidence.length, ...(u.options ? { options: u.options } : {}) }))
+}
 const budgetLeft = (kind) => (kind === 'repo' ? (scout.budget.repo_scouts || 0) - scout.used.repo : scout.web.enabled ? (scout.budget.web_scouts || 0) - scout.used.web : 0)
 if (SC) await scoutPhase()
 
@@ -408,7 +416,7 @@ if (brief.config === 'clarify') {
     }
     const g2 = groundQuestions(judge.questions)
     researchable = [...g.researchable.filter((r) => !g2.researchable.some((x) => x.question === r.question)), ...g2.researchable]
-    judge = { ...judge, questions: g2.keep }
+    judge = { ...judge, questions: [...g2.keep, ...mustAsk(g2.keep, judge.dismissed)] }
   }
   const degraded = degradedNow(held)
   const inputs = inputsNow()

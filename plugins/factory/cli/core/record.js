@@ -97,7 +97,8 @@ function recClarify(root, state, env) {
   // Re-apply the question protocol: every question names its unknown and cites evidence or
   // is the user's call; researchable questions research answered are not asked; then intent
   // first and alone, priority order, budget, never re-ask.
-  const g = idata ? questions.ground((d.judge && d.judge.questions) || [], idata) : { questions: (d.judge && d.judge.questions) || [], researchable: [], flagged: [], created: [] };
+  const judgeQs = (d.judge && d.judge.questions) || [];
+  const g = idata ? questions.ground([...judgeQs, ...intentMod.mustAsk(idata, judgeQs, (d.judge && d.judge.dismissed) || [], state.question_log || [])], idata) : { questions: judgeQs, researchable: [], flagged: [], created: [] };
   if (idata && g.created.length) idata.unknowns.push(...g.created);
   const n = questions.shape(g.questions, { budget: max, asked: questions.askedList(state, answers), startId: log.length });
   state.counters.clarify_rounds = round;

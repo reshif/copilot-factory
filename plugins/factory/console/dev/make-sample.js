@@ -123,7 +123,7 @@ function instructions(p) {
 
 // ---- agents: parallel calls start together; each takes 1–7 minutes ---------------------
 const DUR = {
-  'intent-analyst': [1, 3.5], judge: [1, 3], 'god-eye': [2, 5], researcher: [1.5, 5], 'option-generator': [2, 5],
+  'intent-mapper': [1, 2.5], verifier: [1, 3], 'intent-analyst': [1, 3.5], judge: [1, 3], 'god-eye': [2, 5], researcher: [1.5, 5], 'option-generator': [2, 5],
   'threat-modeler': [3, 6], architect: [4, 7], planner: [3, 7], builder: [3, 7], tester: [1, 3], integrator: [1, 2.5],
   'code-reviewer': [2, 6], 'test-reviewer': [2, 5], 'security-reviewer': [3, 7], 'finding-verifier': [2, 5],
 };
@@ -181,6 +181,7 @@ async function runWorkflow(J, n, crew) {
 const BASE = {
   'package.json': '{\n  "name": "search-api",\n  "version": "1.4.0",\n  "private": true\n}\n',
   'README.md': '# search-api\n\nThe public product-search API.\n',
+  '.nvmrc': '20.11.1\n',
   'src/index-store.js': [
     "const DOCS = [",
     "  { id: 1, title: 'Trail running shoes' },",
@@ -268,6 +269,13 @@ function crew(J, sc, st) {
     const retry = /\(retry\)$/.test(label);
     const role = type.replace('factory:', '');
     switch (role) {
+      // The clarify scout phase: map the unknowns, research them, verify the findings.
+      case 'intent-mapper':
+        return { unknowns: (sc.intentMap || DEFAULT_INTENT_MAP).map(({ text, kind, impact, draft, research, search, options }) => ({ text, kind, impact, draft, research, search, ...(options ? { options } : {}) })) };
+      case 'verifier': {
+        const ids = [...new Set([...text.matchAll(/"id": "(E-\d+)"/g)].map((m) => m[1]))];
+        return { verdicts: ids.map((id) => ({ evidence_id: id, verdict: 'confirmed', confidence: 'high', reason: 'Re-opened the source: the quote is there and applies to the version in use.', quote_found: true, version_applies: true, second_source: /"source": "https?:/.test(text) ? { source: 'https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3', quote: 'Retry-After = HTTP-date / delay-seconds' } : { source: 'src/server.js:2', quote: "'/search': require('./search')," } })) };
+      }
       case 'intent-analyst': {
         const focus = label.replace('analyst · ', '');
         const qs = ((sc.questions && sc.questions(st.round)) || []).filter((q) => q.focus === focus);
@@ -275,7 +283,7 @@ function crew(J, sc, st) {
       }
       case 'judge': {
         const qs = (sc.questions && sc.questions(st.round)) || [];
-        return { questions: qs.map(({ question, why }) => ({ question, why })), dismissed: sc.dismissed && st.round === 1 ? sc.dismissed : [] };
+        return { questions: qs.map(({ question, why, unknown, kind }) => ({ question, why, category: 'scope', default: 'Your call', unknown: unknown || 'new', kind: kind || 'user', preference: true })), dismissed: sc.dismissed && st.round === 1 ? sc.dismissed : [] };
       }
       case 'god-eye': {
         const m = label.match(/design #(\d+)/);
@@ -283,6 +291,25 @@ function crew(J, sc, st) {
         return { verdict: 'approve', items: [] };
       }
       case 'researcher': {
+        if (/^scout · (repo|web)/.test(label)) {
+          const mode = label.includes('web') ? 'web' : 'repo';
+          const ids = [...new Set([...text.matchAll(/"id": "(U-\d+)"/g)].map((m) => m[1]))];
+          const map = sc.intentMap || DEFAULT_INTENT_MAP;
+          // unknown ids follow the map's order (U-1, U-2, …) for the first round
+          const evidence = ids.flatMap((id) => {
+            const u = map[Number(id.slice(2)) - 1];
+            if (!u || !u.evidence) return [];
+            const e = { unknown: id, ...u.evidence };
+            // a real scout cites the line the quote is on today
+            const m = /^([^:]+):\d+$/.exec(e.source_tier === 'repo' ? e.source : '');
+            const lines = m && fs.existsSync(path.join(root, m[1])) ? fs.readFileSync(path.join(root, m[1]), 'utf8').split('\n') : null;
+            const at = lines ? lines.findIndex((l) => l.includes(e.quote)) : -1;
+            if (lines && at === -1) return [];
+            if (lines) e.source = `${m[1]}:${at + 1}`;
+            return [e];
+          });
+          return { mode, ...(mode === 'web' ? { web_available: true, fetched: evidence.map((e) => e.source) } : {}), versions: [{ name: 'node', version: '20.11.1', source: '.nvmrc:1' }], evidence, unresolved: ids.filter((id) => !evidence.some((e) => e.unknown === id)).map((id) => ({ unknown: id, reason: 'nothing in the repo or the docs settles it' })) };
+        }
         const topic = label.replace('ground · ', '').replace(' (retry)', '');
         if (sc.researcherFailsOnce === topic && !retry) return null;
         const r = (sc.research || {})[topic] || DEFAULT_RESEARCH[topic] || [];
@@ -344,6 +371,16 @@ function crew(J, sc, st) {
     }
   };
 }
+
+// What the intent mapper finds by default: where the change lands (a repo unknown the repo
+// scout settles from src/search.js) and how small the change may be (low impact: assumed).
+const DEFAULT_INTENT_MAP = [
+  { text: 'Where are search requests handled, and is there middleware to hook into?', kind: 'repo', impact: 'high', draft: 'GET /search is one handler function in src/search.js with no middleware', research: 'repo', search: 'src/search.js, src/server.js',
+    evidence: { claim: 'GET /search is handled by a single exported function in src/search.js; there is no middleware layer', source: 'src/search.js:3', source_tier: 'repo', quote: 'module.exports = function search(req) {', confidence: 'high' } },
+  { text: 'Which Node version does the service run on?', kind: 'repo', impact: 'medium', draft: 'The service runs on Node 20', research: 'repo', search: '.nvmrc, package.json engines',
+    evidence: { claim: 'The service pins Node 20 in .nvmrc', source: '.nvmrc:1', source_tier: 'repo', quote: '20.11.1', confidence: 'high' } },
+  { text: 'Is a code comment enough documentation?', kind: 'user', impact: 'low', draft: 'A code comment is enough documentation', research: 'none' },
+];
 
 const DEFAULT_RESEARCH = {
   codebase: [['GET /search is handled by a single function with no middleware', 'src/search.js:3'], ['Routes are a plain path → handler map', 'src/server.js:1']],
@@ -507,10 +544,18 @@ const J1PLAN = {
 function sc1(J) {
   let denied = false;
   return {
+    intentMap: [
+      DEFAULT_INTENT_MAP[0],
+      DEFAULT_INTENT_MAP[1],
+      { text: 'What must a 429 response carry, per the HTTP standards?', kind: 'world', impact: 'high', draft: 'A 429 response may carry Retry-After; Retry-After is a whole number of seconds', research: 'web', search: 'RFC 6585, RFC 9110 Retry-After',
+        evidence: { claim: 'RFC 6585 defines 429 Too Many Requests and says the response MAY include a Retry-After header', source: 'https://www.rfc-editor.org/rfc/rfc6585#section-4', source_tier: 'standard', retrieved_at: new Date(clock.now()).toISOString().slice(0, 10), quote: 'The response representations SHOULD include details explaining the condition, and MAY include a Retry-After header indicating how long to wait before making a new request.', applies_to_version: 'RFC 6585 (2012)', confidence: 'high' } },
+      { text: 'Is the limit per API key or per client address?', kind: 'user', impact: 'high', draft: 'Limit per API key or per IP address?', research: 'none', options: ['per API key', 'per IP address'] },
+      { text: 'Must the limit hold across instances?', kind: 'decision', impact: 'high', draft: 'Must the limit hold across both API instances, or is per-instance acceptable?', research: 'repo', options: ['shared store (Redis)', 'per instance'] },
+    ],
     questions: (round) => (round === 1
       ? [
-          { focus: 'ambiguity', question: 'Limit per API key or per IP address?', why: 'Partners call through shared NAT gateways: one IP can carry many API keys' },
-          { focus: 'constraints', question: 'Must the limit hold across both API instances, or is per-instance acceptable?', why: 'Two instances sit behind the load balancer; per-instance doubles the effective limit' },
+          { focus: 'ambiguity', question: 'Limit per API key or per IP address?', why: 'Partners call through shared NAT gateways: one IP can carry many API keys', unknown: 'U-4' },
+          { focus: 'constraints', question: 'Must the limit hold across both API instances, or is per-instance acceptable?', why: 'Two instances sit behind the load balancer; per-instance doubles the effective limit', unknown: 'U-5', kind: 'decision' },
         ]
       : []),
     dismissed: [{ question: 'Should limits differ per pricing plan?', reason: 'Non-goal in the contract' }],

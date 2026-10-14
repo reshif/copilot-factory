@@ -266,7 +266,7 @@ function sort(data) {
     else if (u.kind === 'decision') res = u.impact === 'low' && !evs.length ? 'deferred' : 'question';
     else if (good.length) res = 'assumption';
     else if (u.impact === 'low' && !evs.length) res = 'deferred';
-    else if (u.resolution === 'pending' && !u.researched) res = 'pending';
+    else if (u.resolution === 'pending' && !u.researched && !evs.length) res = 'pending';
     else res = 'question';
     if (res === 'question' && !u.note && evs.length) {
       const bad = evs.filter((e) => !usable(e, u));
@@ -306,6 +306,15 @@ function applyAnswers(data, state, answers) {
     }
   }
   return out;
+}
+
+// Repo and world unknowns research could not settle are asked even when the judge left them
+// out: web off, no web access, unverified, contradicted, research budget spent.
+function mustAsk(data, questions, dismissed, log = []) {
+  const covered = new Set([...(questions || []).map((q) => String(q.unknown || '').toUpperCase()), ...(dismissed || []).map((x) => String(x.unknown || '').toUpperCase()), ...log.map((q) => q.unknown).filter(Boolean)]);
+  return data.unknowns
+    .filter((u) => ['repo', 'world'].includes(u.kind) && u.impact !== 'low' && u.resolution === 'question' && !u.question_id && !covered.has(u.id))
+    .map((u) => ({ question: /\?$/.test(u.draft) ? u.draft : `Is this right: ${u.draft}?`, category: 'constraint', why: `Research could not settle it: ${u.note || 'no confirmed evidence'}.`, default: 'None: answer needed', unknown: u.id, kind: u.kind, evidence: u.evidence, preference: !u.evidence.length, ...(u.options ? { options: u.options } : {}) }));
 }
 
 // ---------------------------------------------------------------- the contract section
@@ -503,7 +512,7 @@ function findingsMarkdown(state, data) {
   const asks = data.unknowns.filter((u) => ['question', 'answered'].includes(u.resolution));
   for (const u of asks) {
     const tag = u.resolution === 'answered' ? `answered${u.question_id ? ` (${u.question_id})` : ''}: ${u.answer}` : u.question_id ? `asked as ${u.question_id}` : 'not asked yet';
-    const why = ['repo', 'world'].includes(u.kind) ? ` — researchable, asked because ${u.note || 'research did not settle it'}` : u.evidence.length ? ` — evidence: ${u.evidence.join(', ')}` : ' — your call';
+    const why = ['repo', 'world'].includes(u.kind) ? ` — researchable, asked because ${u.note || 'research did not settle it'}` : u.evidence.length ? ` — evidence: ${u.evidence.join(', ')}` : u.resolution === 'answered' ? '' : ' — your call';
     L.push(`- ${u.id} [${u.kind}, ${u.impact}] ${u.draft} — ${tag}${why}`);
   }
   if (!asks.length) L.push('None.');
@@ -512,7 +521,8 @@ function findingsMarkdown(state, data) {
   if (!data.unknowns.length) L.push('| — | — | — | — | — | No unknowns mapped |');
   L.push('', '## Research log', '');
   for (const r of data.rounds || []) {
-    L.push(`- Round ${r.round} (${String(r.at).slice(0, 16)}): ${r.scouted ? `${r.mapped ? 'mapped the unknowns; ' : ''}${(r.scouts || []).length} scout(s)${(r.scouts || []).length ? ` (${r.scouts.map((s) => `${s.label}: ${s.outcome}`).join(', ')})` : ''}, ${r.verifiers || 0} verifier(s)` : 'no scout phase'}${(r.degraded || []).length ? `; degraded: ${r.degraded.join(', ')}` : ''}`);
+    const reused = r.scouted && !r.mapped && !(r.scouts || []).length;
+    L.push(`- Round ${r.round} (${String(r.at).slice(0, 16)}): ${reused ? 'reused the earlier research (nothing new to research)' : r.scouted ? `${r.mapped ? 'mapped the unknowns; ' : ''}${(r.scouts || []).length} scout(s)${(r.scouts || []).length ? ` (${r.scouts.map((s) => `${s.label}: ${s.outcome}`).join(', ')})` : ''}, ${r.verifiers || 0} verifier(s)` : 'no scout phase'}${(r.degraded || []).length ? `; degraded: ${r.degraded.join(', ')}` : ''}`);
   }
   if ((data.versions || []).length) L.push(`- Versions researched: ${data.versions.map((v) => `${v.name} ${v.version} (${v.source})`).join(', ')}`);
   if (!(data.rounds || []).length) L.push('None.');
@@ -585,6 +595,6 @@ function show(root, jobId) {
 }
 
 module.exports = {
-  KINDS, IMPACTS, TIERS, files, settings, empty, load, save, nextIds, merge, checkEvidence, repoQuoteOk, repoSource, usable, sort, applyAnswers,
+  KINDS, IMPACTS, TIERS, files, settings, empty, load, save, nextIds, merge, checkEvidence, repoQuoteOk, repoSource, usable, sort, applyAnswers, mustAsk,
   liveAssumptions, contractLines, writeContract, groundedProblems, floorOk, topFindings, assumptionsView, counts, briefText, findingsMarkdown, render, override, show,
 };
