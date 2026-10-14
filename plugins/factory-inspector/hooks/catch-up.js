@@ -1,17 +1,20 @@
 'use strict';
-// Catch-up at the end of every turn: jobs also end outside Claude's Bash — a "cancel job"
-// or "merged <sha>" reply applied by the factory's prompt hook, or a command you ran in
-// your own terminal — and PostToolUse never sees those. If any ended job hasn't been
-// inspected at its current status, inspect now and show you one line. Never blocks.
+// agentStop catch-up: jobs also end outside the agent's shell — a "cancel job" or
+// "merged <sha>" reply applied by the factory's prompt hook, or a command you ran in your
+// own terminal — and postToolUse never sees those. If any ended job hasn't been inspected
+// at its current status, inspect it now. Never blocks: Copilot's agentStop honours only
+// decision/reason (hooks.md §5.5; systemMessage is not a CLI output, §5.8), so the
+// result goes to the register and the one-line summary is kept for the next session
+// start or after-close report.
 
-const { safe, emit } = require('./lib');
-const { findRoot } = require('../inspector/io');
+const { safe, stashUnreported } = require('./lib');
 
 safe((input) => {
-  const root = findRoot(input.cwd || process.cwd());
+  const { findRoot } = require('../inspector/io');
+  const root = findRoot(input.cwd);
   if (!root) return;
   const main = require('../inspector/main');
   if (!main.pending(root).length) return;
   const line = main.summary(main.run(root, {}));
-  if (line) emit({ systemMessage: `${line} Details with /factory-inspector:inspect.` });
+  if (line) stashUnreported(root, line);
 });

@@ -214,21 +214,73 @@ test('settled recipes get a suggestion, never an automatic change', () => {
   assert.equal(inspect(root, ['status']).recipes[0].mode, 'on');
 });
 
-test('hooks: after-close reports, session start mentions open findings, replies apply', () => {
+test('hooks: after-close reports, session start mentions open findings, replies apply (Copilot payloads)', () => {
   const root = F.makeRepo();
   const J = cleanJob(root);
-  const run = (hook, input) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook)], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
-  const after = JSON.parse(run('after-close.js', { tool_name: 'Bash', tool_input: { command: `factory close --job ${J}` } }).stdout);
-  assert.match(after.hookSpecificOutput.additionalContext, /inspected J-0001; no new findings/);
-  assert.equal(run('after-close.js', { tool_name: 'Bash', tool_input: { command: 'git status' } }).stdout, '');
-  assert.equal(run('session-start.js', {}).stdout, '');
+  const run = (hook, input, event) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook), ...(event ? [event] : [])], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
+  const ctx = (r) => JSON.parse(r.stdout).additionalContext;
+  const after = run('after-close.js', { toolName: 'bash', toolArgs: JSON.stringify({ command: `factory close --job ${J}` }), toolResult: { resultType: 'success', textResultForLlm: '{}' } }, 'postToolUse');
+  assert.deepEqual(Object.keys(JSON.parse(after.stdout)), ['additionalContext']);
+  assert.match(ctx(after), /inspected J-0001; no new findings/);
+  assert.equal(run('after-close.js', { toolName: 'bash', toolArgs: { command: 'git status' } }, 'postToolUse').stdout, '');
+  assert.equal(run('after-close.js', { toolName: 'view', toolArgs: { path: 'factory close' } }, 'postToolUse').stdout, '', 'only shell calls');
+  const quiet = ctx(run('session-start.js', { source: 'startup' }, 'sessionStart'));
+  assert.ok(quiet.includes(`node "${path.join(PLUGIN, 'bin', 'factory-inspect')}"`), 'the absolute inspector command');
+  assert.doesNotMatch(quiet, /open factory finding/);
   fs.appendFileSync(path.join(F.jobDir(root, J), 'ledger.jsonl'), '{"forged":true}\n');
   inspect(root, ['run', '--all']);
-  assert.match(JSON.parse(run('session-start.js', {}).stdout).hookSpecificOutput.additionalContext, /1 open factory finding/);
-  assert.match(JSON.parse(run('prompt.js', { prompt: 'ack finding F1' }).stdout).hookSpecificOutput.additionalContext, /Applied: Finding F1 marked acknowledged/);
-  const denied = JSON.parse(run('guard.js', { tool_name: 'Bash', tool_input: { command: 'factory-inspect mark F1 fixed' } }).stdout);
-  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(spawnSync('node', [path.join(PLUGIN, 'hooks', 'guard.js')], { input: 'garbage', encoding: 'utf8' }).status, 0);
+  assert.match(ctx(run('session-start.js', {}, 'sessionStart')), /1 open factory finding/);
+  assert.match(ctx(run('prompt.js', { prompt: 'ack finding F1' }, 'userPromptSubmitted')), /Applied: Finding F1 marked acknowledged/);
+  for (const input of [{ toolName: 'bash', toolArgs: { command: 'factory-inspect mark F1 fixed' } }, { toolName: 'bash', toolArgs: '{"command":"factory-inspect mark F1 fixed"}' }, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'factory-inspect mark F1 fixed' } }]) {
+    const denied = run('guard.js', input, 'preToolUse');
+    assert.equal(denied.status, 2, 'exit 2 denies');
+    assert.equal(JSON.parse(denied.stdout).permissionDecision, 'deny');
+    assert.match(JSON.parse(denied.stdout).permissionDecisionReason, /\[inspector guard\]/);
+    assert.match(denied.stderr, /\[inspector guard\]/);
+  }
+  const ok = run('guard.js', { toolName: 'bash', toolArgs: { command: 'factory-inspect report' } }, 'preToolUse');
+  assert.deepEqual([ok.status, ok.stdout], [0, '']);
+  assert.equal(spawnSync('node', [path.join(PLUGIN, 'hooks', 'guard.js'), 'preToolUse'], { input: 'garbage', encoding: 'utf8' }).status, 0);
+  // the inspector's hooks.json: native Copilot format, no matchers, plugin-root env var
+  const H = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'hooks', 'hooks.json'), 'utf8'));
+  assert.equal(H.version, 1);
+  assert.deepEqual(Object.keys(H.hooks).sort(), ['agentStop', 'postToolUse', 'preToolUse', 'sessionStart', 'userPromptSubmitted']);
+  for (const [ev, list] of Object.entries(H.hooks)) for (const h of list) {
+    assert.equal(h.type, 'command');
+    assert.equal(h.matcher, undefined);
+    assert.match(h.bash, /\$\{PLUGIN_ROOT:-\$\{COPILOT_PLUGIN_ROOT:-\$CLAUDE_PLUGIN_ROOT\}\}/);
+    assert.match(h.bash, new RegExp(` ${ev}$`));
+    assert.ok(h.powershell && h.timeoutSec > 0);
+  }
+});
+
+test('observe reads camelCase hook events and Copilot tool names; agents pair by type when starts carry no id', () => {
+  const { normEvent, openAgents } = require('../inspector/observe');
+  assert.deepEqual(['subagentStart', 'postToolUse', 'agentStop', 'PostToolUse', 'cli', 'guard_deny'].map((e) => normEvent({ event: e }).event), ['SubagentStart', 'PostToolUse', 'Stop', 'PostToolUse', 'cli', 'guard_deny']);
+  assert.deepEqual(['bash', 'edit', 'create', 'view', 'apply_patch', 'Bash', 'mcp_x'].map((t) => normEvent({ event: 'PostToolUse', tool: t }).tool), ['Bash', 'Edit', 'Write', 'Read', 'Edit', 'Bash', 'mcp_x']);
+  assert.equal(normEvent({ event: 'SubagentStart', agent_name: 'factory:builder' }).agent_type, 'factory:builder');
+  assert.equal(normEvent({ event: 'SubagentStop', agentId: 'a1', agentName: 'factory:builder' }).agent_id, 'a1');
+  const ev = [
+    { event: 'SubagentStart', ts: '1', agent_type: 'factory:builder' },
+    { event: 'SubagentStart', ts: '2', agent_type: 'factory:builder' },
+    { event: 'SubagentStart', ts: '3', agent_type: 'factory:tester' },
+    { event: 'SubagentStop', ts: '4', agent_type: 'factory:builder', agent_id: 'x9' },
+    { event: 'SubagentStart', ts: '5', agent_id: 'a1', agent_type: 'factory:reviewer' },
+    { event: 'SubagentStop', ts: '6', agent_id: 'a1', agent_type: 'factory:reviewer' },
+  ].map(normEvent);
+  assert.deepEqual(openAgents(ev).map((e) => `${e.agent_type}@${e.ts}`), ['factory:builder@2', 'factory:tester@3']);
+  // end to end: a factory log written from Copilot camelCase payloads
+  const root = F.makeRepo();
+  F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  const fh = (name, input, event) => spawnSync('node', [path.join(F.PLUGIN, 'hooks', name), event], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
+  fh('activity.js', { agentName: 'factory:builder' }, 'subagentStart');
+  fh('activity.js', { agentName: 'factory:tester' }, 'subagentStart');
+  fh('subagent-stop.js', { agentName: 'factory:builder', agentType: 'custom', agentId: 'b1', response: 'ok' }, 'subagentStop');
+  fh('activity.js', { toolName: 'bash', toolArgs: '{"command":"ls"}' }, 'postToolUse');
+  const obs = require('../inspector/observe').observe(root);
+  assert.deepEqual(openAgents(obs.events).map((e) => e.agent_type), ['factory:tester']);
+  assert.ok(obs.events.some((e) => e.event === 'PostToolUse' && e.tool === 'Bash'));
+  assert.equal(I.health(root).agents.not_stopped, 1);
 });
 
 test('job health from synthetic records (R12–R19)', () => {
@@ -338,20 +390,25 @@ test('limits and rules_off come from config; a fixed health finding reopens only
   assert.equal(fds.find((x) => x.id === g.id).status, 'open', 'a new denial does');
 });
 
-test('hooks: a job that ends outside Claude\'s Bash is caught at the end of the turn and at session start', () => {
+test('hooks: a job that ends outside the agent\'s shell is caught at the end of the turn (silently) and reported at session start', () => {
   const root = F.makeRepo();
-  const run = (hook, input) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook)], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
+  const run = (hook, input, event) => spawnSync('node', [path.join(PLUGIN, 'hooks', hook), event], { input: JSON.stringify({ cwd: root, ...input }), encoding: 'utf8' });
+  const stop = () => run('catch-up.js', { transcriptPath: '/nope', stopReason: 'end_turn', stop_hook_active: false }, 'agentStop');
   const J = F.cli(root, ['job', 'new', '--title', 'Never mind', '--type', 'bug', '--risk', 'low']).job;
-  assert.equal(run('catch-up.js', {}).stdout, '', 'an active job is not inspected');
-  F.reply(root, 'cancel job'); // applied by the factory's prompt hook: no Bash, no PostToolUse
+  assert.equal(stop().stdout, '', 'an active job is not inspected');
+  F.reply(root, 'cancel job'); // applied by the factory's prompt hook: no shell call, no postToolUse
   assert.deepEqual(I.pending(root), [J]);
-  assert.match(JSON.parse(run('catch-up.js', {}).stdout).systemMessage, new RegExp(`inspected ${J}`));
-  assert.deepEqual(I.pending(root), []);
-  assert.equal(run('catch-up.js', {}).stdout, '', 'nothing pending: silent');
+  const r = stop();
+  assert.deepEqual([r.status, r.stdout], [0, ''], 'agentStop never blocks and shows nothing (only decision/reason are honoured there)');
+  assert.deepEqual(I.pending(root), [], 'but the job was inspected');
+  assert.equal(stop().stdout, '', 'nothing pending: silent');
+  // the catch-up line is shown at the next session start, once
+  assert.match(JSON.parse(run('session-start.js', {}, 'sessionStart').stdout).additionalContext, new RegExp(`inspected ${J}`));
+  assert.doesNotMatch(JSON.parse(run('session-start.js', {}, 'sessionStart').stdout).additionalContext, new RegExp(`inspected ${J}`));
 
   const J2 = F.cli(root, ['job', 'new', '--title', 'Also not', '--type', 'bug', '--risk', 'low']).job;
   F.reply(root, `abandon job ${J2}`);
-  assert.match(JSON.parse(run('session-start.js', {}).stdout).hookSpecificOutput.additionalContext, new RegExp(`inspected ${J2}`));
+  assert.match(JSON.parse(run('session-start.js', {}, 'sessionStart').stdout).additionalContext, new RegExp(`inspected ${J2}`));
 });
 
 test('independence: the inspector imports nothing from the factory', () => {

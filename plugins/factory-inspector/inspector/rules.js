@@ -8,7 +8,7 @@
 
 const path = require('path');
 const { readJson } = require('./io');
-const { isRouting } = require('./observe');
+const { isRouting, openAgents } = require('./observe');
 const M = require('./model');
 
 const f = (o) => ({ evidence: [], ...o });
@@ -431,14 +431,9 @@ function jobHealth(job, L, now) {
     if (items.length >= L.step_failures) out.push(f({ rule: 'R14.step_failures', class: 'ambiguity', severity: 'medium', subject: `${id}:${step}`, job: id, latest: latest(items, 'at'), summary: `"${step}" was recorded as failed ${items.length} times in ${id}.`, question: `What keeps ${step} from passing?` }));
   }
   // R15 agents that started and never stopped
-  const open = new Map();
-  for (const e of ev) {
-    if (e.event === 'SubagentStart' && e.agent_id) open.set(e.agent_id, e);
-    if (e.event === 'SubagentStop' && e.agent_id) open.delete(e.agent_id);
-  }
   const ended = ['closed', 'cancelled', 'abandoned'].includes(status);
-  const orphans = [...open.values()].filter((s) => ended || hours(s.ts, now) * 60 >= L.orphan_agent_minutes);
-  if (orphans.length) out.push(f({ rule: 'R15.orphaned_agents', class: 'gap', severity: 'low', subject: id, job: id, latest: latest(orphans), summary: `${orphans.length} agent(s) in ${id} started and never reported stopping${ended ? ` before the job ${status}` : ` within ${L.orphan_agent_minutes} min`}: ${orphans.slice(0, 4).map((s) => `${s.agent_type || 'agent'} since ${s.ts}`).join(', ')}.`, evidence: orphans.slice(0, 6).map((s) => s.agent_id), question: 'Did these agents crash or time out? Were their results lost?' }));
+  const orphans = openAgents(ev).filter((s) => ended || hours(s.ts, now) * 60 >= L.orphan_agent_minutes);
+  if (orphans.length) out.push(f({ rule: 'R15.orphaned_agents', class: 'gap', severity: 'low', subject: id, job: id, latest: latest(orphans), summary: `${orphans.length} agent(s) in ${id} started and never reported stopping${ended ? ` before the job ${status}` : ` within ${L.orphan_agent_minutes} min`}: ${orphans.slice(0, 4).map((s) => `${s.agent_type || 'agent'} since ${s.ts}`).join(', ')}.`, evidence: orphans.slice(0, 6).map((s) => s.agent_id || `${s.agent_type || 'agent'}@${s.ts}`), question: 'Did these agents crash or time out? Were their results lost?' }));
   // R16 parks and resumes
   const parks = [...job.decisions.filter((d) => d.action === 'parked'), ...cli.filter((e) => (e.cmd === 'park' && e.ok) || (e.cmd === 'record' && e.status === 'park')).map((e) => ({ ts: e.ts, reason: e.cmd === 'park' ? 'parked by hand' : `${e.workflow || 'workflow'} parked it` }))];
   const resumes = job.decisions.filter((d) => d.action === 'human.resume');

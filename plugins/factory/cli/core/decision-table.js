@@ -86,7 +86,29 @@ function repeatKey(ctx, action) {
   );
 }
 
+// The chat reply the prompt hook last applied or refused (.factory/last-reply.json), shown
+// in `factory next` while no routing decision has been made since: Copilot may drop the
+// hook's own message (docs/research/hooks.md §5.3).
+function lastReply(root, jobId, decisionBefore) {
+  try {
+    const r = JSON.parse(require('fs').readFileSync(require('path').join(root, '.factory', 'last-reply.json'), 'utf8'));
+    if (r.job && r.job !== jobId) return null;
+    if ((r.decision_id || null) !== (decisionBefore || null)) return null;
+    return { at: r.at, text: r.text, status: r.status, reply: r.reply || null, message: r.message };
+  } catch {
+    return null;
+  }
+}
+
 function decide(root, jobId) {
+  const before = job.resolve(root, jobId);
+  const r = route(root, jobId);
+  const reply = lastReply(root, before.id, before.last_decision_id);
+  if (reply) r.last_reply = reply;
+  return r;
+}
+
+function route(root, jobId) {
   let state = job.resolve(root, jobId);
   const out = (o) => ({ job: state.id, title: state.title, status: state.status, recipe: `${state.recipe.id}@v${state.recipe.version}`, risk: state.risk, ...o });
 

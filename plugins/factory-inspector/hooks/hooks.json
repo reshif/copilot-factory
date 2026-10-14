@@ -1,20 +1,46 @@
 {
-  "description": "Software Factory inspector: audits each job when it ends (close, cancel or abandon — from Claude, a chat reply or your terminal), reports on session start, applies your finding replies, and keeps its own controls human-only.",
+  "version": 1,
+  "description": "Software Factory inspector for the GitHub Copilot CLI: audits each job when it ends (close, cancel or abandon — from the agent, a chat reply or your terminal), reports on session start, applies your finding replies, and keeps its own controls human-only.",
   "hooks": {
-    "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js\"", "timeout": 60 } ] }
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/session-start.js\" ] || exit 0; exec node \"$R/hooks/session-start.js\" sessionStart",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/session-start.js\")) { exit 0 }; node \"$r/hooks/session-start.js\" sessionStart; exit $LASTEXITCODE",
+        "timeoutSec": 60
+      }
     ],
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt.js\"", "timeout": 15 } ] }
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/prompt.js\" ] || exit 0; exec node \"$R/hooks/prompt.js\" userPromptSubmitted",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/prompt.js\")) { exit 0 }; node \"$r/hooks/prompt.js\" userPromptSubmitted; exit $LASTEXITCODE",
+        "timeoutSec": 15
+      }
     ],
-    "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.js\"", "timeout": 10 } ] }
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/guard.js\" ] || exit 0; exec node \"$R/hooks/guard.js\" preToolUse",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/guard.js\")) { exit 0 }; node \"$r/hooks/guard.js\" preToolUse; exit $LASTEXITCODE",
+        "timeoutSec": 10
+      }
     ],
-    "PostToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/after-close.js\"", "timeout": 60 } ] }
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/after-close.js\" ] || exit 0; exec node \"$R/hooks/after-close.js\" postToolUse",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/after-close.js\")) { exit 0 }; node \"$r/hooks/after-close.js\" postToolUse; exit $LASTEXITCODE",
+        "timeoutSec": 60
+      }
     ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/catch-up.js\"", "timeout": 60 } ] }
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "R=\"${PLUGIN_ROOT:-${COPILOT_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}\"; [ -f \"$R/hooks/catch-up.js\" ] || exit 0; exec node \"$R/hooks/catch-up.js\" agentStop",
+        "powershell": "$r = if ($env:PLUGIN_ROOT) { $env:PLUGIN_ROOT } elseif ($env:COPILOT_PLUGIN_ROOT) { $env:COPILOT_PLUGIN_ROOT } else { $env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/catch-up.js\")) { exit 0 }; node \"$r/hooks/catch-up.js\" agentStop; exit $LASTEXITCODE",
+        "timeoutSec": 60
+      }
     ]
   }
 }
