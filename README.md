@@ -289,7 +289,7 @@ Project overrides go in `.factory/policy.json` (you edit it; agents can't). Defa
     "model_ids": { "opus": "claude-opus-5.5", "sonnet": "claude-sonnet-5.5", "haiku": "claude-haiku-5.5" },
     "builder_escalation": ["opus"]
   },
-  "copilot": { "flags": ["--effort", "medium"] },
+  "copilot": { "flags": ["--reasoning-effort", "medium"] },
   "protected_paths": [".factory/**", ".git/**", ".github/workflows/**", "migrations/**"],
   "limits": { "max_review_rounds": 3, "max_parallel_tasks": 4, "max_parallel_agents": 4, "max_agent_runs_per_job": 400 }
 }
@@ -298,7 +298,7 @@ Project overrides go in `.factory/policy.json` (you edit it; agents can't). Defa
 - `agents.models` sets a model alias per role. `agents.builder_escalation` moves a builder to a stronger model from its second attempt.
 - `agents.model_ids` maps each alias to a Copilot model id. The ids above are examples from the Copilot CLI's supported-models list; the defaults are in `default-policy.json`. Any id your plan offers works, including non-Claude models.
 - `limits.max_parallel_agents` caps how many `copilot -p` processes `factory run` runs at once (default 4). Keep it at or below what your plan allows for concurrent sessions.
-- `copilot.flags` adds flags to every `copilot -p` call the runner makes, for example `--effort` or extra `--deny-tool` patterns (see `factory run --dry-run` for the full command line).
+- `copilot.flags` adds flags to every `copilot -p` call the runner makes, for example `--reasoning-effort` or extra `--deny-tool` patterns (see `factory run --dry-run` for the full command line).
 - `COPILOT_BIN` (environment) points `factory run` at a different `copilot` binary. The tests use it to run a fake.
 
 Every workflow agent runs as its real factory custom agent (`agents/<role>.agent.md`), so each role's tool list applies.
@@ -383,11 +383,15 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 
 **Verified in this repository** (automated tests, no Copilot needed): the CLI core, routing, floors, seals, record, console and inspector (unchanged from claude-factory); the workflow scripts under the harness; the manifests and every agent and skill frontmatter against the field lists in Copilot's docs (`tests/packaging.test.js`).
 
-**Needs checking on a real Copilot CLI.** These are open points from the research reports in [`docs/research/`](docs/research/); none could be run here.
+**Verified on the real Copilot CLI 1.0.97** (installed from npm `@github/copilot`, not signed in):
+- [x] `copilot plugin marketplace add <this repo>` finds `.github/plugin/marketplace.json`; `copilot plugin install factory@copilot-factory` and `factory-inspector@copilot-factory` install both plugins at 0.1.0 (`copilot plugin list --json`).
+- [x] `copilot skill list` shows all 11 factory skills and `inspect`, with their descriptions.
+- [x] Every flag `factory run` passes exists in `copilot --help`: `-p`, `-s`, `--agent`, `--model`, `--output-format json` (JSONL), `--no-ask-user`, `--allow-all-tools`, `--add-dir`, `--session-id`, `--plugin-dir`, `-C`. Reasoning effort is `--reasoning-effort` (the `--effort` alias in the docs is not in this build's help).
+
+**Needs checking while signed in to Copilot.** Without a login the CLI stops at authentication before it resolves agents or runs hooks, so these remain open (from the research reports in [`docs/research/`](docs/research/)):
 
 Packaging and invocation ([plugins-cli](docs/research/plugins-cli.md), [agents-skills](docs/research/agents-skills.md)):
-- [ ] `copilot plugin marketplace add reshif/copilot-factory` finds `.github/plugin/marketplace.json`, and both plugins install from it.
-- [ ] `/skills` lists the 11 factory skills and `inspect`; `/agent` lists 19 agents. Plugin agents in `agents/` load as `*.agent.md` files (the docs disagree about `.md` vs `.agent.md`; we chose `.agent.md`).
+- [ ] `/agent` lists the 19 agents. Plugin agents in `agents/` load as `*.agent.md` files (the docs disagree about `.md` vs `.agent.md`; we chose `.agent.md`).
 - [ ] Plugin agent ids are `factory:<role>`, and `copilot -p … --agent factory:<role>` works headless (the only source is the 1.0.81 changelog).
 - [ ] How plugin skills are invoked: `/start`, `/factory/start` (the current reference), or `/factory:start` (older changelog entries and VS Code). Which wins when a built-in command has the same name (`/review`).
 - [ ] The `tools` aliases restrict agents as expected, and `web` gives the researcher web search as well as fetch (the CLI documents `web_fetch` but no web-search tool).
