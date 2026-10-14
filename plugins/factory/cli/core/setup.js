@@ -12,33 +12,69 @@ const job = require('./job');
 
 const HOOK_MARK = '# installed by software-factory';
 
-// A folder that isn't a repository yet becomes one, and an empty repository gets an empty
-// first commit — never your files: nothing is staged. Home and / are refused, so a stray
-// /factory:start can't turn your whole home folder into a repository.
-function ensureRepo(cwd, created) {
+// A folder that isn't a repository yet becomes one, and a repository with no commits gets
+// a first commit holding your existing files (`git add -A`, so .gitignore applies): task
+// worktrees are checked out from that commit, so files left out of it are invisible to
+// builders and testers. Files matching policy.secret_paths (.env, keys, credentials) are
+// never committed: they stay untracked and are listed. Home and / are refused, so a stray
+// /factory:start can't turn your whole home folder into a repository; git identity is
+// checked before anything is created.
+function identityMissing(dir) {
+  const who = (k) => git.run(dir, ['config', k], { allowFail: true }).stdout;
+  return !who('user.name') || !who('user.email');
+}
+
+const NO_IDENTITY = 'git needs your name and email for the first commit: git config --global user.name "Your Name" && git config --global user.email you@example.com — then run factory init again.';
+
+function secretPolicy(dir) {
+  const pol = require('./policy').defaults();
+  const over = readJson(path.join(dir, '.factory', 'policy.json'), null);
+  return (over && Array.isArray(over.secret_paths) ? over.secret_paths : pol.secret_paths) || [];
+}
+
+function isSecret(rel, globs) {
+  const { matchesAny } = require('../lib/glob');
+  const name = path.basename(rel);
+  if (/\.example$|\.sample$|\.template$/.test(name)) return false;
+  return matchesAny(rel, globs) || matchesAny(name, globs.map((g) => g.replace(/^\*\*\//, '')));
+}
+
+function firstCommit(root, created, report) {
+  if (identityMissing(root)) fail(NO_IDENTITY, 'no_git_identity');
+  git.run(root, ['add', '-A', '--', '.', ':(exclude).factory', ':(exclude).factory/**']);
+  const staged = git.run(root, ['diff', '--cached', '--name-only', '-z'], { allowFail: true }).stdout.split('\0').filter(Boolean);
+  const globs = secretPolicy(root);
+  const secrets = staged.filter((f) => isSecret(f, globs));
+  for (let i = 0; i < secrets.length; i += 100) git.run(root, ['rm', '--cached', '-q', '--', ...secrets.slice(i, i + 100)]);
+  const files = staged.length - secrets.length;
+  git.run(root, ['commit', '--allow-empty', '-q', '-m', 'Initial commit (factory init)']);
+  created.push(`first commit (${files} file(s))`);
+  report.first_commit = { files, commit: git.run(root, ['rev-parse', 'HEAD']).stdout.trim() };
+  if (secrets.length) {
+    report.left_untracked = secrets;
+    report.warning = `Not committed (they look like secrets, policy.secret_paths): ${secrets.join(', ')}. They stay untracked; add them to .gitignore so they are never committed.`;
+  }
+}
+
+function ensureRepo(cwd, created, report) {
   const dir = path.resolve(cwd);
   if (!git.isRepo(dir)) {
     if (dir === path.resolve(require('os').homedir()) || dir === path.parse(dir).root) {
-      fail(`${dir} is your home or root folder; cd into a project folder (or create one) and run factory init there.`, 'no_git');
+      fail(`${dir} is your home or root folder; cd into a project folder (or create one) and run factory init there.`, 'home_folder');
     }
+    if (identityMissing(dir)) fail(NO_IDENTITY, 'no_git_identity'); // before git init: nothing is left behind
     if (!git.ok(dir, ['init', '-b', 'main'])) git.run(dir, ['init']);
     created.push(path.join(dir, '.git'));
   }
   const root = git.toplevel(dir);
-  if (!git.hasCommits(root)) {
-    const who = (k) => git.run(root, ['config', k], { allowFail: true }).stdout;
-    if (!who('user.name') || !who('user.email')) {
-      fail('git needs your name and email for the first commit: git config --global user.name "Your Name" && git config --global user.email you@example.com — then run factory init again.', 'no_git_identity');
-    }
-    git.run(root, ['commit', '--allow-empty', '-q', '-m', 'Initial commit (factory init)']);
-    created.push('first commit (empty)');
-  }
+  if (!git.hasCommits(root)) firstCommit(root, created, report);
   return root;
 }
 
 function init(cwd, { baseBranch } = {}) {
   const created = [];
-  const root = ensureRepo(cwd, created);
+  const report = {};
+  const root = ensureRepo(cwd, created, report);
   const p = project(root);
   if (!exists(p.projectFile)) {
     writeJson(p.projectFile, { version: 1, created_at: nowIso(), base_branch: baseBranch || git.currentBranch(root) });
@@ -69,7 +105,7 @@ function init(cwd, { baseBranch } = {}) {
     fs.chmodSync(hookFile, 0o755);
     created.push(hookFile);
   }
-  return { root, created, base_branch: readJson(p.projectFile).base_branch, doctor: doctor(root) };
+  return { root, created, ...report, base_branch: readJson(p.projectFile).base_branch, doctor: doctor(root) };
 }
 
 function doctor(cwd) {
@@ -112,8 +148,8 @@ function readJsonc(file) {
 
 function copilotChecks(add) {
   const bin = process.env.COPILOT_BIN || 'copilot';
-  const [file, args] = /\.c?js$/.test(bin) ? [process.execPath, [bin, '--version']] : [bin, ['--version']];
-  const v = spawnSync(file, args, { encoding: 'utf8', timeout: 20000 });
+  const [file, args, shell] = require('./runner').command(bin, ['--version']); // same resolution as factory run (copilot.cmd on Windows)
+  const v = spawnSync(file, args, { encoding: 'utf8', timeout: 20000, ...(shell ? { shell: true, windowsVerbatimArguments: true } : {}) });
   const version = `${v.stdout || ''}`.trim().split('\n')[0];
   add('copilot cli', v.status === 0, v.status === 0 ? `${bin}: ${version}` : `${bin} not found or failing: install the GitHub Copilot CLI (or set COPILOT_BIN). factory run needs it`, 'warning');
   const allowAll = String(process.env.COPILOT_ALLOW_ALL || '').trim();

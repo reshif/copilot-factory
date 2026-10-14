@@ -410,26 +410,42 @@ test('doctor reports readiness', () => {
   assert.ok(d.checks.some((c) => c.name === 'remote' && c.level === 'warning'));
 });
 
-test('init: a plain folder becomes a repository with an empty first commit; your files are not committed', () => {
+test('init: a plain folder becomes a repository whose first commit holds your files, never secrets', () => {
   const { spawnSync } = require('child_process');
   const run = (cwd, env = {}) => JSON.parse(spawnSync('node', [F.BIN, 'init'], { cwd, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', ...env } }).stdout);
   const git = (cwd, args) => spawnSync('git', args, { cwd, encoding: 'utf8' }).stdout.trim();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nogit-'));
-  fs.writeFileSync(path.join(dir, 'notes.txt'), 'mine\n');
+  F.write(dir, 'notes.txt', 'mine\n');
+  F.write(dir, 'src/app.js', 'module.exports = 1;\n');
+  F.write(dir, '.gitignore', 'build/\n');
+  F.write(dir, 'build/out.js', 'ignored\n');
+  F.write(dir, '.env', 'TOKEN=secret\n');
+  F.write(dir, '.env.example', 'TOKEN=\n');
+  F.write(dir, 'config/deploy.key', 'k\n');
   const r = run(dir);
   assert.ok(!r.error, JSON.stringify(r));
   assert.equal(git(dir, ['rev-list', '--count', 'HEAD']), '1');
-  assert.equal(git(dir, ['ls-tree', '-r', '--name-only', 'HEAD']), '', 'the first commit is empty');
-  assert.match(git(dir, ['status', '--porcelain']), /notes\.txt/, 'your file is left untracked');
+  assert.deepEqual(git(dir, ['ls-tree', '-r', '--name-only', 'HEAD']).split('\n').sort(), ['.env.example', '.gitignore', 'notes.txt', 'src/app.js'], 'your files are in the first commit; ignored files and secrets are not');
+  assert.equal(r.first_commit.files, 4);
+  assert.deepEqual(r.left_untracked.sort(), ['.env', 'config/deploy.key']);
+  assert.match(r.warning, /\.env/);
+  assert.deepEqual(git(dir, ['status', '--porcelain']).split('\n').sort(), ['?? .env', '?? config/'], 'secrets stay untracked; .factory/ is excluded');
   assert.ok(fs.existsSync(path.join(dir, '.factory', 'project.json')));
-  // no identity: a clear message; run init again after git config and it finishes
+  // a repository with no commits yet gets the same first commit
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'nocommit-'));
+  spawnSync('git', ['init', '-q'], { cwd: empty });
+  F.write(empty, 'a.txt', 'a\n');
+  assert.equal(run(empty).first_commit.files, 1);
+  assert.equal(git(empty, ['ls-tree', '-r', '--name-only', 'HEAD']), 'a.txt');
+  // no identity: a clear message, and no .git left behind; run init again after git config and it finishes
   const anon = fs.mkdtempSync(path.join(os.tmpdir(), 'noid-'));
   const noId = { HOME: anon, GIT_CONFIG_GLOBAL: path.join(anon, 'none'), GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: '', GIT_COMMITTER_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_EMAIL: '', EMAIL: '' };
   const proj = path.join(anon, 'proj');
   fs.mkdirSync(proj);
   assert.equal(run(proj, noId).code, 'no_git_identity');
+  assert.ok(!fs.existsSync(path.join(proj, '.git')), 'checked before git init');
   // never the home folder itself
-  assert.equal(run(anon, { HOME: anon }).code, 'no_git');
+  assert.equal(run(anon, { HOME: anon }).code, 'home_folder');
 });
 
 test('spike: grounded recommendation, HF gate, close without shipping code', () => {
