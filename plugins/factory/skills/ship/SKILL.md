@@ -16,4 +16,5 @@ user-invocable: false
 After the merge:
 - GitHub: `factory next` runs `factory pr sync`, which records checks and the merge commit.
 - Local: once the reply hook applies `merged <commit>` (`factory next` shows it in `last_reply`), run `factory ci verify` to re-verify the merge result (this satisfies the CI re-verify floor for local merges), then continue the loop.
+  <!-- TODO(fix-runner decision pending): confirm whether `factory next` now routes to `factory ci verify` after a local merge (then this skill should just follow `factory next`), or whether this skill keeps running it. -->
 - If `factory-gate` isn't set up in the repo, suggest the user run `factory ci install` themselves (it's human-only) and commit it on their base branch. Until then, after a GitHub merge, run `factory ci verify --commit <merge commit>` to re-verify locally, or the user can reply `waive ci_reverify <reason>`.

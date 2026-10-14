@@ -25,8 +25,8 @@ Answer everything the repo can answer yourself. Then run `factory contract check
 - **Intent never defaults**: still unclear after 2 rounds of intent questions, the job parks for you instead of guessing. `resume` gives one more intent round.
 
 ## Round
-1. Run the clarify fan-out with `factory run fanout-judge --config clarify` (the start skill, section 3). It runs the analysts, the judge and God Eye as separate Copilot agents, records the result and prints it. Never write the envelope yourself.
-2. Read the result:
+1. Run the clarify fan-out with `factory run fanout-judge --config clarify` (the start skill, section 3: run it once, wait for it, never start a second one, and handle a refusal `code` as that section says). It runs the analysts, the judge and God Eye as separate Copilot agents, records the result and prints it. Never write the envelope yourself.
+2. Read the printed top-level `status` — the status of the **recorded** result, not the workflow's own (`workflow.status`). The workflow can finish `ok` while the record still needs you (for example God Eye approved but the contract has problems), so act only on the top-level `status`:
    - `needs_user` with `questions`: ask them as **one numbered list**, in the order given, each on one line: id, question, options (if any) and `(default: …)`. If `intent_first` is true, say in one line that other questions wait until the intent is settled. **Stop.** When they answer: record each with `factory answer --id Q-n --answer "…"`; for any they skip, write the default under Assumptions; update the contract (only the contract), run `factory contract check`, and run `factory next` again — it routes back here for the next round.
    - `needs_user` with `critique`: God Eye asked for revisions, or could not confirm the intent (compare its `restatement` with your Intent section). Fix what you can from the repo; ask the user only what you can't (intent: one question); then `factory next`.
    - `needs_user` with `problems`: fix the contract, then `factory next`.

@@ -1,6 +1,6 @@
 ---
 name: inspect
-description: "Audit the Software Factory — check whether jobs ran the recipe they were meant to, in the declared order, with valid gates and evidence, and whether the Copilot agent did what the router said; check the factory's health (hook errors, guard denials, blocked done claims, refused replies, CLI failures, stale or degraded workflows, agent failures, parks, idle jobs); then walk the user through open findings (deviations, ambiguities, gaps). Use when the user types /factory-inspector:inspect, asks if the factory is behaving, or asks about inspector findings, modes or streaks."
+description: "Audit the Software Factory — check whether jobs ran the recipe they were meant to, in the declared order, with valid gates and evidence, and whether the Copilot agent did what the router said; check the factory's health (hook errors, guard denials, stop-gate blocks, refused replies, CLI failures, stale or degraded workflows, agent failures, parks, idle jobs); then walk the user through open findings (deviations, ambiguities, gaps). Use when the user types /factory-inspector:inspect, asks if the factory is behaving, or asks about inspector findings, modes or streaks."
 argument-hint: "[job id | all | active | health | status]"
 ---
 # Inspect the factory
@@ -8,7 +8,7 @@ argument-hint: "[job id | all | active | health | status]"
 The inspector is an independent auditor. It reads the factory's sealed records and each job's **declared rulebook** (`recipe.lock.json`: the recipe, floors and selection rules the job promised to follow) and checks what happened against it. It never blocks, approves or changes anything.
 
 ## Run
-Run it as `factory-inspect …`. If it is not found, run it with node from the installed plugin, `node ~/.copilot/installed-plugins/copilot-factory/factory-inspector/bin/factory-inspect …` (or the inspector path the factory's session-start note gives), and tell the user once that `factory shim` in their own terminal puts `factory-inspect` on their PATH.
+Run it as `factory-inspect …`. If it is not found, use the `[inspector] Inspector CLI:` command the inspector gave you at session start (it looks like `node "<plugin root>/bin/factory-inspect"`). Only if you have no such note, find the plugin's folder with `copilot plugin list --json`: for `"source": "installed"` it is `~/.copilot/installed-plugins/copilot-factory/factory-inspector/` (with `COPILOT_HOME` set, that folder replaces `~/.copilot`); for `"source": "live"` (a marketplace added from a local folder) it is `<installedFrom>/plugins/factory-inspector/`. Tell the user once that `factory shim` in their own terminal puts `factory-inspect` on their PATH.
 
 The argument is the text the user typed after the command:
 - No argument after the command → `factory-inspect run` (closed jobs not yet inspected).
