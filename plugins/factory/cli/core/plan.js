@@ -103,6 +103,31 @@ function waves(tasks) {
   return { waves: out, cycle: null };
 }
 
+// A task's dependencies: its depends_on plus every task in an earlier wave whose allowed
+// paths overlap its own. waves() only separates overlapping tasks; without the implicit
+// dependency the later one would start from a base without the earlier one's change and
+// reconcile would have to choose between them.
+function effectiveDeps(tasks, id) {
+  const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
+  const me = byId[id];
+  if (!me) return [];
+  const deps = new Set((me.depends_on || []).filter((d) => byId[d]));
+  const w = waves(tasks).waves;
+  if (w) {
+    const mine = w.findIndex((x) => x.includes(id));
+    for (let i = 0; i < mine; i++) {
+      for (const other of w[i]) if (globsOverlap(byId[other].allowed_paths || [], me.allowed_paths || [])) deps.add(other);
+    }
+  }
+  return [...deps];
+}
+
+// Every task in build order (waves flattened): what reconcile merges, in that order.
+function buildOrder(tasks) {
+  const w = waves(tasks).waves;
+  return w ? w.flat() : tasks.map((t) => t.id);
+}
+
 function otherJobLocks(root, state) {
   const locks = [];
   for (const id of job.listJobIds(root)) {
@@ -216,4 +241,4 @@ function fromContract(root, state) {
   return { ok: true, plan: jobPaths(root, state.id).plan, waves: v.waves };
 }
 
-module.exports = { validate, validatePlan, validateSlices, waves, layers, fromContract, cmdOf, TASK_SCHEMA, SLICE_SCHEMA };
+module.exports = { validate, validatePlan, validateSlices, waves, layers, effectiveDeps, buildOrder, fromContract, cmdOf, TASK_SCHEMA, SLICE_SCHEMA };

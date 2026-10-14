@@ -15,7 +15,7 @@ function runOnce(cmd, cwd, timeoutSec) {
     encoding: 'utf8',
     timeout: timeoutSec * 1000,
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, CI: process.env.CI || '1', FACTORY_VERIFY: '1' },
+    env: { ...process.env, CI: process.env.CI || '1', FACTORY_VERIFY: '1', PYTHONDONTWRITEBYTECODE: '1' },
   });
   return {
     code: r.status === null ? -1 : r.status,

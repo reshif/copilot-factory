@@ -71,6 +71,35 @@ function ensureRepo(cwd, created, report) {
   return root;
 }
 
+// Keep .factory/ and common build caches out of git without touching the user's .gitignore:
+// the common-dir info/exclude applies to every worktree, so a verify command that writes
+// __pycache__ (or a test cache) never leaves a task or job worktree "dirty". Run at init and
+// whenever a worktree is prepared, so repositories initialised earlier get it too.
+const EXCLUDES = ['.factory/', '__pycache__/', '*.py[cod]', '.pytest_cache/', '.mypy_cache/', '.ruff_cache/', '.tox/', 'node_modules/.cache/', '.DS_Store'];
+function ensureExcludes(root) {
+  const commonDir = path.resolve(root, git.out(root, ['rev-parse', '--git-common-dir']));
+  const exclude = path.join(commonDir, 'info', 'exclude');
+  const ex = readText(exclude, '');
+  const have = new Set(ex.split(/\r?\n/).map((l) => l.trim()));
+  const add = EXCLUDES.filter((p) => !have.has(p));
+  if (!add.length) return null;
+  writeText(exclude, `${ex}${ex.endsWith('\n') || !ex ? '' : '\n'}${add.join('\n')}\n`);
+  return exclude;
+}
+
+// Before a worktree is prepared: the excludes above, and the factory's own commit-msg hook
+// brought up to date (never a hook the user wrote).
+function ensureGitSetup(root) {
+  ensureExcludes(root);
+  const hookFile = path.join(path.resolve(root, git.out(root, ['rev-parse', '--git-common-dir'])), 'hooks', 'commit-msg');
+  const existing = readText(hookFile, null);
+  const want = readText(pluginPath('templates', 'git', 'commit-msg'));
+  if (existing !== null && existing.includes(HOOK_MARK) && existing !== want) {
+    writeText(hookFile, want);
+    fs.chmodSync(hookFile, 0o755);
+  }
+}
+
 function init(cwd, { baseBranch } = {}) {
   const created = [];
   const report = {};
@@ -86,16 +115,11 @@ function init(cwd, { baseBranch } = {}) {
   }
   for (const d of [p.jobsDir, p.logDir, path.dirname(p.lessonsFile), p.telemetryDir, p.worktreesDir, p.scratchDir]) mkdirp(d);
 
-  // Keep .factory/ out of git without touching the user's .gitignore.
   const commonDir = path.resolve(root, git.out(root, ['rev-parse', '--git-common-dir']));
-  const exclude = path.join(commonDir, 'info', 'exclude');
-  const ex = readText(exclude, '');
-  if (!/^\.factory\/$/m.test(ex)) {
-    writeText(exclude, `${ex}${ex.endsWith('\n') || !ex ? '' : '\n'}.factory/\n`);
-    created.push(exclude);
-  }
+  const exclude = ensureExcludes(root);
+  if (exclude) created.push(exclude);
 
-  // commit-msg hook: adds Factory-Job / Factory-Task trailers on factory branches.
+  // commit-msg hook: adds Factory-Job / Factory-Task (and, in fix rounds, Factory-Fix) trailers on factory branches.
   const hooksDir = path.join(commonDir, 'hooks');
   const hookFile = path.join(hooksDir, 'commit-msg');
   const existing = readText(hookFile, null);
@@ -206,4 +230,4 @@ function shim({ dir, force = false } = {}) {
   return { dir: target, linked, skipped, on_path: onPath, ...(onPath ? {} : { hint: `${target} is not on your PATH: add  export PATH="${target}:$PATH"  to your shell profile` }) };
 }
 
-module.exports = { init, doctor, shim };
+module.exports = { init, doctor, shim, ensureExcludes, ensureGitSetup, EXCLUDES };

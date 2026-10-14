@@ -1,6 +1,6 @@
 #!/bin/sh
 # installed by software-factory
-# Adds Factory-Job (and Factory-Task) trailers to commits made on factory branches.
+# Adds Factory-Job (and Factory-Task, and in a fix round Factory-Fix) trailers to commits made on factory branches.
 msg_file="$1"
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 case "$branch" in
@@ -13,6 +13,11 @@ case "$branch" in
     fi
     if [ -n "$task" ] && ! grep -q "^Factory-Task:" "$msg_file"; then
       git interpret-trailers --in-place --trailer "Factory-Task: $task" "$msg_file"
+    fi
+    # In a fix round `factory task start` leaves a marker in the worktree's git dir.
+    fix_file="$(git rev-parse --git-dir 2>/dev/null)/factory-fix"
+    if [ -n "$task" ] && [ -f "$fix_file" ] && ! grep -q "^Factory-Fix:" "$msg_file"; then
+      git interpret-trailers --in-place --trailer "Factory-Fix: $(head -n 1 "$fix_file")" "$msg_file"
     fi
     ;;
 esac

@@ -352,11 +352,11 @@ function cwdFor(ctx, opts, { prepare }) {
   if (!m || !b.tasks || !b.tasks[m[2]]) return ctx.root;
   const wt = b.tasks[m[2]].worktree || taskWorktree(ctx.root, b.job, m[2]);
   if (!prepare || exists(path.join(wt, '.git'))) return wt;
+  // Never fall back to the project root: a builder there would build in the root checkout.
   try {
     return require('./tasks').prepareWorktree(ctx.root, ctx.state, m[2]);
   } catch (e) {
-    ctx.note(`could not prepare the worktree for ${m[2]} (${e.message}); starting its agent at the project root`);
-    return ctx.root;
+    return { error: `could not prepare the worktree for ${m[2]}: ${e.message}` };
   }
 }
 
@@ -405,6 +405,13 @@ async function runAgent(ctx, prompt, opts) {
   const left = () => (deadline ? Math.floor((deadline - Date.now()) / 1000) : S.timeoutSec);
   return ctx.limit(async () => {
     const cwd = cwdFor(ctx, o, { prepare: true });
+    if (cwd && cwd.error) {
+      const rec = { label: o.label || role, role, agent_type: agentType, model: o.model || null, model_id: model, cwd: null, ms: 0, exit: null, retry: false, spawns: 0, outcome: 'error', code: 'no_worktree', errors: [`${cwd.error}; not started (a task agent never runs at the project root)`] };
+      ctx.runs.push(rec);
+      events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...rec });
+      ctx.note(`${rec.label} (${agentType}) not started: ${cwd.error}`);
+      return null;
+    }
     if (deadline && left() < 5) {
       const rec = { label: o.label || role, role, agent_type: agentType, model: o.model || null, model_id: model, cwd, ms: 0, exit: null, retry: false, spawns: 0, outcome: 'timeout', time_cap_sec: capSec, errors: [`its ${capSec}s time budget ran out before a slot was free; not started`] };
       ctx.runs.push(rec);

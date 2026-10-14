@@ -693,7 +693,12 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
       if (INTERNALS_STRICT.test(code) || (STATE.test(code) && WRITE_OPS.test(code))) {
         return 'Inline scripts may not change factory state or load factory internals. To read a job file use the Read tool; to change one you are allowed to change (an ADR, the plan, a threat model) use Write or Edit; for job state use the factory CLI (factory job show, contract show, why).';
       }
-      if (agent && (INTERNALS.test(code) || head.args.some((x) => !x.text.startsWith('-') && INTERNALS.test(x.text)))) {
+      // An agent may read its own job's folder in inline code (the check above still stops
+      // writes and code loading); script files handed a job path, and anything else under
+      // .factory/, stay off limits.
+      const own = ownJobDir(ctx.job || process.env.FACTORY_JOB);
+      const strip = (t) => (own ? t.replace(own, 'OWN_JOB_DIR') : t);
+      if (agent && (INTERNALS.test(strip(code)) || head.args.some((x) => !x.text.startsWith('-') && INTERNALS.test(code.includes(x.text) ? strip(x.text) : x.text)))) {
         return 'Factory agents may not reach into factory state with scripts. To read a job file use the Read tool; for job state use the factory CLI your brief gives you.';
       }
     }
@@ -720,8 +725,15 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
   return null;
 }
 
+// .factory/jobs/<own job> (with or without a trailing slash), never followed by a path that
+// climbs out with "..".
+function ownJobDir(jobId) {
+  if (!/^J-\d+$/.test(String(jobId || ''))) return null;
+  return new RegExp(`\\.factory[\\\\/]jobs[\\\\/]${jobId}(?![\\w-])(?![^\\s'"\`;|&)]*\\.\\.)`, 'g');
+}
+
 function checkBash(root, cmd, policy, opts = {}) {
-  const ctx = { root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), names: new Set(), vars: new Map(), found: [] };
+  const ctx = { root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [] };
   try {
     return walk(String(cmd || ''), ctx, 0);
   } catch {

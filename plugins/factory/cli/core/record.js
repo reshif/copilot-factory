@@ -172,7 +172,9 @@ function recClarify(root, state, env) {
   }
   const intentConfirmed = Boolean(crit && crit.intent_confirmed !== false); // older critiques carry no flag
   const ok = Boolean(crit && crit.verdict === 'approve' && intentConfirmed && !researchableQs.length && !probs.length && !n.questions.length);
-  ledger.append(root, state.id, { kind: 'step', step: 'clarify', ok, bound: { contract: b.contract }, detail: { round, questions: n.questions.length, question_ids: n.questions.map((q) => q.id), categories: n.questions.map((q) => q.category), intent_open: n.intent_open, held: n.held.length, dropped: n.dropped.length, degraded: d.degraded || [], contract_problems: probs, ...(researchDetail ? { research: researchDetail } : {}) } });
+  // A round that asks the user questions stays ok:false (clarify is not done), marked
+  // outcome needs_user so it doesn't read as a failure.
+  ledger.append(root, state.id, { kind: 'step', step: 'clarify', ok, bound: { contract: b.contract }, detail: { ...(n.questions.length && !ok ? { outcome: 'needs_user' } : {}), round, questions: n.questions.length, question_ids: n.questions.map((q) => q.id), categories: n.questions.map((q) => q.category), intent_open: n.intent_open, held: n.held.length, dropped: n.dropped.length, degraded: d.degraded || [], contract_problems: probs, ...(researchDetail ? { research: researchDetail } : {}) } });
   const extra = { ...grounding, ...(warnings.length ? { warnings } : {}) };
   if (ok) return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', restatement: crit.restatement || null, ...extra, message: `God Eye approved the contract and confirmed the intent.${idata && intentMod.liveAssumptions(idata).length ? ' The evidence-backed assumptions are in the contract; the user can override one with "change A-n <value>" or "drop A-n".' : ''} Next: present it for your approval.` };
   if (n.questions.length) {
@@ -203,7 +205,7 @@ function recGround(root, state, env) {
   const blocking = topics.flatMap((t) => t.unknowns.filter((u) => u.blocking && !answered.has(u.question)).map((u) => u.question));
   const b = invalidation.current(root, state);
   const ok = blocking.length === 0 && topics.length > 0;
-  ledger.append(root, state.id, { kind: 'step', step: 'ground', ok, bound: { contract: b.contract }, detail: { topics: topics.length, claims: topics.reduce((n, t) => n + t.claims.length, 0), unverified: topics.reduce((n, t) => n + t.claims.filter((c) => c.source === 'UNVERIFIED').length, 0), blocking, degraded: (env.data && env.data.degraded) || [] } });
+  ledger.append(root, state.id, { kind: 'step', step: 'ground', ok, bound: { contract: b.contract }, detail: { ...(blocking.length ? { outcome: 'needs_user' } : {}), topics: topics.length, claims: topics.reduce((n, t) => n + t.claims.length, 0), unverified: topics.reduce((n, t) => n + t.claims.filter((c) => c.source === 'UNVERIFIED').length, 0), blocking, degraded: (env.data && env.data.degraded) || [] } });
   if (blocking.length) return { status: 'needs_user', questions: blocking.map((q) => ({ question: q, why: 'Blocks the design' })), message: `Ask the user, then record each answer with factory answer --job ${state.id} --question "…" --answer "…", and run ground again.` };
   return { status: 'ok', message: `Findings written to ${jp.findings}.` };
 }
@@ -291,6 +293,10 @@ function recReconcile(root, state, env) {
     return { status: 'park', park_reason: `Behavioural conflict while integrating: ${d.integrator.summary}`, message: 'Parked.' };
   }
   if (!steps.isDone(ctx, { step: 'reconcile' })) {
+    const last = ledger.lastStep(root, state.id, 'reconcile');
+    if (last && !last.ok && last.detail && last.detail.regression) {
+      return { status: 'park', park_reason: `Reconcile regression: ${last.detail.message || 'merged or fixed lines were dropped'}`, message: 'Parked: integrating would drop work already merged or fixed.' };
+    }
     return { status: 'park', park_reason: `Integration did not complete: ${(d.integrator && d.integrator.summary) || 'no result'}`, message: 'Parked.' };
   }
   return { status: 'ok', message: `Integrated at fingerprint ${ctx.b.fingerprint.slice(0, 12)}.` };
