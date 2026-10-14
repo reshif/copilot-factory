@@ -89,7 +89,7 @@ The register is `.factory/inspect/register.json`.
 ## Test
 
 ```bash
-npm test   # 15 tests: a clean job has no findings; forged records, gate-window actions, skipped work,
+npm test   # 18 tests: a clean job has no findings; forged records, gate-window actions, skipped work,
            # synthetic deviations, cross-job ambiguity, friction, job and factory health (R10–R19: hook errors, torn lines, intent parks,
            # crashes, --active, health report), limits/rules_off, marks/regressions/modes/re-arming, hooks, jobs ending outside Bash, independence
 ```
