@@ -265,6 +265,64 @@ test('a deny reason reaches the agents who redo the work', () => {
   assert.equal(b.fanout[0].role, 'intent-analyst');
 });
 
+test('deny needs a reason; after deny the producing step runs again before the gate is shown again', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  const clarify = () => {
+    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+    return F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  };
+  next(root);
+  clarify();
+  const g = next(root);
+  assert.equal(g.step, 'H1');
+  // a bare "deny" is refused (nothing is denied); "deny: <reason>" is a reply
+  assert.throws(() => F.reply(root, 'deny'), (e) => e.code === 'needs_reason' && /deny <what must change>/.test(e.message));
+  assert.equal(F.cli(root, ['job', 'show']).denials.length, 0);
+  assert.equal(require('../cli/core/human').parseReply('deny: too big').reason, 'too big');
+  F.reply(root, 'deny: cover negative numbers too');
+  // the contract is unchanged, but the gate isn't shown again: clarify runs with the reason
+  let n = next(root);
+  assert.equal(n.action, 'skill');
+  assert.equal(n.skill, 'clarify');
+  assert.equal(n.rule, 'gate.denied_revise');
+  assert.match(n.reason, /You denied H1: "cover negative numbers too"/);
+  assert.equal(n.denied.gate, 'H1');
+  assert.equal(F.cli(root, ['job', 'show']).pending_gate, null, 'the gate is no longer pending while it is revised');
+  // once clarify has run again, the gate is presented again (even if the document came out the same)
+  clarify();
+  n = next(root);
+  assert.equal(n.action, 'gate');
+  assert.equal(n.gate.hash, g.gate.hash);
+  assert.match(F.reply(root, 'approve').message, /Approved H1/);
+});
+
+test('factory next is a query: asked again with nothing tried, it returns the same decision and never parks', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  const first = next(root);
+  assert.equal(first.skill, 'clarify');
+  for (let i = 0; i < 4; i++) {
+    const n = next(root);
+    assert.equal(n.action, 'skill', JSON.stringify(n));
+    assert.equal(n.decision_id, first.decision_id, 'no new decision');
+    assert.equal(n.requery, true);
+  }
+  assert.equal(F.cli(root, ['why']).decisions.filter((d) => d.rule !== 'human').length, 1, 'one decision written');
+  assert.equal(F.cli(root, ['job', 'show']).repeat.count, 1, 'no repeat counted');
+  // looking around (why, contract check, job show) is not an attempt either
+  F.cli(root, ['contract', 'check']);
+  assert.equal(next(root).decision_id, first.decision_id);
+  // a step that was tried is: the next decision is a new one
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  const after = next(root);
+  assert.notEqual(after.decision_id, first.decision_id);
+  assert.equal(after.step, 'H1');
+});
+
 test('gate A refuses if the contract changed after the amendment was submitted', () => {
   const root = F.makeRepo();
   const { J } = toProve(root);
