@@ -1,13 +1,13 @@
 ---
 name: review
-description: Monthly factory review (about 30 minutes) — read the telemetry per recipe, decide which steps cost much and change little, and propose recipe or floor changes for the user to make. Use when the user types /factory:review or asks how the factory is doing.
+description: "Monthly factory review (about 30 minutes) — read the telemetry per recipe, decide which steps cost much and change little, and propose recipe or floor changes for the user to make. Use when the user asks for the factory review, types /factory/review, or asks how the factory is doing. (Copilot's own /review command is the built-in code review, not this skill.)"
 argument-hint: "[days to look back, default 30]"
 ---
 # Monthly factory review
 
 Telemetry informs the user; the system never changes its own recipes. Recipes, floors and policy live in the plugin and are edited by the user (the guard blocks agents).
 
-1. Run `factory telemetry report --since <days> --format md` (days = the number in `$ARGUMENTS`, or 30) and show it.
+1. Run `factory telemetry report --since <days> --format md` (days = the number the user gave after the command, or 30) and show it.
 2. Walk through these questions with the numbers:
    - **Primary**: any escaped defects or reverts within 30 days of merge? For each, which floor step would have caught it?
    - **Cost**: which recipe costs the most agent runs and hours per job? Which steps (fix rounds, review lanes) cost much and changed little?

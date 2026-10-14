@@ -1,0 +1,32 @@
+{
+  "name": "copilot-factory",
+  "owner": {
+    "name": "Firdous"
+  },
+  "metadata": {
+    "description": "Software Factory for the GitHub Copilot CLI: requests become verified, merged changes through approved contracts, CLI-decided steps, evidence bound to the build, human gates and an independent inspector.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "factory",
+      "source": "./plugins/factory",
+      "description": "Software Factory: a grounded orchestrator with CLI-enforced floors, human gates, evidence-bound builds, 19 custom agents run by `factory run`, and a console.",
+      "version": "0.1.0",
+      "author": { "name": "Firdous" },
+      "repository": "https://github.com/reshif/copilot-factory",
+      "license": "MIT",
+      "keywords": ["software-factory", "orchestrator", "verification", "code-review", "governance"]
+    },
+    {
+      "name": "factory-inspector",
+      "source": "./plugins/factory-inspector",
+      "description": "Independent auditor for the Software Factory: deviations, ambiguities and gaps against each job's declared rulebook, plus factory health. Disable to turn off.",
+      "version": "0.1.0",
+      "author": { "name": "Firdous" },
+      "repository": "https://github.com/reshif/copilot-factory",
+      "license": "MIT",
+      "keywords": ["software-factory", "audit", "governance"]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: gate
-description: Present a factory human gate (H1 contract, H2 design, H3 plan, HF findings, HS ship sign-off, EH1–EH3 epic, A amendment) with its documents and hash, then wait for the user's reply. Used by factory:start when `factory next` returns a gate.
+description: "Present a factory human gate (H1 contract, H2 design, H3 plan, HF findings, HS ship sign-off, EH1–EH3 epic, A amendment) with its documents and hash, then wait for the user's reply. Used by the start skill when `factory next` returns a gate."
 user-invocable: false
 ---
 # Human gate
@@ -27,5 +27,5 @@ End with exactly this, and **stop**:
 Rules:
 - Only the user's own reply counts. Never approve on their behalf and never run `factory approve` (the guard blocks it).
 - If they answer with other words ("looks good", "yes"), ask them to reply exactly `approve` — the hook only applies the exact reply.
-- After they reply, the hook applies it before you see the message and adds a `[factory]` note. If it says *Applied*, continue the loop with `factory next`. If it says *NOT applied* (e.g. the document changed), present the gate again.
+- After they reply, the reply hook applies it before you act on the message. Don't rely on a note in the conversation: run `factory next`. Its `last_reply` says whether the reply was applied. If it was, continue the loop with what `factory next` returned. If it was *not* applied (for example the document changed, or the reply wasn't exact), tell the user why and present the gate again.
 - On `deny`, revise what they asked for (contract, design or plan — via the right step) and present it again when `factory next` returns the gate.

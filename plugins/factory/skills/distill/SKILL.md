@@ -1,12 +1,12 @@
 ---
 name: distill
-description: Factory distill — after a job merges, turn confirmed problems into at most three scoped lessons for the user to accept or reject. Used by factory:start when `factory next` returns skill distill.
+description: "Factory distill — after a job merges, turn confirmed problems into at most three scoped lessons for the user to accept or reject. Used by the start skill when `factory next` returns skill distill."
 user-invocable: false
 ---
 # Distill
 
 1. Run `factory distill context`.
-2. If it shows confirmed findings, verify-fix rounds, or minor findings that also appear in other jobs, start the **factory:lesson-writer** agent (Agent tool) with: the distill context JSON, the cap (`cap`), the lessons already proposed, and the command to record each lesson:
+2. If it shows confirmed findings, verify-fix rounds, or minor findings that also appear in other jobs, start the factory's **lesson-writer** custom agent as one subagent (the `task` tool with agent type `factory:lesson-writer`) with: the distill context JSON, the cap (`cap`), the lessons already proposed, and the command to record each lesson:
    `factory lessons add --job <job> --text "<lesson>" --scope "<glob>,<glob>" --why "<finding id: what went wrong>"`.
    Each lesson becomes a card in `.factory/lessons/lessons.md` (templates/docs/lessons.md).
    If there is nothing worth learning, skip the agent.
