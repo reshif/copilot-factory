@@ -1,0 +1,4 @@
+{ "type": "object", "required": ["verdict", "items"], "properties": {
+  "verdict": { "enum": ["approve", "revise"] },
+  "items": { "type": "array", "items": { "type": "object", "required": ["issue", "severity"], "properties": {
+    "issue": { "type": "string" }, "severity": { "enum": ["blocker", "major", "minor"] }, "suggestion": { "type": "string" } } } } } }

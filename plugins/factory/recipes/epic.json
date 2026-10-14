@@ -1,0 +1,22 @@
+{
+  "id": "epic",
+  "version": 1,
+  "status": "proven",
+  "outcome": "epic",
+  "description": "Work too large for one job: contracts first, then slices that each run their own recipe (tree depth 2).",
+  "applies_to": { "epic": true },
+  "steps": [
+    { "step": "clarify", "run": "skill:clarify", "mode": "epic" },
+    { "step": "EH1", "run": "gate" },
+    { "step": "ground", "run": "workflow:ground" },
+    { "step": "decide", "run": "workflow:fanout-judge", "config": "decide", "mode": "contracts", "threat_model": "policy" },
+    { "step": "EH2", "run": "gate" },
+    { "step": "decompose", "run": "workflow:decompose", "mode": "slices" },
+    { "step": "EH3", "run": "gate" },
+    { "step": "children", "run": "cli:epic spawn" },
+    { "step": "epic_gate", "run": "cli:epic gate" },
+    { "step": "challenge", "run": "workflow:fanout-judge", "config": "challenge", "mode": "conformance", "lanes": ["conformance"] },
+    { "step": "distill", "run": "skill:distill" },
+    { "step": "close", "run": "cli:close" }
+  ]
+}

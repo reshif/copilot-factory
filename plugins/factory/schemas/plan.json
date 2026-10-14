@@ -1,0 +1,78 @@
+{
+  "$comment": "Shape of .factory/jobs/<job>/plan.json (task contracts).",
+  "type": "object",
+  "required": [
+    "tasks"
+  ],
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "objective",
+          "allowed_paths",
+          "criteria_ids",
+          "verify_commands"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^T\\d+$"
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 3
+          },
+          "allowed_paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "criteria_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "verify_commands": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": [
+                "string",
+                "object"
+              ]
+            }
+          },
+          "retry_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "rollback": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "waves": {
+      "type": "array"
+    }
+  }
+}

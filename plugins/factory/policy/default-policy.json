@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "base_branch": null,
+  "risk_floor": {
+    "hotfix": "high",
+    "migration": "high"
+  },
+  "work_types": [
+    "feature",
+    "bug",
+    "hotfix",
+    "refactor",
+    "migration",
+    "dependency",
+    "docs",
+    "spike",
+    "greenfield"
+  ],
+  "required_lanes": {
+    "low": [
+      "code"
+    ],
+    "medium": [
+      "code",
+      "tests",
+      "security"
+    ],
+    "high": [
+      "code",
+      "tests",
+      "security"
+    ]
+  },
+  "ui_paths": [
+    "**/*.tsx",
+    "**/*.jsx",
+    "**/*.vue",
+    "**/*.svelte",
+    "**/*.css",
+    "**/*.scss",
+    "**/*.html"
+  ],
+  "protected_paths": [
+    ".factory/**",
+    ".git/**",
+    ".github/workflows/**"
+  ],
+  "secret_paths": [
+    "**/.env",
+    "**/.env.*",
+    "**/*.pem",
+    "**/*.key",
+    "**/id_rsa",
+    "**/id_ed25519",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/credentials",
+    "**/credentials.json"
+  ],
+  "checks": [],
+  "limits": {
+    "max_intent_rounds": 4,
+    "max_design_critique_rounds": 2,
+    "max_plan_validate_rounds": 3,
+    "retry_limit": 3,
+    "max_review_rounds": 3,
+    "max_verify_fix_rounds": 3,
+    "max_parallel_tasks": 4,
+    "max_parallel_research": 4,
+    "max_parallel_lanes": 4,
+    "max_tree_depth": 2,
+    "repeat_guard": 2,
+    "max_agent_runs_per_job": 400,
+    "max_agent_runs_per_tree": 2000,
+    "max_ship_files": 200,
+    "flaky_reruns": 1,
+    "command_timeout_seconds": 600
+  },
+  "lessons_max_per_job": 3,
+  "ci": {
+    "required_check": "factory-gate"
+  },
+  "agents": {
+    "models": {},
+    "builder_escalation": []
+  }
+}

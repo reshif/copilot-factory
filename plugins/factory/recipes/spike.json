@@ -1,0 +1,16 @@
+{
+  "id": "spike",
+  "version": 1,
+  "status": "proven",
+  "outcome": "findings",
+  "description": "Research question: grounded findings and a recommendation, no code shipped.",
+  "applies_to": { "work_type": ["spike"], "risk": ["low", "medium", "high"] },
+  "steps": [
+    { "step": "clarify", "run": "skill:clarify" },
+    { "step": "H1", "run": "gate" },
+    { "step": "ground", "run": "workflow:ground" },
+    { "step": "decide", "run": "workflow:fanout-judge", "config": "decide", "mode": "recommendation", "threat_model": false },
+    { "step": "HF", "run": "gate" },
+    { "step": "close", "run": "cli:close" }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "id": "full@high",
+  "version": 1,
+  "status": "proven",
+  "outcome": "change",
+  "description": "High risk: threat model, human approval of design and plan, every review lane before merge, ship sign-off.",
+  "applies_to": { "work_type": ["feature", "bug", "refactor", "migration", "dependency", "docs", "greenfield"], "risk": ["high"] },
+  "steps": [
+    { "step": "clarify", "run": "skill:clarify" },
+    { "step": "H1", "run": "gate" },
+    { "step": "ground", "run": "workflow:ground" },
+    { "step": "decide", "run": "workflow:fanout-judge", "config": "decide", "threat_model": true },
+    { "step": "H2", "run": "gate" },
+    { "step": "decompose", "run": "workflow:decompose" },
+    { "step": "H3", "run": "gate" },
+    { "step": "realize", "run": "workflow:realize" },
+    { "step": "reconcile", "run": "workflow:reconcile" },
+    { "step": "prove", "run": "cli:verify run" },
+    { "step": "challenge", "run": "workflow:fanout-judge", "config": "challenge", "lanes": ["all"] },
+    { "step": "HS", "run": "gate" },
+    { "step": "ship", "run": "skill:ship" },
+    { "step": "H4", "run": "merge" },
+    { "step": "distill", "run": "skill:distill" },
+    { "step": "close", "run": "cli:close" }
+  ]
+}

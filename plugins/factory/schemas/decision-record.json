@@ -1,0 +1,8 @@
+{ "$comment": "One line of .factory/log/decisions.jsonl.",
+  "type": "object", "required": ["ts", "job", "action"], "properties": {
+  "ts": { "type": "string" }, "job": { "type": "string" }, "node": { "type": "string" },
+  "recipe": { "type": "string" }, "recipe_version": { "type": "integer" },
+  "state_hash": { "type": ["string", "null"] }, "fingerprint": { "type": ["string", "null"] },
+  "alignment": { "type": ["object", "null"] }, "first_failing": { "type": ["string", "null"] },
+  "chosen": { "type": "string" }, "action": { "type": "string" }, "rule": { "type": ["string", "null"] },
+  "budget": { "type": "object" }, "reason": { "type": ["string", "null"] } } }

@@ -1,0 +1,19 @@
+# Re-verifies every factory job in a pull request on the exact merge result.
+# Installed by `factory ci install`. Make "factory-gate" a required status check.
+name: factory-gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  factory-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Add your project's own setup (language runtimes, dependency install) here,
+      # so the verify commands recorded in .factory-ship/*.json can run.
+      - name: Re-verify factory jobs on the merge result
+        run: node .github/factory-cli/bin/factory ci verify --manifest-dir .factory-ship

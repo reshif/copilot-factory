@@ -1,0 +1,219 @@
+'use strict';
+// Plans (job: plan.json of task contracts) and slices (epic: slices.json).
+// Validation is deterministic; waves are computed, never hand-written.
+
+const { readJson, writeJson, stableStringify, fail } = require('../lib/util');
+const { jobPaths } = require('../lib/paths');
+const { validate: validateSchema } = require('../lib/schema');
+const { globsOverlap, matchesAny } = require('../lib/glob');
+const contractMod = require('./contract');
+const job = require('./job');
+const ledger = require('./ledger');
+
+const TASK_SCHEMA = {
+  type: 'object',
+  required: ['tasks'],
+  properties: {
+    tasks: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        required: ['id', 'objective', 'allowed_paths', 'criteria_ids', 'verify_commands'],
+        properties: {
+          id: { type: 'string', pattern: '^T\\d+$' },
+          objective: { type: 'string', minLength: 3 },
+          allowed_paths: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
+          depends_on: { type: 'array', items: { type: 'string' } },
+          criteria_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+          verify_commands: { type: 'array', minItems: 1, items: { type: ['string', 'object'] } },
+          retry_limit: { type: 'integer', minimum: 1, maximum: 10 },
+          rollback: { type: 'string' },
+          notes: { type: 'string' },
+        },
+      },
+    },
+    waves: { type: 'array' },
+  },
+};
+
+const SLICE_SCHEMA = {
+  type: 'object',
+  required: ['slices'],
+  properties: {
+    slices: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        required: ['id', 'goal', 'criteria_ids'],
+        properties: {
+          id: { type: 'string', pattern: '^S\\d+$' },
+          goal: { type: 'string', minLength: 3 },
+          criteria_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+          depends_on: { type: 'array', items: { type: 'string' } },
+          work_type: { type: 'string' },
+          risk: { enum: ['low', 'medium', 'high'] },
+          allowed_paths: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+    epic_verify_commands: { type: 'array', items: { type: 'string' } },
+  },
+};
+
+function cmdOf(c) {
+  return typeof c === 'string' ? c : c && c.cmd;
+}
+
+// Kahn layering over depends_on. Returns { layers, cycle }.
+function layers(items) {
+  const ids = items.map((t) => t.id);
+  const deps = Object.fromEntries(items.map((t) => [t.id, (t.depends_on || []).filter((d) => ids.includes(d))]));
+  const done = new Set();
+  const out = [];
+  while (done.size < ids.length) {
+    const layer = ids.filter((id) => !done.has(id) && deps[id].every((d) => done.has(d)));
+    if (!layer.length) return { layers: out, cycle: ids.filter((id) => !done.has(id)) };
+    layer.forEach((id) => done.add(id));
+    out.push(layer);
+  }
+  return { layers: out, cycle: null };
+}
+
+// Split each dependency layer so that no two tasks in a wave can touch the same files.
+function waves(tasks) {
+  const { layers: ls, cycle } = layers(tasks);
+  if (cycle) return { waves: null, cycle };
+  const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
+  const out = [];
+  for (const layer of ls) {
+    const pending = [...layer];
+    while (pending.length) {
+      const wave = [];
+      for (const id of [...pending]) {
+        if (wave.every((w) => !globsOverlap(byId[w].allowed_paths, byId[id].allowed_paths))) {
+          wave.push(id);
+          pending.splice(pending.indexOf(id), 1);
+        }
+      }
+      out.push(wave);
+    }
+  }
+  return { waves: out, cycle: null };
+}
+
+function otherJobLocks(root, state) {
+  const locks = [];
+  for (const id of job.listJobIds(root)) {
+    if (id === state.id) continue;
+    let s;
+    try {
+      s = job.load(root, id);
+    } catch {
+      continue;
+    }
+    if (s.status !== 'active' || !s.approvals || !s.approvals.H3 || (s.pr && s.pr.merged)) continue;
+    const p = readJson(jobPaths(root, id).plan, null);
+    if (p && p.tasks) locks.push({ job: id, paths: p.tasks.flatMap((t) => t.allowed_paths || []) });
+  }
+  return locks;
+}
+
+function validatePlan(root, state, { write = true } = {}) {
+  const jp = jobPaths(root, state.id);
+  const plan = readJson(jp.plan, null);
+  const errors = [];
+  if (!plan) return { valid: false, errors: [`No plan.json at ${jp.plan}`] };
+  errors.push(...validateSchema(TASK_SCHEMA, plan));
+  if (errors.length) return { valid: false, errors };
+
+  const parsed = contractMod.parse(contractMod.read(root, state.id));
+  const acIds = parsed.acs.map((a) => a.id);
+  const ids = plan.tasks.map((t) => t.id);
+  if (new Set(ids).size !== ids.length) errors.push('Task ids must be unique');
+  for (const t of plan.tasks) {
+    for (const d of t.depends_on || []) if (!ids.includes(d)) errors.push(`${t.id} depends on unknown task ${d}`);
+    for (const c of t.criteria_ids) if (!acIds.includes(c)) errors.push(`${t.id} cites ${c}, which is not in the contract`);
+    for (const p of t.allowed_paths) {
+      if (matchesAny(p.replace(/\*+$/, 'x'), state.policy.protected_paths) || matchesAny(p, state.policy.protected_paths)) {
+        errors.push(`${t.id} allows protected path ${p}`);
+      }
+    }
+    if (t.verify_commands.some((c) => !cmdOf(c))) errors.push(`${t.id} has an empty verify command`);
+  }
+  const needsTask = parsed.acs.filter((a) => a.evidence.some((e) => ['test', 'run', 'diff'].includes(e)));
+  for (const ac of needsTask) {
+    if (!plan.tasks.some((t) => t.criteria_ids.includes(ac.id))) errors.push(`${ac.id} is not covered by any task`);
+  }
+  if (state.risk === 'low' && plan.tasks.length > 6) errors.push(`${plan.tasks.length} tasks is too large for low risk; raise the risk via amendment or split into an epic`);
+  for (const lock of otherJobLocks(root, state)) {
+    const mine = plan.tasks.flatMap((t) => t.allowed_paths);
+    if (globsOverlap(mine, lock.paths)) errors.push(`Paths overlap with active job ${lock.job}, which holds a plan lock`);
+  }
+  const w = waves(plan.tasks);
+  if (w.cycle) errors.push(`Dependency cycle among ${w.cycle.join(', ')}`);
+  if (errors.length) return { valid: false, errors };
+
+  if (write && stableStringify(plan.waves || null) !== stableStringify(w.waves)) {
+    plan.waves = w.waves;
+    writeJson(jp.plan, plan);
+  }
+  return { valid: true, errors: [], waves: w.waves, tasks: plan.tasks.length };
+}
+
+function validateSlices(root, state) {
+  const jp = jobPaths(root, state.id);
+  const doc = readJson(jp.slices, null);
+  const errors = [];
+  if (!doc) return { valid: false, errors: [`No slices.json at ${jp.slices}`] };
+  errors.push(...validateSchema(SLICE_SCHEMA, doc));
+  if (errors.length) return { valid: false, errors };
+  const parsed = contractMod.parse(contractMod.read(root, state.id));
+  const acIds = parsed.acs.map((a) => a.id);
+  const ids = doc.slices.map((s) => s.id);
+  if (new Set(ids).size !== ids.length) errors.push('Slice ids must be unique');
+  for (const s of doc.slices) {
+    for (const d of s.depends_on || []) if (!ids.includes(d)) errors.push(`${s.id} depends on unknown slice ${d}`);
+    for (const c of s.criteria_ids) if (!acIds.includes(c)) errors.push(`${s.id} cites ${c}, which is not in the epic contract`);
+    if (s.risk && ['low', 'medium', 'high'].indexOf(s.risk) < ['low', 'medium', 'high'].indexOf(state.risk) && s.id === 'S00') {
+      errors.push('S00 (contracts + flag) may not be lower risk than the epic');
+    }
+  }
+  for (const ac of acIds) if (!doc.slices.some((s) => s.criteria_ids.includes(ac))) errors.push(`${ac} is not owned by any slice`);
+  const l = layers(doc.slices);
+  if (l.cycle) errors.push(`Dependency cycle among ${l.cycle.join(', ')}`);
+  return errors.length ? { valid: false, errors } : { valid: true, errors: [], layers: l.layers, slices: doc.slices.length };
+}
+
+function validate(root, state) {
+  return state.epic ? validateSlices(root, state) : validatePlan(root, state);
+}
+
+// bug@low: one task built straight from the contract.
+function fromContract(root, state) {
+  const parsed = contractMod.parse(contractMod.read(root, state.id));
+  const probs = contractMod.problems(parsed, { requirePlanFields: true, requireIntent: false }); // H1 already passed
+  if (probs.length) fail(`The contract can't produce a plan:\n- ${probs.join('\n- ')}`, 'contract_incomplete', probs);
+  const plan = {
+    source: 'contract',
+    tasks: [
+      {
+        id: 'T1',
+        objective: parsed.goal,
+        allowed_paths: parsed.allowedPaths,
+        depends_on: [],
+        criteria_ids: parsed.acs.map((a) => a.id),
+        verify_commands: parsed.verifyCommands.map((v) => ({ cmd: v.cmd, covers: v.covers.length ? v.covers : parsed.acs.map((a) => a.id) })),
+      },
+    ],
+  };
+  writeJson(jobPaths(root, state.id).plan, plan);
+  const v = validatePlan(root, state);
+  if (!v.valid) fail(`Plan from contract is invalid:\n- ${v.errors.join('\n- ')}`, 'plan_invalid', v.errors);
+  const b = require('./invalidation').current(root, state);
+  ledger.append(root, state.id, { kind: 'step', step: 'decompose', ok: true, bound: { plan: b.plan, contract: b.contract }, detail: { source: 'contract', tasks: 1 } });
+  return { ok: true, plan: jobPaths(root, state.id).plan, waves: v.waves };
+}
+
+module.exports = { validate, validatePlan, validateSlices, waves, layers, fromContract, cmdOf, TASK_SCHEMA, SLICE_SCHEMA };

@@ -1,0 +1,23 @@
+{
+  "id": "feature@low",
+  "version": 1,
+  "status": "proven",
+  "outcome": "change",
+  "description": "Low-risk features and refactors: planned tasks, plan approval may be automatic after a God Eye plan critique.",
+  "applies_to": { "work_type": ["feature", "refactor", "greenfield", "bug", "docs", "dependency"], "risk": ["low"] },
+  "steps": [
+    { "step": "clarify", "run": "skill:clarify" },
+    { "step": "H1", "run": "gate" },
+    { "step": "ground", "run": "workflow:ground" },
+    { "step": "decompose", "run": "workflow:decompose", "plan_critique": true },
+    { "step": "H3", "run": "gate", "auto": "plan_critique" },
+    { "step": "realize", "run": "workflow:realize" },
+    { "step": "reconcile", "run": "workflow:reconcile" },
+    { "step": "prove", "run": "cli:verify run" },
+    { "step": "challenge", "run": "workflow:fanout-judge", "config": "challenge", "lanes": ["code", "tests"] },
+    { "step": "ship", "run": "skill:ship" },
+    { "step": "H4", "run": "merge" },
+    { "step": "distill", "run": "skill:distill" },
+    { "step": "close", "run": "cli:close" }
+  ]
+}

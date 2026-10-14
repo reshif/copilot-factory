@@ -1,0 +1,4 @@
+{ "type": "object", "required": ["title", "summary", "pros", "cons"], "properties": {
+  "title": { "type": "string" }, "summary": { "type": "string" }, "approach": { "type": "string" },
+  "pros": { "type": "array", "items": { "type": "string" } }, "cons": { "type": "array", "items": { "type": "string" } },
+  "risks": { "type": "array", "items": { "type": "string" } } } }

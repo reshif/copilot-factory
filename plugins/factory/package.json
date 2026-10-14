@@ -1,0 +1,12 @@
+{
+  "name": "factory-plugin",
+  "private": true,
+  "version": "0.10.0",
+  "description": "Software Factory v2 Claude Code plugin — CLI, hooks, workflows and tests.",
+  "bin": { "factory": "bin/factory" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test --test-concurrency=4 tests/*.test.js"
+  },
+  "license": "MIT"
+}

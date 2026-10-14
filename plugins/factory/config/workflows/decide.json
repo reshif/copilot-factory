@@ -1,0 +1,12 @@
+{
+  "id": "decide",
+  "description": "Make a design decision without anchoring: independent option generators (and a threat modeler at high risk) in parallel, the architect decides and records it, God Eye critiques cold.",
+  "fanout": [
+    { "role": "option-generator", "prior": "the smallest change that meets every criterion" },
+    { "role": "option-generator", "prior": "the most robust design for the next two years" },
+    { "role": "option-generator", "prior": "the design closest to patterns already in this repository" },
+    { "role": "threat-modeler", "when": "threat_model" }
+  ],
+  "judge": { "role": "architect", "schema": "architect" },
+  "critique": { "role": "god-eye", "focus": "design", "revise_role": "architect" }
+}

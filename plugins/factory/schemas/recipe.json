@@ -1,0 +1,98 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "status",
+    "outcome",
+    "steps"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "candidate",
+        "trial",
+        "proven",
+        "retired"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "change",
+        "findings",
+        "epic"
+      ]
+    },
+    "description": {
+      "type": "string"
+    },
+    "applies_to": {
+      "type": "object"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "step",
+          "run"
+        ],
+        "properties": {
+          "step": {
+            "type": "string",
+            "minLength": 1
+          },
+          "run": {
+            "type": "string",
+            "pattern": "^(skill:[a-z-]+|workflow:[a-z-]+|cli:[a-z -]+|gate|merge)$"
+          },
+          "config": {
+            "enum": [
+              "clarify",
+              "decide",
+              "challenge"
+            ]
+          },
+          "lanes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mode": {
+            "type": "string"
+          },
+          "when": {
+            "enum": [
+              "adr"
+            ]
+          },
+          "auto": {
+            "enum": [
+              "plan_critique"
+            ]
+          },
+          "threat_model": {
+            "type": [
+              "boolean",
+              "string"
+            ]
+          },
+          "plan_critique": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  },
+  "$comment": "Shape of recipes/*.json. Recipes are human-authored; the CLI also refuses any recipe that omits a floor step."
+}

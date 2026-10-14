@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "description": "Rule table: the first matching rule picks the recipe. Edited by humans only.",
+  "rules": [
+    { "when": { "epic": true }, "recipe": "epic" },
+    { "when": { "work_type": ["spike"] }, "recipe": "spike" },
+    { "when": { "work_type": ["hotfix"] }, "recipe": "hotfix@high" },
+    { "when": { "risk": ["high"] }, "recipe": "full@high" },
+    { "when": { "risk": ["medium"] }, "recipe": "standard@medium" },
+    { "when": { "risk": ["low"], "work_type": ["bug", "docs", "dependency"] }, "recipe": "bug@low" },
+    { "when": { "risk": ["low"] }, "recipe": "feature@low" }
+  ]
+}

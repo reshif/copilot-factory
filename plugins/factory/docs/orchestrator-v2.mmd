@@ -1,0 +1,132 @@
+flowchart TB
+  %% Software Factory — Grounded Orchestrator (design v2, 2026-10-14). Companion to software-factory-orchestrator-v2.md.
+  %% Shapes: rounded = workflow primitive (agents), hexagon = CLI step or check, parallelogram = artifact / log,
+  %% stadium in yellow = human gate, diamond = decision. Floor tags: [L] low · [M] medium · [H] high = required at that risk level.
+  %% Grey dashed = deferred, not built in v2.
+
+  REQ(["/factory &lt;what you want&gt;"]):::human --> INTAKE["intake: read repo, classify work type,<br/>propose risk (policy can only raise it)"]
+  INTAKE --> CONF(["you confirm type · risk · job vs epic"]):::human
+  CONF --> SEL{{"factory recipe select<br/>(work_type, risk) → recipe@version<br/>risk is locked into the contract hash"}}:::cli
+  SEL --> NEXT
+
+  %% ---------------------------------------------------------------- CONTROL LOOP
+  subgraph CTRL["CONTROL LOOP · the CLI decides, agents propose · no LLM picks the next step"]
+    direction TB
+    NEXT{{"factory next"}}:::cli --> AV{"alignment vector<br/>first failing element, in order:<br/>1 contract_approved · 2 no_drift ·<br/>3 floors_satisfied_so_far · 4 no_confirmed_serious ·<br/>5 acs_proven · 6 no_stale_evidence"}
+    AV -->|"all pass: recipe order<br/>for steps not yet run"| STEP["run the chosen step"]
+    STEP --> ENV[/"result envelope<br/>status · next_gate · input_hash · budgets ·<br/>artifacts · questions · park_reason · summary"/]:::art
+    ENV --> REC{{"CLI recorders<br/>evidence ledger · decisions.jsonl · budget ledger"}}:::cli
+    REC --> GUARD{"caps<br/>depth ≤ 2 · min task size ·<br/>same step + same state hash twice ·<br/>per-node AND per-tree budget"}
+    GUARD -->|ok| NEXT
+  end
+
+  %% ---------------------------------------------------------------- JOB LINE
+  subgraph LINE["JOB LINE · recipe standard@medium shown · a recipe may add steps, never drop a floor step"]
+    direction TB
+    CLARIFY("clarify<br/>fanout-judge: ambiguity · constraints · testability<br/>→ judge → God Eye · [L M H]") --> H1(["H1 · you approve the contract<br/>bound to its hash · [L M H]"]):::human
+    H1 --> GROUND("ground<br/>parallel cited probes: repo · deps ·<br/>prior ADRs + lessons · docs · [M H]")
+    GROUND --> DECIDE("decide<br/>fanout-judge: option generators ∥ threat-modeler<br/>→ architect → ADR or no-adr.md → God Eye<br/>design record [M H] · threat model [H]")
+    DECIDE --> H2(["H2 · you approve design<br/>[H] · medium when an ADR exists"]):::human
+    H2 --> DECOMP("decompose<br/>planner → factory plan validate (≤ 3 rounds)<br/>waves: no shared files in a wave · [M H]")
+    DECOMP --> H3(["H3 · you approve plan, path locks taken<br/>[H] · low may auto-approve via God Eye plan critique"]):::human
+    H3 --> REALIZE("realize<br/>per task in its own worktree:<br/>builder → independent tester → retry with escalation<br/>waves in parallel up to max_parallel_tasks · [L M H]")
+    REALIZE --> RECON("reconcile<br/>merge --no-ff in dependency order<br/>textual vs behavioural conflict")
+    RECON --> PROVE{{"prove · factory verify run<br/>tests · scans · rehearsal · standards ratchet ·<br/>flaky reruns · [L M H] on the final fingerprint"}}:::cli
+    PROVE --> CHAL("challenge<br/>fanout-judge: lanes → convergence →<br/>finding-verifier per blocker/major<br/>code [L] · + tests + security [M] · all lanes [H]")
+    CHAL --> SHIP{{"ship<br/>report → gate:ship → PR →<br/>CI re-verify on the merge result · [L M H]"}}:::cli
+    SHIP --> H4(["H4 · you review and merge · [L M H]"]):::human
+    H4 --> DISTILL{{"distill<br/>CLI computes telemetry from the ledger;<br/>lesson-writer proposes ≤ 3 lessons"}}:::cli
+    DISTILL --> CLOSED["closed · worktrees removed"]
+    H4 -->|hotfix| PMR("post-merge challenge: code + security<br/>adds to pre-merge review, never replaces it")
+    PMR -->|pass| DISTILL
+    PMR -->|confirmed blocker/major| FUP{{"factory followup → new linked job"}}:::cli
+  end
+
+  %% routes from the alignment vector into the line
+  AV -->|"1 contract not approved"| CLARIFY
+  AV -->|"3 floor step missing"| MISS["the missing floor step<br/>(ground · decide · decompose · a lane …)"]
+  MISS -.-> GROUND
+  AV -->|"4 confirmed serious finding"| FIXR["realize, fix scope:<br/>only tasks owning the findings"]
+  AV -->|"5 AC not proven"| VFIX["realize, verify-fix scope:<br/>only tasks owning failing commands"]
+  AV -->|"6 stale evidence"| PROVE
+  FIXR --> REALIZE
+  VFIX --> REALIZE
+  STEP -.->|one of| CLARIFY
+
+  %% ---------------------------------------------------------------- SIDE TRACKS
+  subgraph SIDE["AMEND · PARK"]
+    direction TB
+    AMEND{{"amend<br/>edit affected AC-n + affected tasks,<br/>compute impact"}}:::cli --> HA(["A · you approve amendment<br/>approvals re-bound"]):::human
+    HA -->|"realize: affected tasks only"| REALIZE
+    PARK["parked with a reason"] --> HP(["P · you decide<br/>resume &lt;state&gt; · cancel · abandon"]):::human
+    HP -.->|resume| NEXT
+  end
+  AV -->|"2 contract changed"| AMEND
+  AV -->|"2 files outside allowed paths"| PARK
+  GUARD -->|cap or budget hit| PARK
+  ENV -->|"park · not converging"| PARK
+  ENV -->|"needs_user: questions"| ASK(["you answer in chat"]):::human
+  ASK --> NEXT
+
+  %% ---------------------------------------------------------------- FLOORS
+  subgraph FLOORS["HARD FLOORS · enforced in code, not prose · a missing step is missing evidence, never a pass"]
+    direction LR
+    FL[/"Low: approved contract · isolation · prove · code lane · CI re-verify · human merge<br/>Medium: + ground · design record + God Eye · plan validated · tests + security lanes · finding verifiers<br/>High: + threat model · H2 + H3 · all lanes before merge · no trial recipes · sign-off on irreversible steps"/]:::art
+    FIN{{"factory finalize · Stop gate · CI factory-gate<br/>read the ledger: every floor step ran on the current fingerprint?"}}:::cli
+    FL --> FIN
+  end
+  SHIP -.->|checked by| FIN
+  FIN -->|"missing_evidence: &lt;step&gt;"| NEXT
+
+  %% ---------------------------------------------------------------- RECIPES
+  subgraph RECIPES["RECIPES · human-authored, versioned, selected by rule"]
+    direction TB
+    RB["bug@low (fast path)<br/>clarify → H1 → ground → realize → reconcile →<br/>prove → challenge(code) → ship"]
+    RF["feature@low<br/>clarify → H1 → ground → decompose (auto-H3 via critique) →<br/>realize → reconcile → prove → challenge(code, tests) → ship"]
+    RM["standard@medium<br/>the job line above"]
+    RH["full@high · hotfix@high<br/>job line + threat model, H2, H3, all lanes;<br/>hotfix adds post-merge challenge"]
+    RS["spike<br/>clarify → H1 → ground → decide (recommendation) → HF"]
+    RE["epic · outcome tree depth 2<br/>clarify(epic) → EH1 → ground → decide (contracts) → EH2 →<br/>decompose(slices) → EH3 → each slice runs its own recipe →<br/>epic gate → challenge(conformance)"]
+  end
+  SEL -.->|picks one| RECIPES
+
+  %% ---------------------------------------------------------------- IMPROVEMENT LOOP
+  subgraph IMPROVE["IMPROVEMENT · telemetry informs a human; the system never promotes its own patterns"]
+    direction LR
+    LOGS[/"decisions.jsonl · evidence ledger · budget ledger"/]:::art --> TEL{{"factory telemetry report --since 30d<br/>primary: escaped defects + reverts in 30 days · cost<br/>diagnostic: rework rounds · gate denials · findings confirmed vs dismissed"}}:::cli
+    TEL --> MREV(["monthly review, ~30 min<br/>you edit recipes above the floor · promote recurring lessons to checks"]):::human
+    MREV --> REG[/"recipe registry vN+1"/]:::art
+    MREV -.->|"specific question"| AB["paired A/B on the same task:<br/>same base commit, 3 seeds each, variance band"]
+    WHY{{"factory why &lt;job&gt;<br/>renders the path from decisions.jsonl"}}:::cli
+    LOGS --> WHY
+  end
+  REC --> LOGS
+  DISTILL --> LOGS
+  REG -.->|next jobs| SEL
+
+  %% ---------------------------------------------------------------- ENFORCEMENT (unchanged)
+  subgraph ENF["ENFORCEMENT · unchanged from v0.7.5"]
+    direction LR
+    E1{{"PreToolUse guard"}}:::cli
+    E2{{"SubagentStop output gate"}}:::cli
+    E3{{"Stop gate"}}:::cli
+    E4{{"commit-msg trailers"}}:::cli
+    E5{{"hash-bound approvals ·<br/>fingerprint-bound evidence"}}:::cli
+    E6{{"Inspector reads events +<br/>decisions.jsonl"}}:::cli
+  end
+
+  %% ---------------------------------------------------------------- DEFERRED
+  subgraph DEF["DEFERRED · revisit at several hundred jobs per recipe"]
+    direction LR
+    D1["learned recipe selection"]:::deferred
+    D2["per-step contribution scoring"]:::deferred
+    D3["shadow runs"]:::deferred
+    D4["golden-set benchmark<br/>(smoke test only for now)"]:::deferred
+    D5["tree depth &gt; 2"]:::deferred
+  end
+  TEL -.-> DEF
+
+  classDef human fill:#fbefc6,stroke:#b8860b,stroke-width:2px,color:#2a2200
+  classDef cli fill:#dbe9f5,stroke:#1c6cab,color:#0d2a44
+  classDef art fill:#eef1f0,stroke:#6c7a85,color:#18232c
+  classDef deferred fill:#f4f4f4,stroke:#9a9a9a,stroke-dasharray:4 3,color:#6a6a6a

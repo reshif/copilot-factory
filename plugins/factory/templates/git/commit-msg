@@ -1,0 +1,19 @@
+#!/bin/sh
+# installed by software-factory
+# Adds Factory-Job (and Factory-Task) trailers to commits made on factory branches.
+msg_file="$1"
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+case "$branch" in
+  factory/J-*)
+    rest=${branch#factory/}
+    job=$(printf '%s' "$rest" | sed -E 's/^(J-[0-9]+).*/\1/')
+    task=$(printf '%s' "$rest" | sed -nE 's/^J-[0-9]+-(T[0-9]+)$/\1/p')
+    if ! grep -q "^Factory-Job:" "$msg_file"; then
+      git interpret-trailers --in-place --trailer "Factory-Job: $job" "$msg_file"
+    fi
+    if [ -n "$task" ] && ! grep -q "^Factory-Task:" "$msg_file"; then
+      git interpret-trailers --in-place --trailer "Factory-Task: $task" "$msg_file"
+    fi
+    ;;
+esac
+exit 0

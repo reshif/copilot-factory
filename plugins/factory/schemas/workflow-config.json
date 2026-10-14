@@ -1,0 +1,3 @@
+{ "type": "object", "required": ["id"], "properties": {
+  "id": { "enum": ["clarify", "decide", "challenge"] }, "fanout": { "type": "array" }, "judge": { "type": "object" },
+  "critique": { "type": "object" }, "lanes": { "type": "object" }, "verifier": { "type": "object" }, "limits": { "type": "object" } } }

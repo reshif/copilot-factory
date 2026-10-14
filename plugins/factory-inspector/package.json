@@ -1,0 +1,10 @@
+{
+  "name": "factory-inspector-plugin",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Independent auditor for the Software Factory plugin.",
+  "bin": { "factory-inspect": "bin/factory-inspect" },
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test --test-concurrency=4 tests/*.test.js" },
+  "license": "MIT"
+}

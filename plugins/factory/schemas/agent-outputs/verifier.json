@@ -1,0 +1,2 @@
+{ "type": "object", "required": ["finding_id", "status", "reason"], "properties": {
+  "finding_id": { "type": "string" }, "status": { "enum": ["confirmed", "refuted"] }, "reason": { "type": "string" } } }

@@ -1,0 +1,12 @@
+{
+  "id": "challenge",
+  "description": "Find what proof missed: one reviewer per lane in parallel, then one finding-verifier per blocker/major finding. The CLI applies convergence rules and decides each lane's verdict.",
+  "lanes": {
+    "code": "code-reviewer",
+    "tests": "test-reviewer",
+    "security": "security-reviewer",
+    "ux": "ux-reviewer",
+    "conformance": "epic-reviewer"
+  },
+  "verifier": { "role": "finding-verifier", "severities": ["blocker", "major"] }
+}

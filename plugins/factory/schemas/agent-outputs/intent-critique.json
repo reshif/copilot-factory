@@ -1,0 +1,7 @@
+{ "type": "object", "required": ["verdict", "intent_confirmed", "restatement", "items"], "properties": {
+  "verdict": { "enum": ["approve", "revise"] },
+  "intent_confirmed": { "type": "boolean" },
+  "restatement": { "type": "object", "required": ["problem", "outcome"], "properties": {
+    "problem": { "type": "string" }, "who": { "type": "string" }, "outcome": { "type": "string" }, "success": { "type": "string" } } },
+  "items": { "type": "array", "items": { "type": "object", "required": ["issue", "severity"], "properties": {
+    "issue": { "type": "string" }, "severity": { "enum": ["blocker", "major", "minor"] }, "suggestion": { "type": "string" } } } } } }

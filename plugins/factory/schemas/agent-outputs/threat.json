@@ -1,0 +1,4 @@
+{ "type": "object", "required": ["path", "threats"], "properties": {
+  "path": { "type": "string" },
+  "threats": { "type": "array", "items": { "type": "object", "required": ["threat", "mitigation", "severity"], "properties": {
+    "threat": { "type": "string" }, "mitigation": { "type": "string" }, "severity": { "enum": ["low", "medium", "high"] } } } } } }

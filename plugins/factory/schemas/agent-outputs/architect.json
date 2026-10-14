@@ -1,0 +1,6 @@
+{ "type": "object", "required": ["kind", "paths", "summary"], "properties": {
+  "kind": { "enum": ["adr", "no-adr", "recommendation", "contracts"] },
+  "paths": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+  "summary": { "type": "string" },
+  "rejected": { "type": "array", "items": { "type": "object", "required": ["option", "reason"], "properties": {
+    "option": { "type": "string" }, "reason": { "type": "string" } } } } } }

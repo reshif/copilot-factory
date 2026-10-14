@@ -1,0 +1,6 @@
+{ "type": "object", "required": ["lane", "findings"], "properties": {
+  "lane": { "type": "string" },
+  "findings": { "type": "array", "items": { "type": "object", "required": ["id", "severity", "summary"], "properties": {
+    "id": { "type": "string" }, "severity": { "enum": ["blocker", "major", "minor"] },
+    "file": { "type": ["string", "null"] }, "line": { "type": ["integer", "null"] },
+    "summary": { "type": "string" }, "rule": { "type": ["string", "null"] } } } } } }

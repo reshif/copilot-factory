@@ -1,0 +1,4 @@
+{ "type": "object", "required": ["floors", "after_merge", "waivable"], "properties": {
+  "floors": { "type": "object", "required": ["low", "medium", "high"], "additionalProperties": { "type": "array", "items": { "type": "string" } } },
+  "after_merge": { "type": "array", "items": { "type": "string" } },
+  "waivable": { "type": "array", "items": { "type": "string" } } } }

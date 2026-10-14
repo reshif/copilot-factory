@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "description": "Steps no recipe may omit, per risk level. Enforced by `factory finalize`, the Stop hook and CI. A missing floor step is missing evidence, never a pass.",
+  "floors": {
+    "low": [
+      "contract_approved",
+      "isolation",
+      "prove",
+      "challenge:code",
+      "ci_reverify",
+      "human_merge"
+    ],
+    "medium": [
+      "@low",
+      "ground",
+      "design_record",
+      "design_critique",
+      "plan_validated",
+      "challenge:tests",
+      "challenge:security",
+      "finding_verifiers"
+    ],
+    "high": [
+      "@medium",
+      "threat_model",
+      "H2",
+      "H3",
+      "challenge:all_before_merge",
+      "no_trial_recipes",
+      "irreversible_signoff"
+    ]
+  },
+  "after_merge": [
+    "ci_reverify",
+    "human_merge"
+  ],
+  "waivable": [
+    "ci_reverify",
+    "ship_size"
+  ]
+}

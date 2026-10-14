@@ -1,0 +1,22 @@
+{
+  "id": "bug@low",
+  "version": 1,
+  "status": "proven",
+  "outcome": "change",
+  "description": "Fast path for small, low-risk fixes: one task built straight from the contract.",
+  "applies_to": { "work_type": ["bug", "docs", "dependency"], "risk": ["low"] },
+  "steps": [
+    { "step": "clarify", "run": "skill:clarify" },
+    { "step": "H1", "run": "gate" },
+    { "step": "ground", "run": "workflow:ground" },
+    { "step": "decompose", "run": "cli:plan from-contract" },
+    { "step": "realize", "run": "workflow:realize" },
+    { "step": "reconcile", "run": "workflow:reconcile" },
+    { "step": "prove", "run": "cli:verify run" },
+    { "step": "challenge", "run": "workflow:fanout-judge", "config": "challenge", "lanes": ["code"] },
+    { "step": "ship", "run": "skill:ship" },
+    { "step": "H4", "run": "merge" },
+    { "step": "distill", "run": "skill:distill" },
+    { "step": "close", "run": "cli:close" }
+  ]
+}

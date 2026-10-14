@@ -1,0 +1,5 @@
+{ "type": "object", "required": ["status", "summary"], "properties": {
+  "status": { "enum": ["done", "blocked"] }, "summary": { "type": "string" },
+  "needs_paths": { "type": "array", "items": { "type": "string" } },
+  "swept": { "type": "array", "items": { "type": "string" } },
+  "commits": { "type": "array", "items": { "type": "string" } } } }

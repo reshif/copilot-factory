@@ -1,0 +1,14 @@
+{
+  "id": "clarify",
+  "description": "Turn a request into an approvable contract: an intent gate first (problem, who, outcome, success signal), then three independent analysts, a judge that merges, prioritises and never re-asks, then a cold God Eye critique once nothing is open.",
+  "fanout": [
+    { "role": "intent-analyst", "focus": "intent", "category": "intent", "gate": true, "brief": "Can you restate, from the contract alone, the problem, who has it, the outcome they get and the signal that proves it worked, each in one line, and would the requester agree? Ask only where you can't." },
+    { "role": "intent-analyst", "focus": "ambiguity", "category": "scope", "brief": "Where could two competent engineers read this contract's scope differently (what's in, what's out)?" },
+    { "role": "intent-analyst", "focus": "constraints", "category": "constraint", "brief": "What limits (compatibility, performance, security, data, style) does the repo impose that the contract doesn't state?" },
+    { "role": "intent-analyst", "focus": "testability", "category": "acceptance", "brief": "Can every acceptance criterion be proven by its stated evidence type? What would the test actually check?" }
+  ],
+  "judge": { "role": "judge", "schema": "judge" },
+  "critique": { "role": "god-eye", "focus": "intent", "when": "no_questions", "schema": "intent-critique" },
+  "priority": ["intent", "scope", "constraint", "acceptance"],
+  "limits": { "early_questions": 5, "early_rounds": 1, "later_questions": 3, "intent_rounds": 2 }
+}

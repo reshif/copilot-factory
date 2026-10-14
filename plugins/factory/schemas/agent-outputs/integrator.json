@@ -1,0 +1,3 @@
+{ "type": "object", "required": ["status", "summary"], "properties": {
+  "status": { "enum": ["merged", "behavioural_conflict", "failed"] }, "summary": { "type": "string" },
+  "files": { "type": "array", "items": { "type": "string" } } } }

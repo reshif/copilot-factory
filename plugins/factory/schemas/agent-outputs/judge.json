@@ -1,0 +1,9 @@
+{ "type": "object", "required": ["questions", "dismissed"], "properties": {
+  "questions": { "type": "array", "maxItems": 5, "items": { "type": "object", "required": ["question", "category", "why", "default"], "properties": {
+    "question": { "type": "string" }, "category": { "enum": ["intent", "scope", "constraint", "acceptance"] },
+    "why": { "type": "string" }, "default": { "type": "string" },
+    "options": { "type": "array", "maxItems": 5, "items": { "type": "string" } } } } },
+  "held": { "type": "array", "items": { "type": "object", "required": ["question", "category"], "properties": {
+    "question": { "type": "string" }, "category": { "type": "string" } } } },
+  "dismissed": { "type": "array", "items": { "type": "object", "required": ["question", "reason"], "properties": {
+    "question": { "type": "string" }, "reason": { "type": "string" } } } } } }

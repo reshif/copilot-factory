@@ -1,0 +1,9 @@
+{ "$comment": "One line of .factory/jobs/<job>/ledger.jsonl.",
+  "oneOf": [
+    { "type": "object", "required": ["at", "kind", "step", "ok", "bound"], "properties": {
+      "at": { "type": "string" }, "kind": { "const": "step" }, "step": { "type": "string" }, "ok": { "type": "boolean" },
+      "bound": { "type": "object" }, "detail": { "type": "object" } } },
+    { "type": "object", "required": ["at", "kind", "ac", "type", "fingerprint", "pass"], "properties": {
+      "at": { "type": "string" }, "kind": { "const": "evidence" }, "ac": { "type": "string" },
+      "type": { "enum": ["verify", "human", "diff", "doc"] }, "fingerprint": { "type": "string" }, "pass": { "type": "boolean" },
+      "path": { "type": ["string", "null"] }, "source": { "type": "string" }, "note": { "type": "string" } } } ] }

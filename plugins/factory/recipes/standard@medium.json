@@ -1,0 +1,25 @@
+{
+  "id": "standard@medium",
+  "version": 1,
+  "status": "proven",
+  "outcome": "change",
+  "description": "Default for medium risk: grounded design with critique, validated plan, three review lanes.",
+  "applies_to": { "work_type": ["feature", "bug", "refactor", "dependency", "docs", "greenfield"], "risk": ["medium"] },
+  "steps": [
+    { "step": "clarify", "run": "skill:clarify" },
+    { "step": "H1", "run": "gate" },
+    { "step": "ground", "run": "workflow:ground" },
+    { "step": "decide", "run": "workflow:fanout-judge", "config": "decide", "threat_model": "policy" },
+    { "step": "H2", "run": "gate", "when": "adr" },
+    { "step": "decompose", "run": "workflow:decompose" },
+    { "step": "H3", "run": "gate" },
+    { "step": "realize", "run": "workflow:realize" },
+    { "step": "reconcile", "run": "workflow:reconcile" },
+    { "step": "prove", "run": "cli:verify run" },
+    { "step": "challenge", "run": "workflow:fanout-judge", "config": "challenge", "lanes": ["code", "tests", "security"] },
+    { "step": "ship", "run": "skill:ship" },
+    { "step": "H4", "run": "merge" },
+    { "step": "distill", "run": "skill:distill" },
+    { "step": "close", "run": "cli:close" }
+  ]
+}
