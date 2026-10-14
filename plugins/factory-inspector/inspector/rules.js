@@ -234,7 +234,7 @@ function driverFidelity(job) {
     if (windowClosed) {
       for (let r = 0; r < exp.required.length; r++) {
         if (!evs.some(exp.required[r])) {
-          out.push(f({ rule: 'R7.not_done', class: 'deviation', severity: 'medium', subject: `${job.id}:${d.id}`, job: job.id, summary: `factory next said ${d.action} "${d.step || d.skill || d.command}", but ${exp.requiredLabel} never ran before the next decision.`, evidence: [d.id], question: 'Did Claude skip or replace the step it was told to run? Is the skill text unclear here?' }));
+          out.push(f({ rule: 'R7.not_done', class: 'deviation', severity: 'medium', subject: `${job.id}:${d.id}`, job: job.id, summary: `factory next said ${d.action} "${d.step || d.skill || d.command}", but ${exp.requiredLabel} never ran before the next decision.`, evidence: [d.id], question: 'Did Copilot skip or replace the step it was told to run? Is the skill text unclear here?' }));
           break;
         }
       }
@@ -310,7 +310,7 @@ function friction(obs, threshold) {
     if (items.length >= threshold) out.push(f({ rule: 'R9.record_refused', class: 'ambiguity', severity: 'medium', subject: k, summary: `factory record refused ${items.length} workflow results (${k}).`, evidence: [...new Set(items.map((i) => i.job).filter(Boolean))], question: 'Do briefs and envelopes disagree, or do inputs change while workflows run?' }));
   }
   for (const [k, items] of group(ev.filter((e) => ['stop_block', 'subagent_block'].includes(e.event)), (e) => `${e.event}|${e.role || ''}`)) {
-    if (items.length >= threshold) out.push(f({ rule: 'R9.blocked_finish', class: 'ambiguity', severity: 'low', subject: k, summary: `${k.split('|')[0] === 'stop_block' ? 'Claude claimed "done" while floors failed' : `The ${k.split('|')[1]} role tried to finish without its output`} ${items.length} times.`, question: 'Does the skill or role prompt make "done" clear enough?' }));
+    if (items.length >= threshold) out.push(f({ rule: 'R9.blocked_finish', class: 'ambiguity', severity: 'low', subject: k, summary: `${k.split('|')[0] === 'stop_block' ? 'The stop gate blocked the end of a turn while floors failed' : `The ${k.split('|')[1]} role tried to finish without its output`} ${items.length} times.`, question: 'Does the skill or role prompt make "done" clear enough?' }));
   }
   const dec = obs.decisions;
   for (const [rule, parks] of group(dec.filter((d) => d.action === 'parked' && d.rule && d.rule.startsWith('cap.')), (d) => d.rule)) {
@@ -391,7 +391,7 @@ function jobHealth(job, L, now) {
   // R12 hook pushback in this job
   const pushback = [
     ['guard_deny', 'guard_denials_per_job', 'R12.guard_denials', 'guard denials', (items) => `top: ${[...groupBy(items, (e) => norm(e.reason, 70)).entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 2).map(([r, x]) => `${x.length}× ${r}`).join('; ')}`, 'Are the agents\' instructions unclear about this boundary, or is the boundary wrong for this job?'],
-    ['stop_block', 'stop_blocks_per_job', 'R12.stop_blocks', 'blocked "done" claims', (items) => `floors still missing: ${[...new Set(items.flatMap((e) => e.missing || []))].slice(0, 5).join(', ')}`, 'Why does Claude keep calling this job done while floors fail?'],
+    ['stop_block', 'stop_blocks_per_job', 'R12.stop_blocks', 'stop-gate blocks', (items) => `floors still missing: ${[...new Set(items.flatMap((e) => e.missing || []))].slice(0, 5).join(', ')}`, 'Why does Copilot keep ending its turn on this job while floors fail?'],
     ['reply_refused', 'replies_refused_per_job', 'R12.replies_refused', 'refused chat replies', (items) => `codes: ${[...new Set(items.map((e) => e.code || 'unknown'))].join(', ')}`, 'Was the gate presented clearly? Did the document change after it was shown?'],
     ['reply_unparsed', 'replies_unparsed_per_job', 'R12.replies_unparsed', 'messages that looked like replies but weren\'t applied', (items) => `e.g. "${items[0].word}" (meant ${items[0].verb}?)`, 'Are the reply forms hard to remember?'],
   ];
@@ -404,7 +404,7 @@ function jobHealth(job, L, now) {
   for (const [k, items] of groupBy(cli.filter((e) => e.ok === false && e.code !== 'internal'), (e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}|${e.code || 'error'}`)) {
     if (items.length < L.cli_failures) continue;
     const [cmd, code] = k.split('|');
-    out.push(f({ rule: 'R13.cli_failures', class: 'ambiguity', severity: 'medium', subject: `${id}:${k}`, job: id, latest: latest(items), summary: `"factory ${cmd}" failed ${items.length} times in ${id} with ${code}.`, evidence: [...new Set(items.map((e) => e.decision_id).filter(Boolean))].slice(0, 6), question: 'Is Claude retrying blindly? Does the skill say what to do on this error?' }));
+    out.push(f({ rule: 'R13.cli_failures', class: 'ambiguity', severity: 'medium', subject: `${id}:${k}`, job: id, latest: latest(items), summary: `"factory ${cmd}" failed ${items.length} times in ${id} with ${code}.`, evidence: [...new Set(items.map((e) => e.decision_id).filter(Boolean))].slice(0, 6), question: 'Is Copilot retrying blindly? Does the skill say what to do on this error?' }));
   }
   const stale = cli.filter((e) => e.cmd === 'record' && e.status === 'stale');
   if (stale.length >= L.stale_results_per_job) out.push(f({ rule: 'R13.stale_results', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(stale), summary: `${stale.length} workflow results in ${id} were thrown away as stale (inputs changed while the workflow ran).`, evidence: [...new Set(stale.map((e) => e.workflow).filter(Boolean))], question: 'What keeps changing the contract, design or build while workflows run?' }));

@@ -69,7 +69,7 @@ Docs       doc list · doc template <type> · doc check [<file>] [--type t] [--j
 Learning   distill context · distill done · lessons list · lessons add --text "…" --scope "glob,…" [--why "…"]
            telemetry report [--since 30] [--format md] · recipe list|show <id>|check|select --type t --risk r [--epic]
 Console    console [--out file.html] [--job J] [--label "…"] [--data data.json]   (read-only page of every job)
-           console --serve [--port 4477] [--job J]   (the same page, live: updates as Claude works)
+           console --serve [--port 4477] [--job J]   (the same page, live: updates as Copilot works)
 Human only (your terminal, or reply in chat):
            approve [gate] · deny --reason "…" · resume [step] · cancel · abandon · waive <floor> --reason "…"
            merged <commit> · confirm <AC> · lessons accept|reject <L> · lessons promote <L> --check "cmd" · reseal

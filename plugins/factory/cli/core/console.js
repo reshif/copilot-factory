@@ -255,9 +255,9 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       const a = amendments.find((x) => Math.abs(Date.parse(x.submitted_at) - Date.parse(e.ts)) < 5000);
       push({ t: e.ts, type: 'amend', phase: 'submit', id: a ? a.amendment : null, step: null, text: a ? `Submitted: ${(a.changed_criteria || []).length} criteria changed, ${(a.affected || []).length} step(s) affected` : 'Amendment submitted for your approval', affected: a ? a.affected || [] : [] });
     }
-    if (e.event === 'guard_deny') push({ t: e.ts, type: 'guard', step: ids.has(stepOfDecision[e.decision_id]) ? stepOfDecision[e.decision_id] : null, text: short(`Guard blocked ${e.tool || 'a tool call'}: ${e.reason || ''}`, 200), who: e.agent_type ? String(e.agent_type) : 'Claude (main session)', target: e.target ? short(String(e.target), 160) : null });
+    if (e.event === 'guard_deny') push({ t: e.ts, type: 'guard', step: ids.has(stepOfDecision[e.decision_id]) ? stepOfDecision[e.decision_id] : null, text: short(`Guard blocked ${e.tool || 'a tool call'}: ${e.reason || ''}`, 200), who: e.agent_type ? String(e.agent_type) : 'Copilot (main session)', target: e.target ? short(String(e.target), 160) : null });
     if (e.event === 'hook_error') push({ t: e.ts, type: 'hook_error', step: ids.has(stepOfDecision[e.decision_id]) ? stepOfDecision[e.decision_id] : null, text: short(`The ${e.hook || 'factory'} hook failed${e.tool ? ` on ${e.tool}` : ''}: ${e.message || ''}`, 200) });
-    if (e.event === 'stop_block') push({ t: e.ts, type: 'stop_block', step: null, text: short(`The Stop hook refused a "done" claim: ${(e.missing || []).join(', ') || 'floors not met'}`, 200) });
+    if (e.event === 'stop_block') push({ t: e.ts, type: 'stop_block', step: null, text: short(`The stop gate sent the agent back to work: ${(e.missing || []).join(', ') || 'floors not met'}`, 200) });
     if (e.event === 'reply_unparsed') push({ t: e.ts, type: 'unparsed', step: null, text: short(`A message looked like "${e.verb || 'a reply'}" but was not applied ("${e.word || ''}")`, 200) });
     if (e.event === 'reply_refused') push({ t: e.ts, type: 'refused', step: null, text: short(`Reply refused: ${e.reason || e.code || ''}`, 200) });
   }
@@ -449,7 +449,7 @@ function runServe(root, { port, job, label }) {
   if (!Number.isInteger(p) || p < 0 || p > 65535) fail('--port must be a number from 0 to 65535', 'bad_input');
   serve(root, {
     port: p, job, label,
-    onReady: ({ url }) => process.stdout.write(JSON.stringify({ serving: url, jobs: job ? [job] : 'all', message: `Open ${url} to watch the factory live. It updates as Claude works; Ctrl-C stops it.` }, null, 2) + '\n'),
+    onReady: ({ url }) => process.stdout.write(JSON.stringify({ serving: url, jobs: job ? [job] : 'all', message: `Open ${url} to watch the factory live. It updates as Copilot works; Ctrl-C stops it.` }, null, 2) + '\n'),
   }).server.on('error', (e) => {
     process.stdout.write(JSON.stringify({ error: true, code: e.code === 'EADDRINUSE' ? 'port_in_use' : 'internal', message: e.code === 'EADDRINUSE' ? `Port ${p} is in use: is a console already serving? Try --port 0 for any free port.` : e.message }, null, 2) + '\n');
     process.exitCode = 1;
