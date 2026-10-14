@@ -35,13 +35,15 @@ The inspector has its own implementations of three things: seal verification, re
 | R11 log integrity | gap | Lines in `events.jsonl`, `decisions.jsonl` or a ledger that aren't JSON at all (a crashed or concurrent write) |
 | R12 hook pushback | ambiguity | Per job, over a limit: guard denials, blocked stops (agentStop), refused replies, look-alike replies that weren't applied |
 | R13 CLI failures | gap / ambiguity | A `factory` command crashed (internal error, factory-wide); the same command failing with the same code again and again in a job; workflow results thrown away as stale |
-| R14 workflows and agents | ambiguity | Workflow errors; steps that went on degraded (agents with no result after a retry); agent retries, failures and model escalations over a limit; `factory run` agents that timed out or exited with an error, and a Copilot CLI that could not be started or used (`R14.copilot_unavailable`, high); the same step recorded as failed again and again |
+| R14 workflows and agents | ambiguity | Workflow errors; steps that went on degraded (agents with no result after a retry); agent retries, failures and model escalations over a limit; `factory run` agents that timed out or exited with an error, and a Copilot CLI that could not be started or used (`R14.copilot_unavailable`, high); the same step recorded as failed again and again (a clarify or ground round that stopped to ask you questions is not a failure) |
 | R15 orphaned agents | gap | Agents that started and never reported stopping (after the job ended, or after a time limit) |
 | R16 parks and resumes | ambiguity | A job parked, or resumed past its caps, more than a limit |
 | R17 idle job | gap | Active, not waiting for you, and nothing has happened for a long time |
 | R18 slow reply | ambiguity | A gate that waited longer than a limit for your reply |
 | R19 clarify | ambiguity | A job parked because its intent was still unclear after the intent rounds; clarify proposing questions over the round budget or already asked (dropped by the CLI) beyond a limit |
 | R20 grounded intent | ambiguity | Clarify asked you questions its research could have answered (repo or world unknowns), with the reason research gave (web off — low severity, a setting to revisit — no web access, sources disagree, budget spent); evidence-backed assumptions you changed or dropped (low severity: a learning signal that the evidence was wrong or the point was yours to decide). From the job's `kind: intent` ledger entries, its `intent-evidence.json` and your `change`/`drop` replies |
+| R21 review regression | deviation / ambiguity | A finding confirmed serious in one review round found again in a later round (same file and lane + rule, or a line within ±10, or the same summary): the fix was lost. High when the later round let it through (downgraded, minor, unconfirmed — what older factory versions did); medium when it blocked again. From the job's `challenge` ledger records |
+| R22 reconcile drop | deviation | Reconcile's regression guard caught a merge or conflict resolution that dropped lines already-merged tasks or fix rounds had added (high). From the job's failed `reconcile` ledger records |
 
 ## Use
 
@@ -69,7 +71,7 @@ All hooks read Copilot payloads in either casing (`toolName`/`toolArgs` or `tool
 
 A finding marked fixed that is seen again reopens automatically (marked ↺).
 
-A finding from the health rules (R10–R20) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
+A finding from the health rules (R10–R22) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
 
 **CLI** (`factory-inspect`; `factory shim` puts it on your PATH, or run `node <plugin folder>/bin/factory-inspect`: the folder is `~/.copilot/installed-plugins/copilot-factory/factory-inspector` for a GitHub install (under `$COPILOT_HOME` if set), or `<your clone>/plugins/factory-inspector` for a marketplace added from a local folder; `copilot plugin list --json` tells you which): `run [--job J | --all | --active]` · `report [--format md]` (findings plus a **Factory health** section) · `health [--format md]` · `status` · `show F3` · `trace --job J`. The commands `mark` and `mode` are human-only: use them from your own terminal, or reply in chat.
 
