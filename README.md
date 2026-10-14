@@ -85,11 +85,13 @@ copilot plugin install factory-inspector@copilot-factory   # optional, recommend
 
 Run `/plugin` (or `copilot plugin list`) to check that both are listed with the versions above. The docs say plugin agents and skills are available as soon as they are installed. If they don't show up, restart the CLI (`/restart`).
 
-**Put `factory` and `factory-inspect` on your PATH.** Copilot does not put a plugin's `bin/` on the PATH. Inside a session, each plugin's session-start hook gives Copilot the absolute command (`node "<plugin root>/bin/factory"`, `node "<plugin root>/bin/factory-inspect"`), so the skills work without it. For your own terminal (`factory console --serve`, `factory-inspect report`, and the human-only commands), run this once:
+**Put `factory` and `factory-inspect` on your PATH.** Copilot does not put a plugin's `bin/` on the PATH, and the plugin folder is outside your workspace, so without the link Copilot asks for permission before every `node "<plugin root>/bin/factory" …` it runs (and refuses it in `copilot -p`). With `factory` on the PATH the skills run `factory …` and there is nothing to approve (checked on CLI 1.0.97). The session-start hook says which case you're in. Run this once, in your own terminal:
 
 ```bash
 node "${COPILOT_HOME:-$HOME/.copilot}/installed-plugins/copilot-factory/factory/bin/factory" shim
 ```
+
+If you'd rather not link anything, allow the plugin folder instead: `/add-dir <plugin root>` in a session, or start Copilot with `copilot --add-dir <plugin root>` (the session-start hook prints the exact path).
 
 **Where the plugins live.** That path is right for the install above, from GitHub: Copilot copies each plugin to `installed-plugins/copilot-factory/<plugin>/` under `~/.copilot`, or under `COPILOT_HOME` when that is set. A marketplace added from a local folder (`copilot plugin marketplace add <your clone>`) is different: Copilot loads it live from that folder and copies nothing, so use `node <your clone>/plugins/factory/bin/factory shim` instead. To see which case you have, run `copilot plugin list --json`. `"source": "installed"` means the copied folder; `"source": "live"` means the plugin runs from `<installedFrom>/plugins/<plugin>/`.
 
@@ -299,18 +301,20 @@ Rule table and CLI: [`plugins/factory-inspector/README.md`](plugins/factory-insp
 
 ## Hooks
 
-Both plugins ship hooks in Copilot's own format (`hooks/hooks.json`, `{ "version": 1, "hooks": { "<event>": [ … ] } }`, camelCase events). Every script reads its input through one normaliser that accepts Copilot's camelCase payloads (`toolName`, `toolArgs`) and the snake_case ones (`tool_name`, `tool_input`).
+Both plugins ship hooks in Copilot's own format, in `hooks.json` at the plugin root (the place both the Copilot CLI and VS Code read for this plugin format; `{ "version": 1, "hooks": { "<event>": [ … ] } }`, camelCase events). Every script reads its input through one normaliser that accepts Copilot's camelCase payloads (`toolName`, `toolArgs`) and the snake_case ones (`tool_name`, `tool_input`).
+
+**They stay out of your way.** The guard denies only clear violations, and the stop gate nudges at most once; when a hook isn't sure, it allows. Every launcher starts with its name (`H=factory:guard; …`, so a timeout warning tells you which hook) and ends in `exit 0`: if `node` is missing, too old or crashes, the hook is off with a warning instead of denying every tool. A deny is the documented JSON on stdout (`permissionDecision: "deny"` and the reason, exit 0).
 
 | Plugin | Event | Script | What it does |
 |---|---|---|---|
-| factory | `sessionStart` | `session-start.js` | Tells Copilot about the current job and what's waiting, and gives it the absolute `node "<root>/bin/factory"` command |
-| factory | `userPromptSubmitted` | `prompt.js` | Applies your replies through the CLI and writes the outcome to `.factory/last-reply.json` (shown by `factory next` as `last_reply`); flags look-alikes as not applied. Ignores the stop gate's and Autopilot's continuation prompts |
-| factory | `preToolUse` (shell, file reads and edits, search) | `guard.js` | Blocks writes to protected paths, recipes and policy, and reads of secrets (`.env`, keys, the seal key); keeps builders inside their task's allowed paths; blocks human-only commands however they're typed (including into an interactive shell); inside a `factory run` agent, allows only the factory commands that role is briefed for. Denies with `permissionDecision: "deny"` and exit code 2 |
+| factory | `sessionStart` | `session-start.js` | Tells Copilot about the current job and what's waiting, and how to run the CLI: `factory` if it's on your PATH, otherwise the absolute `node "<root>/bin/factory"` plus how to stop the permission prompts (`factory shim`, or `/add-dir <plugin root>`) |
+| factory | `userPromptSubmitted` | `prompt.js` | Applies your replies through the CLI and writes the outcome to `.factory/last-reply.json` (shown by `factory next` as `last_reply`); flags look-alikes as not applied. Notes in `.factory/turn.json` whether your message was factory work (`/factory:…` or a reply). Ignores the stop gate's and Autopilot's continuation prompts |
+| factory | `preToolUse` (shell, file reads and edits, search) | `guard.js` | Blocks writes to protected paths, recipes and policy, and reads of secrets (`.env`, keys, the seal key; `.env.example` and other templates are not secrets); keeps builders inside their task's allowed paths; blocks human-only commands however they're run (wrappers like `env`/`sudo`/`xargs`, `bash -c`, `eval`, `$(…)`, a variable or alias set to the CLI, an interactive shell); inside a `factory run` agent, allows only the factory commands that role is briefed for. Shell commands are read like a shell would: only what *runs* counts, so `grep "factory approve" docs/`, `echo`, commit messages, `gh --body`, heredocs and `$HOME/…` commands are fine |
 | factory | `postToolUse`, `subagentStart` | `activity.js` | Appends a sealed line per event to `.factory/log/events.jsonl` |
 | factory | `subagentStop` | `subagent-stop.js` | Records that an agent finished |
-| factory | `agentStop` | `stop.js` | The stop gate: sends Copilot back to work while the current job is active, nothing waits on you (no gate, not parked, no open questions, last `factory next` not `wait` or `done`) and floors are unmet; also blocks a false "done" while a gate waits on you. Reasons start with `[factory stop gate]`. At most 3 blocks in a row (Copilot's own limit is 8). Off inside `factory run` agents |
+| factory | `agentStop` | `stop.js` | The stop gate: **at most once per routing decision**, it sends Copilot back when this turn was factory work and the step `factory next` assigned hasn't been started (job active, floors unmet, nothing waiting on you, no `factory run` in progress, not ending with a question to you). Reasons start with `[factory stop gate]`. Never for a turn that only answered you; off inside `factory run` agents |
 | inspector | `postToolUse` (shell) | `after-close.js` | Inspects right after `factory close / cancel / abandon` |
-| inspector | `agentStop` · `sessionStart` | `catch-up.js` · `session-start.js` | Inspects jobs that ended any other way |
+| inspector | `agentStop` · `sessionStart` | `catch-up.js` · `session-start.js` | Inspects jobs that ended any other way (at the end of a turn in a background process, so the hook itself stays fast) |
 | inspector | `userPromptSubmitted` · `preToolUse` | `prompt.js` · `guard.js` | Applies your finding replies and reports what the end-of-turn catch-up found; keeps marking and modes human-only |
 
 A hook that fails never breaks the Copilot CLI, but it leaves a `hook_error` event, which the inspector reports. Copilot treats a hook that **times out** as allowing the action (fail open), so the guard is kept fast.
@@ -342,6 +346,7 @@ Project overrides go in `.factory/policy.json` (you edit it; agents can't). Defa
 - `agents.model_ids` maps each alias to a Copilot model id. The ids above are examples from the Copilot CLI's supported-models list; the defaults are in `default-policy.json`. Any id your plan offers works, including non-Claude models.
 - `limits.max_parallel_agents` caps how many `copilot -p` processes `factory run` runs at once (default 4). Keep it at or below what your plan allows for concurrent sessions.
 - `copilot.flags` adds flags to every `copilot -p` call the runner makes, for example `--reasoning-effort` or extra `--deny-tool` patterns (see `factory run --dry-run` for the full command line).
+- `secret_paths` are the files the guard won't let agents read or write (`.env`, `.env.*`, keys, `.npmrc`, credentials). `secret_exempt` lists templates that are never secrets: by default `.env.example`, `.env.sample`, `.env.template`, `.env.dist` and any `*.example` / `*.sample` / `*.template` / `*.dist`. Add a name there (e.g. `"**/.env.test"`) if your project keeps no secrets in it; your list replaces the default one, and the template suffixes stay exempt either way.
 - `COPILOT_BIN` (environment) points `factory run` at a different `copilot` binary. The tests use it to run a fake.
 
 Every workflow agent runs as its real factory custom agent (`agents/<role>.agent.md`), so each role's tool list applies. The read-only roles (researcher, analysts, option generators, reviewers, verifier, tester, God Eye, judge, lesson-writer) have no file-edit tool, but all of them except the judge have a shell (`execute`), and `factory run` pre-approves tools, so a shell command could still write files. What actually limits them: their tool list, the guard (no writes to protected paths, factory state, the plugin or secrets; builders stay inside their task's allowed paths; only the factory commands the role is briefed for, which the CLI enforces too), the task worktree a builder or tester works in, and `factory record`, which re-checks every result before it counts.
@@ -372,7 +377,8 @@ plugins/factory/
   agents/                           19 custom agents (<role>.agent.md): intent-analyst, judge, god-eye, researcher,
                                     option-generator, threat-modeler, architect, planner, slicer, builder, tester, integrator,
                                     code/test/security/ux-reviewer, finding-verifier, epic-reviewer, lesson-writer
-  hooks/                            hooks.json (Copilot format) + the scripts in the table above
+  hooks.json                        the hooks (Copilot format, at the plugin root)
+  hooks/                            the scripts in the table above (+ shell.js, the guards' shell reader)
   cli/                              the factory CLI: main.js, core/ (router, record, floors, run, ship, console, doc …), lib/
   workflows/                        ground · fanout-judge · decompose · realize · reconcile (run by factory run)
   config/workflows/                 fan-out configs: clarify · decide · challenge
@@ -424,7 +430,10 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 | An agent fails because its model is rejected (`--model`) | The id isn't on your plan. Set `policy.agents.model_ids` in `.factory/policy.json` to ids that `/model` lists, or remove the role from `policy.agents.models` so it uses your default model |
 | An agent's result is rejected | The runner asks once for a correction, then records the agent as failed. The workflow goes on degraded or retries per its rules; `/factory:why` and the console show which agent and why |
 | Your `approve` was ignored | It must be the whole message. `factory next` shows `last_reply` with the reason and the accepted forms |
-| Copilot keeps going when you wanted it to stop | That is the stop gate: the job has steps left and nothing waits on you. Say what you want instead, or `cancel job` |
+| Copilot keeps going when you wanted it to stop | That is the stop gate, once: in a factory turn, `factory next` gave Copilot a step it didn't start. It doesn't repeat for the same step and never fires on a turn that only answered you. Say what you want instead, or `cancel job` |
+| Hooks seem to block repeatedly | Look at what was blocked: `grep -E 'guard_deny\|stop_block\|hook_error' .factory/log/events.jsonl \| tail`. `[factory guard] …` is a deny with its reason; `[factory stop gate] …` is the once-per-step nudge. Run `/env` to see every hook source: a second install of the plugins, or old claude-factory hooks in `.claude/settings*.json`, `.github/hooks/` or `~/.copilot/settings.json`, run too. Update to CLI 1.0.97+ (older ones could bring back disabled plugins' hooks on `--resume`) |
+| Copilot asks permission for every `node "…/bin/factory" …` (or `-p` says "Permission denied because no interactive user response was available") | The plugin folder is outside your workspace. Run `factory shim` once (see Install) so the skills call `factory` by name, or `/add-dir <plugin root>` / `copilot --add-dir <plugin root>`. Not the guard: the guard's messages start with `[factory guard]` |
+| `Hook command timed out after N seconds: H=factory:…` | The name after `H=` is the hook. Timeouts allow the action; if it repeats, check the disk and `node` start-up time, and report it |
 | A job is parked | `/factory:why` shows why; reply `resume` for one more round, or `deny` / `cancel job` |
 | Hooks don't seem to run | Trust the folder, check `/env`, and check `disableAllHooks` isn't set in `~/.copilot/settings.json`, `.github/copilot/settings(.local).json` or `.claude/settings(.local).json` |
 | Hooks print "node is not on PATH; factory hooks are off" (or "inspector hooks are off") | The hooks need `node` on the PATH Copilot runs them with. Without it every factory and inspector hook exits quietly with that warning, so **the guard allows everything** and replies aren't applied. Install Node 18+ or fix the PATH, then `/restart`. (`factory doctor` checks the Node version it runs on, but it can't see the hooks' PATH.) |
@@ -444,9 +453,11 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 - [x] All 19 agents load as `factory:<role>`, and `--agent factory:<role>` loads the plugin's agent in `-p` even when the project has its own agent of the same name.
 - [x] Slash commands are `/factory:start`, `/factory:why`, `/factory:console`, `/factory:review` and `/factory-inspector:inspect`; the seven step skills are not user-invocable.
 - [x] These hooks fire in `-p`, without trusting the folder: `sessionStart`, `userPromptSubmitted`, `preToolUse`, `postToolUse`, `agentStop`, `sessionEnd`, `subagentStart` and `subagentStop` (subagent events carry `agentName`).
-- [x] The guard's deny (`permissionDecision: "deny"` plus exit 2) works: `factory approve` and `echo … > .factory/policy.json` were refused.
+- [x] The guard's deny (`permissionDecision: "deny"` on stdout, exit 0, the documented form) works and shows the reason: `factory approve` was refused with `Denied by preToolUse hook: [factory guard] …`, while `grep -rn "factory approve" README.md` and `ls .factory/ 2>/dev/null` ran.
+- [x] `hooks.json` at the plugin root loads (both plugins' hooks fire); the launchers end in `exit 0`.
+- [x] `factory …` through a PATH link (`factory shim`) runs in `-p` without `--add-dir`; the absolute `node "<plugin root>/bin/factory" …` is refused there.
 - [x] `sessionStart`'s `additionalContext` reaches the model, and so does `userPromptSubmitted`'s (inside a system reminder), although Copilot's reference says the latter is dropped. The factory still doesn't rely on it: `factory next` shows `last_reply`.
-- [x] An `agentStop` block (`decision: "block"`) forces another turn. The block reason comes back as a new prompt, so it also fires `userPromptSubmitted`. `stop_hook_active` is `false` on the first stop and `true` after that, and the CLI's own cap of 8 blocks in a row ends the loop. (Fixed since: the reply hook no longer resets the factory's counter on those continuation prompts, so the factory's own cap of 3 ends it first.)
+- [x] An `agentStop` block (`decision: "block"`) forces another turn. The block reason comes back as a new prompt, so it also fires `userPromptSubmitted`. `stop_hook_active` is `false` on the first stop and `true` after that, and the CLI's own cap of 8 blocks in a row ends the loop. (Fixed since: the stop gate blocks at most once per routing decision, only in factory turns. Real sessions: a question about another file in a repo with an active job, a turn ending "Should I continue with the job?" (3 runs) and one ending "…Reply and I will start it." are no longer blocked; a `/factory:start` turn that abandoned its step is blocked once.)
 - [x] `-s` with `--output-format json` still prints JSONL with a top-level `assistant.message` event, which is what `factory run` reads.
 - [x] Retry by resume works: reusing a `--session-id` resumes that session.
 - [x] `factory run --dry-run` prints the right commands, with no `--model` by default.

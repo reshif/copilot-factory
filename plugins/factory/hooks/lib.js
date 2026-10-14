@@ -14,9 +14,10 @@
 // Paths come from path / file_path / filePath / notebook_path, plus every file an
 // apply_patch body touches (*** Update File: / *** Add File: / *** Delete File: / *** Move to:).
 //
-// Output (§5): flat fields only. Deny = stdout {permissionDecision:'deny', permissionDecisionReason}
-// AND exit 2 with the reason on stderr; context = top-level additionalContext; stop block =
-// top-level {decision:'block', reason}.
+// Output (§5): flat fields only, always exit 0. Deny = stdout {permissionDecision:'deny',
+// permissionDecisionReason}; context = top-level additionalContext; stop block = top-level
+// {decision:'block', reason}. The hooks.json launchers also end in `exit 0`, so a node that
+// crashes, is too old or is killed fails open instead of "Denied by preToolUse hook (hook errored)".
 
 const fs = require('fs');
 const path = require('path');
@@ -202,16 +203,22 @@ function readInput() {
   }
 }
 
+// One JSON object on stdout, written synchronously (process.exit right after an async pipe
+// write could cut it short; output that doesn't parse is ignored by Copilot).
 function emit(obj) {
-  process.stdout.write(JSON.stringify(obj));
+  try {
+    fs.writeSync(1, JSON.stringify(obj));
+  } catch {
+    process.stdout.write(JSON.stringify(obj));
+  }
 }
 
-// preToolUse deny: the flat JSON on stdout (merged with the deny) and exit 2 with the
-// reason on stderr — exit 2 denies even if the JSON were ignored (hooks.md §5.1).
+// preToolUse deny, the documented way: {permissionDecision:'deny', permissionDecisionReason}
+// on stdout and exit 0 (Copilot CLI hooks reference; verified on CLI 1.0.97: the tool is
+// denied and the reason reaches the model). No exit 2 and nothing on stderr: exit 2 is the
+// CLI's warning channel and showed every deny as a hook error.
 function deny(reason) {
   emit({ permissionDecision: 'deny', permissionDecisionReason: reason });
-  process.stderr.write(`${reason}\n`);
-  process.exitCode = 2;
 }
 
 function context(text) {
@@ -254,7 +261,7 @@ function traceError(input, e) {
 
 // Runs a hook: fn gets the normalised input. The event name comes from the payload
 // (hook_event_name) or, for camelCase payloads that carry none, from argv[2] (hooks.json
-// passes it). Exit code: 2 after a deny, else 0 — a crash is traced and fails open
+// passes it). Always exits 0 (a deny is the JSON) — a crash is traced and fails open
 // (a non-zero exit would deny every tool in Copilot, hooks.md §5.1).
 function safe(fn) {
   let input = { cwd: process.cwd(), event: process.argv[2] || null };
@@ -265,7 +272,7 @@ function safe(fn) {
     if (process.env.FACTORY_HOOK_DEBUG) process.stderr.write(`factory hook error: ${e.stack}\n`);
     traceError(input, e);
   }
-  process.exit(process.exitCode === 2 ? 2 : 0);
+  process.exit(0);
 }
 
 function realpath(p) {

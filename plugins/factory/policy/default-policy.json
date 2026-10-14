@@ -57,6 +57,16 @@
     "**/credentials",
     "**/credentials.json"
   ],
+  "secret_exempt": [
+    "**/.env.example",
+    "**/.env.sample",
+    "**/.env.template",
+    "**/.env.dist",
+    "**/*.example",
+    "**/*.sample",
+    "**/*.template",
+    "**/*.dist"
+  ],
   "checks": [],
   "limits": {
     "max_intent_rounds": 4,

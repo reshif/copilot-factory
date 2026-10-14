@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "description": "Software Factory enforcement for the GitHub Copilot CLI: agents propose, the CLI and these hooks decide. Native Copilot format (camelCase events, flat outputs); no matchers — each script filters by the normalised tool name. Each command starts with H=<plugin>:<hook>, so a timeout warning names the hook. Every launcher ends in exit 0: if node is missing, too old or crashes, the hooks are off with a warning on stderr instead of denying every tool (a deny is JSON on stdout).",
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "H=factory:session; R=$PLUGIN_ROOT; [ -n \"$R\" ] || R=$COPILOT_PLUGIN_ROOT; [ -n \"$R\" ] || R=$CLAUDE_PLUGIN_ROOT; [ -f \"$R/hooks/session-start.js\" ] || { echo \"[$H] hook script $R/hooks/session-start.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[$H] node is not on PATH; factory hooks are off (the guard allows everything)\" >&2; exit 0; }; node \"$R/hooks/session-start.js\" sessionStart || echo \"[$H] hook failed (exit $?); allowed\" >&2; exit 0",
+        "powershell": "$h='factory:session'; $r=$env:PLUGIN_ROOT; if (-not $r) { $r=$env:COPILOT_PLUGIN_ROOT }; if (-not $r) { $r=$env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/session-start.js\")) { [Console]::Error.WriteLine(\"[$h] hook script $r/hooks/session-start.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[$h] node is not on PATH; factory hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/session-start.js\" sessionStart; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"[$h] hook failed (exit $LASTEXITCODE); allowed\") }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "H=factory:prompt; R=$PLUGIN_ROOT; [ -n \"$R\" ] || R=$COPILOT_PLUGIN_ROOT; [ -n \"$R\" ] || R=$CLAUDE_PLUGIN_ROOT; [ -f \"$R/hooks/prompt.js\" ] || { echo \"[$H] hook script $R/hooks/prompt.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[$H] node is not on PATH; factory hooks are off (the guard allows everything)\" >&2; exit 0; }; node \"$R/hooks/prompt.js\" userPromptSubmitted || echo \"[$H] hook failed (exit $?); allowed\" >&2; exit 0",
+        "powershell": "$h='factory:prompt'; $r=$env:PLUGIN_ROOT; if (-not $r) { $r=$env:COPILOT_PLUGIN_ROOT }; if (-not $r) { $r=$env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/prompt.js\")) { [Console]::Error.WriteLine(\"[$h] hook script $r/hooks/prompt.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[$h] node is not on PATH; factory hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/prompt.js\" userPromptSubmitted; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"[$h] hook failed (exit $LASTEXITCODE); allowed\") }; exit 0",
+        "timeoutSec": 30
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "H=factory:guard; R=$PLUGIN_ROOT; [ -n \"$R\" ] || R=$COPILOT_PLUGIN_ROOT; [ -n \"$R\" ] || R=$CLAUDE_PLUGIN_ROOT; [ -f \"$R/hooks/guard.js\" ] || { echo \"[$H] hook script $R/hooks/guard.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[$H] node is not on PATH; factory hooks are off (the guard allows everything)\" >&2; exit 0; }; node \"$R/hooks/guard.js\" preToolUse || echo \"[$H] hook failed (exit $?); allowed\" >&2; exit 0",
+        "powershell": "$h='factory:guard'; $r=$env:PLUGIN_ROOT; if (-not $r) { $r=$env:COPILOT_PLUGIN_ROOT }; if (-not $r) { $r=$env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/guard.js\")) { [Console]::Error.WriteLine(\"[$h] hook script $r/hooks/guard.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[$h] node is not on PATH; factory hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/guard.js\" preToolUse; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"[$h] hook failed (exit $LASTEXITCODE); allowed\") }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "H=factory:activity; R=$PLUGIN_ROOT; [ -n \"$R\" ] || R=$COPILOT_PLUGIN_ROOT; [ -n \"$R\" ] || R=$CLAUDE_PLUGIN_ROOT; [ -f \"$R/hooks/activity.js\" ] || { echo \"[$H] hook script $R/hooks/activity.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[$H] node is not on PATH; factory hooks are off (the guard allows everything)\" >&2; exit 0; }; node \"$R/hooks/activity.js\" postToolUse || echo \"[$H] hook failed (exit $?); allowed\" >&2; exit 0",
+        "powershell": "$h='factory:activity'; $r=$env:PLUGIN_ROOT; if (-not $r) { $r=$env:COPILOT_PLUGIN_ROOT }; if (-not $r) { $r=$env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/activity.js\")) { [Console]::Error.WriteLine(\"[$h] hook script $r/hooks/activity.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[$h] node is not on PATH; factory hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/activity.js\" postToolUse; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"[$h] hook failed (exit $LASTEXITCODE); allowed\") }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "subagentStart": [
+      {
+        "type": "command",
+        "bash": "H=factory:subagent-start; R=$PLUGIN_ROOT; [ -n \"$R\" ] || R=$COPILOT_PLUGIN_ROOT; [ -n \"$R\" ] || R=$CLAUDE_PLUGIN_ROOT; [ -f \"$R/hooks/activity.js\" ] || { echo \"[$H] hook script $R/hooks/activity.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[$H] node is not on PATH; factory hooks are off (the guard allows everything)\" >&2; exit 0; }; node \"$R/hooks/activity.js\" subagentStart || echo \"[$H] hook failed (exit $?); allowed\" >&2; exit 0",
+        "powershell": "$h='factory:subagent-start'; $r=$env:PLUGIN_ROOT; if (-not $r) { $r=$env:COPILOT_PLUGIN_ROOT }; if (-not $r) { $r=$env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/activity.js\")) { [Console]::Error.WriteLine(\"[$h] hook script $r/hooks/activity.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[$h] node is not on PATH; factory hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/activity.js\" subagentStart; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"[$h] hook failed (exit $LASTEXITCODE); allowed\") }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "bash": "H=factory:subagent-stop; R=$PLUGIN_ROOT; [ -n \"$R\" ] || R=$COPILOT_PLUGIN_ROOT; [ -n \"$R\" ] || R=$CLAUDE_PLUGIN_ROOT; [ -f \"$R/hooks/subagent-stop.js\" ] || { echo \"[$H] hook script $R/hooks/subagent-stop.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[$H] node is not on PATH; factory hooks are off (the guard allows everything)\" >&2; exit 0; }; node \"$R/hooks/subagent-stop.js\" subagentStop || echo \"[$H] hook failed (exit $?); allowed\" >&2; exit 0",
+        "powershell": "$h='factory:subagent-stop'; $r=$env:PLUGIN_ROOT; if (-not $r) { $r=$env:COPILOT_PLUGIN_ROOT }; if (-not $r) { $r=$env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/subagent-stop.js\")) { [Console]::Error.WriteLine(\"[$h] hook script $r/hooks/subagent-stop.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[$h] node is not on PATH; factory hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/subagent-stop.js\" subagentStop; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"[$h] hook failed (exit $LASTEXITCODE); allowed\") }; exit 0",
+        "timeoutSec": 15
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "H=factory:stop; R=$PLUGIN_ROOT; [ -n \"$R\" ] || R=$COPILOT_PLUGIN_ROOT; [ -n \"$R\" ] || R=$CLAUDE_PLUGIN_ROOT; [ -f \"$R/hooks/stop.js\" ] || { echo \"[$H] hook script $R/hooks/stop.js not found; hook skipped\" >&2; exit 0; }; command -v node >/dev/null 2>&1 || { echo \"[$H] node is not on PATH; factory hooks are off (the guard allows everything)\" >&2; exit 0; }; node \"$R/hooks/stop.js\" agentStop || echo \"[$H] hook failed (exit $?); allowed\" >&2; exit 0",
+        "powershell": "$h='factory:stop'; $r=$env:PLUGIN_ROOT; if (-not $r) { $r=$env:COPILOT_PLUGIN_ROOT }; if (-not $r) { $r=$env:CLAUDE_PLUGIN_ROOT }; if (-not (Test-Path \"$r/hooks/stop.js\")) { [Console]::Error.WriteLine(\"[$h] hook script $r/hooks/stop.js not found; hook skipped\"); exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine(\"[$h] node is not on PATH; factory hooks are off (the guard allows everything)\"); exit 0 }; node \"$r/hooks/stop.js\" agentStop; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"[$h] hook failed (exit $LASTEXITCODE); allowed\") }; exit 0",
+        "timeoutSec": 30
+      }
+    ]
+  }
+}

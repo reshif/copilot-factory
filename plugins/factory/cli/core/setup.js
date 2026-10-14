@@ -35,7 +35,7 @@ function secretPolicy(dir) {
 function isSecret(rel, globs) {
   const { matchesAny } = require('../lib/glob');
   const name = path.basename(rel);
-  if (/\.example$|\.sample$|\.template$/.test(name)) return false;
+  if (/\.(example|sample|template|dist)$/i.test(name)) return false; // .env.example & co. are templates, not secrets (policy.secret_exempt)
   return matchesAny(rel, globs) || matchesAny(name, globs.map((g) => g.replace(/^\*\*\//, '')));
 }
 

@@ -764,4 +764,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { run, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, WORKFLOWS };
+module.exports = { run, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };
