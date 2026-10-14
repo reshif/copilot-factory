@@ -219,7 +219,7 @@ function expectationsFor(d) {
   if (d.action === 'skill') {
     if (d.skill === 'clarify') return wf('fanout-judge', 'clarify');
     if (d.skill === 'ship') return { required: [(e) => e.cmd === 'ship'], requiredLabel: 'factory ship', allowed: new Set(['report', 'ship', 'pr', 'ci']) };
-    if (d.skill === 'distill') return { required: [(e) => cmdKey(e) === 'distill:done'], requiredLabel: 'factory distill done', allowed: new Set(['distill:done', 'lessons:add']) };
+    if (d.skill === 'distill') return { required: [(e) => cmdKey(e) === 'distill:done'], requiredLabel: 'factory distill done', allowed: new Set(['distill:write', 'distill:done', 'lessons:add']) };
     if (d.skill === 'amend') return { required: [(e) => e.cmd === 'amend'], requiredLabel: 'factory amend start/submit', allowed: new Set(['amend']) };
     return { required: [], allowed: new Set() };
   }
