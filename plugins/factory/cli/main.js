@@ -84,11 +84,39 @@ function out(obj, opt) {
   else process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
 }
 
+// Inside a `factory run` agent (FACTORY_RUNNER=1) only what agents are briefed to run is
+// allowed: driving the job and every human-only verb belong to the main session and the
+// human. The guard hook blocks these by command text (hooks/guard-rules.js AGENT_ALLOWED,
+// same list); this is the same rule in the CLI itself, whatever way the command was built.
+const AGENT_ALLOWED = {
+  help: '*',
+  why: '*',
+  report: '*',
+  job: ['show', 'list'],
+  contract: ['show', 'check'],
+  plan: ['validate'],
+  task: ['start', 'show', 'verify'],
+  reconcile: ['run', 'continue', 'abort'],
+  doc: ['list', 'template', 'check', 'index'],
+  lessons: ['list', 'add'],
+  recipe: ['list', 'show', 'check', 'select'],
+  telemetry: ['report'],
+};
+
+function agentAllowed(cmd, sub) {
+  if (cmd === undefined) return true;
+  const ok = AGENT_ALLOWED[cmd];
+  return ok === '*' || (Array.isArray(ok) && ok.includes(sub));
+}
+
 function run(argv) {
   const { pos, opt } = parseArgs(argv);
   if (opt.root) process.env.FACTORY_ROOT = path.resolve(opt.root);
   const cmd = pos[0];
   const sub = pos[1];
+  if (process.env.FACTORY_RUNNER === '1' && !agentAllowed(cmd, sub)) {
+    fail(`"factory ${[cmd, sub].filter(Boolean).join(' ')}" is not for a factory agent: driving the job (next, run, record, ship, close …) is the main session's work and approvals are the human's. Do your role's task and reply with your JSON.`, 'agent_not_allowed');
+  }
   const R = () => requireRoot(opt.root);
   const J = opt.job;
   const tty = 'tty';
@@ -423,4 +451,4 @@ function main(argv) {
   return finish(res, null);
 }
 
-module.exports = { main, run, parseArgs, findRoot };
+module.exports = { main, run, parseArgs, findRoot, AGENT_ALLOWED, agentAllowed };

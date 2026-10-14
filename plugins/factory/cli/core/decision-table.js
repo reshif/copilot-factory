@@ -115,7 +115,10 @@ function attemptedSince(root, state) {
       continue;
     }
     if (e.decision_id !== id) continue;
-    if (e.event === 'agent_run') return true;
+    if (e.event === 'agent_run') {
+      if (e.code === 'copilot_unavailable') continue; // Copilot could not start: nothing was tried
+      return true;
+    }
     if (e.event !== 'cli') continue;
     if (LOOKS.has(e.cmd) || LOOKS.has(`${e.cmd}:${e.sub}`)) continue;
     if (e.cmd === 'run' && REFUSED_RUN.has(e.code)) continue;

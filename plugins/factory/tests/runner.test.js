@@ -468,6 +468,9 @@ test('Copilot missing or not signed in: the run aborts with copilot_unavailable 
   assert.match(r.message, /not signed in[\s\S]*\/login/);
   assert.equal(signedOut.log().length, 1, 'the first failure stops the run: no retries, no other agents');
   assert.ok(!events(root).some((e) => e.event === 'cli' && e.cmd === 'record'), 'nothing recorded');
+  const ev = events(root);
+  assert.ok(ev.some((e) => e.event === 'cli' && e.cmd === 'run' && e.code === 'copilot_unavailable' && e.ok === false), 'the failed run is logged with its code');
+  assert.ok(ev.some((e) => e.event === 'agent_run' && e.outcome === 'copilot_unavailable' && e.code === 'copilot_unavailable'), 'and the agent that could not start');
   const n = F.cli(root, ['next']);
   assert.equal(n.skill, 'clarify', 'the job is where it was, not parked');
   assert.equal(n.requery, true, 'a run Copilot could not start is no attempt: no new decision, no repeat counted');
@@ -606,4 +609,33 @@ test('standard@medium through factory run: decide with --threat-model, H2, decom
   assert.equal(again.preflight.ok, true);
   const planner = again.agents.find((a) => a.agent_type === 'factory:planner');
   assert.match(fs.readFileSync(planner.prompt.split('\n').find((l) => l.trim().startsWith('/') && l.trim().endsWith('.md')).trim(), 'utf8') + planner.prompt, /split the test change into its own task/);
+});
+
+test('inside a factory run agent (FACTORY_RUNNER=1) the CLI refuses driving and human-only commands', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const asAgent = (args) => {
+    const r = spawnSync('node', [F.BIN, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', FACTORY_RUNNER: '1' } });
+    let out;
+    try {
+      out = JSON.parse(r.stdout);
+    } catch {
+      out = { raw: r.stdout };
+    }
+    return Object.assign(out, { __code: r.status });
+  };
+  for (const args of [['next'], ['run', 'ground'], ['record', '--file', 'x.json'], ['wfargs', 'ground'], ['ship', '--local'], ['close'], ['init'], ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low'], ['amend', 'start'], ['park', '--reason', 'r'], ['followup'], ['epic', 'spawn'], ['distill', 'done'], ['evidence', 'add', 'AC-1', '--type', 'doc'], ['verify', 'run'], ['approve'], ['deny', 'no'], ['resume'], ['cancel'], ['abandon'], ['waive', 'ci_reverify', 'x'], ['merged', 'abc1234'], ['confirm', 'AC-1'], ['reseal'], ['lessons', 'accept', 'L1'], ['ci', 'install'], ['doctor']]) {
+    const r = asAgent(args);
+    assert.equal(r.code, 'agent_not_allowed', `${args.join(' ')}: ${JSON.stringify(r)}`);
+    assert.equal(r.__code, 1);
+  }
+  const st = F.cli(root, ['job', 'show']);
+  assert.equal(st.last_decision_id, undefined, 'next did not run');
+  assert.equal(st.status, 'active', 'park did not run');
+  for (const args of [['help'], ['why'], ['job', 'show'], ['job', 'list'], ['contract', 'check'], ['contract', 'show'], ['plan', 'validate'], ['lessons', 'list'], ['doc', 'list'], ['telemetry', 'report'], ['task', 'show', 'T1']]) {
+    const r = asAgent(args);
+    assert.notEqual(r.code, 'agent_not_allowed', `${args.join(' ')} is allowed: ${JSON.stringify(r)}`);
+  }
+  assert.ok(events(root).some((e) => e.event === 'cli' && e.cmd === 'next' && e.code === 'agent_not_allowed'), 'refusals are logged');
+  assert.ok(J);
 });

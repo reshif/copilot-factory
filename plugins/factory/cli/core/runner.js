@@ -406,6 +406,7 @@ async function runAgent(ctx, prompt, opts) {
       const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags }), { cwd, env, timeoutSec: S.timeoutSec });
       const u = unavailable(r);
       if (u) {
+        if (!ctx.unavailable) events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, cwd, ms: r.ms, exit: r.code, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [u.detail] });
         ctx.unavailable = ctx.unavailable || { ...u, label: o.label || role };
         throw new Error(`Copilot CLI unavailable: ${u.detail}`);
       }
