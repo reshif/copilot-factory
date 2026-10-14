@@ -1,6 +1,6 @@
 ---
 name: park
-description: Explain why a factory job is parked and what the user can do (resume with one more round, cancel, abandon). Used by factory:start when `factory next` returns parked.
+description: "Explain why a factory job is parked and what the user can do (resume with one more round, cancel, abandon). Used by the start skill when `factory next` returns parked."
 user-invocable: false
 ---
 # Parked
@@ -15,5 +15,5 @@ The CLI parked the job (`reason` in the `factory next` output). Parking is how t
      - **`resume`** — continue; the cap that stopped it gets one more round (for budgets, +50%)
      - **`cancel job`** or **`abandon job`** — stop for good; files are kept
      - **`waive ci_reverify <reason>`** — only when the CI re-verify floor can't be met (no `factory-gate` workflow and no local merge to re-verify)
-     - or tell you what to change (you may then need **factory:amend**).
-3. **Stop.** After the hook applies their reply, continue with `factory next`.
+     - or tell you what to change (you may then need the **amend** skill).
+3. **Stop.** After the reply hook applies their reply, continue with `factory next` (its `last_reply` says whether the reply was applied).

@@ -1,6 +1,6 @@
 ---
 name: intake
-description: Factory intake — read the repo, restate the intent in one line, classify the work type, propose a risk level, decide job vs epic, confirm all of it with the user in one question, and create the job. Used by factory:start for a new request.
+description: "Factory intake — read the repo, restate the intent in one line, classify the work type, propose a risk level, decide job vs epic, confirm all of it with the user in one question, and create the job. Used by the start skill for a new request."
 user-invocable: false
 ---
 # Intake
@@ -16,4 +16,4 @@ user-invocable: false
 7. On confirmation run:
    `factory job new --title "<short title>" --type <type> --risk <risk> [--epic]`
    Tell the user the job id and the recipe the CLI chose (one line). If `risk_raised_by_policy` is true, say so. Write the confirmed restatement into the contract's **Intent** section (Problem, Who, Outcome) straight away.
-8. Return to the factory:start loop (`factory next`).
+8. Return to the start skill loop (`factory next`).

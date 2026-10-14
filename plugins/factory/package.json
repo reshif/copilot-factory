@@ -1,10 +1,14 @@
 {
   "name": "factory-plugin",
   "private": true,
-  "version": "0.10.0",
-  "description": "Software Factory v2 Claude Code plugin — CLI, hooks, workflows and tests.",
-  "bin": { "factory": "bin/factory" },
-  "engines": { "node": ">=18" },
+  "version": "0.1.0",
+  "description": "Software Factory for the GitHub Copilot CLI — CLI, hooks, workflows, custom agents, skills and tests.",
+  "bin": {
+    "factory": "bin/factory"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "test": "node --test --test-concurrency=4 tests/*.test.js"
   },

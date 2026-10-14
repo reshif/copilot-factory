@@ -1,9 +1,9 @@
 # factory-inspector
 
-An independent auditor for the Software Factory. It answers two questions about every job:
+An independent auditor for the Software Factory, packaged as a GitHub Copilot CLI plugin (`factory-inspector@copilot-factory`). It answers two questions about every job:
 
 1. **Was the intended recipe the one used?**
-2. **Did the factory behave the way that recipe says?** That covers the order of steps, gates, the evidence chain and caps, and whether Claude did what `factory next` told it to.
+2. **Did the factory behave the way that recipe says?** That covers the order of steps, gates, the evidence chain and caps, and whether the Copilot agent did what `factory next` told it to.
 
 It also finds **ambiguities**: places where the rules left room and someone had to improvise. And it watches the factory's **health**: every issue the factory reports about itself — hooks that failed, guard denials, blocked stops, refused replies, CLI failures and crashes, stale or degraded workflow results, agent failures, retries and escalations, agents that never stopped, parks, idle jobs, slow gates. Each finding goes into a register for you to decide on.
 
@@ -28,7 +28,7 @@ The inspector has its own implementations of three things: seal verification, re
 | R4 gates | deviation | Approvals that were never presented, or presented for a different document hash; automatic approvals the recipe doesn't allow |
 | R5 evidence chain | deviation | Review on a build with no passing proof; proof on a build never integrated; shipping without both on the same build |
 | R6 loops | deviation | Fix or clarify rounds beyond their caps plus your resumes |
-| R7 driver fidelity | deviation | Claude didn't run what `factory next` asked for, ran something else, or changed things while waiting at a gate |
+| R7 driver fidelity | deviation | The agent didn't run what `factory next` asked for, ran something else, or changed things while waiting at a gate |
 | R8 consistency | ambiguity / deviation | The same failing check routed by different rules under the same rulebook; identical inputs picking different recipes |
 | R9 friction | ambiguity | Repeated patterns across jobs (3+ by default): the same guard denial, refused replies, refused workflow results, caps you nearly always resume past, the same floor waived, denials clustering at one gate, a step repeating with no progress |
 | R10 hook errors | gap | A factory hook failed (`hook_error`; high for the guard, stop and prompt hooks, which enforce nothing while failing); the inspector's own hooks failed (`.factory/inspect/hook-errors.jsonl`) |
@@ -44,13 +44,15 @@ The inspector has its own implementations of three things: seal verification, re
 
 ## Use
 
+If another skill is also called `inspect`, use the plugin-qualified name `/factory-inspector/inspect`, or just ask Copilot to run the inspector.
+
 | | |
 |---|---|
-| `/factory-inspector:inspect` | Inspect closed jobs not yet inspected, then walk through open findings |
-| `/factory-inspector:inspect J-0007` | One job, plus its timeline |
-| `/factory-inspector:inspect status` | Modes, clean streaks, suggestions |
-| `/factory-inspector:inspect active` | Also inspect the jobs still running, as they stand now (issues happen mid-job) |
-| `/factory-inspector:inspect health` | The factory-wide health summary |
+| `/inspect` | Inspect closed jobs not yet inspected, then walk through open findings |
+| `/inspect J-0007` | One job, plus its timeline |
+| `/inspect status` | Modes, clean streaks, suggestions |
+| `/inspect active` | Also inspect the jobs still running, as they stand now (issues happen mid-job) |
+| `/inspect health` | The factory-wide health summary |
 
 It also runs on its own whenever a job ends (closed, cancelled or abandoned), through its GitHub Copilot CLI hooks (`hooks/hooks.json`, native format: camelCase events, no matchers, run through `$PLUGIN_ROOT`):
 - **postToolUse** (shell calls only): right after the agent runs `factory close`/`cancel`/`abandon`, it inspects and adds one line to the tool result (`additionalContext`).
@@ -66,14 +68,14 @@ A finding marked fixed that is seen again reopens automatically (marked ↺).
 
 A finding from the health rules (R10–R19) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
 
-**CLI** (`factory-inspect`, on the PATH): `run [--job J | --all | --active]` · `report [--format md]` (findings plus a **Factory health** section) · `health [--format md]` · `status` · `show F3` · `trace --job J`. The commands `mark` and `mode` are human-only: use them from your own terminal, or reply in chat.
+**CLI** (`factory-inspect`; `factory shim` puts it on your PATH, or run `node ~/.copilot/installed-plugins/copilot-factory/factory-inspector/bin/factory-inspect`): `run [--job J | --all | --active]` · `report [--format md]` (findings plus a **Factory health** section) · `health [--format md]` · `status` · `show F3` · `trace --job J`. The commands `mark` and `mode` are human-only: use them from your own terminal, or reply in chat.
 
 ## Turning it down and off
 
 - **Per recipe:** `on` inspects every closed job. `sample N` inspects one job in N. `off` inspects none.
 - **Suggestions:** after 20 clean jobs in a row on the current rules (configurable), it suggests sampling. After 60 while sampling, it suggests off. It never changes the mode itself.
 - **Re-arming:** when a recipe's rules change (the recipe, floors, selection, or the factory's skills, agents or workflows), it resets that recipe's streak and inspects every job again.
-- **Off entirely:** disable the `factory-inspector` plugin. The factory keeps logging, so you can install it again later and run `factory-inspect run --all` over past jobs.
+- **Off entirely:** disable the plugin (`copilot plugin disable factory-inspector`). The factory keeps logging, so you can install it again later and run `factory-inspect run --all` over past jobs.
 
 Settings live in `.factory/inspect/config.json`: `mode`, `sample_every`, `settle_after`, `threshold` (R9), per-recipe overrides, and:
 

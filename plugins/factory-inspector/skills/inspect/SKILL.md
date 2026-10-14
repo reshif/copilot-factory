@@ -1,6 +1,6 @@
 ---
 name: inspect
-description: Audit the Software Factory — check whether jobs ran the recipe they were meant to, in the declared order, with valid gates and evidence, and whether Claude did what the router said; check the factory's health (hook errors, guard denials, blocked done claims, refused replies, CLI failures, stale or degraded workflows, agent failures, parks, idle jobs); then walk the user through open findings (deviations, ambiguities, gaps). Use when the user types /factory-inspector:inspect, asks if the factory is behaving, or asks about inspector findings, modes or streaks.
+description: "Audit the Software Factory — check whether jobs ran the recipe they were meant to, in the declared order, with valid gates and evidence, and whether the Copilot agent did what the router said; check the factory's health (hook errors, guard denials, blocked done claims, refused replies, CLI failures, stale or degraded workflows, agent failures, parks, idle jobs); then walk the user through open findings (deviations, ambiguities, gaps). Use when the user types /inspect (or /factory-inspector/inspect), asks if the factory is behaving, or asks about inspector findings, modes or streaks."
 argument-hint: "[job id | all | active | health | status]"
 ---
 # Inspect the factory
@@ -8,7 +8,10 @@ argument-hint: "[job id | all | active | health | status]"
 The inspector is an independent auditor. It reads the factory's sealed records and each job's **declared rulebook** (`recipe.lock.json`: the recipe, floors and selection rules the job promised to follow) and checks what happened against it. It never blocks, approves or changes anything.
 
 ## Run
-- `$ARGUMENTS` empty → `factory-inspect run` (closed jobs not yet inspected).
+Run it as `factory-inspect …`. If it is not found, run it with node from the installed plugin, `node ~/.copilot/installed-plugins/copilot-factory/factory-inspector/bin/factory-inspect …` (or the inspector path the factory's session-start note gives), and tell the user once that `factory shim` in their own terminal puts `factory-inspect` on their PATH.
+
+The argument is the text the user typed after the command:
+- No argument after the command → `factory-inspect run` (closed jobs not yet inspected).
 - A job id → `factory-inspect run --job <id>`; also show `factory-inspect trace --job <id>` if the user wants the timeline.
 - `all` → `factory-inspect run --all`.
 - `active` → `factory-inspect run --active` (closed jobs not yet inspected, plus every active or parked job as it stands now). Use it when the user asks how a running job is going, or reports trouble mid-job.
@@ -19,7 +22,7 @@ Then show `factory-inspect report --format md` (open findings, then a **Factory 
 
 ## Explain the findings
 Group them by class, highest severity first, in plain words:
-- **deviation** — the factory did something its declared rulebook doesn't allow (wrong recipe, skipped step, approval for a document that wasn't presented, review on an unproven build, Claude doing something other than what `factory next` said, records written outside the CLI).
+- **deviation** — the factory did something its declared rulebook doesn't allow (wrong recipe, skipped step, approval for a document that wasn't presented, review on an unproven build, the agent doing something other than what `factory next` said, records written outside the CLI).
 - **ambiguity** — the rules left room and someone improvised (same situation routed differently, caps you keep resuming past, guard denials agents keep hitting, the same step repeating).
 - **gap** — something the audit needs is missing or broken (no rulebook snapshot, a recipe edited without a version bump, a hook that failed and so enforced nothing, torn log lines, a CLI crash, agents that never stopped, a job left idle).
 
