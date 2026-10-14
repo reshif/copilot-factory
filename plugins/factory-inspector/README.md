@@ -44,7 +44,7 @@ The inspector has its own implementations of three things: seal verification, re
 
 ## Use
 
-If another skill is also called `inspect`, use the plugin-qualified name `/factory-inspector:inspect`, or just ask Copilot to run the inspector.
+Type `/factory-inspector:inspect`, or ask Copilot to run the inspector. Copilot keeps one skill per name, so a project or personal skill of your own called `inspect` hides this one; rename yours if `copilot skill list` doesn't show the inspector's.
 
 | | |
 |---|---|
@@ -68,7 +68,7 @@ A finding marked fixed that is seen again reopens automatically (marked ↺).
 
 A finding from the health rules (R10–R19) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
 
-**CLI** (`factory-inspect`; `factory shim` puts it on your PATH, or run `node ~/.copilot/installed-plugins/copilot-factory/factory-inspector/bin/factory-inspect`): `run [--job J | --all | --active]` · `report [--format md]` (findings plus a **Factory health** section) · `health [--format md]` · `status` · `show F3` · `trace --job J`. The commands `mark` and `mode` are human-only: use them from your own terminal, or reply in chat.
+**CLI** (`factory-inspect`; `factory shim` puts it on your PATH, or run `node <plugin folder>/bin/factory-inspect`: the folder is `~/.copilot/installed-plugins/copilot-factory/factory-inspector` for a GitHub install (under `$COPILOT_HOME` if set), or `<your clone>/plugins/factory-inspector` for a marketplace added from a local folder; `copilot plugin list --json` tells you which): `run [--job J | --all | --active]` · `report [--format md]` (findings plus a **Factory health** section) · `health [--format md]` · `status` · `show F3` · `trace --job J`. The commands `mark` and `mode` are human-only: use them from your own terminal, or reply in chat.
 
 ## Turning it down and off
 
@@ -87,7 +87,7 @@ The register is `.factory/inspect/register.json`.
 ## Test
 
 ```bash
-npm test   # 14 tests: a clean job has no findings; forged records, gate-window actions, skipped work,
+npm test   # 15 tests: a clean job has no findings; forged records, gate-window actions, skipped work,
            # synthetic deviations, cross-job ambiguity, friction, job and factory health (R10–R19: hook errors, torn lines, intent parks,
            # crashes, --active, health report), limits/rules_off, marks/regressions/modes/re-arming, hooks, jobs ending outside Bash, independence
 ```

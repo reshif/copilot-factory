@@ -3,7 +3,7 @@
 Floors are the steps no recipe may omit, per risk level ([`policy/floors.json`](../policy/floors.json)). They are enforced **twice**:
 
 - **Statically**: `factory recipe check` (and every recipe load) refuses a recipe that doesn't contain a floor step for a risk it applies to.
-- **Dynamically**: `factory finalize`, `factory ship`, `factory close`, the Stop hook, and the alignment vector check the ledger — the floor step must have run **on the current build**. A step that never ran is missing evidence, never a pass.
+- **Dynamically**: `factory finalize`, `factory ship`, `factory close`, the stop gate (`agentStop` hook), and the alignment vector check the ledger — the floor step must have run **on the current build**. A step that never ran is missing evidence, never a pass.
 
 | Floor | Low | Medium | High | Met when |
 |---|:-:|:-:|:-:|---|
