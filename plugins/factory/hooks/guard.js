@@ -45,6 +45,11 @@ safe((input) => {
     }
   } else if (tool === 'Bash' && root) why = checkBash(root, input.command, policy, { agent: Boolean(agent), shellInput: /^write_/.test(String(input.runtimeTool || '')) });
   if (why) {
+    // Say what was seen, so a block can be traced to the exact command.
+    if (tool === 'Bash' && input.command) {
+      const seen = String(input.command).replace(/\s+/g, ' ').trim();
+      why = `${why} (command: "${seen.length > 120 ? `${seen.slice(0, 117)}...` : seen}")`;
+    }
     deny(why);
     try {
       require('./activity-log').log(input, 'guard_deny', { reason: why });

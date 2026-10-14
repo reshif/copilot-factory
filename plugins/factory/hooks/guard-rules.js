@@ -626,7 +626,7 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
       if (cIdx !== -1 && head.args[cIdx + 1]) {
         const why = walk(head.args[cIdx + 1].text, ctx, depth + 1, collect);
         if (why) return why;
-      } else if (n === 'watch' && head.args.length) {
+      } else if ((n === 'watch' || (TTY_FAKERS.test(n) && n !== 'expect' && n !== 'socat')) && head.args.length) {
         const why = walk(head.args.filter((a) => !a.text.startsWith('-')).map((a) => a.text).join(' '), ctx, depth + 1, collect);
         if (why) return why;
       } else if (SHELLS.test(n) && !head.args.some((a) => !a.text.startsWith('-') && !a.text.startsWith('+'))) {
@@ -669,7 +669,9 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
     }
     if (collect) return null;
     // terminal emulation and interactive shells
-    if (TTY_FAKERS.test(n)) return `${n} (terminal emulation) is not allowed here.`;
+    // A terminal emulator's payload is already parsed above (it is a wrapper); this catches
+    // only what that can't read (e.g. an expect script) when it names the factory CLI.
+    if (TTY_FAKERS.test(n) && /(^|[\s/'"])factory(-inspect)?\b|bin\/factory/.test([n, ...head.args.map((a) => a.text)].join(' '))) return `${n} (terminal emulation) around the factory CLI is not allowed here: run the command directly.`;
     if (SHELLS.test(n) || PWSH.test(n)) {
       const args = head.args.map((x) => x.text);
       const info = args.some((t) => /^(--version|--help|-version|-help|-h)$/.test(t));

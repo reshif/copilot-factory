@@ -640,3 +640,19 @@ test('guard regressions: the real violations still deny, however they are typed'
   // runner agents: driving the job, and scripts on job files
   for (const c of [`node "${B}" next`, `node "${B}" plan from-contract`, `python3 -m json.tool .factory/jobs/J-0001/plan.json`, `ls | xargs node ${B} job show`]) assert.ok(checkBash(root, c, pol, { agent: true }), `agent should be denied: ${c}`);
 });
+
+test('guard: terminal emulators are allowed unless they wrap the factory CLI; the deny names the command', () => {
+  const root = F.makeRepo();
+  const run = (command, env = {}) => spawnSync('node', [path.join(F.PLUGIN, 'hooks', 'guard.js'), 'preToolUse'], { input: JSON.stringify({ cwd: root, toolName: 'bash', toolArgs: { command } }), encoding: 'utf8', env: { ...process.env, ...env } });
+  const agentEnv = { FACTORY_RUNNER: '1', FACTORY_JOB: 'J-0001', FACTORY_AGENT_ROLE: 'test-reviewer', FACTORY_ROOT: root };
+  // seen in a real run: "Guard Blocked Bash: empty (terminal emulation) is not allowed here, by factory:test-reviewer"
+  for (const c of ['empty', 'empty -f -i in -o out npm test', 'unbuffer npm test', 'script -q -c "npm test" log.txt', 'script -q /dev/null npm test']) {
+    assert.ok(isAllow(run(c)), `main session: ${c}`);
+    assert.ok(isAllow(run(c, agentEnv)), `agent: ${c}`);
+  }
+  for (const c of ['unbuffer factory approve', 'script -c "factory approve" /dev/null', 'expect -c "spawn factory approve; interact"', 'empty -f node /x/bin/factory resume']) {
+    const r = run(c);
+    assert.ok(isDeny(r), `denied: ${c}`);
+    assert.match(JSON.parse(r.stdout).permissionDecisionReason, /\(command: ".+"\)$/, 'the reason quotes the command it saw');
+  }
+});
