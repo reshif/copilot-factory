@@ -174,6 +174,8 @@ function writeCounter(root, count) {
 }
 
 if (require.main === module) safe((input) => {
+  // Agents started by `factory run` are their own sessions; their result goes through factory record, not this gate.
+  if (process.env.FACTORY_RUNNER === '1') return;
   const cwd = input.cwd;
   const root = findRoot(cwd);
   if (!root) return;

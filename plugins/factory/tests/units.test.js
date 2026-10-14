@@ -499,7 +499,7 @@ test('briefs name a real factory agent for every item, and carry only the run co
   for (const p of g.probes) {
     assert.equal(p.agent_type, 'factory:researcher');
     assert.equal(p.model, 'haiku');
-    assert.ok(fs.existsSync(path.join(F.PLUGIN, 'agents', 'researcher.md')));
+    assert.ok(fs.existsSync(path.join(F.PLUGIN, 'agents', 'researcher.agent.md')));
     const file = fs.readFileSync(p.prompt.split('\n')[1].trim(), 'utf8');
     assert.ok(!file.includes('You are a researcher grounding one topic'), 'the role text is the agent\'s system prompt, not repeated in the brief');
     assert.match(file, /## This run/);

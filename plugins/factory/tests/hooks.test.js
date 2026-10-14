@@ -298,3 +298,12 @@ test('stop: done-claim and question heuristics', () => {
   assert.ok(asksUser('Done with step one.\n\nWhich database should I use?'));
   assert.ok(!asksUser('Is this right? I went ahead anyway.'));
 });
+
+test('agentStop: never gates an agent session started by factory run', () => {
+  const root = F.makeRepo();
+  F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  F.cli(root, ['next']);
+  const r = spawnSync('node', [path.join(F.PLUGIN, 'hooks', 'stop.js'), 'agentStop'], { input: JSON.stringify({ cwd: root }), encoding: 'utf8', env: { ...process.env, FACTORY_RUNNER: '1' } });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '', 'a runner agent ends its turn freely; its result goes through factory record');
+});

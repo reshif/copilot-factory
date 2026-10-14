@@ -86,7 +86,7 @@ function rulebookSnapshot({ recipe, policy, workType, risk, effRisk, epic }) {
     };
     walk(pluginPath(dir));
   }
-  const manifest = readJson(pluginPath('.claude-plugin', 'plugin.json'), {});
+  const manifest = readJson(pluginPath('.github', 'plugin', 'plugin.json'), {});
   const floors = policyMod.floorsFile();
   const selection = recipes.selection();
   return sealMod.seal({

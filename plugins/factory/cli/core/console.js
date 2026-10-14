@@ -324,7 +324,7 @@ function build(root, { job: only, now } = {}) {
   let current = null;
   try { current = fs.readFileSync(p.currentFile, 'utf8').trim() || null; } catch { /* none */ }
   let version = null;
-  try { version = readJson(pluginPath('.claude-plugin', 'plugin.json'), {}).version || null; } catch { /* unknown */ }
+  try { version = readJson(pluginPath('.github', 'plugin', 'plugin.json'), {}).version || null; } catch { /* unknown */ }
   return {
     generated_at: new Date().toISOString(),
     project: path.basename(root),

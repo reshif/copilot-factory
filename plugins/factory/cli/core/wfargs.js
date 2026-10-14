@@ -24,8 +24,8 @@ function docCheck(root, state, file) {
 }
 
 function roleBody(role) {
-  const t = readText(pluginPath('agents', `${role}.md`), null);
-  if (t === null) fail(`Agent definition agents/${role}.md is missing`, 'plugin_broken');
+  const t = readText(pluginPath('agents', `${role}.agent.md`), null) ?? readText(pluginPath('agents', `${role}.md`), null);
+  if (t === null) fail(`Agent definition agents/${role}.agent.md is missing`, 'plugin_broken');
   return t.replace(/^---[\s\S]*?\n---\n/, '').trim();
 }
 

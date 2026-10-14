@@ -26,7 +26,7 @@ async function run(file, args, agentImpl) {
   const agent = async (prompt, opts) => {
     const t = opts && opts.agentType;
     const m = /^factory:([a-z-]+)$/.exec(t || '');
-    if (!m || !fs.existsSync(require('path').join(agentsDir, `${m[1]}.md`))) {
+    if (!m || !fs.existsSync(require('path').join(agentsDir, `${m[1]}.agent.md`))) {
       throw new Error(`agent() called without a real factory agentType (got ${JSON.stringify(t)}) for "${opts && opts.label}"`);
     }
     calls.push({ prompt, opts });
