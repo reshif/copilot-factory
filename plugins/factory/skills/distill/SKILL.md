@@ -5,11 +5,8 @@ user-invocable: false
 ---
 # Distill
 
-1. Run `factory distill context`.
-2. If it shows confirmed findings, verify-fix rounds, or minor findings that also appear in other jobs, start the factory's **lesson-writer** custom agent as one subagent (the `task` tool with agent type `factory:lesson-writer`) with: the distill context JSON, the cap (`cap`), the lessons already proposed, and the command to record each lesson:
-   `factory lessons add --job <job> --text "<lesson>" --scope "<glob>,<glob>" --why "<finding id: what went wrong>"`.
+1. Run `factory distill write`. It starts the factory's **lesson-writer** agent as its own Copilot session (like `factory run`: works in the Copilot CLI and in every VS Code harness), gives it the distill context and the cap, and the agent records each lesson with `factory lessons add`. When the job left nothing to learn from (no confirmed findings, no verify-fix rounds, no minor findings repeated in other jobs) or the cap is used, it starts no agent and says so (`skipped: true`). Don't start the lesson-writer yourself with the task tool. It takes a while; wait for it to finish and don't run it twice.
    Each lesson becomes a card in `.factory/lessons/lessons.md` (templates/docs/lessons.md).
-   If there is nothing worth learning, skip the agent.
-3. Run `factory distill done`.
-4. If lessons were proposed, list them for the user with their ids and say they can reply **`accept lesson L4`** or **`reject lesson L4 <why>`** at any time. Accepted lessons apply from the next plan, build and review.
-5. Continue the loop (`factory next`).
+2. Run `factory distill done`.
+3. If lessons were proposed (`lessons` in the output of step 1), list them for the user with their ids and say they can reply **`accept lesson L4`** or **`reject lesson L4 <why>`** at any time. Accepted lessons apply from the next plan, build and review. If it says Copilot is unavailable (`copilot_unavailable`), tell the user what it says and move on with step 2.
+4. Continue the loop (`factory next`).

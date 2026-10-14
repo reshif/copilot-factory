@@ -729,6 +729,117 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
   }
 }
 
+// ---------------------------------------------------------------- factory distill write
+
+// The lesson-writer's reply when `factory distill write` starts it.
+const LESSON_REPLY = {
+  type: 'object',
+  required: ['lessons'],
+  properties: {
+    lessons: { type: 'array', items: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, text: { type: 'string' } } } },
+    nothing_to_learn: { type: 'boolean' },
+    note: { type: 'string' },
+  },
+};
+
+// `factory distill write`: runs the lesson-writer as its own Copilot session (copilot -p
+// --agent factory:lesson-writer, the same flags, add-dirs, model mapping and FACTORY_*
+// environment as `factory run`), so distill works from any harness — VS Code's Local
+// harness can't start a plugin agent through the task tool. Only when `factory next` asked
+// for the distill step; skipped (no agent) when the job left nothing to learn from. The
+// lessons are recorded by the agent itself (`factory lessons add`, the one write its role
+// may make); this command reports the ones that appeared and logs a distill_write event.
+async function distillWrite(root, { jobId, quiet = false } = {}) {
+  const job = require('./job');
+  const lessons = require('./lessons');
+  let state = job.resolve(root, jobId);
+  const say = (m) => {
+    if (!quiet) process.stderr.write(`[factory distill] ${m}\n`);
+  };
+  if (state.status !== 'active') fail(`${state.id} is ${state.status}; nothing to distill. Nothing was started.`, 'not_waiting_for_distill');
+  const d = state.last_decision_id ? require('./decisions').forJob(root, state.id).find((x) => x.id === state.last_decision_id) : null;
+  if (!d || d.action !== 'skill' || d.skill !== 'distill') fail(`factory next did not ask for distill (its last decision${d ? ` ${d.id}` : ''} says ${d ? `${d.action} "${d.step || d.skill || d.command || ''}"` : 'nothing yet'}). Run factory next and do what it says. Nothing was started.`, 'not_waiting_for_distill', { decision_id: d ? d.id : null });
+  const context = require('./lifecycle').distillContext(root, { jobId: state.id });
+  const before = new Set(lessons.load(root).lessons.map((l) => l.id));
+  const worth = context.confirmed.length || context.verify_fix_rounds || (context.minor.length && context.minor_in_other_jobs.length);
+  const left = Math.max(0, (context.cap || 0) - context.already_proposed.length);
+  const log = (rec) => events.append(root, { event: 'distill_write', job: state.id, decision_id: d.id, ...rec });
+  if (!worth || !left) {
+    const why = !left ? `the cap of ${context.cap} lessons is already used` : 'no confirmed findings, no verify-fix rounds, no minor findings repeated in other jobs';
+    log({ outcome: 'skipped', reason: why, lessons: [] });
+    return { job: state.id, skipped: true, reason: `Nothing to learn from: ${why}. No agent was started. Run factory distill done.`, lessons: [], agents: [] };
+  }
+  const lock = acquireLock(root, state, { workflow: 'distill-write', config: null });
+  try {
+    state = job.resolve(root, state.id);
+    const S = settings(root, state);
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
+    const ctx = {
+      root,
+      state,
+      brief: { job: state.id, workflow: 'distill', config: null },
+      settings: S,
+      runs: [],
+      notes: [],
+      files: 0,
+      unavailable: null,
+      scratch: path.join(root, '.factory', 'scratch', 'runner', state.id, `${stamp}-distill-${process.pid}`),
+      decisionId: d.id,
+      limit: limiter(1),
+      say,
+      note: (m) => {
+        ctx.notes.push(m);
+        say(m);
+      },
+    };
+    const cli = `node "${path.join(PLUGIN_ROOT, 'bin', 'factory')}" --root "${root}"`;
+    const role = 'lesson-writer';
+    const model = ((state.policy && state.policy.agents) || {}).models ? state.policy.agents.models[role] || null : null;
+    const prompt = [
+      `# Distill job ${state.id}: ${state.title}`,
+      '',
+      `Write at most ${left} lesson(s) from this job (fewer is better; none is fine). Do not restate a lesson that already exists (already_proposed below, and ${path.join(root, '.factory', 'lessons', 'lessons.json')}).`,
+      'Record each lesson with exactly this command (one per lesson):',
+      `  ${cli} lessons add --job ${state.id} --text "<lesson>" --scope "<glob>,<glob>" --why "<finding id: what went wrong>"`,
+      'The command prints the lesson with its id (L<n>). Run no other factory command.',
+      '',
+      '## Distill context',
+      '```json',
+      JSON.stringify(context, null, 2),
+      '```',
+      '',
+      'This run expects a JSON reply (below) instead of the short list your instructions mention: `lessons` holds every lesson you recorded ({ id, text }), empty with nothing_to_learn true if there was nothing worth a lesson.',
+    ].join('\n');
+    let reply;
+    try {
+      reply = await runAgent(ctx, prompt, { agentType: `factory:${role}`, label: 'lesson-writer', schema: LESSON_REPLY, ...(model ? { model } : {}) });
+    } catch (e) {
+      if (ctx.unavailable) copilotUnavailable(ctx);
+      throw e;
+    }
+    if (ctx.unavailable) copilotUnavailable(ctx);
+    const added = lessons.load(root).lessons.filter((l) => !before.has(l.id) && l.source_job === state.id);
+    const claimed = reply && Array.isArray(reply.lessons) ? reply.lessons.map((l) => String(l.id || '').toUpperCase()) : [];
+    const unrecorded = claimed.filter((id) => !added.some((l) => l.id === id));
+    const run = ctx.runs[ctx.runs.length - 1] || {};
+    const outcome = run.outcome || (reply ? 'ok' : 'invalid');
+    log({ outcome, lessons: added.map((l) => l.id), claimed, unrecorded, agent_ms: run.ms || null });
+    const out = {
+      job: state.id,
+      outcome,
+      lessons: added.map((l) => ({ id: l.id, text: l.text, scope: l.scope, why: l.why || null })),
+      ...(unrecorded.length ? { unrecorded, warning: `The lesson-writer named ${unrecorded.join(', ')} but no such lesson was recorded for ${state.id}; only the lessons listed were recorded.` } : {}),
+      ...(reply && reply.note ? { note: reply.note } : {}),
+      message: added.length ? `${added.length} lesson(s) proposed: ${added.map((l) => l.id).join(', ')}. The user can reply "accept lesson Ln" or "reject lesson Ln <why>". Run factory distill done.` : outcome === 'ok' ? 'The lesson-writer found nothing worth a lesson. Run factory distill done.' : `The lesson-writer did not finish (${outcome}); no lessons were recorded. Run factory distill done to move on, or factory distill write to try again.`,
+      copilot: S.bin,
+      agents: ctx.runs,
+    };
+    return out;
+  } finally {
+    lock.release();
+  }
+}
+
 // ---------------------------------------------------------------- printed summary
 
 const one = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
@@ -798,4 +909,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { run, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };
+module.exports = { run, distillWrite, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };

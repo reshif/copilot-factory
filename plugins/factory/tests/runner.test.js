@@ -655,3 +655,66 @@ test('inside a factory run agent (FACTORY_RUNNER=1) the CLI refuses driving and 
   assert.ok(events(root).some((e) => e.event === 'cli' && e.cmd === 'next' && e.code === 'agent_not_allowed'), 'refusals are logged');
   assert.ok(J);
 });
+
+// --- factory distill write --------------------------------------------------------------------
+
+test('distill write: runs the lesson-writer through copilot -p like factory run, and reports the lessons it recorded', () => {
+  const root = F.makeRepo();
+  const policy = { agents: { models: { 'lesson-writer': 'haiku' } } };
+  const J = newJob(root, policy);
+  const env = (h) => ({ ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: h.file, FAKE_COPILOT_LOG: h.logFile });
+  // The fake lesson-writer runs the exact `lessons add` command its prompt gives (as an agent:
+  // FACTORY_RUNNER=1 reaches it), then replies with the JSON the run asks for.
+  const script = `module.exports = (call) => {
+    const { execSync } = require('child_process');
+    const line = call.instructions.split('\\n').find((l) => /lessons add --job/.test(l)).trim();
+    const cmd = line.replace('"<lesson>"', '"In src/**, check argument types before use."').replace('"<glob>,<glob>"', '"src/**"').replace('"<finding id: what went wrong>"', '"code-1: add trusted its inputs"');
+    const out = JSON.parse(execSync(cmd, { encoding: 'utf8', env: { ...process.env } }));
+    return { lessons: [{ id: out.id, text: out.text }, { id: 'L9', text: 'never recorded' }] };
+  };`;
+  const h = harness(script);
+  h.logFile = path.join(path.dirname(h.file), 'copilot.jsonl');
+  const run = (extra = {}) => {
+    const r = spawnSync('node', [F.BIN, 'distill', 'write'], { cwd: root, encoding: 'utf8', env: { ...env(h), ...extra }, timeout: 120000 });
+    return Object.assign(JSON.parse(r.stdout), { __stderr: r.stderr });
+  };
+  // only when factory next asked for distill
+  assert.equal(run().code, 'not_waiting_for_distill');
+  const job = require('../cli/core/job');
+  const decisions = require('../cli/core/decisions');
+  const ledger = require('../cli/core/ledger');
+  decisions.write(root, { id: 'D-distill-1', job: J, action: 'skill', skill: 'distill', step: 'distill' });
+  const s = job.load(root, J);
+  s.last_decision_id = 'D-distill-1';
+  job.save(root, s);
+  // nothing to learn from: no agent
+  let r = run();
+  assert.equal(r.skipped, true);
+  assert.equal(h.log().length, 0);
+  // a confirmed finding: the agent runs, records its lesson through the CLI
+  ledger.append(root, J, { kind: 'step', step: 'challenge', ok: true, bound: {}, detail: { round: 1, findings: [{ id: 'code-1', status: 'confirmed', severity: 'major', file: 'src/add.js', summary: 'add trusts its inputs' }] } });
+  r = run();
+  assert.equal(r.outcome, 'ok', JSON.stringify(r));
+  assert.deepEqual(r.lessons.map((l) => [l.id, l.text, l.scope, l.why]), [['L1', 'In src/**, check argument types before use.', ['src/**'], 'code-1: add trusted its inputs']]);
+  assert.deepEqual(r.unrecorded, ['L9'], 'a lesson the agent claims but never recorded is called out');
+  assert.match(r.message, /accept lesson Ln/);
+  const [call] = h.log();
+  assert.equal(call.agent, 'factory:lesson-writer');
+  assert.equal(call.model, 'claude-haiku-5.5', 'policy.agents.models → model_ids, as in factory run');
+  for (const f of ['--output-format', '-s', '--no-ask-user', '--allow-all-tools', '--session-id']) assert.ok(call.argv.includes(f), f);
+  const dirs = call.argv.filter((a, i) => call.argv[i - 1] === '--add-dir');
+  assert.ok(dirs.includes(path.resolve(F.PLUGIN)), 'the plugin root, as in factory run');
+  assert.equal(dirs.length, 2, 'the project and the plugin');
+  assert.equal(call.env.FACTORY_RUNNER, '1');
+  assert.equal(call.env.FACTORY_AGENT_ROLE, 'lesson-writer');
+  const ev = events(root);
+  assert.ok(ev.some((e) => e.event === 'agent_run' && e.agent_type === 'factory:lesson-writer' && e.decision_id === 'D-distill-1'));
+  const dw = ev.filter((e) => e.event === 'distill_write');
+  assert.deepEqual(dw.map((e) => e.outcome), ['skipped', 'ok']);
+  assert.deepEqual(dw[1].lessons, ['L1']);
+  // the lesson is proposed, for the human
+  assert.equal(F.cli(root, ['lessons', 'list']).lessons[0].status, 'proposed');
+  // Copilot missing: a clear error, nothing recorded
+  const missing = run({ COPILOT_BIN: path.join(os.tmpdir(), 'no-such-copilot-bin') });
+  assert.equal(missing.code, 'copilot_unavailable');
+});

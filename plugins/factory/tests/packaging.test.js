@@ -136,10 +136,9 @@ test('factory: 21 custom agents as <name>.agent.md with documented frontmatter a
     for (const t of fm.tools) assert.ok(TOOL_ALIASES.has(t) || RUNTIME_TOOLS.has(t), `${f}: tool ${t} is a Copilot alias or a runtime tool name the CLI resolves`);
     if (fm.tools.includes('search')) assert.ok(fm.tools.includes('grep') && fm.tools.includes('glob'), `${f}: "search" alone gives no rg/glob on CLI 1.0.97; list grep and glob too`);
     if (fm.tools.includes('web')) assert.ok(fm.tools.includes('web_fetch'), `${f}: "web" alone gives no web_fetch on CLI 1.0.97; list web_fetch too`);
-    // Only the lesson-writer is started as a subagent (task tool, distill skill); every other
-    // role is started by `factory run` with --agent, so the main agent may not pick it itself.
-    if (fm.name === 'lesson-writer') assert.notEqual(fm['disable-model-invocation'], true, `${f}: the distill skill delegates to it`);
-    else assert.equal(fm['disable-model-invocation'], true, `${f}: not auto-selected by the main agent`);
+    // Every role is started with --agent (factory run; the lesson-writer by factory distill
+    // write), so the main agent may not pick one itself.
+    assert.equal(fm['disable-model-invocation'], true, `${f}: not auto-selected by the main agent`);
     assert.notEqual(fm['user-invocable'], false, `${f}: --agent factory:${fm.name} must keep working`);
     assert.ok(!('model' in fm), `${f}: no model, so the runner's --model applies`);
     if ('include-custom-instructions' in fm) assert.equal(typeof fm['include-custom-instructions'], 'boolean');
@@ -174,6 +173,8 @@ test('factory: every agent role the workflows and skills start has an agent file
   for (const d of fs.readdirSync(path.join(PLUGIN, 'skills'))) {
     for (const m of fs.readFileSync(path.join(PLUGIN, 'skills', d, 'SKILL.md'), 'utf8').matchAll(/(?<![/\w-])factory:([a-z]+(?:-[a-z]+)*)/g)) roles.add(m[1]);
   }
+  // the CLI starts one agent itself: factory distill write → factory:lesson-writer
+  for (const m of fs.readFileSync(path.join(PLUGIN, 'cli', 'core', 'runner.js'), 'utf8').matchAll(/const role = '([a-z-]+)'/g)) roles.add(m[1]);
   roles.delete('role'); // the generic "factory:<role>" in prose
   assert.ok(roles.size >= 15, `found the roles (${[...roles].join(', ')})`);
   const agents = new Set(fs.readdirSync(path.join(PLUGIN, 'agents')).map((f) => f.replace(/\.agent\.md$/, '')));

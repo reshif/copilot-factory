@@ -69,7 +69,7 @@ Change     amend start --reason "…" [--by who] · amend submit · park --reaso
 Epic       epic spawn · epic gate
 Docs       doc list · doc template <type> · doc check [<file>] [--type t] [--job J] · doc index
            (templates/docs: adr, no-adr, recommendation, threat-model, contracts, findings, ship-report, lessons, index)
-Learning   distill context · distill done · lessons list · lessons add --text "…" --scope "glob,…" [--why "…"]
+Learning   distill context · distill write · distill done · lessons list · lessons add --text "…" --scope "glob,…" [--why "…"]
            telemetry report [--since 30] [--format md] · recipe list|show <id>|check|select --type t --risk r [--epic]
 Console    console [--out file.html] [--job J] [--label "…"] [--data data.json]   (read-only page of every job)
            console --serve [--port 4477] [--job J]   (the same page, live: updates as Copilot works)
@@ -326,7 +326,8 @@ function run(argv) {
     case 'distill':
       if (sub === 'context') return C('lifecycle').distillContext(R(), { jobId: J });
       if (sub === 'done') return C('lifecycle').distillDone(R(), { jobId: J });
-      return fail('distill context | done', 'bad_input');
+      if (sub === 'write') return C('runner').distillWrite(R(), { jobId: J }); // async: main() awaits it
+      return fail('distill context | write | done', 'bad_input');
     case 'lessons': {
       const l = C('lessons');
       if (sub === 'list') return l.load(R());
@@ -396,7 +397,9 @@ function run(argv) {
     }
     case 'reseal':
       C('human').requireHumanChannel(tty);
-      return C('job').reseal(R(), J || C('job').current(R()));
+      const id = J || C('job').current(R());
+      if (id) C('human').confirmTyped(tty, id, 'reseal it');
+      return C('job').reseal(R(), id);
     default:
       return fail(`Unknown command "${cmd}". Run factory help.`, 'bad_input');
   }
