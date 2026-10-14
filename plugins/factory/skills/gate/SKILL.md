@@ -28,4 +28,5 @@ Rules:
 - Only the user's own reply counts. Never approve on their behalf and never run `factory approve` (the guard blocks it).
 - If they answer with other words ("looks good", "yes"), ask them to reply exactly `approve` — the hook only applies the exact reply.
 - After they reply, the reply hook applies it before you act on the message. Don't rely on a note in the conversation: run `factory next`. Its `last_reply` says whether the reply was applied. If it was, continue the loop with what `factory next` returned. If it was *not* applied (for example the document changed, or the reply wasn't exact), tell the user why and present the gate again.
-- On `deny`, revise what they asked for (contract, design or plan — via the right step) and present it again when `factory next` returns the gate.
+- On `deny`: `factory next` routes back to the step that made the document (clarify, decide or decompose) with the user's reason; follow it, and the gate comes back afterwards.
+- A bare `deny` is refused (`last_reply` refused, code `needs_reason`): ask the user to reply `deny <what must change>` (`deny: …` works too).

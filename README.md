@@ -110,7 +110,7 @@ ln -sf "$P/factory-inspector/bin/factory-inspect" ~/.local/bin/factory-inspect
 
 Check: `factory help | head -1` and `factory-inspect help | head -1` each print a line, and `readlink -f "$(command -v factory-inspect)"` points into the plugin folder.
 
-**First run in a folder.** `/factory:start` (the first time, via `factory init`) sets up the folder. If the folder has no git history yet, it runs `git init` if needed and makes a first commit of the folder's files, leaving anything that looks like a secret untracked. It also keeps `.factory/` out of git and adds a commit-msg hook. It refuses your home folder itself, so open Copilot in a project folder. If git doesn't know your name and email yet, it tells you the two `git config --global` commands to run first.
+**First run in a folder.** `/factory:start` (the first time, via `factory init`) sets up the folder. If the folder has no git history yet, it runs `git init` if needed and makes a first commit of the folder's existing files (respecting `.gitignore`), so builders' worktrees start from your code. Files that look like secrets (`policy.secret_paths`: `.env`, keys, credentials) are not committed; init lists them as `left_untracked`, and you should add them to `.gitignore`. It also keeps `.factory/` out of git and adds a commit-msg hook. It refuses your home folder itself (`home_folder`), so open Copilot in a project folder. If git doesn't know your name and email yet, it tells you the two `git config --global` commands to run first, before it changes anything.
 
 **Trust the repository.** When the Copilot CLI asks whether to trust the folder, say yes. Hooks, skills and agents need it.
 
@@ -163,7 +163,7 @@ The hook also writes the outcome to `.factory/last-reply.json`. The next `factor
 | Reply | Effect |
 |---|---|
 | `approve` | Approve the waiting gate. Bound to the document's hash: if it changed since you saw it, the approval is refused. |
-| `deny <what must change>` | Send it back with your reason. |
+| `deny <what must change>` | Send it back with your reason (`deny: …` works too). The job goes back to the step that made the document, with your reason, and the gate comes back afterwards. A bare `deny` is refused: say what must change. |
 | `resume` | Un-park; the cap that stopped it gets one more round. |
 | `cancel job` · `abandon job` | Stop for good; files are kept. |
 | `merged <commit>` | Record a local merge (when there's no GitHub PR). |
@@ -206,7 +206,7 @@ The contract starts with an **Intent** section: problem, who, outcome, why now, 
 
 **Routing.** `factory next` checks, in order: contract approved → no drift from what you approved → floors met so far → no confirmed serious finding → every criterion proven → evidence still matches the build. The first that fails decides (clarify, amendment, the missing floor step, a fix round, a verify-fix round, prove again); if all pass, the recipe's next undone step runs. Loops are capped and **park** for you when a cap is hit. Every decision is a line in `.factory/log/decisions.jsonl`; `/factory:why` shows them.
 
-**Workflows.** When `factory next` says `workflow`, the skill runs `factory run <workflow>` with the fields it was given (`--config`, `--mode`, `--scope`, `--lanes`, `--threat-model`/`--no-threat-model`, `--plan-critique`, and `--accept-degraded` when you chose to go on without a failed analyst). `factory run` executes the same workflow scripts as claude-factory (`workflows/*.js`) in a Node runtime that provides their agent API. Each agent call becomes one non-interactive Copilot process: `copilot -p <prompt> --agent factory:<role> --model <id> …`. Builders run in their task's worktree. Calls run in parallel up to `limits.max_parallel_agents`. Each agent must return one JSON object; the runner validates it against the agent's schema and asks once for a correction. The result goes through `factory record`, and `factory run` prints a short summary of the recorded result (`--json` for all of it). A run can take many minutes; only one runs per job at a time. `factory run --dry-run` shows what would run without starting Copilot.
+**Workflows.** When `factory next` says `workflow`, the skill runs `factory run <workflow>` with the fields it was given (`--config`, `--mode`, `--scope`, `--lanes`, `--threat-model`/`--no-threat-model`, `--plan-critique`, and `--accept-degraded` when you chose to go on without a failed analyst). `factory run` executes the same workflow scripts as claude-factory (`workflows/*.js`) in a Node runtime that provides their agent API. Each agent call becomes one non-interactive Copilot process: `copilot -p <pointer to its prompt file> --agent factory:<role> [--model <id>] --add-dir <project root> --add-dir <plugin root> …`. The full prompt goes to `.factory/scratch/runner/<job>/<run>/`, and the plugin folder is an allowed path so agents can run the factory CLI headless. Agents may run only the factory commands their role is briefed for; anything else (driving the job, approvals) is refused with `agent_not_allowed`. Builders run in their task's worktree. Calls run in parallel up to `limits.max_parallel_agents`. Each agent must return one JSON object; the runner validates it against the agent's schema and asks once for a correction. The result goes through `factory record`, and `factory run` prints a short text summary of the recorded result, starting with `status: <x>` (`--json` gives the same as JSON, with the workflow's own status and summary under `workflow`). A run can take many minutes; only one runs per job at a time (`run_in_progress`), and it refuses before starting any agent when the job isn't waiting for that workflow (`not_waiting_for_workflow`) or Copilot is missing or signed out (`copilot_unavailable`). `factory run --dry-run` shows what would run without starting Copilot.
 
 **Floors** are the steps no recipe may skip at a risk level. Examples: contract approval, isolated builds, proof and code review everywhere; grounding, a design record, a validated plan and three review lanes from medium; a threat model, H2/H3, every lane and ship sign-off at high. They are enforced when a recipe loads, and again by `factory ship`, `factory close`, the stop gate and CI. See [`FLOORS.md`](plugins/factory/docs/FLOORS.md).
 
@@ -269,7 +269,7 @@ Run `factory console`, or `/factory:console` in the Copilot CLI, then open `.fac
 
 - **Per job (R1–R9):** forged records, the wrong recipe, steps out of order, gates approved without being shown, review on an unproven build, loops past caps, the agent not doing what `factory next` said, the same situation routed differently, recurring friction.
 - **Factory health (R10–R19):** hook failures, torn log lines, repeated guard denials / stop-gate blocks / refused replies, CLI failures and crashes, degraded workflows and agent retries, agents that never stopped, repeated parks, idle jobs, slow gate replies, and clarify parking on an unclear intent or overrunning its question budget. Thresholds live in `.factory/inspect/config.json` (`limits`, `rules_off`).
-- **When it runs:** whenever a job ends (closed, cancelled or abandoned), however it ended: right after Copilot runs the command, at the end of the turn if you ended it with a chat reply (its one-line summary then shows at the next session start, because an `agentStop` hook can't show you text), or at the next session start if you ended it from your terminal. On demand with `/factory-inspector:inspect` (`active` also covers running jobs). Once a recipe has a long clean streak it suggests sampling, then off.
+- **When it runs:** whenever a job ends (closed, cancelled or abandoned), however it ended: right after Copilot runs the command, at the end of the turn if you ended it with a chat reply (its one-line summary then comes with your next message, because an `agentStop` hook can't show you text), or at the next session start if you ended it from your terminal. On demand with `/factory-inspector:inspect` (`active` also covers running jobs). Once a recipe has a long clean streak it suggests sampling, then off.
 
 Rule table and CLI: [`plugins/factory-inspector/README.md`](plugins/factory-inspector/README.md).
 
@@ -280,14 +280,14 @@ Both plugins ship hooks in Copilot's own format (`hooks/hooks.json`, `{ "version
 | Plugin | Event | Script | What it does |
 |---|---|---|---|
 | factory | `sessionStart` | `session-start.js` | Tells Copilot about the current job and what's waiting, and gives it the absolute `node "<root>/bin/factory"` command |
-| factory | `userPromptSubmitted` | `prompt.js` | Applies your replies through the CLI and writes the outcome to `.factory/last-reply.json` (shown by `factory next` as `last_reply`); flags look-alikes as not applied |
-| factory | `preToolUse` (shell, file reads and edits, search) | `guard.js` | Blocks writes to protected paths, recipes and policy, and reads of secrets (`.env`, keys, the seal key); keeps builders inside their task's allowed paths. Denies with `permissionDecision: "deny"` and exit code 2 |
+| factory | `userPromptSubmitted` | `prompt.js` | Applies your replies through the CLI and writes the outcome to `.factory/last-reply.json` (shown by `factory next` as `last_reply`); flags look-alikes as not applied. Ignores the stop gate's and Autopilot's continuation prompts |
+| factory | `preToolUse` (shell, file reads and edits, search) | `guard.js` | Blocks writes to protected paths, recipes and policy, and reads of secrets (`.env`, keys, the seal key); keeps builders inside their task's allowed paths; blocks human-only commands however they're typed (including into an interactive shell); inside a `factory run` agent, allows only the factory commands that role is briefed for. Denies with `permissionDecision: "deny"` and exit code 2 |
 | factory | `postToolUse`, `subagentStart` | `activity.js` | Appends a sealed line per event to `.factory/log/events.jsonl` |
 | factory | `subagentStop` | `subagent-stop.js` | Records that an agent finished |
-| factory | `agentStop` | `stop.js` | The stop gate: sends Copilot back to work while the current job is active, nothing waits on you (no gate, not parked, no open questions, last `factory next` not `wait` or `done`) and floors are unmet. Honours `stop_hook_active` and stays under Copilot's limit of 8 blocks in a row |
+| factory | `agentStop` | `stop.js` | The stop gate: sends Copilot back to work while the current job is active, nothing waits on you (no gate, not parked, no open questions, last `factory next` not `wait` or `done`) and floors are unmet; also blocks a false "done" while a gate waits on you. Reasons start with `[factory stop gate]`. At most 3 blocks in a row (Copilot's own limit is 8). Off inside `factory run` agents |
 | inspector | `postToolUse` (shell) | `after-close.js` | Inspects right after `factory close / cancel / abandon` |
 | inspector | `agentStop` · `sessionStart` | `catch-up.js` · `session-start.js` | Inspects jobs that ended any other way |
-| inspector | `userPromptSubmitted` · `preToolUse` | `prompt.js` · `guard.js` | Applies your finding replies; keeps marking and modes human-only |
+| inspector | `userPromptSubmitted` · `preToolUse` | `prompt.js` · `guard.js` | Applies your finding replies and reports what the end-of-turn catch-up found; keeps marking and modes human-only |
 
 A hook that fails never breaks the Copilot CLI, but it leaves a `hook_error` event, which the inspector reports. Copilot treats a hook that **times out** as allowing the action (fail open), so the guard is kept fast.
 
@@ -320,7 +320,7 @@ Project overrides go in `.factory/policy.json` (you edit it; agents can't). Defa
 - `copilot.flags` adds flags to every `copilot -p` call the runner makes, for example `--reasoning-effort` or extra `--deny-tool` patterns (see `factory run --dry-run` for the full command line).
 - `COPILOT_BIN` (environment) points `factory run` at a different `copilot` binary. The tests use it to run a fake.
 
-Every workflow agent runs as its real factory custom agent (`agents/<role>.agent.md`), so each role's tool list applies. The read-only roles (researcher, analysts, option generators, reviewers, verifier, tester, God Eye, judge, lesson-writer) have no file-edit tool, but all of them except the judge have a shell (`execute`), and `factory run` pre-approves tools, so a shell command could still write files. What actually limits them: their tool list, the guard (no writes to protected paths, factory state, the plugin or secrets; builders stay inside their task's allowed paths), the task worktree a builder or tester works in, and `factory record`, which re-checks every result before it counts.
+Every workflow agent runs as its real factory custom agent (`agents/<role>.agent.md`), so each role's tool list applies. The read-only roles (researcher, analysts, option generators, reviewers, verifier, tester, God Eye, judge, lesson-writer) have no file-edit tool, but all of them except the judge have a shell (`execute`), and `factory run` pre-approves tools, so a shell command could still write files. What actually limits them: their tool list, the guard (no writes to protected paths, factory state, the plugin or secrets; builders stay inside their task's allowed paths; only the factory commands the role is briefed for, which the CLI enforces too), the task worktree a builder or tester works in, and `factory record`, which re-checks every result before it counts.
 
 ## Start over in a repo
 
@@ -402,6 +402,7 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 | Copilot keeps going when you wanted it to stop | That is the stop gate: the job has steps left and nothing waits on you. Say what you want instead, or `cancel job` |
 | A job is parked | `/factory:why` shows why; reply `resume` for one more round, or `deny` / `cancel job` |
 | Hooks don't seem to run | Trust the folder, check `/env`, and check `disableAllHooks` isn't set in `~/.copilot/settings.json`, `.github/copilot/settings(.local).json` or `.claude/settings(.local).json` |
+| Hooks print "node is not on PATH; factory hooks are off" (or "inspector hooks are off") | The hooks need `node` on the PATH Copilot runs them with. Without it every factory and inspector hook exits quietly with that warning, so **the guard allows everything** and replies aren't applied. Install Node 18+ or fix the PATH, then `/restart`. (`factory doctor` checks the Node version it runs on, but it can't see the hooks' PATH.) |
 | The console doesn't update | Use `factory console --serve` (a written file is a snapshot); the LED shows live / reconnecting / snapshot |
 
 ## Status: verified here vs. needs checking on a real Copilot CLI
@@ -420,14 +421,15 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 - [x] These hooks fire in `-p`, without trusting the folder: `sessionStart`, `userPromptSubmitted`, `preToolUse`, `postToolUse`, `agentStop`, `sessionEnd`, `subagentStart` and `subagentStop` (subagent events carry `agentName`).
 - [x] The guard's deny (`permissionDecision: "deny"` plus exit 2) works: `factory approve` and `echo … > .factory/policy.json` were refused.
 - [x] `sessionStart`'s `additionalContext` reaches the model, and so does `userPromptSubmitted`'s (inside a system reminder), although Copilot's reference says the latter is dropped. The factory still doesn't rely on it: `factory next` shows `last_reply`.
-- [x] An `agentStop` block (`decision: "block"`) forces another turn. The block reason comes back as a new prompt, so it also fires `userPromptSubmitted`. `stop_hook_active` is `false` on the first stop and `true` after that, and the CLI's own cap of 8 blocks in a row ends the loop.
+- [x] An `agentStop` block (`decision: "block"`) forces another turn. The block reason comes back as a new prompt, so it also fires `userPromptSubmitted`. `stop_hook_active` is `false` on the first stop and `true` after that, and the CLI's own cap of 8 blocks in a row ends the loop. (Fixed since: the reply hook no longer resets the factory's counter on those continuation prompts, so the factory's own cap of 3 ends it first.)
 - [x] `-s` with `--output-format json` still prints JSONL with a top-level `assistant.message` event, which is what `factory run` reads.
 - [x] Retry by resume works: reusing a `--session-id` resumes that session.
 - [x] `factory run --dry-run` prints the right commands, with no `--model` by default.
 - [x] Builders and testers in a task worktree under `.factory/worktrees/` with `--add-dir <root>` can write there, and the guard keeps them inside their task's allowed paths.
 - [x] **Autopilot cannot approve gates.** Gates are applied only from your typed replies. Autopilot's and the stop gate's continuation prompts do pass through the reply hook, but their text never parses as a reply, and agents that run `factory approve` are refused. Hooks can't see the session mode (`sessionStart` carries no mode), but Autopilot's continuation prompt has a fixed text a hook can recognise.
-- [x] Found: a headless agent's call to the factory CLI (`node "<plugin root>/bin/factory" …`) is denied unless the plugin folder is an allowed path (`--add-dir <plugin root>`), because `-p` can't ask.
-- [x] Found: the `search` and `web` tool aliases are ignored by 1.0.97, although the docs list them. `grep`, `glob` and `web_fetch` work. `read`, `edit`, `execute`/`shell` and `agent` resolve as documented.
+- [x] Found and fixed: a headless agent's call to the factory CLI (`node "<plugin root>/bin/factory" …`) is denied unless the plugin folder is an allowed path, because `-p` can't ask. `factory run` now passes `--add-dir <plugin root>`.
+- [x] Found and fixed: the `search` and `web` tool aliases are ignored by 1.0.97, although the docs list them. `grep`, `glob` and `web_fetch` work, so the agents list those too. `read`, `edit`, `execute`/`shell` and `agent` resolve as documented.
+- [x] Found and fixed: all 19 agents were offered to the main session for auto-delegation. Every factory role except the lesson-writer now sets `disable-model-invocation: true`; `--agent factory:<role>` still selects them.
 - [x] Found: skills are deduplicated by `name`, so a project or personal skill with the same name hides the factory's (see Troubleshooting). Agents are namespaced and aren't affected.
 
 **Verified signed in, on Copilot CLI 1.0.95** (`scripts/verify-copilot.sh` on a user's machine):
@@ -437,13 +439,14 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (19 factory ag
 - [x] `/factory:start` runs the factory's start skill in an interactive session.
 - [x] `sessionStart` `additionalContext` reaches the model: in a session Copilot ran the factory by the absolute `node "…/installed-plugins/copilot-factory/factory/bin/factory"` command that only the hook provides.
 
-**Still to check while signed in.** Run `bash scripts/verify-copilot.sh` (it makes two short headless calls in a throwaway repo — a few premium requests — and writes `copilot-verify-*/report.md`): its guard probe uses the builder agent, so the protected write is really attempted. The rest come from the research reports in [`docs/research/`](docs/research/):
+**Still to check while signed in.** Run `bash scripts/verify-copilot.sh` (it makes a few short headless calls in a throwaway repo — a few premium requests — writes `report.md` under `$TMPDIR/copilot-verify-<time>/`, or `$VERIFY_OUT`, and exits 1 if any check FAILs): its guard probe uses the builder agent, so the protected write is really attempted. The rest come from the research reports in [`docs/research/`](docs/research/):
 
 Packaging and invocation ([plugins-cli](docs/research/plugins-cli.md), [agents-skills](docs/research/agents-skills.md)):
 - [ ] A full job end to end on a real Copilot model (the mock checks above script the model's tool calls).
 - [ ] The model ids in `model_ids` are accepted by `--model` on your plan, and Auto mode doesn't override them.
 - [ ] The tool restrictions above with a real Copilot model rather than bring-your-own-key mode (tool aliases are resolved by the client, so they shouldn't differ).
 - [ ] Plan limits on concurrent sessions and rate limits at `max_parallel_agents` processes.
+- [ ] The fixes made after the mock-model checks, on a real CLI: `--agent factory:<role>` with `disable-model-invocation: true`, the agents' `grep`/`glob`/`web_fetch` tools, and agents running the factory CLI through `--add-dir <plugin root>` (`verify-copilot.sh` probes the last one).
 
 Hooks ([hooks](docs/research/hooks.md)):
 - [ ] The exact `toolArgs` / `tool_input` keys for `create`, `edit`, `str_replace_editor`, `apply_patch` and `view` (path and content fields) from a real model's tool calls.
@@ -451,11 +454,12 @@ Hooks ([hooks](docs/research/hooks.md)):
 Surfaces ([surfaces-patterns](docs/research/surfaces-patterns.md)):
 - [ ] The GitHub Copilot app and VS Code's Copilot harness behave like the CLI (they share its runtime per the docs; hook coverage in the app is not documented).
 - [ ] Subagent depth and concurrency defaults (4 vs 6; plan-based caps), which matter only for the `distill` skill's single lesson-writer subagent.
-- [ ] Windows: an npm-installed `copilot` is a `.cmd` file, which Node can't start without a shell; the WinGet `copilot.exe` is expected to work.
+- [ ] Windows: `factory run` resolves an npm-installed `copilot.cmd` to its Node loader and runs a WinGet `copilot.exe` directly, and prompts go through files to stay under Windows' command-line limit. Not yet run on Windows.
 
 ## Known limits
 
 - Young on Copilot: install, skills, headless agents and hooks are verified on a real CLI (see Status), but no full job has been run end to end on a real Copilot model yet. Try a `bug@low` job first.
+- The hooks need `node` on the PATH. Without it they switch themselves off (with a warning), and the guard then allows everything.
 - The guard and seals are defence in depth, not a sandbox: agents run as your OS user, and `factory run` pre-approves the agents' tools because `-p` processes can't ask you. CI re-verify and your own merge are the hard backstops (ARCHITECTURE.md §6a).
 - Every agent is a separate Copilot session: more start-up time and more requests than in-session subagents, and the agents don't appear in `/tasks`.
 - Budgets count agent runs and wall time, not AI Credits or premium requests.
