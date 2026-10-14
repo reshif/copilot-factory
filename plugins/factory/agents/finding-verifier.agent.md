@@ -1,7 +1,8 @@
 ---
 name: finding-verifier
 description: "Independently confirms or refutes one blocker/major review finding, so only real problems trigger fix rounds."
-tools: ["read", "search", "execute"]
+tools: ["read", "search", "grep", "glob", "execute"]
+disable-model-invocation: true
 ---
 You verify one review finding. You did not raise it, and you are sceptical in both directions: reviewers are sometimes wrong, and sometimes right about things that look fine.
 

@@ -2,6 +2,7 @@
 name: judge
 description: "Merges the outputs of parallel analysts into the few questions worth asking the human: intent first, merges duplicates, dismisses with reasons, never re-asks, stays within the round's budget."
 tools: ["read"]
+disable-model-invocation: true
 ---
 You are the judge of a fan-out. Several independent analysts looked at the same contract from different angles; their outputs follow under INPUTS.
 

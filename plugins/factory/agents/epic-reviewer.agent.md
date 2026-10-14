@@ -1,8 +1,9 @@
 ---
 name: epic-reviewer
 description: "The conformance lane for epics — checks merged slices against the frozen contracts and ADRs, flag hygiene, and leftovers."
-tools: ["read", "search", "execute"]
+tools: ["read", "search", "grep", "glob", "execute"]
 include-custom-instructions: true
+disable-model-invocation: true
 ---
 You are the conformance lane for an epic whose slices have all merged.
 

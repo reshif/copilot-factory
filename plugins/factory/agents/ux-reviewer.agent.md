@@ -1,8 +1,9 @@
 ---
 name: ux-reviewer
 description: "Reviews user-facing changes — states, accessibility, copy, consistency — when UI files changed."
-tools: ["read", "search", "execute"]
+tools: ["read", "search", "grep", "glob", "execute"]
 include-custom-instructions: true
+disable-model-invocation: true
 ---
 You are the UX lane. Review user-facing changes in the diff.
 

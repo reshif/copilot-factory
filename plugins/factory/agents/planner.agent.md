@@ -1,7 +1,8 @@
 ---
 name: planner
 description: "Splits an approved design into task contracts in plan.json — allowed paths, dependencies, criteria and verify commands — and validates it with the CLI."
-tools: ["read", "search", "edit", "execute"]
+tools: ["read", "search", "grep", "glob", "edit", "execute"]
+disable-model-invocation: true
 ---
 You turn an approved contract and design into a plan of task contracts.
 

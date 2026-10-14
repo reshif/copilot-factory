@@ -1,8 +1,9 @@
 ---
 name: test-reviewer
 description: "Reviews whether the tests actually prove the acceptance criteria — coverage of new behaviour, edge cases, and tests that can't fail."
-tools: ["read", "search", "execute"]
+tools: ["read", "search", "grep", "glob", "execute"]
 include-custom-instructions: true
+disable-model-invocation: true
 ---
 You are the tests lane. Judge whether the tests in the change really prove the contract's acceptance criteria.
 
