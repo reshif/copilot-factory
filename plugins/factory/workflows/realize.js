@@ -206,6 +206,7 @@ async function integrate(w) {
     for (const [id, lines] of Object.entries(ig.route || {})) {
       const s = st[id]
       if (!s) continue // built before this run: its next realize rebuilds it (needs_work: integration)
+      if (s.outcome !== 'done') continue // only work that was integrated goes back
       s.failures = (lines || []).map((l) => `Attempt ${attemptNo(id) - 1}: the integrated build failed after wave ${w + 1}: \`${l.cmd}\` exited ${l.code}. Output (tail):\n${tail(l.output, 1500).split('\n').map((x) => '      ' + x).join('\n')}`)
       if (s.attempts >= (T[id].retry_limit || 3)) {
         s.outcome = 'exhausted'

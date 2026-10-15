@@ -372,3 +372,23 @@ test('P2.3: each wave is integrated and checked on the job branch; a same-wave b
   F.record(root, result);
   assert.match(F.cli(root, ['next']).command, /verify run/);
 });
+
+test('P2.3: a task whose branch only points into the job branch (blocked, restarted) is not integrated, and its commands are not run', () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  customPlan(root, J, [
+    { id: 'T1', objective: 'fix add', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: VC },
+    { id: 'T2', objective: 'stock helper', allowed_paths: ['src/stock.js'], criteria_ids: ['AC-1'], verify_commands: [{ cmd: 'node src/stock.js', covers: ['AC-1'] }] },
+  ]);
+  const s1 = F.cli(root, ['task', 'start', 'T1', '--job', J], { allowFail: false });
+  F.write(s1.worktree, 'src/add.js', 'module.exports = (a, b) => a + b;\n');
+  F.sh(s1.worktree, 'git commit -qam fix');
+  F.built(root, 'T1', { job: J });
+  assert.equal(F.cli(root, ['task', 'verify', 'T1', '--job', J]).pass, true);
+  F.cli(root, ['task', 'start', 'T2', '--job', J], { allowFail: false }); // its branch is the job branch
+  F.built(root, 'T2', { job: J, result: { status: 'blocked', summary: 'needs src/index.js', needs_paths: ['src/index.js'] } });
+  const r = core('reconcile').integrateWave(root, J, ['T1'], { wave: 1 });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const rec = core('ledger').lastStep(root, J, 'integrate');
+  assert.deepEqual(rec.detail.commands.map((c) => c.cmd), ['node tests/add.test.js'], 'T2 is not integrated: its command does not run');
+});

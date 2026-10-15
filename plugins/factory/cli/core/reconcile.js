@@ -229,7 +229,10 @@ function integrateWave(root, jobId, ids, { wave = null } = {}) {
     return { job: state.id, ok: false, kind: 'environment', wave, broken: E.broken, message: E.broken.reason };
   }
   const head = git.revParse(wt, 'HEAD');
-  const integratedIds = (plan.tasks || []).filter((t) => git.branchExists(root, steps.taskBranch(state, t.id)) && git.isAncestor(root, steps.taskBranch(state, t.id), state.branch)).map((t) => t.id);
+  // Integrated: done tasks whose branch is in the job branch. A task branch that merely
+  // points into the job branch (just created, or restarted from it after a failure) is not.
+  const ctxNow = steps.context(root, job.load(root, state.id), job.load);
+  const integratedIds = (plan.tasks || []).filter((t) => steps.taskDone(ctxNow, t.id) && git.branchExists(root, steps.taskBranch(state, t.id)) && git.isAncestor(root, steps.taskBranch(state, t.id), state.branch)).map((t) => t.id);
   const L = state.policy.limits;
   const cmds = integrationCommands(root, state, plan, integratedIds);
   const results = cmds.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c.cmd), wt, { timeoutSec: L.command_timeout_seconds, reruns: L.flaky_reruns }), cmd: c.cmd, owners: c.owners, from: c.from }));
