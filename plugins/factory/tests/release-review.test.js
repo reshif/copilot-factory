@@ -151,3 +151,21 @@ test('environment detection never builds a setup command from a file name that c
   for (const c of p.setup) assert.doesNotMatch(c, /[;$`|&()]/, c);
   assert.ok(!p.evidence.some((e) => /[;$]/.test(e)), JSON.stringify(p.evidence));
 });
+
+test('job.mutate: a state lock left by a process that died (Ctrl+C during task verify) is taken over at once, not after a 30 s wait and a failure', () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  const file = `${require('../cli/lib/paths').jobPaths(root, J).state}.lock`;
+  // what a CLI killed inside mutate leaves: a fresh lock naming a pid that no longer runs
+  const dead = require('child_process').spawnSync('node', ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim();
+  fs.writeFileSync(file, JSON.stringify({ pid: Number(dead), host: require('os').hostname(), at: new Date().toISOString() }));
+  const t0 = Date.now();
+  core('job').mutate(root, J, (s) => { s.tasks.T9 = { note: 'written' }; });
+  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0} ms`);
+  assert.equal(stateOf(root, J).tasks.T9.note, 'written');
+  assert.ok(!fs.existsSync(file), 'released');
+  // a live holder is still waited for (here: this process, for a short while, then refused)
+  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, host: require('os').hostname(), at: new Date().toISOString() }));
+  assert.throws(() => core('job').mutate(root, J, () => {}, { waitMs: 300 }), /stayed locked/);
+  fs.rmSync(file, { force: true });
+});

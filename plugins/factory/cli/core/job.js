@@ -46,24 +46,42 @@ function save(root, state) {
 // Load, change and save the job state under a lock, for writes that run in parallel: builders'
 // task start, the runner recording their replies, task verify for several tasks at once, the
 // per-wave integration. Without it, two load-modify-save cycles lose one update (an attempt
-// count, a task's evidence). The lock is a file created exclusively; one older than 60 s is
-// taken over (its holder died).
-function mutate(root, jobId, fn) {
+// count, a task's evidence). The lock is a file created exclusively, naming its holder: one
+// whose holder process is gone (killed inside mutate: Ctrl+C on factory run stops its task
+// verify children) is taken over at once; one older than 60 s is taken over too (a holder on
+// another machine, or a hung one).
+function lockHolderGone(file) {
+  try {
+    const held = JSON.parse(require('fs').readFileSync(file, 'utf8'));
+    if (!held || !Number.isInteger(held.pid) || held.pid <= 0 || held.host !== require('os').hostname()) return false;
+    try {
+      process.kill(held.pid, 0);
+      return false;
+    } catch (e) {
+      return e.code === 'ESRCH';
+    }
+  } catch {
+    return false; // being written, or released meanwhile
+  }
+}
+
+function mutate(root, jobId, fn, { waitMs = 30000 } = {}) {
   const fs = require('fs');
   const file = `${jobPaths(root, jobId).state}.lock`;
-  const until = Date.now() + 30000;
+  const until = Date.now() + waitMs;
   let fd = null;
   while (fd === null) {
     try {
       fd = fs.openSync(file, 'wx');
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: require('os').hostname(), at: new Date().toISOString() }));
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
       try {
-        if (Date.now() - fs.statSync(file).mtimeMs > 60000) fs.rmSync(file, { force: true });
+        if (Date.now() - fs.statSync(file).mtimeMs > 60000 || lockHolderGone(file)) fs.rmSync(file, { force: true });
       } catch {
         /* released meanwhile */
       }
-      if (Date.now() > until) fail(`${jobId}/state.json stayed locked for 30 s (${file}); another factory command is writing it.`, 'state_locked');
+      if (Date.now() > until) fail(`${jobId}/state.json stayed locked for ${Math.round(waitMs / 1000)} s (${file}); another factory command is writing it.`, 'state_locked');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
     }
   }
