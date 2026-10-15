@@ -102,19 +102,9 @@ function skipDependents() {
 // with the reason.
 let envBroken = null
 
-for (let w = 0; w < brief.waves.length && !envBroken; w++) {
-  skipDependents()
-  let active = brief.waves[w].filter((id) => st[id] && st[id].outcome === 'pending')
-  if (!active.length) continue
-  phase(`realize: wave ${w + 1}/${brief.waves.length} (${active.join(', ')})`)
-  if (factory.prepare) {
-    for (const group of chunks(active, cap)) {
-      const res = await pipeline(group, (id) => factory.prepare(id))
-      const bad = res.find((r) => r && !r.ok)
-      if (bad && !envBroken) envBroken = { task: bad.task, ...(bad.broken || { reason: 'environment broken' }) }
-    }
-    if (envBroken) break
-  }
+// Build, then verify, until every task in `ids` is settled (done, blocked or exhausted).
+async function settle(ids) {
+  let active = ids.filter((id) => st[id].outcome === 'pending')
   while (active.length && !envBroken) {
     const built = await runAll(active, (id) => {
       const s = st[id]
@@ -195,6 +185,61 @@ for (let w = 0; w < brief.waves.length && !envBroken; w++) {
     active = active.filter((id) => st[id].outcome === 'pending')
   }
 }
+
+// After a wave: merge its finished tasks into the job branch and run the job's checks on the
+// integrated tree (`factory reconcile wave`, run by the CLI). A failure goes back, with its
+// raw output, to the task(s) whose files it names; they are rebuilt on the integrated branch
+// (within their retry limit) and the wave is integrated again.
+const integrations = []
+async function integrate(w) {
+  for (;;) {
+    const done = brief.waves[w].concat(Object.keys(st).filter((id) => st[id].reopened && !brief.waves[w].includes(id))).filter((id) => st[id] && st[id].outcome === 'done')
+    if (!done.length) return
+    const ig = await factory.integrate(done, w + 1)
+    integrations.push({ wave: w + 1, tasks: done, ok: Boolean(ig && ig.ok), kind: (ig && ig.kind) || null, route: Object.keys((ig && ig.route) || {}), ...(ig && ig.reconciled ? { reconciled: true } : {}) })
+    if (!ig || ig.ok) return
+    if (ig.kind === 'environment') {
+      envBroken = { reason: (ig.broken && ig.broken.reason) || ig.message || 'environment broken' }
+      return
+    }
+    const again = []
+    for (const [id, lines] of Object.entries(ig.route || {})) {
+      const s = st[id]
+      if (!s) continue // built before this run: its next realize rebuilds it (needs_work: integration)
+      s.failures = (lines || []).map((l) => `Attempt ${attemptNo(id) - 1}: the integrated build failed after wave ${w + 1}: \`${l.cmd}\` exited ${l.code}. Output (tail):\n${tail(l.output, 1500).split('\n').map((x) => '      ' + x).join('\n')}`)
+      if (s.attempts >= (T[id].retry_limit || 3)) {
+        s.outcome = 'exhausted'
+        s.summary = `Exhausted after ${s.attempts} attempt(s): the integrated build failed: ${(lines || []).map((l) => l.cmd).join(', ')}`
+        continue
+      }
+      s.outcome = 'pending'
+      s.reopened = true
+      again.push(id)
+    }
+    if (!again.length) return
+    phase(`realize: wave ${w + 1}: rebuilding ${again.join(', ')} on the integrated branch`)
+    await settle(again)
+    if (envBroken) return
+  }
+}
+
+for (let w = 0; w < brief.waves.length && !envBroken; w++) {
+  skipDependents()
+  let active = brief.waves[w].filter((id) => st[id] && st[id].outcome === 'pending')
+  if (!active.length) continue
+  phase(`realize: wave ${w + 1}/${brief.waves.length} (${active.join(', ')})`)
+  if (factory.prepare) {
+    for (const group of chunks(active, cap)) {
+      const res = await pipeline(group, (id) => factory.prepare(id))
+      const bad = res.find((r) => r && !r.ok)
+      if (bad && !envBroken) envBroken = { task: bad.task, ...(bad.broken || { reason: 'environment broken' }) }
+    }
+    if (envBroken) break
+  }
+  await settle(active)
+  if (envBroken) break
+  if (brief.integrate_each_wave && factory.integrate) await integrate(w)
+}
 skipDependents()
 
 const tasks = Object.keys(T).map((id) => ({ id, outcome: st[id].outcome, attempts: st[id].attempts, summary: st[id].summary }))
@@ -213,7 +258,7 @@ if (envBroken) {
     questions: [],
     park_reason: envBroken.reason,
     summary: `Stopped: ${envBroken.reason}`,
-    data: { tasks, verifications: checks, environment_broken: envBroken },
+    data: { tasks, verifications: checks, integrations, environment_broken: envBroken },
   }
 }
 const notDone = tasks.filter((t) => t.outcome !== 'done')
@@ -231,5 +276,5 @@ return {
   questions: [],
   park_reason: notDone.length ? `Tasks not done: ${notDone.map((t) => `${t.id} (${t.outcome})`).join(', ')}` : null,
   summary: `${tasks.length - notDone.length}/${tasks.length} task(s) done.`,
-  data: { tasks, verifications: checks },
+  data: { tasks, verifications: checks, integrations },
 }

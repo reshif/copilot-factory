@@ -30,12 +30,53 @@ const TASK_SCHEMA = {
           retry_limit: { type: 'integer', minimum: 1, maximum: 10 },
           rollback: { type: 'string' },
           notes: { type: 'string' },
+          // the interfaces (by name) this task calls or imports from another task's work
+          consumes: { type: 'array', items: { type: 'string', minLength: 1 } },
+        },
+      },
+    },
+    // What tasks build for each other: a function, class, module, CLI command, schema, endpoint,
+    // config key… named once, with the file it lives in and the task that owns (produces) it.
+    interfaces: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'file', 'owner'],
+        properties: {
+          name: { type: 'string', minLength: 1 },
+          kind: { type: 'string' },
+          file: { type: 'string', minLength: 1 },
+          owner: { type: 'string', pattern: '^T\\d+$' },
+          signature: { type: 'string' },
         },
       },
     },
     waves: { type: 'array' },
   },
 };
+
+// A consumer depends on the owner of every interface it consumes: it must start from the
+// owner's change. { T3: [{ on: 'T1', via: 'toCsv(items)' }] }.
+function impliedDeps(tasks, interfaces) {
+  const owner = Object.fromEntries((interfaces || []).filter((i) => i && i.name).map((i) => [i.name, i.owner]));
+  const ids = new Set(tasks.map((t) => t.id));
+  const out = {};
+  for (const t of tasks) {
+    for (const name of t.consumes || []) {
+      const on = owner[name];
+      if (!on || on === t.id || !ids.has(on) || (t.depends_on || []).includes(on)) continue;
+      (out[t.id] = out[t.id] || []).push({ on, via: name });
+    }
+  }
+  return out;
+}
+
+// The tasks with depends_on widened by the interfaces they consume.
+function withInterfaceDeps(tasks, interfaces) {
+  if (!interfaces || !interfaces.length) return tasks;
+  const imp = impliedDeps(tasks, interfaces);
+  return tasks.map((t) => (imp[t.id] ? { ...t, depends_on: [...new Set([...(t.depends_on || []), ...imp[t.id].map((x) => x.on)])] } : t));
+}
 
 const SLICE_SCHEMA = {
   type: 'object',
@@ -82,7 +123,8 @@ function layers(items) {
 }
 
 // Split each dependency layer so that no two tasks in a wave can touch the same files.
-function waves(tasks) {
+function waves(tasksIn, interfaces) {
+  const tasks = withInterfaceDeps(tasksIn, interfaces);
   const { layers: ls, cycle } = layers(tasks);
   if (cycle) return { waves: null, cycle };
   const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
@@ -107,7 +149,8 @@ function waves(tasks) {
 // paths overlap its own. waves() only separates overlapping tasks; without the implicit
 // dependency the later one would start from a base without the earlier one's change and
 // reconcile would have to choose between them.
-function effectiveDeps(tasks, id) {
+function effectiveDeps(tasksIn, id, interfaces) {
+  const tasks = withInterfaceDeps(tasksIn, interfaces);
   const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
   const me = byId[id];
   if (!me) return [];
@@ -123,8 +166,8 @@ function effectiveDeps(tasks, id) {
 }
 
 // Every task in build order (waves flattened): what reconcile merges, in that order.
-function buildOrder(tasks) {
-  const w = waves(tasks).waves;
+function buildOrder(tasks, interfaces) {
+  const w = waves(tasks, interfaces).waves;
   return w ? w.flat() : tasks.map((t) => t.id);
 }
 
@@ -167,6 +210,19 @@ function validatePlan(root, state, { write = true } = {}) {
     }
     if (t.verify_commands.some((c) => !cmdOf(c))) errors.push(`${t.id} has an empty verify command`);
   }
+  // Interfaces: named once, owned by a real task, living in a file that task may change; every
+  // consumed interface has a producer (a consumer without one would find nothing to call).
+  const ifaces = plan.interfaces || [];
+  const names = ifaces.map((i) => i.name);
+  for (const n of names.filter((n, i) => names.indexOf(n) !== i)) errors.push(`Interface "${n}" is declared twice`);
+  for (const i of ifaces) {
+    const owner = plan.tasks.find((t) => t.id === i.owner);
+    if (!owner) errors.push(`Interface "${i.name}" is owned by unknown task ${i.owner}`);
+    else if (!matchesAny(String(i.file).replace(/^\.\//, ''), owner.allowed_paths)) errors.push(`Interface "${i.name}" lives in ${i.file}, outside its owner ${i.owner}'s allowed paths`);
+  }
+  for (const t of plan.tasks) {
+    for (const c of t.consumes || []) if (!names.includes(c)) errors.push(`${t.id} consumes "${c}", but no task produces it: declare it in interfaces with its owner (or add the task that builds it)`);
+  }
   const needsTask = parsed.acs.filter((a) => a.evidence.some((e) => ['test', 'run', 'diff'].includes(e)));
   for (const ac of needsTask) {
     if (!plan.tasks.some((t) => t.criteria_ids.includes(ac.id))) errors.push(`${ac.id} is not covered by any task`);
@@ -176,15 +232,24 @@ function validatePlan(root, state, { write = true } = {}) {
     const mine = plan.tasks.flatMap((t) => t.allowed_paths);
     if (globsOverlap(mine, lock.paths)) errors.push(`Paths overlap with active job ${lock.job}, which holds a plan lock`);
   }
-  const w = waves(plan.tasks);
-  if (w.cycle) errors.push(`Dependency cycle among ${w.cycle.join(', ')}`);
+  const w = waves(plan.tasks, ifaces);
+  if (w.cycle) errors.push(`Dependency cycle among ${w.cycle.join(', ')}${ifaces.length ? ' (depends_on plus consumed interfaces)' : ''}`);
   if (errors.length) return { valid: false, errors };
 
   if (write && stableStringify(plan.waves || null) !== stableStringify(w.waves)) {
     plan.waves = w.waves;
     writeJson(jp.plan, plan);
   }
-  return { valid: true, errors: [], waves: w.waves, tasks: plan.tasks.length };
+  // For the H3 view: who produces and who consumes what, and the dependencies that implies.
+  const implied = impliedDeps(plan.tasks, ifaces);
+  return {
+    valid: true,
+    errors: [],
+    waves: w.waves,
+    tasks: plan.tasks.length,
+    interfaces: ifaces.map((i) => ({ name: i.name, kind: i.kind || null, file: i.file, owner: i.owner, consumers: plan.tasks.filter((t) => (t.consumes || []).includes(i.name)).map((t) => t.id) })),
+    implied_dependencies: Object.entries(implied).flatMap(([task, xs]) => xs.map((x) => ({ task, on: x.on, via: x.via }))),
+  };
 }
 
 function validateSlices(root, state) {
@@ -241,4 +306,4 @@ function fromContract(root, state) {
   return { ok: true, plan: jobPaths(root, state.id).plan, waves: v.waves };
 }
 
-module.exports = { validate, validatePlan, validateSlices, waves, layers, effectiveDeps, buildOrder, fromContract, cmdOf, TASK_SCHEMA, SLICE_SCHEMA };
+module.exports = { validate, validatePlan, validateSlices, waves, layers, effectiveDeps, buildOrder, impliedDeps, withInterfaceDeps, fromContract, cmdOf, TASK_SCHEMA, SLICE_SCHEMA };

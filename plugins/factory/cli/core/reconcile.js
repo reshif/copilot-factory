@@ -4,6 +4,7 @@
 // anything else is aborted and parks the job.
 
 const { readJson, nowIso, fail } = require('../lib/util');
+const { runCommand } = require('../lib/run');
 const { jobPaths } = require('../lib/paths');
 const { matchesAny } = require('../lib/glob');
 const git = require('../lib/git');
@@ -16,7 +17,7 @@ const tasks = require('./tasks');
 function orderedTasks(root, state) {
   const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
   const byId = Object.fromEntries((plan.tasks || []).map((t) => [t.id, t]));
-  return planMod.buildOrder(plan.tasks || []).map((id) => byId[id]);
+  return planMod.buildOrder(plan.tasks || [], plan.interfaces).map((id) => byId[id]);
 }
 
 function conflicted(wt) {
@@ -138,6 +139,137 @@ function run(root, jobId) {
   return finish(root, state);
 }
 
+// ---- per-wave integration (P2.3) ----------------------------------------------------------
+// After each realize wave, `factory run` merges the wave's finished tasks into the job branch
+// and runs the job-level checks on the integrated tree, inside the build environment: every
+// integrated task's verify commands, the contract's verify commands whose criteria are all
+// integrated, and the policy checks. The next wave's tasks start from that branch. A failure
+// routes to the task(s) whose files the output names (else the ones owning the failing
+// command, else the wave), with the raw output; they are rebuilt on the integrated branch.
+
+// Repo paths named in a command's output ("src/x.py", "src/x.py:12", "./src/x.js").
+function pathsIn(output) {
+  return [...new Set((String(output || '').match(/(?:\.\/)?[\w@.-]+(?:\/[\w@.-]+)+\.[A-Za-z]{1,6}\b/g) || []).map((p) => p.replace(/^\.\//, '')))];
+}
+
+function integrationCommands(root, state, plan, integratedIds) {
+  const parsed = require('./contract').parse(require('./contract').read(root, state.id));
+  const byCmd = new Map();
+  const add = (cmd, owners, from) => {
+    if (!cmd) return;
+    const e = byCmd.get(cmd) || { cmd, owners: new Set(), from };
+    owners.forEach((o) => e.owners.add(o));
+    byCmd.set(cmd, e);
+  };
+  const tasksIn = (plan.tasks || []).filter((t) => integratedIds.includes(t.id));
+  for (const t of tasksIn) for (const c of t.verify_commands || []) add(planMod.cmdOf(c), [t.id], 'task');
+  const covered = new Set(tasksIn.flatMap((t) => t.criteria_ids || []));
+  for (const v of parsed.verifyCommands) {
+    if (v.covers.length && v.covers.every((a) => covered.has(a))) add(v.cmd, tasksIn.filter((t) => (t.criteria_ids || []).some((a) => v.covers.includes(a))).map((t) => t.id), 'contract');
+  }
+  for (const c of state.policy.checks || []) add(typeof c === 'string' ? c : c.cmd, [], 'policy');
+  return [...byCmd.values()].map((e) => ({ cmd: e.cmd, owners: [...e.owners], from: e.from }));
+}
+
+function integrateWave(root, jobId, ids, { wave = null } = {}) {
+  const state = job.resolve(root, jobId);
+  const ctx = steps.context(root, state, job.load);
+  const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
+  const ordered = orderedTasks(root, state).filter((t) => t && ids.includes(t.id));
+  const notDone = ordered.filter((t) => !steps.taskDone(ctx, t.id));
+  if (notDone.length) fail(`Not done, so not integrated: ${notDone.map((t) => t.id).join(', ')}`, 'not_ready');
+  const wt = tasks.ensureJobWorktree(root, state);
+  if (conflicted(wt).length) git.run(wt, ['merge', '--abort'], { allowFail: true });
+  if (git.status(wt)) fail(`The job worktree has uncommitted changes:\n${git.status(wt)}`, 'dirty_worktree');
+  const before = git.revParse(wt, 'HEAD');
+  const record = (ok, detail) => ledger.append(root, state.id, { kind: 'step', step: 'integrate', ok, bound: {}, detail: { wave, tasks: ids, before, ...detail } });
+  const routeTo = (fresh, route) => {
+    for (const [id, lines] of Object.entries(route)) {
+      fresh.tasks[id] = { ...(fresh.tasks[id] || {}), needs_work: 'integration', integration_failure: { at: nowIso(), wave, failures: lines } };
+    }
+  };
+  const merged = [];
+  for (const t of ordered) {
+    const br = steps.taskBranch(state, t.id);
+    if (git.isAncestor(root, br, state.branch)) continue;
+    const r = git.run(wt, ['merge', '--no-ff', '--no-edit', '-m', `factory: merge ${t.id} into ${state.id}\n\nFactory-Job: ${state.id}\nFactory-Task: ${t.id}`, br], { allowFail: true });
+    if (r.code !== 0) {
+      const files = conflicted(wt);
+      git.run(wt, ['merge', '--abort'], { allowFail: true });
+      git.run(wt, ['reset', '--hard', before]);
+      const line = { cmd: `merge ${t.id} into the job branch`, code: 1, output: `Merging ${t.id} into the integrated job branch conflicts in ${files.join(', ') || 'its files'}: rebuild it on the integrated branch.` };
+      const fresh = job.load(root, state.id);
+      routeTo(fresh, { [t.id]: [line] });
+      job.save(root, fresh);
+      record(false, { kind: 'conflict', task: t.id, files });
+      return { job: state.id, ok: false, kind: 'conflict', wave, task: t.id, files, route: { [t.id]: [line] } };
+    }
+    merged.push(t.id);
+  }
+  const found = regressions(root, state, wt);
+  if (found.length) {
+    git.run(wt, ['reset', '--hard', before]);
+    const dropped = found.flatMap((x) => x.dropped.map((d) => ({ ...d, task: x.task || null })));
+    const route = {};
+    for (const d of dropped) {
+      const id = d.task && ids.includes(d.task) ? d.task : ids[0];
+      (route[id] = route[id] || []).push({ cmd: `merge ${id} into the job branch`, code: 1, output: `Merging would drop ${d.file}: "${String(d.line).slice(0, 120)}" (${d.by}). Rebuild on the integrated branch and keep that line.` });
+    }
+    const fresh = job.load(root, state.id);
+    routeTo(fresh, route);
+    job.save(root, fresh);
+    record(false, { kind: 'regression', dropped: dropped.slice(0, 20) });
+    return { job: state.id, ok: false, kind: 'regression', wave, dropped: dropped.slice(0, 20), route };
+  }
+  // the job-level checks on the integrated tree, inside the build environment
+  const envMod = require('./environment');
+  const E = envMod.ensure(root, state, { taskId: null, wt });
+  if (!E.ok) {
+    record(false, { kind: 'environment', broken: E.broken });
+    return { job: state.id, ok: false, kind: 'environment', wave, broken: E.broken, message: E.broken.reason };
+  }
+  const head = git.revParse(wt, 'HEAD');
+  const integratedIds = (plan.tasks || []).filter((t) => git.branchExists(root, steps.taskBranch(state, t.id)) && git.isAncestor(root, steps.taskBranch(state, t.id), state.branch)).map((t) => t.id);
+  const L = state.policy.limits;
+  const cmds = integrationCommands(root, state, plan, integratedIds);
+  const results = cmds.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c.cmd), wt, { timeoutSec: L.command_timeout_seconds, reruns: L.flaky_reruns }), cmd: c.cmd, owners: c.owners, from: c.from }));
+  const failed = results.filter((r) => !r.pass);
+  if (failed.length) {
+    // Route each failure: the integrated tasks whose files its output names, else the tasks
+    // owning the command, else this wave's tasks.
+    const tasksIn = (plan.tasks || []).filter((t) => integratedIds.includes(t.id));
+    const route = {};
+    for (const f of failed) {
+      const named = pathsIn(f.output);
+      // a path in a stack trace is often absolute (…/worktrees/J-0001/src/x.js): any suffix counts
+      const hits = (t) => named.some((p) => p.split('/').some((_, i, a) => matchesAny(a.slice(i).join('/'), t.allowed_paths || [])));
+      let to = tasksIn.filter(hits).map((t) => t.id);
+      if (!to.length) to = f.owners.filter((o) => integratedIds.includes(o));
+      if (!to.length) to = ids.slice();
+      const line = { cmd: f.cmd, code: f.code, ...(f.flaky ? { flaky: true } : {}), output: f.output.length > 3000 ? `…${f.output.slice(-3000)}` : f.output, named_files: named.slice(0, 10) };
+      for (const id of to) (route[id] = route[id] || []).push(line);
+    }
+    const fresh = job.load(root, state.id);
+    routeTo(fresh, route);
+    job.save(root, fresh);
+    record(false, { kind: 'commands', commit: head, merged, commands: results.map((r) => ({ cmd: r.cmd, pass: r.pass, code: r.code, from: r.from })), route: Object.fromEntries(Object.entries(route).map(([k, v]) => [k, v.map((x) => x.cmd)])) });
+    return { job: state.id, ok: false, kind: 'commands', wave, commit: head, merged, failures: failed.map((f) => ({ cmd: f.cmd, code: f.code, output: f.output })), route };
+  }
+  const fresh = job.load(root, state.id);
+  for (const id of ids) if (fresh.tasks[id] && fresh.tasks[id].integration_failure) delete fresh.tasks[id].integration_failure;
+  job.save(root, fresh);
+  record(true, { commit: head, merged, commands: results.map((r) => ({ cmd: r.cmd, pass: r.pass, from: r.from })) });
+  // Every task is built and integrated: this is the reconcile step's result too (no
+  // integrator agent needed; the regression guard ran above).
+  const ctx2 = steps.context(root, job.load(root, state.id), job.load);
+  let reconciled = false;
+  if (steps.allTasksDone(ctx2) && steps.allTasksMerged(ctx2)) {
+    finish(root, job.load(root, state.id));
+    reconciled = true;
+  }
+  return { job: state.id, ok: true, wave, commit: head, merged, commands: results.length, reconciled };
+}
+
 function cont(root, jobId) {
   const state = job.resolve(root, jobId);
   const wt = jobPaths(root, state.id).worktree;
@@ -156,4 +288,4 @@ function abort(root, jobId) {
   return { job: state.id, status: 'aborted' };
 }
 
-module.exports = { run, cont, abort };
+module.exports = { run, cont, abort, integrateWave, integrationCommands, pathsIn };

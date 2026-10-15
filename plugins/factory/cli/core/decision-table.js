@@ -3,7 +3,8 @@
 // vector, applies the decision table, and falls back to recipe order. It writes one
 // decision record per routing decision. No LLM decides the next step.
 
-const { sha256, stableStringify, nowIso } = require('../lib/util');
+const { sha256, stableStringify, nowIso, readJson } = require('../lib/util');
+const { jobPaths } = require('../lib/paths');
 const job = require('./job');
 const steps = require('./steps');
 const alignment = require('./alignment');
@@ -42,7 +43,7 @@ function blameOwner(ctx, f, tasks) {
 
 function ownersOfFindings(ctx, findings) {
   const all = steps.planTasks(ctx);
-  const order = require('./plan').buildOrder(all);
+  const order = require('./plan').buildOrder(all, (readJson(jobPaths(ctx.root, ctx.state.id).plan, {}) || {}).interfaces);
   const tasks = order.map((id) => all.find((t) => t.id === id)).filter(Boolean);
   const owners = new Set();
   const byFinding = {};

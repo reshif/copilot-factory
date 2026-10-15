@@ -98,7 +98,7 @@ const STAGES = [
         detail: { what: 'Approval takes the path locks so no other job builds on the same files. In feature@low it is approved automatically when God Eye approves this exact plan.', you: ['approve', 'deny <what must change>'], floors: 'H3 (high)' } },
     ] },
   { id: 'build', name: 'Build', sub: 'workflows: realize · reconcile', gapAfter: 150,
-    what: 'Tasks build wave by wave, up to four at once, each in its own git worktree. Builders write and commit; the CLI runs task verify itself and its exit code decides. Then the integrator merges every task branch into the job branch.',
+    what: 'Tasks build wave by wave, up to four at once, each in its own git worktree. Builders write and commit; the CLI runs task verify itself and its exit code decides. After each wave the CLI merges it into the job branch and runs the job\'s checks there; the next wave starts from it. The integrator runs only when that could not finish.',
     nodes: [
       { id: 'wf-realize', type: 'workflow', title: 'realize · wave by wave', step: 'realize',
         groups: [[P('builder · T1', 'agent', 'builder'), P('builder · T2', 'agent', 'builder')], [P('task verify T1', 'cli'), P('task verify T2', 'cli')], [P('builder · T3', 'agent', 'builder')], [P('task verify T3', 'cli')]],

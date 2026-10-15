@@ -285,7 +285,15 @@ function run(argv) {
       if (sub === 'run') return r.run(R(), J);
       if (sub === 'continue') return r.cont(R(), J);
       if (sub === 'abort') return r.abort(R(), J);
-      return fail('reconcile run | continue | abort', 'bad_input');
+      if (sub === 'wave') {
+        // factory run's own step after a realize wave (P2.3)
+        const ids = String(opt.tasks || '').split(',').map((x) => x.trim()).filter(Boolean);
+        if (!ids.length) fail('reconcile wave --tasks T1,T2 [--wave n]', 'bad_input');
+        const res = r.integrateWave(R(), J, ids, { wave: opt.wave ? Number(opt.wave) : null });
+        if (!res.ok) process.exitCode = 1;
+        return res;
+      }
+      return fail('reconcile run | continue | abort | wave --tasks T1,T2', 'bad_input');
     }
     case 'verify':
       if (sub !== 'run') fail('verify run', 'bad_input');

@@ -87,7 +87,8 @@
     "max_agent_runs_per_tree": 2000,
     "max_ship_files": 200,
     "flaky_reruns": 1,
-    "command_timeout_seconds": 600
+    "command_timeout_seconds": 600,
+    "integrate_each_wave": true
   },
   "lessons_max_per_job": 3,
   "ci": {

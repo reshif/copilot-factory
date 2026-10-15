@@ -674,10 +674,22 @@ async function prepareTask(ctx, taskId) {
   return out;
 }
 
+// factory.integrate(taskIds, wave) for realize, after a wave: `factory reconcile wave` merges
+// the wave's done tasks into the job branch and runs the job's checks there (P2.3).
+async function integrateWave(ctx, ids, wave) {
+  const r = await cliChild(ctx, ['reconcile', 'wave', '--tasks', ids.join(','), ...(wave ? ['--wave', String(wave)] : [])]);
+  const j = r.json || {};
+  const out = j.error ? { ok: false, kind: 'error', message: j.message || j.code, route: {} } : j;
+  ctx.checks.push({ step: 'integrate', wave: wave || null, tasks: ids, ok: Boolean(out.ok), kind: out.kind || null, ms: r.ms });
+  ctx.say(`integrate wave ${wave || '?'} (${ids.join(', ')}): ${out.ok ? `ok${out.reconciled ? ', every task integrated' : ''}` : `${out.kind}${out.route ? ` → ${Object.keys(out.route).join(', ')}` : ''}${out.message ? `: ${String(out.message).slice(0, 200)}` : ''}`}`);
+  return out;
+}
+
 function workflowApi(ctx) {
   return {
     verify: (taskId) => verifyTask(ctx, String(taskId)),
     prepare: (taskId) => prepareTask(ctx, String(taskId)),
+    integrate: (ids, wave) => integrateWave(ctx, (ids || []).map(String), wave),
   };
 }
 

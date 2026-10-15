@@ -367,7 +367,9 @@ test('factory run realize: builders start in their task worktree, task verify de
   }
   assert.equal(calls[0].model, null, 'attempt 1: the builder\'s own model');
   assert.equal(calls[1].model, 'claude-opus-5.5', 'attempt 2: escalated, alias mapped to the Copilot id');
-  assert.equal(F.cli(root, ['next']).workflow, 'reconcile');
+  // the wave was integrated (merged, checks run on the job branch), which is reconcile's result too
+  assert.deepEqual(r.checks.filter((x) => x.step === 'integrate').map((x) => [x.wave, x.ok]), [[1, true]]);
+  assert.match(F.cli(root, ['next']).command, /verify run/, 'no reconcile run left to do');
 });
 
 test('factory shim links factory and factory-inspect into a directory; doctor checks the Copilot CLI', () => {
@@ -616,7 +618,7 @@ function runArgs(n) {
   return a;
 }
 
-test('bug@low through factory run: clarify, ground, realize, reconcile, challenge (a finding verified), each dry-run first', () => {
+test('bug@low through factory run: clarify, ground, realize (integrating its wave), challenge (a finding verified), each dry-run first', () => {
   const root = F.makeRepo();
   const J = newJob(root);
   const h = harness(CREW, { FAKE_CREW: JSON.stringify({ finding: 'major', verdict: 'refuted' }) });
@@ -666,8 +668,9 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
     assert.deepEqual(roles(r), ['builder'], 'task verify decides: no tester agent');
     assert.deepEqual(r.checks.filter((x) => x.step === 'verify').map((x) => [x.step, x.task, x.pass]), [['verify', 'T1', true]]);
   });
-  step({ workflow: 'reconcile', dry: ['integrator'] }, (r) => assert.deepEqual(roles(r), ['integrator']));
+  // realize integrated the wave and recorded reconcile: no integrator agent is needed
   assert.match(F.cli(root, ['next']).command, /verify run/);
+  assert.equal(require('../cli/core/ledger').lastStep(root, J, 'reconcile').ok, true);
   assert.equal(F.cli(root, ['verify', 'run']).ok, true);
   step({ workflow: 'fanout-judge', dry: ['code-reviewer', 'finding-verifier'] }, (r) => {
     assert.deepEqual(roles(r), ['code-reviewer', 'finding-verifier'], 'the major finding got a verifier');
@@ -686,7 +689,8 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
     assert.deepEqual(flagsOf(c.argv, '--allow-tool'), p.allow, `${role}: --allow-tool`);
     assert.deepEqual(flagsOf(c.argv, '--deny-tool'), p.deny, `${role}: --deny-tool`);
   }
-  for (const r of ['builder', 'code-reviewer', 'finding-verifier', 'integrator', 'researcher', 'judge', 'verifier']) assert.ok(seen.has(r), `${r} ran`);
+  for (const r of ['builder', 'code-reviewer', 'finding-verifier', 'researcher', 'judge', 'verifier']) assert.ok(seen.has(r), `${r} ran`);
+  assert.ok(!seen.has('integrator'), 'every wave was integrated by the CLI; the integrator only runs when that could not finish');
   const argvOf = (role) => h.log().find((c) => c.agent === `factory:${role}`).argv;
   const builder = argvOf('builder');
   assert.deepEqual(flagsOf(builder, '--allow-tool'), ['shell', 'write'], 'the builder edits and runs tests in its worktree');

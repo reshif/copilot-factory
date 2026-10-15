@@ -113,9 +113,10 @@ function start(root, jobId, taskId) {
   const wt = taskWorktree(root, state.id, taskId);
   const ctx = steps.context(root, state, job.load);
   // Explicit depends_on plus earlier-wave tasks with overlapping paths (plan.effectiveDeps).
-  const deps = planMod.effectiveDeps(plan.tasks, taskId);
+  const deps = planMod.effectiveDeps(plan.tasks, taskId, plan.interfaces);
   for (const d of deps) {
-    if (!steps.taskDone(ctx, d)) fail(`${taskId} depends on ${d}${(task.depends_on || []).includes(d) ? '' : ' (an earlier wave touching the same paths)'}, which is not done yet`, 'dependency_not_done');
+    const via = (task.consumes || []).find((n) => ((plan.interfaces || []).find((i) => i.name === n) || {}).owner === d);
+    if (!steps.taskDone(ctx, d)) fail(`${taskId} depends on ${d}${(task.depends_on || []).includes(d) ? '' : via ? ` (it produces "${via}", which ${taskId} consumes)` : ' (an earlier wave touching the same paths)'}, which is not done yet`, 'dependency_not_done');
   }
   prepareWorktree(root, state, taskId);
   const prev = state.tasks[taskId] || {};
@@ -232,6 +233,8 @@ function show(root, jobId, taskId) {
     last_evidence: evidence ? { pass: evidence.pass, failures: evidence.commands.filter((c) => !c.pass), scope_violations: evidence.scope_violations } : null,
     fix_findings: fixFindings,
     verify_failures: verifyFailures,
+    // the per-wave integration check that failed on this task's files (P2.3)
+    integration_failures: t.needs_work === 'integration' && t.integration_failure ? t.integration_failure.failures || [] : [],
     lessons: lessons.inScope(root, task.allowed_paths),
     // the approved design as this task needs it, and where it sits in the plan
     packet: require('./packet').build(root, state, plan, task),
@@ -292,7 +295,7 @@ function verify(root, jobId, taskId) {
   // Every declared and implied dependency must be in the branch that is verified.
   const branch = steps.taskBranch(state, taskId);
   const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
-  const missingDeps = planMod.effectiveDeps(plan.tasks || [], taskId).filter((d) => {
+  const missingDeps = planMod.effectiveDeps(plan.tasks || [], taskId, plan.interfaces).filter((d) => {
     const db = steps.taskBranch(state, d);
     return !git.branchExists(root, db) || !git.isAncestor(root, db, branch);
   });

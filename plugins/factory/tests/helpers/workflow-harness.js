@@ -32,6 +32,13 @@ function realFactory(brief) {
         return { task: id, pass: false, error: { code: e.code || 'internal', message: e.message } };
       }
     },
+    integrate: async (ids, wave) => {
+      try {
+        return require('../../cli/core/reconcile').integrateWave(brief.root, brief.job, ids, { wave });
+      } catch (e) {
+        return { ok: false, kind: 'error', message: e.message, route: {} };
+      }
+    },
     prepare: async (id) => {
       const job = require('../../cli/core/job');
       const state = job.load(brief.root, brief.job);

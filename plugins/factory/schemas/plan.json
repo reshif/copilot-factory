@@ -1,5 +1,5 @@
 {
-  "$comment": "Shape of .factory/jobs/<job>/plan.json (task contracts).",
+  "$comment": "Shape of .factory/jobs/<job>/plan.json (task contracts). Mirrors TASK_SCHEMA in cli/core/plan.js (tests check they match). interfaces: what tasks build for each other; a task consumes them by name, which makes it depend on their owner.",
   "type": "object",
   "required": [
     "tasks"
@@ -66,6 +66,44 @@
             "type": "string"
           },
           "notes": {
+            "type": "string"
+          },
+          "consumes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "file",
+          "owner"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "pattern": "^T\\d+$"
+          },
+          "signature": {
             "type": "string"
           }
         }
