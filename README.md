@@ -6,8 +6,8 @@ This is a port of [claude-factory](https://github.com/reshif/claude-factory) (th
 
 | Plugin | Version | What it is |
 |---|---|---|
-| `factory` | 0.3.1 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, 21 custom agents, recipes, templates and the console |
-| `factory-inspector` | 0.3.1 | An independent auditor: checks each job against the rulebook it declared and the factory's health (rules R1–R20) |
+| `factory` | 0.3.1 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, the custom agents (one per role), recipes, templates and the console |
+| `factory-inspector` | 0.3.1 | An independent auditor: checks each job against the rulebook it declared and the factory's health (its rule table is in the inspector README) |
 
 0.3.0 adds **grounded intent**: clarify researches the repo and the web before it asks you anything (see [How a job runs](#grounded-intent-research-before-questions)). 0.3.1 makes the hooks work in VS Code's Local harness as well as the Copilot one, says when chat replies aren't reaching the factory, asks you to type the job id when you approve from a terminal, and runs the distill lesson-writer through `factory distill write` (see [Use it in VS Code](#use-it-in-vs-code)).
 
@@ -51,7 +51,7 @@ flowchart TB
   store[/"<b>.factory/</b> in your repo · contract · ADRs · plan · ledger · decisions · events · lessons"/]:::art
 
   console["<b>Console</b><br/>factory console --serve<br/>live board · wire · line map · story"]
-  inspector["<b>Inspector</b><br/>plugin factory-inspector<br/>rules R1–R20 · runs when a job ends"]
+  inspector["<b>Inspector</b><br/>plugin factory-inspector<br/>its rules · runs when a job ends"]
 
   you --> skills
   you --> hooks
@@ -118,7 +118,7 @@ Check: `factory help | head -1` and `factory-inspect help | head -1` each print 
 
 **Trust the repository.** When the Copilot CLI asks whether to trust the folder, say yes. Hooks, skills and agents need it.
 
-**Never use Autopilot with the factory.** Autopilot answers questions and permission prompts by itself, and every gate here is yours. It can't approve a gate (only your own typed reply does), but it pushes the agent on past the points where the factory waits for you. Run the factory in an interactive session. The cloud agent is out of scope: it is non-interactive and turns "ask" into "deny".
+**Never use Autopilot with the factory.** Autopilot answers questions and permission prompts by itself, and every gate here is yours. It can't approve a gate (only your own typed reply does), but it pushes the agent on past the points where the factory waits for you. Run the factory in an interactive session. The factory checks for it: the reply hook recognises Autopilot's own continuation prompt and records it in `.factory/autopilot.json` (event `autopilot_seen`), and for six hours afterwards `factory next` carries an `autopilot` warning (the start skill shows it and stops) and `factory doctor` warns. It can't see an Autopilot session that never stops early, and plan-then-autopilot only through `COPILOT_PLAN_THEN_AUTOPILOT` (doctor). The cloud agent is out of scope: it is non-interactive and turns "ask" into "deny".
 
 ### Update
 
@@ -316,7 +316,7 @@ Run `factory console`, or `/factory:console` in the Copilot CLI, then open `.fac
   ![A job's story](plugins/factory/console/dev/screenshots/job-story.png)
 - **Live.** With `--serve`, the page gets each change over server-sent events. Only the rows whose job changed are redrawn, with a short highlight, and a row that changes group slides there. A new gate brings a toast with the reply to copy, and, if you turn on the bell, a desktop notification. On an open job, new steps play in if you are watching the latest moment, and your place is kept if you are scrubbing back. The server listens on this machine only (`http://127.0.0.1:4477/`, `--port 0` for any free port), refuses foreign `Host` headers and is read-only.
 - **Keys.** `j`/`k` move, `Enter` opens, `Esc` goes back, `/` filters, `⌘K` (or ctrl-K) opens a palette to jump to any job or view, `1`–`5` toggle the tiles, `g w` opens the next job waiting for you, `?` lists them all. The view, filters and open job are in the URL, so a link brings you back to the same place.
-- **Recipe map and Crew.** *Recipe map* is the whole factory as a floor plan for any recipe (clarify starts with the scout phase: intent map, repo and web scouts, verifier); *Crew* lists the 21 agents and how often each ran.
+- **Recipe map and Crew.** *Recipe map* is the whole factory as a floor plan for any recipe (clarify starts with the scout phase: intent map, repo and web scouts, verifier); *Crew* lists every agent and how often each ran.
 - **Where the data comes from.** Each workflow returns a roster of every agent it started, and `factory record` seals it into the ledger as an `agents` entry tied to the routing decision. Hooks add timings. Clarify's research comes from the round's `intent` ledger entry and `intent-evidence.json`. Parks, amendments, follow-ups, hook errors and stop-gate blocks come from the event log and the job's own records. An agent that started but never stopped counts as running for two hours at most, and only while its job is active; after that it shows as stale.
 - **Options.** `--job J-0003` makes the page for one job, `--out file.html` writes it elsewhere, `--label "…"` adds a banner, and `--data file.json` also writes the data as JSON. Dark is the default look when your system is dark; the half-moon button switches theme.
 - **Sample.** `node plugins/factory/console/dev/make-sample.js <dir>` builds a realistic sample: nine jobs over about three days on a simulated clock. They run through the real CLI, workflows, hooks and inspector, with scripted agents. More screenshots are in [`plugins/factory/console/dev/screenshots/`](plugins/factory/console/dev/screenshots/).
@@ -326,7 +326,7 @@ Run `factory console`, or `/factory:console` in the Copilot CLI, then open `.fac
 `factory-inspector` audits the factory from the outside. It imports none of the factory's code: it reads `.factory/` directly, with its own seal check, so a bug in the factory can't hide itself. It never blocks or changes a job; its findings are questions for you, kept in `.factory/inspect/register.json`.
 
 - **Per job (R1–R9):** forged records, the wrong recipe, steps out of order, gates approved without being shown, review on an unproven build, loops past caps, the agent not doing what `factory next` said, the same situation routed differently, recurring friction.
-- **Factory health (R10–R20):** hook failures, torn log lines, repeated guard denials / stop-gate blocks / refused replies, CLI failures and crashes, degraded workflows and agent retries, agents that never stopped, repeated parks, idle jobs, slow gate replies, clarify parking on an unclear intent or overrunning its question budget, and (R20) clarify asking you what research could have answered, or assumptions you overrode. Thresholds live in `.factory/inspect/config.json` (`limits`, `rules_off`).
+- **Factory health (the R10+ rules):** hook failures, torn log lines, repeated guard denials / stop-gate blocks / refused replies, CLI failures and crashes, degraded workflows and agent retries, agents that never stopped, repeated parks, idle jobs, slow gate replies, clarify parking on an unclear intent or overrunning its question budget, and (R20) clarify asking you what research could have answered, or assumptions you overrode. Thresholds live in `.factory/inspect/config.json` (`limits`, `rules_off`).
 - **When it runs:** whenever a job ends (closed, cancelled or abandoned), however it ended: right after Copilot runs the command, at the end of the turn if you ended it with a chat reply (its one-line summary then comes with your next message, because an `agentStop` hook can't show you text), or at the next session start if you ended it from your terminal. On demand with `/factory-inspector:inspect` (`active` also covers running jobs). Once a recipe has a long clean streak it suggests sampling, then off.
 
 Rule table and CLI: [`plugins/factory-inspector/README.md`](plugins/factory-inspector/README.md).
@@ -420,7 +420,7 @@ docs/                               DESIGN-COPILOT.md (port decisions) · COPILO
 plugins/factory/
   plugin.json                       plugin manifest (legacy Copilot format; version; read by the CLI and VS Code)
   skills/                           start · intake · clarify · gate · ship · distill · amend · park · why · console · review
-  agents/                           21 custom agents (<role>.agent.md): intent-mapper, verifier, intent-analyst, judge, god-eye,
+  agents/                           custom agents, one per role (<role>.agent.md): intent-mapper, verifier, intent-analyst, judge, god-eye,
                                     researcher, option-generator, threat-modeler, architect, planner, slicer, builder, tester, integrator,
                                     code/test/security/ux-reviewer, finding-verifier, epic-reviewer, lesson-writer
   hooks.json                        the hooks (Copilot format, at the plugin root)
@@ -437,7 +437,7 @@ plugins/factory/
   tests/                            end-to-end, unit and packaging tests
 plugins/factory-inspector/
   plugin.json                       plugin manifest
-  inspector/                        observe · rules (R1–R20) · register · config · io
+  inspector/                        observe · rules · register · config · io
   hooks/ · skills/inspect/ · bin/factory-inspect · tests/
 ```
 

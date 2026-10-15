@@ -153,6 +153,8 @@ function doctor(cwd) {
     add('current job', true, cur || '(none)');
   }
   copilotChecks(add, root);
+  const ap = root ? require('./autopilot').recent(root) : null;
+  if (ap) add('copilot autopilot', false, `Autopilot continuations were seen in this project (last ${ap.last_at}): Autopilot keeps going past the factory's stops. Use interactive mode for factory work`, 'warning');
   const rc = recipes.checkAll();
   for (const [id, errs] of Object.entries(rc)) add(`recipe ${id}`, errs.length === 0, errs.length ? errs.join('; ') : 'valid');
   const ready = checks.every((c) => c.ok || c.level !== 'error');

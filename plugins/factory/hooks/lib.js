@@ -409,6 +409,8 @@ function runnerAgent() {
 const STOP_MARK = '[factory stop gate]';
 const AUTOPILOT_CONTINUE = /^\s*You have not yet marked the task as complete using the task_complete tool/;
 
+const isAutopilot = (prompt) => AUTOPILOT_CONTINUE.test(String(prompt || ''));
+
 function isContinuation(prompt) {
   const p = String(prompt || '').trimStart();
   return p.startsWith(STOP_MARK) || /^\[factory\] Not (done|finished):/.test(p) || AUTOPILOT_CONTINUE.test(p);
@@ -419,4 +421,4 @@ function cliCommand() {
   return `node "${path.join(path.resolve(__dirname, '..'), 'bin', 'factory')}"`;
 }
 
-module.exports = { readInput, normalise, toolName, patchFiles, emit, deny, context, block, denyOutput, contextOutput, blockOutput, findRoot, safe, realpath, traceError, cliCommand, runnerAgent, isContinuation, STOP_MARK, EVENTS, TOOLS };
+module.exports = { readInput, normalise, toolName, patchFiles, emit, deny, context, block, denyOutput, contextOutput, blockOutput, findRoot, safe, realpath, traceError, cliCommand, runnerAgent, isContinuation, isAutopilot, STOP_MARK, EVENTS, TOOLS };

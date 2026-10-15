@@ -98,7 +98,7 @@ test('factory run --dry-run prints the brief and the copilot commands, maps mode
   assert.equal(flagOf(cmd, '--output-format'), 'json');
   for (const f of ['-s', '--no-ask-user', '--session-id']) assert.ok(cmd.includes(f), f);
   assert.ok(!cmd.includes('--allow-all-tools'), 'no blanket pre-approval: each role gets its own --allow-tool / --deny-tool');
-  assert.deepEqual(judge.tools, ['read']);
+  assert.deepEqual(judge.tools, runner.agentTools('judge'), 'tools come from the agent file');
   assert.ok(cmd.includes('--deny-tool=shell') && cmd.includes('--deny-tool=write') && cmd.includes('--deny-tool=url'), 'the judge only reads');
   assert.ok(!cmd.some((a) => a.startsWith('--allow-tool=')), 'nothing pre-approved for a read-only, shell-less role');
   assert.equal(flagOf(cmd, '--plugin-dir'), F.PLUGIN, 'policy.copilot.flags, with {plugin_root} filled in');
@@ -601,6 +601,16 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
   for (const d of ['write', 'url', 'memory', 'shell(git commit:*)', 'shell(touch:*)', 'shell(sed -i:*)']) assert.ok(flagsOf(reviewer, '--deny-tool').includes(d), `…but not ${d}`);
   assert.deepEqual(flagsOf(argvOf('researcher'), '--allow-tool'), ['shell', 'url'], 'web roles get url');
   assert.deepEqual(flagsOf(argvOf('judge'), '--allow-tool'), [], 'the judge only reads');
+  // Tier 4: the quality signals come out of what this run logged.
+  const t = F.cli(root, ['telemetry', 'report']);
+  const q = t.quality;
+  assert.ok(q.roles.builder.runs >= 1 && q.roles.builder.correction_turn_rate === 0 && q.roles.builder.null_result_rate === 0, JSON.stringify(q.roles.builder));
+  assert.equal(q.god_eye.intent.approve, q.god_eye.intent.verdicts, 'God Eye approved the contract; its verdict is logged with the agent_run');
+  assert.equal(q.god_eye.intent.revise_rate, 0);
+  assert.deepEqual(q.lanes.code, { raised: 1, verified: 1, refuted: 1, unverified: 0, refute_rate: 1, unverified_rate: 0 }, 'the finding-verifier refuted the one code finding');
+  assert.deepEqual(q.parks, {});
+  const md = spawnSync('node', [F.BIN, 'telemetry', 'report', '--format', 'md'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '' } }).stdout;
+  assert.match(md, /## Quality signals[\s\S]*\| builder \|[\s\S]*\| code \| 1 \| 1 \| 1 \| 1 \|[\s\S]*\| intent \|/);
 });
 
 test('tool permissions follow the tools: list of each agent; policy adds patterns or restores allow-all', () => {
@@ -778,4 +788,21 @@ test('distill write: runs the lesson-writer through copilot -p like factory run,
   // Copilot missing: a clear error, nothing recorded
   const missing = run({ COPILOT_BIN: path.join(os.tmpdir(), 'no-such-copilot-bin') });
   assert.equal(missing.code, 'copilot_unavailable');
+});
+
+test('telemetry quality: correction turns, null results and park reasons are counted per role and rule', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const ev = require('../cli/core/events');
+  ev.append(root, { event: 'agent_run', job: J, role: 'judge', agent_type: 'factory:judge', outcome: 'ok', retry: true });
+  ev.append(root, { event: 'agent_run', job: J, role: 'judge', agent_type: 'factory:judge', outcome: 'invalid', retry: true });
+  ev.append(root, { event: 'agent_run', job: J, role: 'judge', agent_type: 'factory:judge', outcome: 'ok', retry: false });
+  ev.append(root, { event: 'agent_run', job: J, role: 'god-eye', label: 'god-eye · design #1', outcome: 'ok', verdict: 'revise' });
+  ev.append(root, { event: 'agent_run', job: J, role: 'god-eye', label: 'god-eye · design #2', outcome: 'ok', verdict: 'approve' });
+  ev.append(root, { event: 'agent_run', job: 'J-9999', role: 'judge', outcome: 'failed' }); // another job, not in the window's jobs
+  require('../cli/core/decisions').write(root, { id: `${J}-D9`, job: J, action: 'parked', rule: 'cap.review_rounds', reason: 'Review rounds exhausted' });
+  const q = F.cli(root, ['telemetry', 'report']).quality;
+  assert.deepEqual(q.roles.judge, { runs: 3, correction_turns: 2, null_results: 1, outcomes: { ok: 2, invalid: 1 }, correction_turn_rate: 0.67, null_result_rate: 0.33 });
+  assert.deepEqual(q.god_eye.design, { verdicts: 2, approve: 1, revise: 1, revise_rate: 0.5 });
+  assert.deepEqual(q.parks['cap.review_rounds'], { parks: 1, jobs: [J], example: 'Review rounds exhausted' });
 });

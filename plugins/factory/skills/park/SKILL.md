@@ -1,9 +1,11 @@
 ---
 name: park
-description: "Explain why a factory job is parked and what the user can do (resume with one more round, cancel, abandon). Used by the start skill when `factory next` returns parked."
+description: "Explains why a factory job is parked and which exact replies move it on. Use when `factory next` returns action parked."
 user-invocable: false
 ---
 # Parked
+
+Park, floor and recipe are defined in the start skill's [glossary](../start/references/glossary.md).
 
 The CLI parked the job (`reason` in the `factory next` output). Parking is how the factory stops instead of guessing: budgets, round caps, no-progress loops, scope drift, conflicts, failed epic gates.
 
@@ -16,4 +18,5 @@ The CLI parked the job (`reason` in the `factory next` output). Parking is how t
      - **`cancel job`** or **`abandon job`** — stop for good; files are kept
      - **`waive ci_reverify <reason>`** — only when the CI re-verify floor can't be met (no `factory-gate` workflow and no local merge to re-verify)
      - or tell you what to change (you may then need the **amend** skill).
+   Example: "J-0004 is parked: the review found a new major issue in each of the last three fix rounds, which is the round cap. The last round confirmed only one small issue (an unchecked null in `src/cart/total.js`), so one more round is reasonable. Reply **`resume`** for one more round, **`cancel job`** or **`abandon job`** to stop, or tell me what to change."
 3. **Stop.** After the reply hook applies their reply, continue with `factory next` (its `last_reply` says whether the reply was applied).

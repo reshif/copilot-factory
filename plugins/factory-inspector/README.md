@@ -71,7 +71,7 @@ All hooks read Copilot payloads in either casing (`toolName`/`toolArgs` or `tool
 
 A finding marked fixed that is seen again reopens automatically (marked ↺).
 
-A finding from the health rules (R10–R22) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
+A finding from the health rules (R10 and up) is tied to its newest evidence: once marked fixed, it reopens only when something new happens, not because the old log lines are still there.
 
 **CLI** (`factory-inspect`; `factory shim` puts it on your PATH, or run `node <plugin folder>/bin/factory-inspect`: the folder is `~/.copilot/installed-plugins/copilot-factory/factory-inspector` for a GitHub install (under `$COPILOT_HOME` if set), or `<your clone>/plugins/factory-inspector` for a marketplace added from a local folder; `copilot plugin list --json` tells you which): `run [--job J | --all | --active]` · `report [--format md]` (findings plus a **Factory health** section) · `health [--format md]` · `status` · `show F3` · `trace --job J`. The commands `mark` and `mode` are human-only: use them from your own terminal, or reply in chat.
 
@@ -84,7 +84,7 @@ A finding from the health rules (R10–R22) is tied to its newest evidence: once
 
 Settings live in `.factory/inspect/config.json`: `mode`, `sample_every`, `settle_after`, `threshold` (R9), per-recipe overrides, and:
 
-- `limits` — the thresholds of R10–R20, e.g. `{ "guard_denials_per_job": 5, "stop_blocks_per_job": 2, "cli_failures": 3, "agent_retries_per_job": 4, "orphan_agent_minutes": 120, "idle_hours": 72, "reply_hours": 48, "researchable_asked_per_job": 1, "assumptions_overridden_per_job": 1 }` (full list and defaults: `factory-inspect status`).
+- `limits` — the thresholds of the health rules, e.g. `{ "guard_denials_per_job": 5, "stop_blocks_per_job": 2, "cli_failures": 3, "agent_retries_per_job": 4, "orphan_agent_minutes": 120, "idle_hours": 72, "reply_hours": 48, "researchable_asked_per_job": 1, "assumptions_overridden_per_job": 1 }` (full list and defaults: `factory-inspect status`).
 - `rules_off` — rules or families you don't want, e.g. `["R18", "R14.agent_retries"]`.
 
 The register is `.factory/inspect/register.json`.
@@ -93,6 +93,6 @@ The register is `.factory/inspect/register.json`.
 
 ```bash
 npm test   # 21 tests: a clean job has no findings; forged records, gate-window actions, skipped work,
-           # synthetic deviations, cross-job ambiguity, friction, job and factory health (R10–R20: hook errors, torn lines, intent parks,
+           # synthetic deviations, cross-job ambiguity, friction, job and factory health (health rules: hook errors, torn lines, intent parks,
            # crashes, --active, health report), grounded intent (R20 from a real clarify record and synthetic ones), limits/rules_off, marks/regressions/modes/re-arming, hooks, jobs ending outside Bash, independence
 ```

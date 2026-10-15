@@ -1,9 +1,11 @@
 ---
 name: gate
-description: "Present a factory human gate (H1 contract, H2 design, H3 plan, HF findings, HS ship sign-off, EH1–EH3 epic, A amendment) with its documents and hash, then wait for the user's reply. Used by the start skill when `factory next` returns a gate."
+description: "Presents a factory human gate (contract, design, plan, findings, ship sign-off, epic or amendment) with its documents and hash, and waits for the user's reply. Use when `factory next` returns action gate. Not for approving anything on the user's behalf."
 user-invocable: false
 ---
 # Human gate
+
+Gate ids, hashes and God Eye are defined in the start skill's [glossary](../start/references/glossary.md).
 
 `factory next` returned `action: gate` with `gate: { id, hash, docs }`. The approval will be bound to that exact hash: if a document changes after you present it, the approval is refused and you present it again.
 
@@ -21,6 +23,17 @@ Read the files in `docs` yourself and summarise faithfully — don't hide open c
 
 ## Then
 If `factory next` gave a `notice` (chat replies aren't reaching the factory), show it once, above the line below: a chat `approve` would not be applied, and the notice says how to check the hooks and which command the user can run in their own terminal instead (it asks them to type the job id).
+
+Example, gate H3 for a two-task plan:
+
+> | Task | Objective | Allowed paths | Depends on | Criteria |
+> |---|---|---|---|---|
+> | T1 | `add` returns the sum | `src/add.js`, `tests/add.test.js` | — | AC-1 |
+> | T2 | cart total uses `add` | `src/cart/**` | T1 | AC-2 |
+>
+> Waves: T1, then T2. God Eye approved the plan with no open items.
+>
+> **Gate H3** · hash `3f9a1c0b7e21` — reply **`approve`** to continue, or **`deny <what must change>`**.
 
 End with exactly this, and **stop**:
 

@@ -268,6 +268,8 @@ function decide(root, jobId) {
   if (reply) r.last_reply = reply;
   const notice = require('./reply-watch').notice(root, r);
   if (notice) r.notice = notice;
+  const ap = require('./autopilot').recent(root);
+  if (ap) r.autopilot = { detected_at: ap.last_at, warning: require('./autopilot').warning(ap) };
   return r;
 }
 

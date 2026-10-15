@@ -1,6 +1,6 @@
 ---
 name: inspect
-description: "Audit the Software Factory — check whether jobs ran the recipe they were meant to, in the declared order, with valid gates and evidence, and whether the Copilot agent did what the router said; check the factory's health (hook errors, guard denials, stop-gate blocks, refused replies, CLI failures, stale or degraded workflows, agent failures, parks, idle jobs); then walk the user through open findings (deviations, ambiguities, gaps). Use when the user types /factory-inspector:inspect, asks if the factory is behaving, or asks about inspector findings, modes or streaks."
+description: "Audits the Software Factory: whether jobs followed their declared rules, and the factory's own health, and walks the user through open findings. Use when the user types /factory-inspector:inspect or asks if the factory is behaving. Not for reviewing code."
 argument-hint: "[job id | all | active | health | status]"
 ---
 # Inspect the factory
@@ -26,7 +26,7 @@ Group them by class, highest severity first, in plain words:
 - **ambiguity** — the rules left room and someone improvised (same situation routed differently, caps you keep resuming past, guard denials agents keep hitting, the same step repeating).
 - **gap** — something the audit needs is missing or broken (no rulebook snapshot, a recipe edited without a version bump, a hook that failed and so enforced nothing, torn log lines, a CLI crash, agents that never stopped, a job left idle).
 
-The health rules (R10–R20) count what the factory reports about itself against limits in `.factory/inspect/config.json` (`limits`, `rules_off`). A **hook error** on the guard, Stop or prompt hook is high severity: while it failed, that hook allowed everything — say what could have slipped through in that window. For repeated guard denials, refused or look-alike replies, CLI failures, stale results, degraded steps, agent retries/failures/escalations, parks and resumes, explain the pattern and the likely cause from the evidence. For intent parks and dropped clarify questions (R19), say whether the request or the judge looks at fault. For grounded intent (R20): questions asked although research could have answered them — give the reason it recorded (web off by policy is a setting the user may revisit; no web access, sources that disagree or a spent budget point at the environment or the research budget); assumptions the user changed or dropped are a learning signal — say what the research claimed and what the user decided instead, and whether the evidence looks wrong or the point was the user's call all along.
+For health findings (hook errors, guard denials, refused replies, CLI failures, stale or degraded steps, agent failures, parks), intent parks and grounded-intent findings, read [references/rules.md](references/rules.md) first: it says how to read each and what to tell the user.
 
 For each, give the evidence (decision ids, job) and the inspector's question. Say what you think the likely cause is when the records support it, and what would fix it (a skill wording, a recipe version bump, a cap change) — but **don't change recipes, floors, policy or skills**; those are the user's.
 
