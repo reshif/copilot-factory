@@ -1001,6 +1001,16 @@ function summaryText(r) {
     L.push(`research: ${x.unknowns || 0} unknown(s), ${x.evidence || 0} finding(s) (${x.confirmed || 0} confirmed), web ${x.web || 'n/a'}${x.researchable_dropped ? `, ${x.researchable_dropped} researchable question(s) not asked` : ''}${(x.degraded || []).length ? `, degraded: ${x.degraded.join(', ')}` : ''}`);
   }
   if (r.intent_findings) L.push(`intent_findings: ${r.intent_findings}`);
+  // clarify v2: the ledger in one line, and God Eye's approve-with-notes remarks
+  if (r.clarify && r.clarify.open_by_owner) {
+    const o = r.clarify.open_by_owner;
+    const rd = r.clarify.round || {};
+    L.push(`clarify: open — you ${o.user || 0}, research ${o.research || 0}, design ${o.design || 0}; this round opened ${rd.opened || 0}, settled ${rd.settled || 0}, deferred ${rd.deferred || 0}${rd.progress === false ? ' (no progress)' : ''}${(r.clarify.deferred_to_design || []).length ? `; handed to design: ${r.clarify.deferred_to_design.map((d) => d.id).join(', ')}` : ''} · ${r.clarify.status_command}`);
+  }
+  if (Array.isArray(r.notes) && r.notes.length) {
+    L.push(`notes (${r.notes.length}):`);
+    for (const n of r.notes.slice(0, 8)) L.push(`  - ${n.ref ? `${n.ref}: ` : ''}${one(n.text)}`);
+  }
   if (Array.isArray(r.warnings) && r.warnings.length) {
     L.push('warnings:');
     for (const w of r.warnings.slice(0, 10)) L.push(`  - ${one(w)}`);

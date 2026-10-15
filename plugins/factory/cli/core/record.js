@@ -256,7 +256,7 @@ function recClarify(root, state, env) {
     const open = ledgerView ? ledgerView.issues.filter((r) => !['settled', 'dropped', 'deferred_to_design'].includes(r.status)) : [];
     return { status: 'park', park_from: 'clarify', ...extra, park_reason: `Clarify is not converging: ${C.clarify_no_progress} round(s) in a row settled nothing and asked nothing new.${open.length ? ` Open: ${open.slice(0, 6).map((r) => `${r.id} ${r.subject} (${r.owner})`).join('; ')}.` : ''}${probs.length ? ` Contract problems: ${probs.slice(0, 3).join('; ')}.` : ''} See factory clarify status.` };
   }
-  if (legacyResearchable.length) return { status: 'needs_user', critique: crit, ...extra, message: `God Eye found ${legacyResearchable.length} question(s) research can answer: they go back to the scouts. Run factory next: clarify runs again and researches them first (don't ask the user).` };
+  if (legacyResearchable.length) return { status: 'revise', critique: crit, ...extra, message: `God Eye found ${legacyResearchable.length} question(s) research can answer: they go back to the scouts. Run factory next: clarify runs again and researches them first (don't ask the user).` };
   if (probs.length) return { status: 'revise', problems: probs, ...extra, message: 'The contract still has problems: clarify runs again and its contract editor fixes them (the user is not asked). Run factory next; don\'t edit the contract.' };
   return { status: 'revise', critique: crit, ...extra, message: 'Clarify is not done yet (open issues or God Eye\'s items without a question): run factory next; clarify runs again.' };
 }
