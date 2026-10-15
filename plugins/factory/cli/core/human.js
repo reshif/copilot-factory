@@ -349,6 +349,24 @@ function confirmAc(root, { jobId, ac, channel }) {
   return { job: state.id, message: `Confirmed ${ac.toUpperCase()} for ${state.id} on the current build. Run factory verify run to include it.` };
 }
 
+// "dismiss finding code-1 <reason>" / "accept finding code-1 <reason>": settle a serious
+// review finding no verifier could settle (carried from round to round, blocking ship).
+// Accepted: a known risk that ships, listed in the completion report; dismissed: not a
+// problem. Only the human can, with a reason; recorded in the ledger.
+function settleFinding(root, { jobId, id, decision, reason, channel }) {
+  requireHumanChannel(channel);
+  const state = job.resolve(root, jobId);
+  if (!['accept', 'dismiss'].includes(decision)) fail('finding accept|dismiss <id> --reason "…"', 'bad_input');
+  if (!String(id || '').trim()) fail(`Name the finding: "${decision} finding <id> <reason>" (factory next or the completion report lists the open ones).`, 'bad_input');
+  if (!String(reason || '').trim()) fail(`Say why: reply "${decision} finding ${id} <reason>". Nothing was settled.`, 'needs_reason');
+  const open = require('./floors').openUnverifiedFindings(steps.context(root, state, job.load));
+  if (!open.some((f) => f.id.toLowerCase() === String(id).trim().toLowerCase())) fail(`${id} is not an open unverified finding of ${state.id}${open.length ? `; open: ${open.map((f) => f.id).join(', ')}` : ' (none is open)'}.`, 'bad_input');
+  confirmTyped(channel, state.id, `${decision} finding ${id}`);
+  const r = require('./review').settle(root, { jobId: state.id, id, decision, reason, channel });
+  log(root, job.load(root, state.id), `${decision}_finding`, { channel, finding: r.finding, reason: String(reason).slice(0, 200) });
+  return { ...r, message: `${r.finding} ${r.status} by you: ${String(reason).trim()}.${r.still_open.length ? ` Still unverified: ${r.still_open.join(', ')}.` : ''} Copilot continues with factory next.` };
+}
+
 // Trailing punctuation, emoji and spaces are tone, not content: "Approve!", "approve 👍".
 const TRAILING = /[\s.!,;:…\p{Extended_Pictographic}\p{Emoji_Modifier}‍️]+$/u;
 
@@ -362,6 +380,7 @@ function parseReply(text) {
   if ((m = t.match(new RegExp(`^deny(?:\\s+${J})?(?:(?:\\s*[:\u2014\u2013-]\\s*|\\s+)(.*))?$`, 'i')))) return { cmd: 'deny', jobId: m[1] && m[1].toUpperCase(), reason: (m[2] || '').trim() };
   if ((m = t.match(new RegExp(`^resume(?:\\s+${J})?(?:\\s+(.*))?$`, 'i')))) return { cmd: 'resume', jobId: m[1] && m[1].toUpperCase(), step: (m[2] || '').trim() || null };
   if ((m = t.match(new RegExp(`^(cancel|abandon)\\s+job(?:\\s+${J})?(?:\\s+(.*))?$`, 'i')))) return { cmd: m[1].toLowerCase() === 'cancel' ? 'cancel' : 'abandon', jobId: m[2] && m[2].toUpperCase(), reason: (m[3] || '').trim() };
+  if ((m = t.match(new RegExp(`^(accept|dismiss)\\s+finding(?:\\s+${J})?\\s+([a-z][\\w.@-]*-\\d+(?:@r\\d+)?)(?:\\s*[:\u2014\u2013-]?\\s+(.*))?$`, 'i')))) return { cmd: 'settle_finding', decision: m[1].toLowerCase(), jobId: m[2] && m[2].toUpperCase(), id: m[3], reason: (m[4] || '').trim() };
   if ((m = t.match(/^(accept|reject)\s+lesson\s+(L\d+)(?:\s+(.*))?$/i))) return { cmd: `${m[1].toLowerCase()}_lesson`, lessonId: m[2].toUpperCase(), reason: (m[3] || '').trim() };
   if ((m = t.match(new RegExp(`^waive(?:\\s+${J})?\\s+([a-z_:]+)\\s+(.+)$`, 'i')))) return { cmd: 'waive', jobId: m[1] && m[1].toUpperCase(), floor: m[2], reason: m[3].trim() };
   if ((m = t.match(new RegExp(`^merged(?:\\s+${J})?\\s+([0-9a-f]{7,40})$`, 'i')))) return { cmd: 'merged', jobId: m[1] && m[1].toUpperCase(), commit: m[2] };
@@ -372,8 +391,8 @@ function parseReply(text) {
 }
 
 // The exact forms, for "that was not applied" hints.
-const REPLY_FORMS = ['approve [J-0001] [H1]', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] <sha>', 'confirm AC-1 [J-0001]', 'change [J-0001] A-3 <new value>', 'drop [J-0001] A-3', 'accept lesson L4', 'reject lesson L4 [reason]'];
-const VERBS = ['approve', 'approved', 'deny', 'denied', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'merge', 'confirm', 'accept', 'reject', 'lgtm'];
+const REPLY_FORMS = ['approve [J-0001] [H1]', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] <sha>', 'confirm AC-1 [J-0001]', 'change [J-0001] A-3 <new value>', 'drop [J-0001] A-3', 'accept lesson L4', 'reject lesson L4 [reason]', 'accept finding code-1 <reason>', 'dismiss finding code-1 <reason>'];
+const VERBS = ['approve', 'approved', 'deny', 'denied', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'merge', 'confirm', 'accept', 'reject', 'dismiss', 'lgtm'];
 // Common words: only a near miss when the message is about an assumption id ("change A3 x", "drop a-3 now").
 const ASSUMPTION_VERBS = ['change', 'drop'];
 
@@ -425,6 +444,8 @@ function applyReply(root, parsed, channel = 'chat') {
       return confirmAc(root, { jobId: parsed.jobId, ac: parsed.ac, channel });
     case 'change_assumption':
       return changeAssumption(root, { jobId: parsed.jobId, id: parsed.id, value: parsed.value, channel });
+    case 'settle_finding':
+      return settleFinding(root, { jobId: parsed.jobId, id: parsed.id, decision: parsed.decision, reason: parsed.reason, channel });
     case 'drop_assumption':
       return changeAssumption(root, { jobId: parsed.jobId, id: parsed.id, drop: true, channel });
     default:
@@ -432,4 +453,4 @@ function applyReply(root, parsed, channel = 'chat') {
   }
 }
 
-module.exports = { snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };

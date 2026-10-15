@@ -17,6 +17,11 @@ const ledger = require('./ledger');
 const floors = require('./floors');
 
 const SEVERITIES = ['blocker', 'major', 'minor'];
+// A serious finding stops blocking when a verifier refutes it, or when the human settles a
+// carried unverified one (`factory finding accept|dismiss`): accepted (a known risk that
+// ships) or dismissed (not a problem).
+const SETTLED_BY_HUMAN = ['accepted', 'dismissed'];
+const NOT_BLOCKING = ['refuted', ...SETTLED_BY_HUMAN];
 
 function requiredLanes(ctx, stepLanes) {
   const { state } = ctx;
@@ -80,6 +85,8 @@ function record(root, { jobId, payload, step = 'challenge' }) {
   // Serious findings the last round left unverified (verifier timeout, "unverifiable"): kept
   // until a verifier settles them, whether or not a reviewer raises them again.
   const open = isPostMerge || isEpic ? [] : openUnverified(previous);
+  // Findings the human accepted or dismissed in an earlier round stay settled if raised again.
+  const humanSettled = earlier.flatMap((e) => ((e.detail && e.detail.findings) || []).filter((p) => SETTLED_BY_HUMAN.includes(p.status)));
   const findings = [];
   const lanes = {};
   for (const lane of payload.lanes || []) {
@@ -124,6 +131,12 @@ function record(root, { jobId, payload, step = 'challenge' }) {
         // The verifier's own "unverifiable" (or no result at all) leaves the finding unverified:
         // it keeps blocking and the review runs again.
         f.status = v && ['confirmed', 'refuted'].includes(v.status) ? v.status : was ? 'confirmed' : 'unverified';
+        const byHuman = f.status === 'unverified' && humanSettled.find((p) => sameFinding(p, f));
+        if (byHuman) {
+          f.status = byHuman.status;
+          f.settled = byHuman.settled;
+          f.notes.push(`${byHuman.status} by you earlier (${byHuman.id}): ${(byHuman.settled && byHuman.settled.reason) || ''}`.trim());
+        }
         if (v && v.status) f.verifier_status = String(v.status);
         if (v && v.status === 'unverifiable') f.notes.push('the verifier could not settle it either way; it keeps blocking');
         if (v && v.reason) f.verification = v.reason;
@@ -134,7 +147,7 @@ function record(root, { jobId, payload, step = 'challenge' }) {
       }
       findings.push(f);
     }
-    const blocking = findings.filter((f) => f.lane === lane.lane && ['blocker', 'major'].includes(f.severity) && f.status !== 'refuted');
+    const blocking = findings.filter((f) => f.lane === lane.lane && ['blocker', 'major'].includes(f.severity) && !NOT_BLOCKING.includes(f.status));
     lanes[lane.lane] = blocking.length ? 'changes' : 'pass';
   }
   // Carry what was left open. Raised again this round (same finding): this round's copy stands,
@@ -188,10 +201,35 @@ function record(root, { jobId, payload, step = 'challenge' }) {
   };
 }
 
+// The human settles a serious finding the last review left unverified: "accepted" (a known
+// risk; it ships and the completion report says so) or "dismissed" (not a problem). Recorded
+// as a ledger entry, and the review record is re-recorded with the finding settled and the
+// verdicts recomputed, so ship, H4 and close no longer wait on it and it is never carried.
+function settle(root, { jobId, id, decision, reason, channel }) {
+  const state = job.resolve(root, jobId);
+  const status = decision === 'accept' ? 'accepted' : decision === 'dismiss' ? 'dismissed' : null;
+  if (!status) fail('finding accept|dismiss <id> --reason "…"', 'bad_input');
+  const last = ledger.lastStep(root, state.id, 'challenge');
+  const open = openUnverified(last);
+  const want = String(id || '').trim();
+  const f = open.find((x) => x.id === want) || open.find((x) => x.id.toLowerCase() === want.toLowerCase());
+  if (!f) fail(`${want || '(no id)'} is not an open unverified finding of ${state.id}${open.length ? `; open: ${open.map((x) => x.id).join(', ')}` : ' (none is open)'}.`, 'bad_input', { open: open.map((x) => x.id) });
+  const settled = { by: 'human', decision: status, reason: String(reason || '').trim(), channel, at: nowIso() };
+  const findings = last.detail.findings.map((x) => (x.id === f.id && x.status === 'unverified' ? { ...x, status, settled, notes: [...(x.notes || []), `${status} by you: ${settled.reason}`] } : x));
+  const lanes = { ...last.detail.lanes };
+  for (const lane of Object.keys(lanes)) lanes[lane] = findings.some((x) => x.lane === lane && ['blocker', 'major'].includes(x.severity) && !NOT_BLOCKING.includes(x.status)) ? 'changes' : 'pass';
+  const missing = last.detail.missing || [];
+  const required = last.detail.required || Object.keys(lanes);
+  const ok = missing.length === 0 && required.every((l) => lanes[l] === 'pass') && !findings.some((x) => ['blocker', 'major'].includes(x.severity) && x.status === 'unverified');
+  ledger.append(root, state.id, { kind: 'finding', finding: f.id, decision: status, reason: settled.reason, channel, round: last.detail.round || 1, lane: f.lane, severity: f.severity, file: f.file || null, line: f.line || null, summary: f.summary });
+  ledger.append(root, state.id, { kind: 'step', step: last.step, ok, bound: last.bound, detail: { ...last.detail, lanes, findings, settled_by_human: [...((last.detail && last.detail.settled_by_human) || []), f.id] } });
+  return { job: state.id, finding: f.id, status, ok, still_open: findings.filter((x) => ['blocker', 'major'].includes(x.severity) && x.status === 'unverified').map((x) => x.id) };
+}
+
 // The serious findings a challenge record left unverified (open until a verifier settles them).
 function openUnverified(rec) {
   const fs = (rec && rec.detail && rec.detail.findings) || [];
   return fs.filter((f) => ['blocker', 'major'].includes(f.severity) && f.status === 'unverified').map((f) => ({ ...f, round: (rec.detail && rec.detail.round) || 1 }));
 }
 
-module.exports = { record, requiredLanes, openUnverified };
+module.exports = { record, requiredLanes, openUnverified, settle, SETTLED_BY_HUMAN, NOT_BLOCKING };

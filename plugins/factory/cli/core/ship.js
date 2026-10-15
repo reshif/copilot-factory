@@ -99,6 +99,13 @@ function report(root, state, ctx, fl) {
   L.push(`- Confirmed serious review findings at this build: ${serious.length}${serious.length ? ` (${serious.map((f) => f.id).join(', ')})` : ''}`);
   const unverified = floors.openUnverifiedFindings(ctx);
   L.push(`- Unverified serious review findings (they block ship): ${unverified.length}${unverified.length ? ` (${unverified.map((f) => `${f.id} [${f.severity}] ${f.file || ''}${f.line ? `:${f.line}` : ''} ${f.summary}`.trim()).join('; ')})` : ''}`);
+  // Serious findings no verifier settled and the human did (factory finding accept|dismiss).
+  const byYou = require('./ledger').all(root, state.id).filter((e) => e.kind === 'finding' && ['accepted', 'dismissed'].includes(e.decision));
+  const fmt = (e) => `${e.finding} [${e.severity}] ${e.file || ''}${e.line ? `:${e.line}` : ''} ${e.summary} — "${e.reason}" (${e.at.slice(0, 10)}, ${e.channel})`.replace(/\s+/g, ' ');
+  const acceptedByYou = byYou.filter((e) => e.decision === 'accepted');
+  const dismissedByYou = byYou.filter((e) => e.decision === 'dismissed');
+  L.push(`- Unverified findings accepted by you (known risk, shipped): ${acceptedByYou.length}${acceptedByYou.length ? ` (${acceptedByYou.map(fmt).join('; ')})` : ''}`);
+  L.push(`- Unverified findings dismissed by you: ${dismissedByYou.length}${dismissedByYou.length ? ` (${dismissedByYou.map(fmt).join('; ')})` : ''}`);
   L.push(`- Waivers: ${Object.keys(state.waivers || {}).length ? Object.entries(state.waivers).map(([f, w]) => `${f} — ${w.reason} (${w.at})`).join('; ') : 'none'}`);
   L.push('', '## Rollout and rollback', '');
   L.push(`- Rollout: merge ${state.branch || 'each slice'} into ${state.base_branch}; CI (factory-gate) re-runs the verify commands in .factory-ship/${state.id}.json on the merge result.`);

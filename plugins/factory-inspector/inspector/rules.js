@@ -176,7 +176,8 @@ function lostFindings(job) {
     for (const x of r.detail.findings.filter((y) => SERIOUS.has(y.severity) && y.status === 'unverified')) {
       const later = rounds.slice(i + 1);
       if (!later.length) continue;
-      const settled = later.some((e) => e.detail.findings.some((y) => (y.id === x.id || sameIssue(x, y, false)) && ['confirmed', 'refuted'].includes(y.status)));
+      // settled by a verifier, or by the human (factory finding accept|dismiss, with a reason)
+      const settled = later.some((e) => e.detail.findings.some((y) => (y.id === x.id || sameIssue(x, y, false)) && ['confirmed', 'refuted', 'accepted', 'dismissed'].includes(y.status)));
       const carried = later[later.length - 1].detail.findings.some((y) => (y.id === x.id || (y.carried && sameIssue(x, y, false))) && y.status === 'unverified');
       if (settled || carried) continue;
       const passedAfter = later.find((e) => e.ok);
@@ -246,11 +247,11 @@ function loops(job) {
 const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'clarify:status', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console']);
 // Human actions run from the user's own terminal, not driver commands: `factory assumption
 // change|drop` (the guard blocks agents from it). Judged by their human.* decision (R20), not R7.
-const HUMAN_ACTIONS = new Set(['assumption']);
+const HUMAN_ACTIONS = new Set(['assumption', 'finding']);
 // The human-only verbs. One that went through (ok, channel tty: the CLI accepted the terminal
 // as the user's, with the typed confirmation) is the user acting, a legitimate channel: not a
 // driver deviation. A refused attempt (human_only) is still judged: that was an agent trying.
-const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'lessons:accept', 'lessons:reject', 'lessons:promote', 'clarify:split']);
+const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding', 'lessons:accept', 'lessons:reject', 'lessons:promote', 'clarify:split']);
 
 function humanFromTerminal(e) {
   return e.event === 'cli' && e.ok !== false && (HUMAN_VERBS.has(cmdKey(e)) || HUMAN_VERBS.has(e.cmd));

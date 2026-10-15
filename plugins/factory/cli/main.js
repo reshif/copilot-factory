@@ -81,6 +81,7 @@ Human only (your terminal, or reply in chat):
            approve [gate] · deny --reason "…" · resume [step] · cancel · abandon · waive <floor> --reason "…"
            merged <commit> · confirm <AC> · lessons accept|reject <L> · lessons promote <L> --check "cmd" · reseal
            assumption change <A-n> --value "…" · assumption drop <A-n>   (chat: change A-3 <value> · drop A-3)
+           finding accept|dismiss <id> --reason "…"   (a serious finding no verifier settled; chat: dismiss finding code-1 <reason>)
 Global     --root <repo> · --job <J-0001>`;
 
 const LONG_RUNNING = Symbol('long-running'); // the command reports for itself (console --serve)
@@ -409,6 +410,9 @@ function run(argv) {
       if (!['change', 'drop'].includes(sub) || !pos[2]) fail('assumption change <A-n> --value "…" | assumption drop <A-n>', 'bad_input');
       return C('human').changeAssumption(R(), { jobId: J, id: pos[2], value: opt.value || pos.slice(3).join(' '), drop: sub === 'drop', channel: tty });
     }
+    case 'finding':
+      if (!['accept', 'dismiss'].includes(sub) || !pos[2]) fail('finding accept|dismiss <id> --reason "…"', 'bad_input');
+      return C('human').settleFinding(R(), { jobId: J, id: pos[2], decision: sub, reason: opt.reason || pos.slice(3).join(' '), channel: tty });
     case 'reseal':
       C('human').requireHumanChannel(tty);
       const id = J || C('job').current(R());
@@ -419,7 +423,7 @@ function run(argv) {
   }
 }
 
-const HUMAN_CLI = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'assumption', 'reseal']);
+const HUMAN_CLI = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'assumption', 'finding', 'reseal']);
 
 const PROSE = new Set(['reason', 'text', 'question', 'answer', 'title', 'note', 'by', 'check', 'label', 'why', 'value']);
 

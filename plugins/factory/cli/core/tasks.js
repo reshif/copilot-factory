@@ -213,7 +213,7 @@ function lastProveFailures(root, state) {
   return rec && rec.detail ? (rec.detail.commands || []).filter((c) => !c.pass).map((c) => ({ cmd: c.cmd, code: c.code, flaky: c.flaky, output: c.output })) : [];
 }
 
-// Builder replies are recorded from 0.6.0 on (tasks.afterBuilder). A task whose attempts were
+// Builder replies are recorded by factory run (tasks.afterBuilder) since after 0.5.3. A task whose attempts were
 // started by an older factory (no builder_tracking, no builder record at all) is legacy: a
 // job that was mid-build when the factory was upgraded. Its current attempt may be verified
 // once without a builder record (an event says so); its next `task start` tracks it.

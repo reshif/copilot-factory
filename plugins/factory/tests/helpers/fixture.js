@@ -34,8 +34,8 @@ function makeRepo() {
   return root;
 }
 
-function cli(root, args, { allowFail = true } = {}) {
-  const r = spawnSync('node', [BIN, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '' } });
+function cli(root, args, { allowFail = true, env = {} } = {}) {
+  const r = spawnSync('node', [BIN, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', ...env } });
   let json;
   try {
     json = JSON.parse(r.stdout);

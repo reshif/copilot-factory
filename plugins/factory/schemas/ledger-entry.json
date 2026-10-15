@@ -6,4 +6,7 @@
     { "type": "object", "required": ["at", "kind", "ac", "type", "fingerprint", "pass"], "properties": {
       "at": { "type": "string" }, "kind": { "const": "evidence" }, "ac": { "type": "string" },
       "type": { "enum": ["verify", "human", "diff", "doc"] }, "fingerprint": { "type": "string" }, "pass": { "type": "boolean" },
-      "path": { "type": ["string", "null"] }, "source": { "type": "string" }, "note": { "type": "string" } } } ] }
+      "path": { "type": ["string", "null"] }, "source": { "type": "string" }, "note": { "type": "string" } } },
+    { "type": "object", "required": ["at", "kind", "finding", "decision", "reason", "channel"], "$comment": "factory finding accept|dismiss: the human settled a serious finding no verifier settled", "properties": {
+      "at": { "type": "string" }, "kind": { "const": "finding" }, "finding": { "type": "string" }, "decision": { "enum": ["accepted", "dismissed"] },
+      "reason": { "type": "string", "minLength": 1 }, "channel": { "enum": ["chat", "tty"] } } } ] }

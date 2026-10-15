@@ -85,3 +85,92 @@ test('upgrade: a task this factory started without a builder reply is not legacy
   assert.equal(F.cli(root, ['task', 'verify', 'T1', '--job', J]).code, 'no_builder_result');
   assert.equal(events(root).filter((e) => e.event === 'legacy_verify').length, 0);
 });
+
+// ------------------------------------------------------------------ settling a carried finding
+
+// bug@low up to a passing proof, the builder's reply recorded.
+function toProve(root) {
+  const J = grounded(root);
+  F.cli(root, ['plan', 'from-contract']);
+  F.cli(root, ['next']);
+  const b = F.cli(root, ['wfargs', 'realize']);
+  const s = F.cli(root, ['task', 'start', 'T1']);
+  F.write(s.worktree, 'src/add.js', 'module.exports = (a, b) => a + b;\n');
+  F.sh(s.worktree, 'git commit -qam fix');
+  F.built(root, 'T1');
+  F.cli(root, ['task', 'verify', 'T1']);
+  F.record(root, F.envelope(b, 'ok', { tasks: [{ id: 'T1', outcome: 'done', attempts: 1 }] }));
+  F.cli(root, ['next']);
+  const rb = F.cli(root, ['wfargs', 'reconcile']);
+  F.cli(root, ['reconcile', 'run']);
+  F.record(root, F.envelope(rb, 'ok', { integrator: { status: 'merged', summary: '' } }));
+  F.cli(root, ['verify', 'run']);
+  return J;
+}
+
+test('finding accept|dismiss: the human settles a carried unverified finding, by chat or terminal, with a reason; ship then passes and the report lists it', () => {
+  const root = F.makeRepo();
+  const J = toProve(root);
+  const n = F.cli(root, ['next']);
+  assert.equal(n.config, 'challenge', JSON.stringify(n));
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  const lanes = [{ lane: 'code', findings: [{ id: 'code-1', severity: 'major', file: 'src/add.js', line: 1, summary: 'non-numbers are not rejected' }, { id: 'code-2', severity: 'blocker', file: 'src/add.js', line: 1, summary: 'NaN slips through' }] }];
+  const rec = F.record(root, F.envelope(b, 'ok', { degraded: [], verifications: [], lanes }, { fingerprint: b.fingerprint }));
+  assert.deepEqual(rec.unverified, ['code-1', 'code-2']);
+  assert.equal(F.cli(root, ['ship', '--local']).code, 'floor');
+  // an agent can't; a chat reply without a reason is refused
+  const agent = F.cli(root, ['finding', 'dismiss', 'code-1', '--reason', 'x'], { env: { FACTORY_RUNNER: '1' } });
+  assert.equal(agent.code, 'agent_not_allowed', JSON.stringify(agent));
+  const guard = require('../hooks/guard-rules');
+  assert.match(String(guard.checkBash(root, 'factory finding dismiss code-1 --reason nah') || ''), /human-only/);
+  assert.equal(require('../cli/core/human').parseReply('dismiss finding code-1').reason, '');
+  // the reply goes through the real prompt hook, as the user's chat message does
+  const say = (text) => {
+    require('child_process').spawnSync('node', [path.join(F.PLUGIN, 'hooks', 'prompt.js'), 'userPromptSubmitted'], { cwd: root, input: JSON.stringify({ prompt: text, cwd: root, sessionId: 'human' }), encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '' } });
+    return JSON.parse(fs.readFileSync(path.join(root, '.factory', 'last-reply.json'), 'utf8'));
+  };
+  let last = say('dismiss finding code-1');
+  assert.equal(last.status, 'refused');
+  assert.equal(last.code, 'needs_reason');
+  // chat: dismissed with a reason
+  last = say('dismiss finding code-1 add() is only called with numbers by the CLI parser');
+  assert.equal(last.status, 'applied', JSON.stringify(last));
+  assert.equal(F.cli(root, ['ship', '--local']).code, 'floor', 'code-2 is still open');
+  // terminal: accepted, typed code required
+  const human = require('../cli/core/human');
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !human.AGENT_ENV.some(([a]) => a === k)));
+  const term = (args, input) => JSON.parse(require('child_process').spawnSync('node', [F.BIN, ...args], { cwd: root, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '', NODE_ENV: 'test', FACTORY_TEST_HUMAN: human.testToken(), FACTORY_TEST_HUMAN_INPUT: input } }).stdout);
+  assert.equal(term(['finding', 'accept', 'code-2', '--reason', 'known; tracked in issue 12'], 'WRONG').code, 'not_confirmed');
+  const ok = term(['finding', 'accept', 'code-2', '--reason', 'known; tracked in issue 12'], '{code}');
+  assert.equal(ok.status, 'accepted', JSON.stringify(ok));
+  assert.deepEqual(ok.still_open, []);
+  assert.equal(term(['finding', 'accept', 'code-2', '--reason', 'again'], '{code}').code, 'bad_input', 'only an open finding can be settled');
+  // settled: ledger entries, the review record passes, ship goes through, the report says so
+  const settled = core('ledger').all(root, J).filter((e) => e.kind === 'finding');
+  assert.deepEqual(settled.map((e) => [e.finding, e.decision, e.channel]), [['code-1', 'dismissed', 'chat'], ['code-2', 'accepted', 'tty']]);
+  const ch = core('ledger').lastStep(root, J, 'challenge');
+  assert.equal(ch.ok, true);
+  assert.equal(ch.detail.lanes.code, 'pass');
+  assert.equal(F.cli(root, ['next']).skill, 'ship');
+  const report = fs.readFileSync(F.cli(root, ['report']).report, 'utf8');
+  assert.match(report, /Unverified findings dismissed by you: 1 \(code-1 \[major\].*add\(\) is only called with numbers/);
+  assert.match(report, /Unverified findings accepted by you \(known risk, shipped\): 1 \(code-2 \[blocker\].*issue 12/);
+  assert.match(report, /Unverified serious review findings \(they block ship\): 0/);
+  const shipped = F.cli(root, ['ship', '--local']);
+  assert.ok(!shipped.error, JSON.stringify(shipped));
+});
+
+test('finding accept|dismiss: a finding the human dismissed stays settled when a later round raises it again', () => {
+  const root = F.makeRepo();
+  const J = toProve(root);
+  F.cli(root, ['next']);
+  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  const finding = { id: 'code-1', severity: 'major', file: 'src/add.js', line: 1, summary: 'non-numbers are not rejected' };
+  F.record(root, F.envelope(b, 'ok', { degraded: [], verifications: [], lanes: [{ lane: 'code', findings: [finding] }] }, { fingerprint: b.fingerprint }));
+  F.reply(root, 'dismiss finding code-1 numbers only, by design');
+  b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  const rec = F.record(root, F.envelope(b, 'ok', { degraded: [], verifications: [], lanes: [{ lane: 'code', findings: [finding] }] }, { fingerprint: b.fingerprint }));
+  assert.equal(rec.status, 'ok', JSON.stringify(rec));
+  const f = core('ledger').lastStep(root, J, 'challenge').detail.findings[0];
+  assert.equal(f.status, 'dismissed');
+});

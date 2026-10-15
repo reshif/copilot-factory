@@ -60,7 +60,7 @@ function check(ctx, floor) {
       const r = challengeRecord(ctx);
       if (!r) return false;
       const serious = ((r.detail && r.detail.findings) || []).filter((f) => ['blocker', 'major'].includes(f.severity));
-      return serious.every((f) => ['confirmed', 'refuted'].includes(f.status));
+      return serious.every((f) => ['confirmed', 'refuted', 'accepted', 'dismissed'].includes(f.status));
     }
     // No blocker/major finding left unverified by the job's latest review (whatever build it
     // ran on): a verifier timeout never turns into a pass.
