@@ -1,7 +1,7 @@
 {
   "name": "factory-plugin",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Software Factory for the GitHub Copilot CLI — CLI, hooks, workflows, custom agents, skills and tests.",
   "bin": {
     "factory": "bin/factory"

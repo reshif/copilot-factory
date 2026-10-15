@@ -1,7 +1,7 @@
 {
   "name": "factory",
   "description": "Software Factory for the GitHub Copilot CLI: outcome contracts, deterministic CLI routing, CLI-enforced floors per risk, evidence bound to builds, human gates, grounded intent (clarify researches the repo and the web before it asks), 21 custom agents run by `factory run`, and telemetry for a monthly human review.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": { "name": "Firdous" },
   "homepage": "https://github.com/reshif/copilot-factory#readme",
   "repository": "https://github.com/reshif/copilot-factory",
