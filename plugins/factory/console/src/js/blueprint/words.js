@@ -4,8 +4,8 @@
 // Ported from claude-software-factory for the Blueprint; Copilot Factory adds HS, its station names and its roles.
 //
 // The displays get the same object as `api.words` (core/displays.js). Its interface:
-//   W.gate(id)            "H1" -> "Approve the intent"            (unknown ids come back unchanged)
-//   W.gateShort(id)       "H1" -> "intent"                         (for "Waiting for you: intent")
+//   W.gate(id)            "H1" -> "Approve the contract"          (unknown ids come back unchanged)
+//   W.gateShort(id)       "H1" -> "contract"                       (for "Waiting for you: contract")
 //   W.state(s, kind)      "awaiting_plan_approval" -> "Waiting for you: plan"; kind "epic" for epic states
 //   W.station(id)         "verify" -> "Check"
 //   W.lane(id)            "security" -> "Security review"
@@ -21,11 +21,11 @@
 APP.words = (function () {
   // The decisions only a person makes. `short` finishes "Waiting for you: ...".
   var GATES = {
-    H1: { title: "Approve the intent", short: "intent", tip: "Agree that the numbered criteria describe what you want." },
+    H1: { title: "Approve the contract", short: "contract", tip: "Agree that the contract and its numbered criteria describe what you want (H1 · contract)." },
     H2: { title: "Approve the design", short: "design", tip: "Agree with the approach, written as a design record." },
     H3: { title: "Approve the plan", short: "plan", tip: "Agree with the tasks; approving it starts the build." },
     HS: { title: "Sign off the ship", short: "ship", tip: "Agree that the change is ready to ship; the pull request opens next." },
-    H4: { title: "Merge", short: "merge", tip: "Review the pull request on GitHub and merge it." },
+    H4: { title: "Merge", short: "merge", tip: "Only you merge: on GitHub, or locally and reply merged <commit>. The merge commit is recorded." },
     HF: { title: "Approve the findings", short: "findings", tip: "Accept what the investigation found; nothing merges." },
     A: { title: "Approve a change to the criteria", short: "change", tip: "The criteria or the plan changed after approval; agree to the change." },
     P: { title: "Parked: your call", short: "your call", tip: "The work stopped and waits for your decision; nothing moves until then." },
@@ -37,12 +37,12 @@ APP.words = (function () {
 
   // Every job state in schemas/state-machine.json and epic state in schemas/epic-state-machine.json.
   var STATES = {
-    received: "Received", intent: "Writing the intent", awaiting_intent_approval: "Waiting for you: intent",
+    received: "Received", intent: "Writing the contract", awaiting_intent_approval: "Waiting for you: contract",
     designing: "Designing", awaiting_design_approval: "Waiting for you: design",
     awaiting_findings_approval: "Waiting for you: findings", planning: "Planning",
     awaiting_plan_approval: "Waiting for you: plan", awaiting_ship_approval: "Waiting for you: ship", building: "Building", integrating: "Combining the tasks",
     verifying: "Checking", reviewing: "Reviewing", ready_to_ship: "Ready to ship", pr_open: "Waiting for you: merge",
-    merged: "Merged", post_merge_review: "Checking after the merge", closed: "Done", amending: "Changing the criteria",
+    merged: "Merged", post_merge_review: "Checking after the merge", learning: "Learning", closed: "Done", amending: "Changing the criteria",
     awaiting_amendment_approval: "Waiting for you: change", needs_replan: "Needs a new plan",
     findings_delivered: "Findings delivered", parked: "Parked", cancelled: "Cancelled", abandoned: "Abandoned",
     epic_intent: "Writing the epic's goal", awaiting_epic_intent_approval: "Waiting for you: epic goal",
@@ -60,7 +60,7 @@ APP.words = (function () {
     epic_intent: "Epic goal", architecture: "Architecture", slicing: "Slices", delivery: "Delivery", epic_gate: "Final check", complete: "Complete"
   };
 
-  var LANES = { code: "Code review", tests: "Test review", security: "Security review", ux: "Usability review" };
+  var LANES = { code: "Code review", tests: "Test review", security: "Security review", ux: "Usability review", conformance: "Conformance review" };
 
   // Every role in schemas/flow.json: a plain name, and what it does.
   var ROLES = {
@@ -110,7 +110,7 @@ APP.words = (function () {
     spike: ["Investigation", "Time-boxed research; it delivers findings, not code."],
     flaky: ["Unreliable", "Passed and failed on the same code, so it does not count as proof."],
     lesson: ["Lesson", "A rule learnt from a confirmed problem and given to later work."],
-    autopilot: ["Autopilot", "A named agent decides some decision points for you for a while; you confirm or undo each one later."],
+    autopilot: ["Autopilot", "Copilot's Autopilot mode: it answers prompts by itself and keeps going past the factory's stops, so it could answer a gate for you. The factory warns when it sees it; use interactive mode for factory work."],
     epic: ["Epic", "A large piece of work split into slices that each go down the line as a job."],
     job: ["Job", "One piece of work going down the line, from request to merge."],
     task: ["Task", "One bounded step of a job's plan, built and checked on its own."],

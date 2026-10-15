@@ -1,4 +1,5 @@
-.wire { border-left: 1px solid var(--rule); background: var(--paper); display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.wire { border-left: 1px solid var(--rule); background: var(--paper); display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.wire > .apwarn { grid-row: 2; margin: 8px 12px 0; } .wire > #wbody { grid-row: 3; }
 .wireh { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px 14px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
 .wireh h2 { font: 800 20px/1 var(--display); text-transform: uppercase; letter-spacing: .03em; margin-right: auto; display: flex; align-items: center; gap: 8px; }
 .wireh h2 i { width: 7px; height: 7px; border-radius: 50%; background: var(--sig-green); box-shadow: 0 0 8px var(--sig-green); animation: livepulse 1.8s ease-in-out infinite; }

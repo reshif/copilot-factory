@@ -29,7 +29,8 @@ APP.displays = (function () {
 })();
 
 const BP = { mounted: false, rev: '' };
-const bpRev = () => ((DATA && DATA.jobs) || []).map((j) => jobRev(j)).join('|');
+// the jobs, and an Autopilot sighting (not part of any job) so the gate-safety note follows it live
+const bpRev = () => ((DATA && DATA.jobs) || []).map((j) => jobRev(j)).join('|') + (DATA && DATA.autopilot ? `|ap:${DATA.autopilot.last_at}:${DATA.autopilot.recent}` : '');
 function showBlueprint() {
   const d = APP.displays.get('blueprint');
   const root = $('#bp-root');

@@ -8,7 +8,7 @@ function wireGlyph(it) {
     case 'agents': return ['◆', 'agents'];
     case 'human': return it.action === 'deny' ? ['✋', 'bad'] : it.action === 'resume' ? ['▶', 'you'] : ['✓', 'you'];
     case 'guard': case 'refused': case 'stop_block': return ['⛔', 'bad'];
-    case 'hook_error': return ['⚠', 'bad'];
+    case 'hook_error': case 'autopilot': return ['⚠', 'bad'];
     case 'unparsed': return ['?', 'you'];
     case 'park': return ['⏸', 'park'];
     case 'stopped': return ['■', 'bad'];

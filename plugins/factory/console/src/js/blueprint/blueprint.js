@@ -41,19 +41,21 @@
 
   // ------------------------------------------------------------------ fixed vocabulary
   var GATE = { awaiting_intent_approval: "H1", awaiting_design_approval: "H2", awaiting_findings_approval: "HF", awaiting_plan_approval: "H3", awaiting_ship_approval: "HS", awaiting_amendment_approval: "A", parked: "P" };
-  var GATE_CMD = { H1: "approve intent", H2: "approve design", HF: "approve findings", H3: "approve plan", A: "approve amendment" };
   var DONE_STATES = { closed: 1, findings_delivered: 1, cancelled: 1, abandoned: 1 };
+  var STOPPED_STATES = { cancelled: 1, abandoned: 1 };   // finished, but not done: red and ■, as the Board's Stopped
   var TYPE_NAME = { feature: "feature", bug: "bug fix", hotfix: "hotfix", spike: "spike", refactor: "refactor", migration: "migration", upgrade: "upgrade", investigate: "investigation" };
-  // under each station: the agents it can call on (a "bank" in the drawing), each a lamp that lights while it works
+  // under each station: the agents it can call on (a "bank" in the drawing), each a lamp that lights while it works.
+  // Prove is a CLI step (factory verify run): no agent. Challenge's lamps are the lanes the jobs must pass and Ship's are
+  // the post-merge reviewers, only when a recipe here runs that review: both are filled per render (bankMembers).
   var BANKS = {
     intake: { name: "No agents", members: [] },
-    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["god-eye", "God Eye"]] },
+    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["god-eye", "God Eye"]] },
     design: { name: "Design agents", members: [["researcher", "researcher"], ["option-generator", "option generator"], ["threat-modeler", "threat-modeler"], ["architect", "architect"], ["god-eye", "God Eye"]] },
     plan: { name: "Plan agents", members: [["planner", "planner"], ["god-eye", "God Eye"]] },
     build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["tester", "tester"], ["tester", "tester"], ["integrator", "integrator"]] },
-    verify: { name: "Checks", members: [["tester", "tester · verify run"]] },
-    review: { name: "Reviewers", members: [["code-reviewer", "code lane"], ["test-reviewer", "tests lane"], ["security-reviewer", "security lane"], ["ux-reviewer", "ux lane"], ["finding-verifier", "finding verifier"]] },
-    ship: { name: "CI and GitHub", members: [] },
+    verify: { name: "CLI check", members: [] },
+    review: { name: "Reviewers", members: [] },
+    ship: { name: "CI and you", members: [] },
     done: { name: "Lessons", members: [["lesson-writer", "lesson writer"]] }
   };
   var STEPS = {
@@ -65,7 +67,7 @@
   var LOOPS = { intent: "questions", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")
   // the return rails: work sent back to Build, each on its own level above the row (up = px above the row's top)
   var RAILS = [{ from: "verify", name: "Checks failed: sent back", up: 38, land: 18 }, { from: "review", name: "Changes asked: sent back", up: 68, land: 0 }, { from: "ship", name: "CI failed: sent back", up: 98, land: -18 }];
-  var NEXT = { received: "intake next", intent: "intent loop running", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "CI runs, then you merge on GitHub", merged: "merged", post_merge_review: "review after merge due", closed: "closed", findings_delivered: "findings delivered", amending: "changing the intent and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
+  var NEXT = { received: "intake next", intent: "intent loop running", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "you merge: on GitHub, or locally and reply merged <commit>", merged: "the merge result is verified again", post_merge_review: "review after merge due", learning: "distill proposes lessons, then close checks every floor", closed: "closed", findings_delivered: "findings delivered", amending: "changing the contract and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
   var STAGE_TONE = { intake: .10, intent: .18, design: .26, plan: .34, build: .48, verify: .56, review: .64, ship: .74, done: .10, change: .3, parked: .2, stopped: .1 };
   var VIEWS = ["line", "globe", "board", "sched", "agents", "learn"];
   var VIEW_NAME = { line: "The line", globe: "Projection", board: "Matrix", sched: "Schedule", agents: "Parts list", learn: "General notes", epics: "Epic register", eflow: "Epic assembly", ebreak: "Epic breakdown" };
@@ -101,7 +103,7 @@
   // line, and every height is laid out from what is on the line (L, per render). Nothing is squeezed: the drawing grows
   // and the sheet scrolls inside its frame. MG = side margin (room for the inlet and the return line), SG = gap.
   var W = 1076, MIN_W = 1280, SG = 40, MG = 34, SY0 = 152, MK_GAP = 8;
-  var ETAG_H = 17, SIDE_KEYS = ["change", "parked", "stopped"], SIDE_SUB = { change: "changing the intent and plan", parked: "nothing moves until you decide", stopped: "cancelled or abandoned" };
+  var ETAG_H = 17, SIDE_KEYS = ["change", "parked", "stopped"], SIDE_SUB = { change: "changing the contract and plan", parked: "nothing moves until you decide", stopped: "cancelled or abandoned" };
 
   // ------------------------------------------------------------------ small pure helpers
   var P = function (s) { var v = Date.parse(s); return isNaN(v) ? 0 : v; };
@@ -144,12 +146,11 @@
       });
     });
     var lessons = arr(d.lessons).filter(Boolean).map(function (l) {
-      return Object.assign({}, l, { id: l.id || "L?", rule: l.rule || "", why: l.why || "", scope: arr(l.scope), lanes: arr(l.lanes), evidence: arr(l.evidence),
-        counters: Object.assign({ injected: 0, held: 0, recurred: 0 }, l.counters || {}), created_at: l.created_at || gen });
+      return Object.assign({}, l, { id: l.id || "L?", rule: l.rule || "", why: l.why || "", scope: arr(l.scope), lanes: arr(l.lanes), evidence: arr(l.evidence), created_at: l.created_at || gen });
     });
     var st = d.standards || {};
     var standards = { adopted: arr(st.adopted), checks: arr(st.checks),
-      rules: arr(st.rules).map(function (r) { return Object.assign({}, r, { lanes: arr(r.lanes), counters: Object.assign({ injected: 0, held: 0, recurred: 0 }, r.counters || {}) }); }) };
+      rules: arr(st.rules).map(function (r) { return Object.assign({}, r, { lanes: arr(r.lanes) }); }) };
     var epics = arr(d.epics).filter(function (e) { return e && (e.id || e.slug); }).map(function (e) {
       var hist = arr(e.history).filter(function (h) { return h && h.at && h.to; }).slice().sort(function (a, b) { return P(a.at) - P(b.at); });
       var state = e.state || (hist.length ? hist[hist.length - 1].to : "");
@@ -179,7 +180,8 @@
         activity_count: e.activity_count || 0 });
     });
     return { generated_at: gen, repo: d.repo || "", stages: arr(d.stages), side_lanes: arr(d.side_lanes), meaning: d.meaning || {},
-      jobs: jobs, activity: arr(d.activity).filter(function (a) { return a && a.at; }), lessons: lessons, standards: standards, epics: epics };
+      jobs: jobs, activity: arr(d.activity).filter(function (a) { return a && a.at; }), lessons: lessons, standards: standards, epics: epics,
+      epic_jobs: arr(d.epic_jobs).filter(function (e) { return e && e.id; }) };
   }
 
   // ------------------------------------------------------------------ one mounted Blueprint
@@ -194,16 +196,16 @@
   // The console's shared glossary (core/words.js, given to displays as api.words) when it exists; until then, and for
   // any word it lacks, this local copy with the same mapping. Internal ids (H1, AC-2, states) stay as small tags.
   var LOCAL_WORDS = {
-    gate: { H1: "Approve the intent", H2: "Approve the design", H3: "Approve the plan", H4: "Merge", HF: "Approve the findings",
+    gate: { H1: "Approve the contract", H2: "Approve the design", H3: "Approve the plan", H4: "Merge", HF: "Approve the findings",
             HS: "Sign off the ship", A: "Approve a change to the criteria", P: "Parked: your call",
             EH1: "Approve the epic's goal", EH2: "Approve the epic's architecture", EH3: "Approve the slices", EA: "Approve a change to the epic" },
-    lane: { code: "Code review", tests: "Test review", security: "Security review", ux: "Usability review", "post-code": "Code review after merge" },
+    lane: { code: "Code review", tests: "Test review", security: "Security review", ux: "Usability review", conformance: "Conformance review" },
     state: {
-      received: "Just in", intent: "Writing the intent", awaiting_intent_approval: "Waiting for you: intent", designing: "Designing",
+      received: "Just in", intent: "Writing the contract", awaiting_intent_approval: "Waiting for you: contract", designing: "Designing",
       awaiting_design_approval: "Waiting for you: design", awaiting_findings_approval: "Waiting for you: findings", planning: "Planning",
       awaiting_plan_approval: "Waiting for you: plan", building: "Building", integrating: "Combining the work", verifying: "Checking",
       reviewing: "Reviewing", ready_to_ship: "Ready to ship", awaiting_ship_approval: "Waiting for you: ship", pr_open: "Waiting for you: merge", merged: "Merged",
-      post_merge_review: "Reviewing after merge", closed: "Done", amending: "Changing the criteria",
+      post_merge_review: "Reviewing after merge", learning: "Learning", closed: "Done", amending: "Changing the criteria",
       awaiting_amendment_approval: "Waiting for you: change", needs_replan: "Needs a new plan", findings_delivered: "Done: findings delivered",
       parked: "Parked", cancelled: "Cancelled", abandoned: "Abandoned",
       epic_intent: "Writing the epic's goal", awaiting_epic_intent_approval: "Waiting for you: epic goal", epic_architecture: "Designing the architecture",
@@ -219,7 +221,7 @@
     m = /^AC-(\d+)$/.exec(s);
     return m ? "Criterion " + m[1] : s;
   }
-  // wd("gate", "H1") -> "Approve the intent"; wd("godEye") -> "God Eye"; wd("crit", "AC-2") -> "Criterion 2"
+  // wd("gate", "H1") -> "Approve the contract"; wd("godEye") -> "God Eye"; wd("crit", "AC-2") -> "Criterion 2"
   function wd(kind, key) {
     var g = api.words ? api.words[kind] : undefined, v;
     if (key === undefined) v = typeof g === "function" ? g() : g;
@@ -230,14 +232,14 @@
     if (key === undefined) return l;
     return (l && l[key]) || String(key || "").replace(/_/g, " ");
   }
-    var gv = function (g) { return wd("gate", g); };   // "H1" -> "Approve the intent"
+    var gv = function (g) { return wd("gate", g); };   // "H1" -> "Approve the contract"
     // "E-AC-1","E-AC-3" -> "epic criteria 1, 3" (the ids stay in tooltips and tags)
     function critList(ids) {
       var n = ids.map(function (x) { var m = /(\d+)$/.exec(String(x)); return m ? m[1] : String(x); });
       var ep = ids.some(function (x) { return /^E-AC/.test(String(x)); });
       return (ep ? "epic " : "") + (n.length === 1 ? "criterion " : "criteria ") + n.join(", ");
     }
-    var AP = null;   // the autopilot as display.json reports it now (on, delegate, until, pending, used, max, by)
+    var AP = null;   // Copilot's Autopilot, if the prompt hook saw it (last_at, count, recent): it could answer gates for the user
     var alive = function () { return root.isConnected; };
     var epSel = null, epDocIdx = {}, EPSIG = "";
     try { var sv = window.localStorage.getItem("dx-blueprint-view"); if (VIEWS.indexOf(sv) >= 0) view = sv; epSel = window.localStorage.getItem("dx-blueprint-epic") || null; } catch (e) { /* storage blocked: start on sheet 1 */ }
@@ -302,10 +304,10 @@
     }
     function gateOf(j, t) { var s = stateAt(j, t); if (!s) return null; if (GATE[s]) return GATE[s]; if (s === "pr_open") return "H4"; return null; }
     function chatReply(j, g) {
-      if (g === "P") return { main: "resume " + (j.parked_from || "<state>"), alt: "or: cancel --reason \"…\" · abandon --reason \"…\"" };
       var wo = j.waiting_on;   // Copilot Factory: the reply the CLI parses, from the data ("approve J-0004 H3 · deny J-0004 …")
       if (wo && wo.reply && wo.gate === g) { var parts = String(wo.reply).split(/\s+·\s+/); return { main: parts[0], alt: parts.length > 1 ? "or: " + parts.slice(1).join(" · ") : "" }; }
-      if (g === "H4") return { main: "merge on GitHub", alt: "the CI gate must be green first" };
+      if (g === "P") return { main: "resume " + j.id, alt: "or: cancel job · abandon job" };
+      if (g === "H4") return { main: "merged " + j.id + " <commit>", alt: "after you merge it on GitHub or locally" };
       return { main: "approve", alt: "or: deny <what must change>" };
     }
     function termCmd(j, g, t) {
@@ -343,6 +345,9 @@
       R.den24 = den24.length;
       R.sentBack7 = JOBS.reduce(function (n, j) { return n + reworksIn(j, t - 7 * DAY, t).length; }, 0);
       R.open = R.jobs.filter(function (r) { return !r.done; }).length;
+      // jobs that wait on your reply (a gate, a merge), as the Board's "Your turn" counts them: parked jobs and lessons apart
+      R.yourTurn = R.jobs.filter(function (r) { return !r.done && r.g && r.g !== "P"; }).length;
+      R.parked = R.jobs.filter(function (r) { return r.g === "P"; }).length;
       R.rev = EVENTS.filter(function (e) { return e.at <= t; }).length;
       R.lessonsWaiting = (t >= TN - 1) ? D.lessons.filter(function (l) { return l.status === "proposed" && P(l.created_at) <= t; })
         : D.lessons.filter(function (l) { return P(l.created_at) <= t && (!l.decided || P(l.decided.at) > t); });
@@ -399,7 +404,7 @@
     var tbQ = H("div", { "class": "qs" });
     var cell = function (k, v, c) { return H("div", { "class": "cell" + (c ? " " + c : "") }, typeof k === "string" ? H("div", { "class": "k", text: k }) : k, v); };
     // the title block: one row; the replay controls and the revision history share the first cell
-    // the autopilot note (filled by renderAP); hidden when autopilot is off and nothing waits for review
+    // the Autopilot note (filled by renderAP): shown when the prompt hook saw Copilot's Autopilot in this project
     var apCell = H("div", { "class": "cell apnote", hidden: true, role: "note" });
     var footer = H("footer", { "class": "tb" },
       H("div", { "class": "cell rcell" }, H("div", { "class": "k", text: "Revision history · replay" }), H("div", { "class": "ctl" }, modeTag, playBtn, speed, liveBtn, H("div", { "class": "scrub" }, scrub, ticks))),
@@ -613,6 +618,9 @@
       zoneNums(o, W);
       o.push(tx(10, 36, "Drawing 1 · the line", { "class": "t-disp", "font-size": 18, "font-weight": 700 }));
       o.push(lineKey(10 + measure("Drawing 1 · the line", "t-disp", 18, 700) + 36, 31));
+      // epics are not drawn on these sheets: say so, rather than leave them silently missing
+      if (D.epic_jobs.length) o.push(Z("g", { "class": "mk", "data-notes": "epics", tabindex: 0, role: "button", "aria-label": plural(D.epic_jobs.length, "epic") + " not drawn here: shown on the Board. Open the notes." },
+        tx(10, 60, "◇ " + plural(D.epic_jobs.length, "epic") + " (" + D.epic_jobs.map(function (e) { return e.id; }).join(", ") + ") shown on the Board, not on these sheets · notes", { "font-size": 13, "class": "t2", "data-fit": W - 20 })));
       // return rails: what was sent back to Build, one level each above Build's row; red while it happened this week
       var bi = SIDX.build != null ? SIDX.build : Math.min(4, STAGES.length - 1), bc = L.cell[bi], brow = L.row[bc.r], bx = bc.x + bc.w / 2;
       RAILS.forEach(function (r) {
@@ -720,18 +728,35 @@
     }
 
     // an agent bank: every member a named lamp; lit (and naming its job) while that agent is at work
-    var ROLE_NAME = { "intent-analyst": "analyst", judge: "judge", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
+    var ROLE_NAME = { "intent-mapper": "intent mapper", verifier: "evidence verifier", "option-generator": "option generator", "intent-analyst": "analyst", judge: "judge", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
       planner: "planner", slicer: "slicer", builder: "builder", tester: "tester", integrator: "integrator", "finding-verifier": "finding verifier", "lesson-writer": "lesson writer" };
-    var ROLE_LANE = { "code-reviewer": "code", "test-reviewer": "tests", "security-reviewer": "security", "ux-reviewer": "ux" };
+    var ROLE_LANE = { "code-reviewer": "code", "test-reviewer": "tests", "security-reviewer": "security", "ux-reviewer": "ux", "epic-reviewer": "conformance" };
+    var LANE_ROLE = { code: "code-reviewer", tests: "test-reviewer", security: "security-reviewer", ux: "ux-reviewer", conformance: "epic-reviewer" };
     function roleName(role, key) {
-      if (key === "verify") return "tester runs every check";
+      if (role === "researcher" && key === "intent") return "scouts · repo, web";
       if (ROLE_LANE[role]) return wd("lane", ROLE_LANE[role]);
       if (role === "god-eye") return wd("godEye");
       return ROLE_NAME[role] || agentLabel(role);
     }
+    // a bank's members now: Challenge has one reviewer per lane the jobs there must pass (else the lanes any job here
+    // requires) and the finding verifier; Ship has the post-merge reviewers only when a job's recipe runs that review
+    function bankMembers(key) {
+      var lanesOf = function (list) { return uniq([].concat.apply([], list.map(function (j) { return arr(j.required_lanes); }))); };
+      if (key === "review") {
+        var ln = lanesOf((S.byStage.review || []).filter(function (r) { return !r.done; }).map(function (r) { return r.j; }));
+        if (!ln.length) ln = lanesOf(JOBS);
+        ln = ln.filter(function (l) { return LANE_ROLE[l]; });
+        return ln.length ? ln.map(function (l) { return [LANE_ROLE[l], l + " lane"]; }).concat([["finding-verifier", "finding verifier"]]) : [];
+      }
+      if (key === "ship") {
+        var pm = uniq([].concat.apply([], JOBS.map(function (j) { return arr(j.post_merge_lanes); }))).filter(function (l) { return LANE_ROLE[l]; });
+        return pm.length ? pm.map(function (l) { return [LANE_ROLE[l], l + " lane after merge"]; }).concat([["finding-verifier", "finding verifier"]]) : [];
+      }
+      return (BANKS[key] || {}).members || [];
+    }
     function bankGroups(key) {
       var out = [], by = {};
-      ((BANKS[key] || {}).members || []).forEach(function (m) { if (by[m[0]]) { by[m[0]].n++; return; } by[m[0]] = { role: m[0], n: 1, name: roleName(m[0], key) }; out.push(by[m[0]]); });
+      bankMembers(key).forEach(function (m) { if (by[m[0]]) { by[m[0]].n++; return; } by[m[0]] = { role: m[0], n: 1, name: roleName(m[0], key) }; out.push(by[m[0]]); });
       return out;
     }
     function bankRows(key) {
@@ -750,7 +775,8 @@
     }
     function bankNode(s, i, recs, ag) {
       var c = L.cell[i], rw = L.row[c.r], x = c.x, SW = c.w, BY = rw.BY, BH = rw.BH;
-      var bk = BANKS[s.key] || { name: s.label, members: [] }, g = Z("g", { "class": "bank" + (ag ? " active" : "") });
+      var bk0 = BANKS[s.key] || { name: s.label, members: [] }, g = Z("g", { "class": "bank" + (ag ? " active" : "") });
+      var bk = { name: s.key === "ship" && bankMembers("ship").length ? "Post-merge review" : bk0.name, members: bankMembers(s.key) };
       var groups = bankGroups(s.key), work = {};
       recs.forEach(function (r) { r.ag.forEach(function (a) { (work[a.agent] = work[a.agent] || []).push({ slug: r.j.slug, j: r.j, since: a.since }); }); });
       kids(g, [Z("line", { x1: x + SW / 2, y1: rw.SY + rw.SH, x2: x + SW / 2, y2: BY, "class": ag ? "ln-agent" : "ln2", "stroke-dasharray": "2 2" }), Z("circle", { cx: x + SW / 2, cy: rw.SY + rw.SH, r: 2.5, fill: ag ? "var(--agent)" : "var(--ink)" }),
@@ -775,7 +801,7 @@
         ry++;
       });
       if (!bk.members.length) {
-        var bl = s.key === "ship" ? ["CI runs on the pull request,", "then you merge it (H4)"] : ["A CLI check:", "no agent is needed"];
+        var bl = s.key === "ship" ? ["CI re-verifies the merge;", "only you merge it (H4)"] : s.key === "review" ? ["No review lanes", "in these recipes"] : ["A CLI check:", "no agent is needed"];
         kids(g, [tx(x + 8, BY + 42, bl[0], { "font-size": 13, "class": "t2", "data-fit": SW - 14 }), tx(x + 8, BY + 61, bl[1], { "font-size": 13, "class": "t2", "data-fit": SW - 14 })]);
       }
       var lw = s.key === "done" ? S.lessonsWaiting.length : 0;
@@ -825,6 +851,30 @@
         tx(x + 34, y + 22.5, "Detail " + letter + " · " + title, { "font-size": 16, "class": "t-disp", "font-weight": 700, "data-fit": w - 46 - lw }),
         sub ? tx(x + 12, y + 52, sub, { "font-size": 13, "class": "t2", "data-fit": w - 24 }) : null];
     }
+    // one review lane of a job at time t, the same in detail B and the section view: the latest result, and whether its
+    // reviewer is at work now (a new round runs while the last result still stands). A serious finding left unverified
+    // (no verifier result, or "unverifiable") blocks its lane.
+    function laneState(j, ln, t, ag) {
+      var rv = j.reviews.filter(function (v) { return v.lane === ln && !v.post_merge && P(v.at) <= t; }).pop() || null;
+      var inReview = S2STAGE[stateAt(j, t)] === "review";
+      var working = inReview && (ag || activeAgents(j, t)).some(function (a) { return a.agent === LANE_ROLE[ln]; });
+      var running = working && (!rv || P(rv.at) < enteredAt(j, t));
+      return { rv: running ? null : rv, prev: rv, running: running, req: j.required_lanes.indexOf(ln) >= 0, unverified: rv ? rv.unverified || 0 : 0 };
+    }
+    function laneWords(x) {
+      var rv = x.rv;
+      if (x.running) return "reviewer at work" + (x.prev ? " · last round " + verdictWord(x.prev) : "");
+      if (!rv) return x.req ? "required · not run yet" : "optional";
+      var fs = rv.findings;
+      return verdictWord(rv) + " · " + plural(fs.length, "finding") + (fs.length ? " (" + fs.map(function (f) { return f.severity; }).join(", ") + ")" : "") + (x.unverified ? " · " + x.unverified + " unverified, blocking" : "");
+    }
+    function verdictWord(rv) { return rv.verdict === "pass" ? "pass" : rv.verdict === "missing" ? "did not report" : rv.unverified && !rv.findings.some(function (f) { return f.status === "confirmed"; }) ? "blocked: unverified" : "changes asked"; }
+    // "round 2 of 3", from the job's last review result and its policy's max_review_rounds
+    function roundText(j, n) {
+      var max = j.max_review_rounds;
+      if (!max) return "round " + n;
+      return n > max ? "round " + n + " · past the limit of " + max : "round " + n + " of " + max;
+    }
     function lastBuild(t) { return S.jobs.filter(function (r) { var lb = leftBuildAt(r.j); return lb && lb <= t; }).sort(function (a, b) { return leftBuildAt(b.j) - leftBuildAt(a.j); })[0]; }
     function lastVerify(t) { var last = null; JOBS.forEach(function (j) { j.history.forEach(function (hh) { if (hh.from === "verifying" && P(hh.at) <= t && (!last || P(hh.at) > last.at)) last = { at: P(hh.at), j: j, ok: !isRework(hh.from, hh.to) }; }); }); return last; }
     function detailA(t, x, y, w, h) {
@@ -856,20 +906,20 @@
     }
     function detailB(t, x, y, w, h) {
       var g = Z("g"), recs = (S.byStage.review || []).filter(function (r) { return !r.done; });
-      var r = recs[0], j = r.j, rounds = j.history.filter(function (hh) { return hh.to === "reviewing" && P(hh.at) <= t; }).length || 1;
-      kids(g, [detailBox(x, y, w, h, "B", "Review", j.slug + " · round " + rounds + " of 3", r.ag.length ? "reviewing now" : "in review", r.ag.length > 0)]);
+      // the round: the last one recorded, plus the one running now if its result is not in yet
+      var r = recs[0], j = r.j, recorded = j.reviews.filter(function (v) { return !v.post_merge && v.round && P(v.at) <= t; }).reduce(function (m, v) { return Math.max(m, v.round); }, 0);
+      var runningNew = r.ag.length > 0 && !j.reviews.some(function (v) { return P(v.at) >= enteredAt(j, t) && P(v.at) <= t; });
+      var rounds = Math.max(1, recorded + (runningNew ? 1 : 0));
+      kids(g, [detailBox(x, y, w, h, "B", "Review", j.slug + " · " + roundText(j, rounds), r.ag.length ? "reviewing now" : "in review", r.ag.length > 0)]);
       var lanes = uniq(j.required_lanes.concat(j.reviews.map(function (v) { return v.lane; }))).slice(0, 4);
-      var working = {}; r.ag.forEach(function (a) { working[a.agent] = 1; });
       var LX = x + 12 + Math.max.apply(null, [90].concat(lanes.map(function (ln) { return measure(wd("lane", ln), "t-disp", 13, 700); }))) + 14;
       lanes.forEach(function (ln, k) {
-        var yy = y + 64 + k * 30, rv = j.reviews.filter(function (v) { return v.lane === ln && P(v.at) <= t; }).pop(), req = j.required_lanes.indexOf(ln) >= 0;
-        var w8 = !!working[{ code: "code-reviewer", tests: "test-reviewer", security: "security-reviewer", ux: "ux-reviewer" }[ln]];
+        var yy = y + 64 + k * 30, ls = laneState(j, ln, t, r.ag), rv = ls.rv, w8 = ls.running;
         var cls = rv ? (rv.verdict === "pass" ? "sq-pass" : "sq-fail") : w8 ? "sq-run" : "sq-todo";
-        var fs = rv ? rv.findings : [];
         kids(g, [tx(x + 12, yy + 16, wd("lane", ln), { "font-size": 13, "class": "t-disp", "font-weight": 700 }),
-          w8 && !rv ? boxText(LX, yy, 22, 22, { "class": "lamp-ring breathe" }) : null, boxText(LX, yy, 22, 22, { "class": cls }),
+          w8 ? boxText(LX, yy, 22, 22, { "class": "lamp-ring breathe" }) : null, boxText(LX, yy, 22, 22, { "class": cls }),
           tx(LX + 11, yy + 16, rv ? (rv.verdict === "pass" ? "✓" : "✗") : w8 ? "…" : "", { "text-anchor": "middle", "font-size": 13, "class": "t-mono" + (rv ? (rv.verdict === "pass" ? " t-ok" : " t-fail") : ""), "font-weight": 700 }),
-          tx(LX + 32, yy + 16, rv ? rv.verdict + " · " + plural(fs.length, "finding") + (fs.length ? " (" + fs.map(function (f) { return f.severity; }).join(", ") + ")" : "") : w8 ? "reviewer at work" : req ? "required · not run yet" : "optional", { "font-size": 13, "class": rv ? null : w8 ? "t-agent" : "t2", "data-fit": x + w - LX - 44 })]);
+          tx(LX + 32, yy + 16, laneWords(ls), { "font-size": 13, "class": rv ? (ls.unverified ? "t-fail" : null) : w8 ? "t-agent" : "t2", "data-fit": x + w - LX - 44 })]);
       });
       var gy = y + h - 24;
       if (r.gf) kids(g, [Z("path", { d: cloudPath(x + 6, gy - 16, w - 12, 30), "class": "cloud" }), tx(x + 16, gy + 4, "✗ Failing check: " + String(j.gate.problems[0] || "failing").replace(" (required for medium risk)", ""), { "font-size": 13, "class": "t-fail", "font-weight": 600, "data-fit": w - 32 })]);
@@ -885,7 +935,7 @@
       var LX = x + 100;
       kids(g, [tx(x + 12, y + 56, "Checks", { "font-size": 13, "class": "t-disp", "font-weight": 700 }), tx(LX, y + 56, vl, { "font-size": 13, "data-fit": w - (LX - x) - 12 })]);
       kids(g, [tx(x + 12, y + 84, "Rounds", { "font-size": 13, "class": "t-disp", "font-weight": 700 })]);
-      if (!rd.length) kids(g, [tx(LX, y + 84, "no intent, design or plan rounds open", { "font-size": 13, "class": "t2" })]);
+      if (!rd.length) kids(g, [tx(LX, y + 84, "no contract, design or plan rounds open", { "font-size": 13, "class": "t2" })]);
       rd.slice(0, 3).forEach(function (r, i) {
         var n = r.j.history.filter(function (hh) { return S2STAGE[hh.to] === r.st && !GATE[hh.to] && P(hh.at) <= t; }).length || 1;
         var more = i === 2 && rd.length > 3 ? " · " + (rd.length - 3) + " more" : "";
@@ -903,7 +953,7 @@
       if (letters.indexOf("C") >= 0) {
         var lv = lastVerify(t);
         rows.push(["C", "Checks", "idle", lv ? "last: " + lv.j.slug + " " + (lv.ok ? "passed" : "failed, " + wd("revise")) + " · " + fT(lv.at) : "no check run yet"]);
-        rows.push(["", "Rounds", "none", "no intent, design or plan rounds open"]);
+        rows.push(["", "Rounds", "none", "no contract, design or plan rounds open"]);
       }
       var h = 36 + rows.length * 28 + 6, g = Z("g", null, boxText(x, y, w, h, { "class": "paperfill", stroke: "var(--ink-2)", "stroke-width": 1.1 }),
         tx(x + 12, y + 22, "Details " + letters.join(" · "), { "font-size": 15, "class": "t-disp", "font-weight": 700 }),
@@ -932,7 +982,7 @@
           Z("g", { transform: "translate(" + (x + 19) + " " + (yy + 15) + ")" }, typeSym(j.type, 0, 0, 11)),
           tx(x + 33, yy + 20, j.slug, { "font-size": 15, "class": "t-cond", "font-weight": 700, "data-fit": w - 45 - measure(when, "t-mono", 13) - 12 }),
           tx(x + w - 12, yy + 20, when, { "text-anchor": "end", "font-size": 13, "class": "t-mono t2" }),
-          Z("text", { x: x + 33, y: yy + 36, "font-size": 13, "data-fit": w - 45 }, ts("✓ " + outcome, { "class": "t-ok" }),
+          Z("text", { x: x + 33, y: yy + 36, "font-size": 13, "data-fit": w - 45 }, STOPPED_STATES[r.s] ? ts("■ " + outcome, { "class": "t-fail" }) : ts("✓ " + outcome, { "class": "t-ok" }),
             ts(" · " + (TYPE_NAME[j.type] || j.type) + " · took " + fD(r.since - P(j.created_at)), { "class": "t2" }),
             n ? ts(" · " + pass + " of " + n + " tasks passing", { "class": pass < n ? "t-fail" : "t2" }) : null))]);
       });
@@ -942,7 +992,7 @@
     function markerNode(r, w, lines, h) {
       var j = r.j, cls = ["mk"];
       if (r.g && r.g !== "H4") cls.push("wait"); else if (!r.done && (r.failing || r.gf)) cls.push("fail"); else if (r.ag.length) cls.push("run");
-      if (r.done || r.s === "merged") cls.push("done"); if (sel === j.id) cls.push("sel");
+      if (r.done || r.s === "merged") cls.push("done"); if (STOPPED_STATES[r.s]) cls.push("stop"); if (sel === j.id) cls.push("sel");
       var tag = epTag(j), ep = tag ? epOfJob(j) : null, off = tag ? ETAG_H : 0;
       if (filter && (j.slug + " " + j.id + " " + j.type + " " + r.s + " " + (tag || "")).toLowerCase().indexOf(filter) < 0) cls.push("dim");
       return Z("g", { "class": cls.join(" "), "data-job": j.id, tabindex: 0, role: "button", "aria-label": j.slug + ", " + (TYPE_NAME[j.type] || j.type) + ", " + j.risk + " risk, " + wd("state", r.s) + (tag ? ", slice " + tag : "") + ". Open section view." },
@@ -956,7 +1006,7 @@
         lines.map(function (ln, i) { return tx(5, off + 15 + i * 15, ln, { "font-size": 15, "class": "t-cond lbl" }); }),
         Z("rect", { x: 4, y: h - 12, width: 14, height: 9, fill: riskFill(j.risk), stroke: "var(--ink)", "stroke-width": .8, opacity: .9 }),
         Z("g", { transform: "translate(26 " + (h - 7.5) + ")" }, typeSym(j.type, 0, 0, 9)),
-        Z("text", { x: 35, y: h - 3.5, "font-size": 13, "class": "t-cond meta2", "font-weight": 500 }, r.done ? ts("✓ ", { "class": "t-ok", "font-weight": 700 }) : null, fD(S.t - r.since) + (r.g && r.g !== "H4" ? " · " + r.g : "")),
+        Z("text", { x: 35, y: h - 3.5, "font-size": 13, "class": "t-cond meta2", "font-weight": 500 }, r.done ? (STOPPED_STATES[r.s] ? ts("■ ", { "class": "t-fail", "font-weight": 700 }) : ts("✓ ", { "class": "t-ok", "font-weight": 700 })) : null, fD(S.t - r.since) + (r.g && r.g !== "H4" ? " · " + r.g : "")),
         r.ag.length ? [Z("circle", { cx: w - 9, cy: h - 8, r: 4, fill: "var(--agent)", "class": "lampdot" }), Z("circle", { cx: w - 9, cy: h - 8, r: 4, "class": "lamp-ring pulse" })] : null);
     }
     function fitText(t, max) {
@@ -1024,7 +1074,7 @@
       return { w: w, n: Z("g", null, boxText(x, y - 12, w, 16, { rx: 2, "class": on ? "idtag on" : "idtag" }), tx(x + 5, y, id, { "font-size": 12, "class": "t-mono idtag-t", "font-weight": 700 })) };
     }
     // the decisions that wait on you: a numbered balloon in the callout row above the station, a leader down to the job,
-    // "Approve the intent" in words with its id as a tag, and the job's name under it
+    // "Approve the contract" in words with its id as a tag, and the job's name under it
     function drawCallouts(targets) {
       if (targets) lastTargets = targets; if (!gCallouts || !L) return; var o = [];
       var main = S.gates.filter(function (r) { return SIDX[r.st] != null; }), side = S.gates.filter(function (r) { return SIDX[r.st] == null && L.side[r.st]; });
@@ -1125,15 +1175,13 @@
           H("div", { "class": "reply" }, H("div", { "class": "lbl", text: "Reply in chat" }), H("div", { "class": "row" }, H("code", { text: rep }), copyBtn(rep)), H("div", { "class": "alt", text: "or: reject lesson " + l.id + " <why>" })))]);
       });
       o.push(sec);
-      // epics in flight: each one, its stage and who acts next (live: the epic sheets are drawn from the latest data)
-      var EF = D.epics.filter(epOpen);
-      o.push(H("section", { "class": "nsec" }, H("h3", null, "Epics in flight ", H("em", { text: EF.length + (D.epics.length > EF.length ? " of " + D.epics.length : "") + " · sheets 7-9" })),
-        EF.length ? H("ul", { "class": "lst" }, EF.map(function (e) {
-          var you = e.waiting_on.who === "you";
-          return H("li", null, H("span", { "class": "chip " + (you ? "hl" : e.agents_at_work.length ? "ag" : "mute"), text: you ? (e.waiting_on.gate || "you") : e.agents_at_work.length ? "● " + e.agents_at_work.length : (EP_LABEL[e.stage] || e.stage) }),
-            H("span", null, H("button", { type: "button", "class": "linkbtn sm", "data-epic": e.id, "data-epic-view": "eflow" }, e.slug), " ",
-              H("span", { "class": "meta", text: "· " + (EP_LABEL[e.stage] || e.stage) + " · epic criteria " + e.delivery.e_criteria_delivered + " of " + e.delivery.e_criteria_total + " · slices " + e.delivery.slices_merged + " of " + e.delivery.slices_total + " merged · " + (you ? "waits on you" : e.waiting_on.who === "agent" ? "agents' turn" : "nobody acting") })));
-        })) : H("p", { "class": "meta", text: D.epics.length ? "No epic in flight." : "No epics in this repository." })));
+      // epics: this port draws no epic sheets. Each epic is listed here and shown on the Board; its slices run on the line.
+      var EJ = D.epic_jobs;
+      o.push(H("section", { "class": "nsec" }, H("h3", null, "Epics ", H("em", { text: EJ.length ? plural(EJ.length, "epic") + " · shown on the Board" : "none" })),
+        EJ.length ? [H("p", { "class": "meta", text: "Epics are not drawn on these sheets: open the Board to see each epic and its slices. A slice is an ordinary job on the line." }),
+          H("ul", { "class": "lst" }, EJ.map(function (e) { return H("li", null, H("span", { "class": "chip mute", text: e.status || "?" }), H("span", null, H("b", { text: e.id }), " " + e.title + (e.children ? " · " + plural(e.children, "slice") : ""))); })),
+          H("button", { type: "button", "class": "btn", "data-classic": "board" }, "Open the Board")]
+          : H("p", { "class": "meta", text: "No epics in this repository. An epic would be listed here and shown on the Board." })));
       // alerts
       o.push(H("section", { "class": "nsec" }, H("h3", null, "Problems ", H("em", { text: S.alerts.length + " · drawn as revision clouds" })),
         S.alerts.length ? H("ul", { "class": "lst" }, S.alerts.map(function (a) {
@@ -1166,7 +1214,10 @@
       o.push(H("section", { "class": "nsec" }, det));
       fill(notesBody, o);
       // the badge in the sheet bar: what waits on you, or just "Notes" when nothing does
-      fill(notesBtn, nd + nl ? [H("b", { text: String(nd + nl) }), nl && !nd ? (nl === 1 ? " lesson to accept" : " lessons to accept") : nl ? " wait on you" : nd === 1 ? " decision waits" : " decisions wait"] : "Notes");
+      // the badge says jobs and lessons apart, so its job count is the Board's "Your turn" (parked jobs are their own)
+      var yt = S.yourTurn + ne, np = S.parked;
+      fill(notesBtn, yt + np + nl ? [yt ? [H("b", { text: String(yt) }), " your turn"] : null, np > 0 ? [yt ? " · " : "", H("b", { text: String(np) }), " parked"] : null,
+        nl ? [yt || np > 0 ? " · " : "", H("b", { text: String(nl) }), nl === 1 ? " lesson" : " lessons"] : null] : "Notes");
       notesBtn.classList.toggle("bp-hl", nd + nl > 0);
       notesBtn.setAttribute("aria-label", "Notes: " + heroTxt);
     }
@@ -1200,9 +1251,11 @@
       tbAsof.textContent = fT(t); tbRev.textContent = S.rev + " / " + EVENTS.length; tbProj.textContent = REPO;
       modeTag.textContent = snapshotOn ? "Issued" : live ? "Live" : "Replay"; modeTag.setAttribute("class", cx("mode " + (live && !snapshotOn ? "live" : "replay")));
       if (document.activeElement !== scrub) scrub.value = Math.round((t - T0) / (TN - T0) * 1000);
-      var neg = epGates().length, nw = S.gates.length + neg + S.lessonsWaiting.length, nef = D.epics.filter(epOpen).length;
+      // "Your turn" counts jobs as the Board does (a gate or a merge waiting on your reply); lessons and parked jobs apart
+      var neg = epGates().length, nw = S.yourTurn + neg, nl = S.lessonsWaiting.length;
       var nf = S.jobs.filter(function (r) { return r.gf; }).length;
-      var q = [[nw ? "hl" : "", "Waiting on you", nw, "decisions and lessons waiting on you" + (neg ? " (" + plural(neg, "epic decision") + ")" : "")], ["", "In flight", S.open, "jobs not finished"],
+      var q = [[nw ? "hl" : "", "Your turn", nw, "jobs waiting on your reply at a gate or a merge, as the Board's Your turn" + (neg ? " (" + plural(neg, "epic decision") + ")" : "") + (S.parked ? "; " + plural(S.parked, "parked job") + " not counted" : "")],
+        [nl ? "hl" : "", "Lessons to decide", nl, "proposed lessons waiting for accept lesson Ln or reject lesson Ln <why>; not jobs, so not in Your turn"], ["", "In flight", S.open, "jobs not finished"],
         [S.agents.length ? "ag" : "", "Agents at work", S.agents.length, "agents at work now"],
         [nf ? "fail" : "", "Failing checks", nf, "jobs whose gate check is failing"],
         [S.den24 ? "fail" : "", "Refused today", S.den24, "unsafe actions the guard refused in the last 24 hours"], [S.sentBack7 ? "back" : "", "Sent back this week", S.sentBack7, "times work was sent back in the last 7 days"]];
@@ -1214,19 +1267,19 @@
       renderAP();
       stamp.textContent = "Issued · snapshot " + fT(t) + " · rev " + S.rev + (heldData ? " · newer data held" : "");
     }
-    // the autopilot: a note in the title block, like a drawing's general note, saying who decides for you until when.
-    // It describes now: during replay it says so.
+    // Copilot's Autopilot: a gate-safety note in the title block. The prompt hook saw Autopilot's own continuation
+    // prompt (.factory/autopilot.json): Autopilot answers prompts by itself and keeps going past the factory's stops,
+    // so it could answer a gate for you. It describes now: during replay it says so.
     function renderAP() {
-      var a = AP, pend = a ? Math.max(0, +a.pending || 0) : 0;
-      if (!a || (!a.on && !pend)) { apCell.hidden = true; clear(apCell); return; }
-      var until = a.until && P(a.until) ? fHM(P(a.until)) : "";
-      var txt = a.on ? "Autopilot on: " + (a.delegate || "claude") + " decides" + (until ? " until " + until : "") + (pend ? " · " + pend + " to review" : "")
-        : "Autopilot off · " + plural(pend, "decision") + " to review";
-      var tip = (a.on ? "Autopilot is on" + (a.by ? ", turned on by " + a.by : "") + (until ? ", until " + until + " UTC" : "") : "Autopilot is off") + ". " +
-        (+a.used || 0) + " of " + (a.max != null ? a.max : "?") + " decisions used. Review them: factory autopilot review" + (a.on ? " · Turn it off: factory autopilot off" : "");
+      var a = AP;
+      if (!a || !a.last_at) { apCell.hidden = true; clear(apCell); return; }
+      var last = fT(P(a.last_at));
+      var txt = a.recent ? "Autopilot seen " + last + ": it may answer gates for you" : "Autopilot last seen " + last;
+      var tip = "Copilot's Autopilot was seen in this project (last continuation " + last + " UTC" + (a.count > 1 ? ", " + a.count + " times this session" : "") + "). " +
+        "It answers prompts by itself and keeps going past the factory's stops, so it could answer a gate for you. Switch Copilot back to interactive mode (Shift+Tab, or /autopilot off) for factory work; factory next and factory doctor warn while the sighting is recent (" + (a.window_hours || 6) + " h).";
       apCell.hidden = false; apCell.setAttribute("title", tip); apCell.setAttribute("aria-label", (live ? "" : "Now: ") + txt + ". " + tip);
-      apCell.setAttribute("class", cx("cell apnote" + (a.on ? " on" : "") + (pend ? " pend" : "")));
-      fill(apCell, H("div", { "class": "k" }, "Note", live ? null : H("span", { "class": "apnow", text: " · now, not at this revision" })),
+      apCell.setAttribute("class", cx("cell apnote" + (a.recent ? " warn" : " old")));
+      fill(apCell, H("div", { "class": "k" }, "Gate safety", live ? null : H("span", { "class": "apnow", text: " · now, not at this revision" })),
         H("div", { "class": "v" }, H("span", { "class": "aplamp", "aria-hidden": "true" }), txt));
     }
     function renderTicks() {
@@ -1268,7 +1321,7 @@
       if (!done && gt && gt.evaluated && gt.pass === false) blockers.push("failing check: " + gt.problems.join("; "));
       if (!done && failingT.length) blockers.push(plural(failingT.length, "task") + " failing: " + failingT.map(function (k) { return k.id; }).join(", "));
       out.push(H("section", { "class": "sec-now" + (g && g !== "H4" ? " wait" : blockers.length ? " fail" : "") },
-        H("div", { "class": "now-row" }, H("span", { "class": "chip big " + (g && g !== "H4" ? "hl" : done ? "ok" : blockers.length ? "fail" : ""), text: wd("state", s), title: s }),
+        H("div", { "class": "now-row" }, H("span", { "class": "chip big " + (g && g !== "H4" ? "hl" : STOPPED_STATES[s] ? "fail" : done ? "ok" : blockers.length ? "fail" : ""), text: (STOPPED_STATES[s] ? "■ " : "") + wd("state", s), title: s }),
           H("span", { "class": "now-txt", text: D.meaning[s] || "" }), H("span", { "class": "meta", text: "since " + fT(enteredAt(j, t)) + " · " + fD(t - enteredAt(j, t)) })),
         !done && NEXT[s] ? H("div", { "class": "now-next" }, H("b", { text: "Next " }), NEXT[s]) : null,
         j.epic ? (function () {
@@ -1318,11 +1371,15 @@
       var lanes = uniq(j.required_lanes.concat(j.reviews.map(function (v) { return v.lane; })));
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Reviews", H("em", { text: "required: " + (j.required_lanes.map(function (x) { return wd("lane", x).toLowerCase(); }).join(", ") || "none") })),
         lanes.length ? lanes.map(function (ln) {
-          var rv = j.reviews.filter(function (v) { return v.lane === ln && P(v.at) <= t; }).pop();
-          return H("div", { "class": "rv" }, H("header", null, H("b", { "class": "disp", text: wd("lane", ln) }), H("span", { "class": "chip " + (rv ? (rv.verdict === "pass" ? "ok" : "fail") : "mute"), text: rv ? (rv.verdict === "pass" ? "✓ pass" : "✗ " + rv.verdict) : "not run" }),
-              H("span", { "class": "meta", text: rv ? (rv.model || "model not recorded") + " · " + fT(P(rv.at)) + " · " + plural(rv.findings.length, "finding") + (rv.dismissed ? " · " + rv.dismissed + " dismissed" : "") : "waiting for this lane" })),
-            rv && rv.findings.length ? H("ol", { "class": "finds" }, rv.findings.map(function (f, k) {
-              return H("li", null, H("div", { "class": "fh" }, H("span", { "class": "chip sev-" + (f.severity || "x"), text: f.severity || "?" }), fileRef(f)), clampText("f:" + j.id + ":" + ln + ":" + k, f.summary || "", 260));
+          var ls = laneState(j, ln, t), rv = ls.rv, shown = rv || ls.prev;
+          var chip = ls.running ? ["ag", "● reviewer at work"] : rv ? (rv.verdict === "pass" ? ["ok", "✓ pass"] : ["fail", "✗ " + verdictWord(rv)]) : ["mute", "not run"];
+          return H("div", { "class": "rv" }, H("header", null, H("b", { "class": "disp", text: wd("lane", ln) }), H("span", { "class": "chip " + chip[0], text: chip[1] }),
+              H("span", { "class": "meta", text: shown ? (ls.running ? "last round: " + verdictWord(shown) + " · " : "") + (shown.round ? roundText(j, shown.round) + " · " : "") + (shown.model ? shown.model + " · " : "") + fT(P(shown.at)) + " · " + plural(shown.findings.length, "finding") + (shown.unverified ? " · " + shown.unverified + " unverified, blocking" : "") + (shown.dismissed ? " · " + shown.dismissed + " refuted" : "") : ls.req ? "required · waiting for this lane" : "optional" })),
+            shown && shown.findings.length ? H("ol", { "class": "finds" }, shown.findings.map(function (f, k) {
+              var unv = f.status === "unverified";
+              return H("li", null, H("div", { "class": "fh" }, H("span", { "class": "chip sev-" + (f.severity || "x"), text: f.severity || "?" }), f.status && f.status !== "minor" ? H("span", { "class": "chip " + (unv ? "fail" : f.status === "confirmed" ? "fail" : "mute"), text: unv ? "unverified · blocking" : f.status }) : null, fileRef(f)),
+                clampText("f:" + j.id + ":" + ln + ":" + k, f.summary || "", 260),
+                f.verifier || f.verification || f.evidence ? H("div", { "class": "meta", text: "Verifier: " + (f.verifier || "no verdict") + (f.verification ? " — " + f.verification : "") + (f.evidence ? " · evidence: " + f.evidence : "") }) : null);
             })) : null);
         }) : H("p", { "class": "meta", text: "No review lanes yet." })));
       // 6. documents
@@ -1346,12 +1403,16 @@
       var segs = segmentsOf(j, t).filter(function (s) { return s.b - s.a > 0 || s.open || s.g; });
       return H("ol", { "class": "path" }, segs.map(function (s, i) {
         var prev = segs[i - 1], back = prev && SIDX[s.st] != null && SIDX[prev.st] != null && SIDX[s.st] < SIDX[prev.st], side = SIDX[s.st] == null;
-        var appr = s.g ? j.history.filter(function (h) { return h.by && P(h.at) === s.b && P(h.at) <= t; })[0] : null;
+        var appr = s.g ? j.history.filter(function (h) { return h.by === "you" && P(h.at) === s.b && P(h.at) <= t; })[0] : null;
         return H("li", { "class": "stop" + (s.g ? " wait" : "") + (s.open ? " now" : "") + (back ? " back" : "") + (side ? " side" : "") },
           H("div", { "class": "sn" }, s.g ? H("span", { "class": "chip hl", text: s.g }) : null, H("span", { text: stageLabel(s.st) })),
           H("div", { "class": "sm" }, H("span", { "class": "mono", text: fHM(s.a) }), H("b", { text: fD(s.b - s.a) + (s.open ? " so far" : "") })),
           back ? H("div", { "class": "sx back", text: "↺ sent back" }) : null,
-          appr ? H("div", { "class": "sx ok", text: "✓ " + appr.by + " " + fHM(P(appr.at)) }) : null);
+          appr ? (function () {
+            // what your reply did there: approved (✓), asked for changes (✋), parked (‖), resumed (▶) or stopped (■) the job
+            var stop = !!STOPPED_STATES[appr.to], deny = /asked for changes/.test(appr.reason || ""), park = appr.to === "parked", res = appr.from === "parked";
+            return H("div", { "class": "sx " + (stop || deny ? "back" : "ok"), text: (stop ? "■ " : deny ? "✋ " : park ? "‖ " : res ? "▶ " : "✓ ") + appr.by + " " + fHM(P(appr.at)) });
+          })() : null);
       }));
     }
     function segmentsOf(j, t) {
@@ -1366,10 +1427,10 @@
     function historyNodes(j, t) {
       return segmentsOf(j, t).map(function (s) {
         var items = [];
-        j.history.forEach(function (h) { var at = P(h.at); if (at >= s.a && at <= s.b && at <= t && s.states.indexOf(h.from) >= 0) items.push({ cls: h.by ? "human" : isRework(h.from, h.to) || h.to === "parked" ? "bad" : "ev", txt: fHM(at) + " " + wd("state", h.from) + " → " + wd("state", h.to) + (h.by ? " · by " + h.by : "") + (h.reason ? " — " + h.reason : "") }); });
+        j.history.forEach(function (h) { var at = P(h.at); if (at >= s.a && at <= s.b && at <= t && s.states.indexOf(h.from) >= 0) items.push({ cls: h.by === "you" ? "human" : isRework(h.from, h.to) || h.to === "parked" ? "bad" : "ev", txt: fHM(at) + " " + wd("state", h.from) + " → " + wd("state", h.to) + (h.by ? " · by " + h.by : "") + (h.reason ? " — " + h.reason : "") }); });
         var runs = {};
-        ACT.forEach(function (a) { var at = P(a.at); if (a.job !== j.id || at < s.a || at > s.b || at > t || s.states.indexOf(a.state) < 0) return; var k = a.agent ? agentLabel(a.agent) : "(agent not recorded)"; var r = runs[k] = runs[k] || { runs: 0, tools: 0, den: [] }; if (a.phase === "start") r.runs++; if (a.phase === "tool") r.tools++; if (a.phase === "denied") r.den.push(a); });
-        Object.keys(runs).forEach(function (k) { var r = runs[k]; if (r.runs || r.tools) items.push({ cls: "", txt: k + ": " + plural(r.runs, "run") + ", " + plural(r.tools, "tool call") }); r.den.forEach(function (d) { items.push({ cls: "bad", txt: fHM(P(d.at)) + " ⊘ refused " + k + " " + (d.command || d.tool || "") + ": " + (d.reason || "") }); }); });
+        ACT.forEach(function (a) { var at = P(a.at); if (a.job !== j.id || at < s.a || at > s.b || at > t || s.states.indexOf(a.state) < 0) return; var k = a.agent ? agentLabel(a.agent) : "(agent not recorded)"; var r = runs[k] = runs[k] || { runs: 0, den: [] }; if (a.phase === "start") r.runs++; if (a.phase === "denied") r.den.push(a); });
+        Object.keys(runs).forEach(function (k) { var r = runs[k]; if (r.runs) items.push({ cls: "", txt: k + ": " + plural(r.runs, "run") }); r.den.forEach(function (d) { items.push({ cls: "bad", txt: fHM(P(d.at)) + " ⊘ refused " + k + " " + (d.command || d.tool || "") + ": " + (d.reason || "") }); }); });
         if (s.st === "intake") items.unshift({ cls: "ev", txt: fHM(s.a) + " job received · " + j.type + ", " + j.risk + " risk" });
         return H("div", { "class": "vis" }, H("div", { "class": "vh" }, (s.g ? s.g + " · " : "") + stageLabel(s.st), H("span", { text: fT(s.a) + " · " + fD(s.b - s.a) + (s.open ? " (current)" : "") })),
           H("ul", null, items.length ? items.map(function (i) { return H("li", { "class": i.cls || null, text: i.txt }); }) : H("li", { text: "no recorded activity" })));
@@ -1433,7 +1494,7 @@
         o.push(tx(10, y + 19, cut(j.slug, 18), { "font-size": 13, "class": "t-mono clickable", "data-open": j.id }));
         intervals(j, t).forEach(function (iv) {
           var st = S2STAGE[iv.state], g = GATE[iv.state] || iv.state === "pr_open", x1 = X(iv.a), x2 = Math.max(X(iv.b), x1 + 1.5);
-          if (DONE_STATES[iv.state]) { o.push(Z("line", { x1: x1, y1: y + 15, x2: x2, y2: y + 15, "class": "ln3", "stroke-dasharray": "1 3" }), tx(x1 + 4, y + 19, "✓ " + (iv.state === "closed" ? "closed" : iv.state === "findings_delivered" ? "delivered" : words(iv.state)), { "font-size": 13, "class": "t-cond t-ok" })); return; }
+          if (DONE_STATES[iv.state]) { o.push(Z("line", { x1: x1, y1: y + 15, x2: x2, y2: y + 15, "class": "ln3", "stroke-dasharray": "1 3" }), tx(x1 + 4, y + 19, (STOPPED_STATES[iv.state] ? "■ " : "✓ ") + (iv.state === "closed" ? "closed" : iv.state === "findings_delivered" ? "delivered" : words(iv.state)), { "font-size": 13, "class": "t-cond " + (STOPPED_STATES[iv.state] ? "t-fail" : "t-ok") })); return; }
           o.push(boxText(x1, y + 6, x2 - x1, 18, { fill: g ? "url(#bp-h-wait)" : "var(--ink)", "fill-opacity": g ? null : Math.min(.34, (STAGE_TONE[st] || .2) * .5 + .08), stroke: "var(--ink)", "stroke-width": .6 }));
           o[o.length - 1].appendChild(Z("title", null, j.slug + " · " + wd("state", iv.state) + " · " + fT(iv.a) + " for " + fD(iv.b - iv.a)));
           if (x2 - x1 > 30) o.push(tx(x1 + 3, y + 19, g ? (GATE[iv.state] || "H4") : stageLabel(st), { "font-size": 13, "class": "t-disp nopoint" + (g ? " on-hl" : ""), "font-weight": 700 }));
@@ -1494,17 +1555,17 @@
     function renderAgents() {
       var t = S.t, recs = ACT.filter(function (a) { return P(a.at) <= t; }), roles = {};
       recs.forEach(function (a) {
-        var k = a.agent || "(agent not recorded)", r = roles[k] = roles[k] || { runs: 0, tools: 0, den: 0, last: null, iv: [] };
+        var k = a.agent || "(agent not recorded)", r = roles[k] = roles[k] || { runs: 0, den: 0, last: null, iv: [] };
         if (a.phase === "start") { r.runs++; var j = JBY[a.job], lv = j && j.history.filter(function (h) { return h.from === a.state && P(h.at) >= P(a.at); })[0]; r.iv.push([P(a.at), null, a.job, lv ? P(lv.at) : null]); }
         if (a.phase === "stop") { var op = r.iv.slice().reverse().filter(function (x) { return x[1] == null && x[2] === a.job; })[0]; if (op) op[1] = P(a.at); }
-        if (a.phase === "tool") r.tools++; if (a.phase === "denied") r.den++; r.last = a;
+        if (a.phase === "denied") r.den++; r.last = a;
       });
       var active = {}; S.agents.forEach(function (a) { active["factory:" + a.agent] = 1; });
-      var order = ["factory:intent-analyst", "factory:god-eye", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
+      var order = ["factory:intent-mapper", "factory:verifier", "factory:intent-analyst", "factory:judge", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
       var keys = order.concat(Object.keys(roles).filter(function (k) { return order.indexOf(k) < 0; }).sort());
       var bw = 260;
       var rowsN = keys.map(function (k, i) {
-        var r = roles[k] || { runs: 0, tools: 0, den: 0, iv: [], last: null }, on = !!active[k];
+        var r = roles[k] || { runs: 0, den: 0, iv: [], last: null }, on = !!active[k];
         var bars = [Z("line", { x1: 0, y1: 9, x2: bw, y2: 9, "class": "ln3", "stroke-dasharray": "1 3" })];
         r.iv.forEach(function (iv) {
           var end = iv[1] || (iv[3] != null ? Math.min(iv[3], t) : t), lv = !iv[1] && (iv[3] == null || iv[3] > t) && on;
@@ -1513,15 +1574,15 @@
           bars[bars.length - 1].appendChild(Z("title", null, short(iv[2]) + " " + fT(iv[0]) + " for " + fD(end - iv[0])));
         });
         var nx = (t - T0) / (TN - T0) * bw; bars.push(Z("line", { x1: nx, y1: 0, x2: nx, y2: 18, stroke: "var(--fail)", "stroke-dasharray": "4 2" }));
-        var la = r.last ? fHM(P(r.last.at)) + " " + (r.last.phase === "tool" ? (r.last.command || r.last.tool) : r.last.phase === "denied" ? "refused " + (r.last.command || r.last.tool) : r.last.phase) + " · " + short(r.last.job) : "—";
+        var la = r.last ? fHM(P(r.last.at)) + " " + (r.last.phase === "denied" ? "refused " + (r.last.command || r.last.tool) : r.last.phase === "stop" ? "finished" : "started") + " · " + short(r.last.job) : "—";
         return H("tr", null, H("td", { "class": "item", text: String(i + 1) }), H("td", null, on ? H("span", { "class": "dotl inl" }) : null, H("b", { text: agentLabel(k) }), on ? [" ", H("span", { "class": "chip ag", text: "at work" })] : null),
-          H("td", { "class": "n", text: String(r.runs) }), H("td", { "class": "n", text: String(r.tools) }), H("td", { "class": "n" + (r.den ? " bad" : ""), text: String(r.den) }),
+          H("td", { "class": "n", text: String(r.runs) }), H("td", { "class": "n" + (r.den ? " bad" : ""), text: String(r.den) }),
           H("td", null, Z("svg", { width: bw, height: 18, viewBox: "0 0 " + bw + " 18" }, bars)), H("td", { "class": "mono last", text: la }));
       });
       var den = recs.filter(function (a) { return a.phase === "denied"; }), groups = {}; den.forEach(function (a) { var k = a.reason || "no reason recorded"; (groups[k] = groups[k] || []).push(a); });
       fill(views.agents,
         H("div", { "class": "viewhead" }, H("h2", { text: "Parts list" }), H("p", { text: "bill of materials · every agent role, what it did " + (live ? "so far" : "up to " + fT(t)) })),
-        H("div", { "class": "ox", "data-keep": "bom" }, H("table", { "class": "bom" }, H("thead", null, H("tr", null, ["Item", "Part · role", "Runs", "Tool calls", "Refused", "Runs over time", "Last action"].map(function (x) { return H("th", { text: x }); }))), H("tbody", null, rowsN))),
+        H("div", { "class": "ox", "data-keep": "bom" }, H("table", { "class": "bom" }, H("thead", null, H("tr", null, ["Item", "Part · role", "Runs", "Refused", "Runs over time", "Last action"].map(function (x) { return H("th", { text: x }); }))), H("tbody", null, rowsN))),
         H("div", { "class": "viewhead", style: { "margin-top": "22px" } }, H("h2", { "class": "sm", text: "Refused actions" }), H("p", { text: "the guard hook said no · " + den.length + " in all · grouped by reason" })),
         Object.keys(groups).length ? Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; }).map(function (k) {
           return H("div", { "class": "pane mb12" }, H("h4", null, H("span", { "class": "plain", text: k }), H("em", { text: "×" + groups[k].length })),
@@ -1535,24 +1596,26 @@
     // ---------------------------------------------------------------- sheet 6: general notes
     function renderLearn() {
       var t = S.t, ls = D.lessons.filter(function (l) { return P(l.created_at) <= t; });
-      var lessonPane = H("div", { "class": "pane mb" }, H("h4", null, "Lessons", H("em", { text: ls.filter(function (l) { return l.status === "active" && (!l.decided || P(l.decided.at) <= t); }).length + " in use · " + S.lessonsWaiting.length + " waiting on you" })),
+      // in use: accepted or promoted (lessons.js), as decided by this revision
+      var inUse = function (l) { return (l.status === "accepted" || l.status === "promoted") && (!l.decided || P(l.decided.at) <= t); };
+      var lessonPane = H("div", { "class": "pane mb" }, H("h4", null, "Lessons", H("em", { text: ls.filter(inUse).length + " in use · " + S.lessonsWaiting.length + " waiting on you" })),
         H("div", { "class": "pb" }, !ls.length ? H("span", { "class": "meta", text: "No lessons yet at this revision." }) : null,
           ls.map(function (l, i) {
             var waiting = S.lessonsWaiting.indexOf(l) >= 0;
             return H("div", { "class": "gnote" }, H("div", { "class": "gn", text: (i + 1) + "." }), H("div", null,
               H("div", { "class": "rule" }, waiting ? [H("span", { "class": "chip hl", text: "waiting on you" }), " "] : null, l.rule),
-              H("div", { "class": "why", text: l.id + " · why: " + l.why + " · scope " + l.scope.join(", ") + " · lanes " + l.lanes.join(", ") }),
-              H("div", { "class": "counters" }, H("span", { "class": "chip", text: "injected " + l.counters.injected }), H("span", { "class": "chip ok", text: "held " + l.counters.held }), H("span", { "class": "chip " + (l.counters.recurred ? "fail" : "mute"), text: "recurred " + l.counters.recurred }),
-                l.decided && P(l.decided.at) <= t ? H("span", { "class": "chip mute", text: "accepted by " + (l.decided.by || "?") + " " + fT(P(l.decided.at)) + (l.decided.note ? " — “" + l.decided.note + "”" : "") }) : null),
-              H("div", { "class": "why", text: "evidence: " + l.evidence.map(function (e) { return short(e.job) + " — " + (e.text || ""); }).join("; ") }),
+              H("div", { "class": "why", text: l.id + " · " + l.why + (l.scope.length ? " · applies to " + l.scope.join(", ") : "") }),
+              H("div", { "class": "counters" }, H("span", { "class": "chip " + (inUse(l) ? "ok" : l.status === "rejected" ? "fail" : "mute"), text: l.decided && P(l.decided.at) <= t ? l.decided.status : "proposed" }),
+                l.decided && P(l.decided.at) <= t ? H("span", { "class": "chip mute", text: (l.decided.status || "decided") + " by " + (l.decided.by || "?") + " " + fT(P(l.decided.at)) + (l.decided.note ? " — “" + l.decided.note + "”" : "") }) : null),
+              l.evidence.length ? H("div", { "class": "why", text: "from: " + l.evidence.map(function (e) { return short(e.job) + (e.text ? " — " + e.text : ""); }).join("; ") }) : null,
               waiting ? H("div", { "class": "reply" }, H("div", { "class": "lbl", text: "Reply in chat" }), H("div", { "class": "row" }, H("code", { text: "accept lesson " + l.id }), copyBtn("accept lesson " + l.id)),
                 H("div", { "class": "row" }, H("code", { text: "reject lesson " + l.id + " <why>" }), copyBtn("reject lesson " + l.id + " "))) : null));
           })));
       var rounds = JOBS.filter(function (j) { return j.reviews.length || j.history.some(function (h) { return h.to === "reviewing"; }); }).map(function (j) {
-        var n = j.history.filter(function (h) { return h.to === "reviewing" && P(h.at) <= t; }).length, rv = j.reviews.filter(function (v) { return P(v.at) <= t; });
+        var rv = j.reviews.filter(function (v) { return !v.post_merge && P(v.at) <= t; }), n = rv.reduce(function (m, v) { return Math.max(m, v.round || 0); }, 0), max = j.max_review_rounds || n;
         var f = rv.reduce(function (a, v) { return a + v.findings.length; }, 0), dis = rv.reduce(function (a, v) { return a + v.dismissed; }, 0);
         return H("div", { "class": "crit wide" }, H("button", { type: "button", "class": "linkbtn mono sm", "data-open": j.id }, j.slug),
-          H("span", null, "●".repeat(Math.min(n, 9)) + "○".repeat(Math.max(0, 3 - n)) + " ", H("span", { "class": "meta", text: "round " + n + " of 3 · " + plural(f, "finding") })), H("span", { "class": "chip " + (dis ? "" : "mute"), text: dis + " suppressed" }));
+          H("span", { "class": n > max ? "t-fail" : null }, "●".repeat(Math.min(n, 9)) + "○".repeat(Math.max(0, max - n)) + " ", H("span", { "class": "meta", text: (n ? roundText(j, n) : "no round yet") + " · " + plural(f, "finding") })), H("span", { "class": "chip " + (dis ? "" : "mute"), text: dis + " refuted" }));
       });
       var st = D.standards;
       var stdPane = H("div", { "class": "pane mb" }, H("h4", null, "Standards in force", H("em", { text: st.adopted.join(", ") || "none adopted" })),
@@ -1562,7 +1625,7 @@
           st.rules.length ? st.rules.map(function (r) {
             return H("div", { "class": "gnote" }, H("div", { "class": "gn sm", text: r.id || "" }), H("div", null, H("div", { "class": "rule sm", text: r.rule || "" }), H("div", { "class": "why", text: r.why || "" }),
               r.example ? H("div", { "class": "why" }, H("i", { text: "e.g." }), " " + r.example) : null,
-              H("div", { "class": "counters" }, H("span", { "class": "chip", text: "injected " + r.counters.injected }), H("span", { "class": "chip ok", text: "held " + r.counters.held }), H("span", { "class": "chip mute", text: "recurred " + r.counters.recurred }), r.lanes.length ? H("span", { "class": "chip mute", text: r.lanes.join(", ") }) : null)));
+              r.lanes.length ? H("div", { "class": "counters" }, H("span", { "class": "chip mute", text: r.lanes.join(", ") })) : null));
           }) : H("p", { "class": "meta", text: "No advisory rules." })));
       fill(views.learn,
         H("div", { "class": "viewhead" }, H("h2", { text: "General notes" }), H("p", { text: "lessons the factory learned and the standards in force · injected into plan, build and review" })),
@@ -2434,6 +2497,7 @@
       if (d && sel) { var j = JBY[sel], i = +d.getAttribute("data-doc"); docIdx[sel] = i; [].forEach.call(secBody.querySelectorAll("[data-doc]"), function (x) { x.setAttribute("aria-selected", String(x === d)); }); var hold = d.parentNode.nextSibling; if (hold && j && j.docs[i]) fill(hold, docBody(j.docs[i])); return; }
       var xp = e.target.closest("[data-xp]"); if (xp && secBody.contains(xp)) { var xk = xp.getAttribute("data-xp"); secOpen[xk] = !secOpen[xk]; keepPlace(renderSection); return; }
       var lm = e.target.closest("[data-lesson]"); if (lm) { var lid = lm.getAttribute("data-lesson"); lessonOpen[lid] = !lessonOpen[lid]; renderNotes(); var again = notesBody.querySelector('[data-lesson="' + lid.replace(/["\\]/g, "") + '"]'); if (again) again.focus({ preventScroll: true }); return; }
+      var oc = e.target.closest("[data-classic]"); if (oc && api.openClassic) { setNotes(false); api.openClassic(oc.getAttribute("data-classic")); return; }
       var dn = e.target.closest("[data-notes]"); if (dn) { setNotes(true, dn.getAttribute("data-notes") === "lessons"); return; }
       var bm = e.target.closest("[data-bm]"); if (bm) { boardMode = bm.getAttribute("data-bm"); renderAll(true); return; }
       var tb = e.target.closest("[data-v]"); if (tb && (tabs.contains(tb) || footer.contains(tb))) { setView(tb.getAttribute("data-v")); return; }
@@ -2464,7 +2528,11 @@
       if (!alive()) { document.removeEventListener("keydown", onDocKey); return; }
       if (root.offsetParent === null) return;   // another console view is showing: its keys are its own
       var a = document.activeElement, tag = (a && a.tagName) || "";
-      if (e.key === "Escape") { if (!findList.hidden) { findList.hidden = true; return; } if (sel) { closeSection(); return; } if (notesOpen) { setNotes(false); return; } }
+      if (e.key === "Escape") {
+        // the find box behaves as the console's own #q: Esc clears what is typed, the next Esc lets go of the keyboard
+        if (a === findIn) { if (findIn.value) { findIn.value = ""; findRender(); } else { findList.hidden = true; findIn.blur(); } return; }
+        if (!findList.hidden) { findList.hidden = true; return; } if (sel) { closeSection(); return; } if (notesOpen) { setNotes(false); return; }
+      }
       if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") { e.preventDefault(); findIn.focus(); }
     }
     document.addEventListener("keydown", onDocKey);

@@ -1,5 +1,11 @@
 .btool { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 0 8px; background: var(--paper); border-bottom: 1px solid var(--rule); }
 .btool .ttl { font: 800 20px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; }
+/* Copilot's Autopilot was seen: it could answer a gate for the user (a gate-safety warning) */
+.apwarn { display: block; margin: 10px 0 2px; padding: 9px 12px; border: 1px solid var(--stop); border-left-width: 4px; border-radius: 3px; background: color-mix(in srgb, var(--stop) 9%, var(--paper)); font-size: 13px; line-height: 1.45; }
+.apwarn[hidden] { display: none; }
+.apwarn b { color: var(--stop); font-weight: 700; margin-right: 4px; }
+.apwarn.old { border-color: var(--rule); border-left-color: var(--signal); background: var(--paper); } .apwarn.old b { color: var(--signal); }
+.apwarn.sm { font-size: 12px; padding: 7px 10px; }
 .btool .cnt { font: 500 11.5px var(--mono); color: var(--muted); }
 .segb { display: inline-flex; border: 1px solid var(--rule-2); border-radius: 6px; overflow: hidden; background: var(--sheet); }
 .segb button { border: 0; background: transparent; padding: 5px 10px; cursor: pointer; font: 600 12px/1.2 var(--body); color: var(--muted); }

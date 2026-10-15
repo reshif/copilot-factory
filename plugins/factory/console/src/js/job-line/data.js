@@ -25,7 +25,7 @@ const STEP_INFO = {
   epic_gate: ['Epic gate', 'All slices merged; the epic branch passes its checks.'],
   HS: ['HS · ship', 'You sign off before anything leaves.'],
   ship: ['Ship', 'Floors checked, completion report written, PR opened or a local merge prepared.'],
-  H4: ['H4 · merge', 'Only you merge. The merge commit is recorded.'],
+  H4: ['H4 · merge', 'Only you merge: on GitHub, or locally and reply merged <commit>. The merge commit is recorded.'],
   post_merge_challenge: ['Post-merge', 'A fresh review of what actually landed.'],
   distill: ['Learn', 'Confirmed problems become scoped lessons you accept.'],
   close: ['Close', 'Every floor met on the final build; worktrees removed.'],
@@ -50,7 +50,14 @@ const RULES = {
 const CHECKS = [['contract_approved', 'contract approved'], ['no_drift', 'no drift'], ['floors_satisfied_so_far', 'floors so far'], ['no_confirmed_serious', 'no confirmed finding'], ['acs_proven', 'criteria proven'], ['no_stale_evidence', 'no stale proof']];
 const WORD = { done: 'Clear', auto: 'Auto-approved', running: 'Running', waiting: 'Your turn', failed: 'Stopped', blocked: 'Blocked', pending: 'Ahead', again: 'Runs again', skipped: 'Not needed', none: 'Not in recipe' };
 const KIND_LABEL = { start: 'you · request', skill: 'skill', workflow: 'workflow', cli: 'factory cli', gate: 'gate · you', merge: 'merge · you' };
-const BAD_OUTCOME = new Set(['fail', 'no_result', 'blocked', 'failed', 'exhausted', 'error']);
+// An agent's outcome: the roster's (workflows/*.js: the reply's status, pass/fail or verdict) or
+// runner.js's own (ok, timeout, failed, invalid, copilot_unavailable, error). Bad: it did not do its
+// job. Warn: it did, and the answer holds the job up (God Eye's revise, a verifier that could not
+// settle a finding). Good: a positive verdict. Anything else (ok, confirmed, refuted) stays neutral.
+const BAD_OUTCOME = new Set(['fail', 'no_result', 'blocked', 'failed', 'exhausted', 'error', 'timeout', 'invalid', 'copilot_unavailable']);
+const WARN_OUTCOME = new Set(['unverifiable', 'revise', 'changes', 'needs_user', 'skipped_dependency']);
+const GOOD_OUTCOME = new Set(['pass', 'done', 'approve', 'merged', 'ready']);
+const outcomeClass = (o) => (BAD_OUTCOME.has(o) ? 'bad' : WARN_OUTCOME.has(o) ? 'warn' : GOOD_OUTCOME.has(o) ? 'good' : '');
 const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const stepName = (id) => (STEP_INFO[id] ? STEP_INFO[id][0] : id || '—');

@@ -314,3 +314,110 @@ test('console blueprint: park and resume, a failed proof sent back to Build, sto
   assert.equal(by['J-0004'].tasks[0].status, 'passing');
   assert.ok(!by['J-0005'], 'an epic is not a job on the line');
 });
+
+test('console: a review round carries the CLI lane verdicts and each finding\'s verifier verdict; unverified findings read as blocking', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'Bulk', '--type', 'feature', '--risk', 'low']).job;
+  const at = (m) => new Date(Date.UTC(2030, 0, 1, 9, m)).toISOString();
+  const ledger = path.join(F.jobDir(root, J), 'ledger.jsonl');
+  fs.appendFileSync(ledger, [
+    { job: J, at: at(1), kind: 'agents', workflow: 'fanout-judge', config: 'challenge', decision_id: `${J}-D0009`, status: 'ok', agents: [{ label: 'review code', agent_type: 'factory:code-reviewer', model: 'sonnet', outcome: 'ok' }, { label: 'verify code-1', agent_type: 'factory:finding-verifier', model: 'sonnet', outcome: 'unverifiable' }] },
+    { job: J, at: at(2), kind: 'step', step: 'challenge', ok: false, detail: { round: 1, required: ['code', 'tests'], lanes: { code: 'changes', tests: 'pass' }, missing: [], findings: [
+      { id: 'code-1', lane: 'code', severity: 'major', status: 'unverified', verifier_status: 'unverifiable', verification: 'Could not build the fixture.', verification_evidence: 'ran the tests: ok', file: 'src/a.js', line: 3, summary: 'Loads every id into memory' },
+      { id: 'tests-1', lane: 'tests', severity: 'minor', status: 'minor', summary: 'Small fixture' },
+    ] } },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), [
+    { ts: at(1), event: 'agent_run', job: J, decision_id: `${J}-D0009`, agent_type: 'factory:god-eye', label: 'review code', ms: 1200, outcome: 'ok', verdict: 'revise' },
+    { ts: at(5), event: 'autopilot_seen', session: 's1' },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const now = Date.parse(at(30));
+  fs.writeFileSync(path.join(root, '.factory', 'autopilot.json'), JSON.stringify({ first_at: at(5), last_at: at(20), session: 's1', count: 3 }));
+  const { build } = require('../cli/core/console');
+  const data = build(root, { now: new Date(now).toISOString() });
+  const job = data.jobs.find((j) => j.id === J);
+  const r = job.timeline.find((t) => t.type === 'result' && t.raw_step === 'challenge');
+  assert.match(r.text, /1 unverified, blocking/, 'the round text counts unverified serious findings');
+  assert.deepEqual(r.lanes, { code: 'changes', tests: 'pass' }, 'the CLI lane verdicts are carried, not re-parsed from text');
+  assert.deepEqual(r.required, ['code', 'tests']);
+  assert.equal(r.round, 1);
+  const f = r.findings.find((x) => x.id === 'code-1');
+  assert.equal(f.verifier_status, 'unverifiable');
+  assert.equal(f.verification_evidence, 'ran the tests: ok');
+  assert.equal(f.verification, 'Could not build the fixture.');
+  assert.deepEqual(job.review_lanes, ['code', 'tests'], 'the lanes the last review required');
+  const state = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'state.json'), 'utf8'));
+  assert.equal(job.limits.max_review_rounds, state.policy.limits.max_review_rounds, 'the job\'s policy limits are in the data');
+  const ag = job.timeline.find((t) => t.type === 'agents').agents.find((a) => a.label === 'review code');
+  assert.equal(ag.verdict, 'revise', 'agent_run verdict is carried to the agent');
+  assert.equal(ag.ms, 1200);
+  assert.deepEqual({ ...data.autopilot, window_hours: undefined }, { first_at: at(5), last_at: at(20), count: 3, recent: true, window_hours: undefined });
+  assert.ok(data.factory_events.some((e) => e.type === 'autopilot' && /could answer a gate/.test(e.text)), 'an Autopilot sighting is on the wire');
+  assert.equal(build(root, { now: new Date(now + 7 * 3600e3).toISOString() }).autopilot.recent, false, 'a sighting past the warning window is no longer recent');
+});
+
+test('console page: the Crew\'s tools are each agent file\'s own tools: line', () => {
+  const html = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
+  const m = /const AGENT_TOOLS = (\{.*?\});/.exec(html);
+  assert.ok(m, 'console.html carries AGENT_TOOLS');
+  const shown = JSON.parse(m[1]);
+  const dir = path.join(F.PLUGIN, 'agents');
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.agent.md'));
+  assert.deepEqual(Object.keys(shown).sort(), files.map((f) => f.replace(/\.agent\.md$/, '')).sort(), 'one entry per agent file');
+  for (const f of files) {
+    const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(fs.readFileSync(path.join(dir, f), 'utf8'))[1];
+    const tools = JSON.parse(/^tools:\s*(.+)$/m.exec(fm)[1]);
+    assert.deepEqual(shown[f.replace(/\.agent\.md$/, '')], tools, `${f}: the console shows the file's tools`);
+  }
+  const src = fs.readFileSync(path.join(F.PLUGIN, 'console', 'src', 'js', 'definitions.js'), 'utf8');
+  assert.ok(!/'(Read|Grep|Glob|Bash|Write|Edit|WebFetch)'/.test(src.slice(src.indexOf('const AGENTS'), src.indexOf('const RECIPES'))), 'no hand-written tool list left in definitions.js');
+  assert.match(src, /'finding-verifier': \[[^\]]*unverifiable/, 'the finding-verifier says what unverifiable does');
+  assert.ok(!/at most (three|3)[^.]*lessons|At most 3 general/i.test(src), 'no stale lesson cap');
+});
+
+test('console page: agent outcomes get bad, warn, good or neutral, never good by default', () => {
+  const vm = require('vm');
+  const ctx = { window: {} };
+  vm.runInNewContext(`${fs.readFileSync(path.join(F.PLUGIN, 'console', 'src', 'js', 'job-line', 'data.js'), 'utf8')}\nthis.outcomeClass = outcomeClass;`, ctx);
+  for (const o of ['timeout', 'invalid', 'failed', 'copilot_unavailable', 'error', 'no_result', 'fail', 'blocked', 'exhausted']) assert.equal(ctx.outcomeClass(o), 'bad', o);
+  for (const o of ['unverifiable', 'revise']) assert.equal(ctx.outcomeClass(o), 'warn', o);
+  for (const o of ['approve', 'pass', 'done', 'merged']) assert.equal(ctx.outcomeClass(o), 'good', o);
+  for (const o of ['ok', 'confirmed', 'refuted', 'something-new', null]) assert.equal(ctx.outcomeClass(o), '', String(o));
+});
+
+test('console blueprint: lane verdicts from the data, unverified findings block, rounds from policy, learn is not merged', () => {
+  const toDisplay = blueprintAdapter();
+  const ch = (m, round, lanes, findings, text) => ({ t: at(m), type: 'result', step: 'challenge', raw_step: 'challenge', ok: false, round, lanes, required: Object.keys(lanes), missing: [], findings, text });
+  const d = toDisplay({ generated_at: at(60), project: 'p', autopilot: { last_at: at(55), recent: true, count: 1 }, jobs: [
+    job('J-0001', { review_lanes: ['code', 'tests'], limits: { max_review_rounds: 5 }, timeline: [route(1, 'challenge'),
+      { t: at(2), type: 'agents', agents: [{ role: 'code-reviewer', model: 'sonnet' }, { role: 'finding-verifier', model: 'sonnet', outcome: 'unverifiable' }] },
+      // the text says nothing parseable: the verdicts come from `lanes`
+      ch(3, 2, { code: 'changes', tests: 'pass' }, [{ id: 'code-1', lane: 'code', severity: 'major', status: 'unverified', verifier_status: 'unverifiable', verification_evidence: 'ran it', summary: 's' }], 'Round two')] }),
+    job('J-0002', { status: 'closed', closed_at: at(30), timeline: [route(1, 'clarify'), route(5, 'H1'), { t: at(6), type: 'human', action: 'approve', gate: 'H1', step: 'H1', via: 'chat' }, route(7, 'ground'), route(20, 'distill'), route(25, 'close')] }),
+    job('J-0003', { work_type: 'spike', status: 'active', timeline: [route(1, 'decide'), route(5, 'close')] }),
+    job('J-0004', { epic: true, title: 'Big epic', children: ['J-0005'] }),
+  ] });
+  const [a, b, c] = d.jobs;
+  const code = a.reviews.find((r) => r.lane === 'code');
+  assert.equal(code.verdict, 'changes');
+  assert.equal(code.unverified, 1, 'an unverified serious finding blocks its lane');
+  assert.equal(code.findings[0].status, 'unverified');
+  assert.equal(code.findings[0].verifier, 'unverifiable');
+  assert.equal(code.findings[0].evidence, 'ran it');
+  assert.equal(code.model, 'sonnet', 'the reviewer\'s model comes from the roster');
+  assert.equal(a.reviews.find((r) => r.lane === 'tests').verdict, 'pass');
+  assert.deepEqual(a.required_lanes, ['code', 'tests']);
+  assert.equal(a.review_round, 2);
+  assert.equal(a.max_review_rounds, 5, 'rounds are capped by the job\'s policy, not a fixed number');
+  assert.ok(!b.history.some((h) => h.to === 'merged'), 'a job that distils without a merge never passes through Merged');
+  assert.ok(b.history.some((h) => h.to === 'learning'), 'distill is the Learn station');
+  const appr = b.history.find((h) => h.from === 'awaiting_intent_approval');
+  assert.equal(appr.by, 'you', 'your approval moves the job off H1, not the router');
+  assert.match(appr.reason, /you approved H1/);
+  assert.equal(c.state, 'learning', 'a spike closing sits at Learn, not Merged');
+  assert.ok(!d.jobs.some((j) => j.id === 'J-0004'), 'an epic is not a job on the line');
+  assert.deepEqual(d.epic_jobs.map((e) => e.id), ['J-0004'], 'but it is listed, so the drawing can say so');
+  assert.equal(d.autopilot.recent, true, 'the Autopilot sighting reaches the Blueprint');
+  assert.ok(d.stages.find((s) => s.key === 'done').states.includes('learning'));
+  assert.ok(d.meaning.learning);
+});

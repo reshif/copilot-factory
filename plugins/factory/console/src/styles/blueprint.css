@@ -28,7 +28,7 @@ html[data-theme="light"] .dx-blueprint{
   color-scheme:light;
 }
 @media (prefers-color-scheme: light){
-  html[data-theme="system"] .dx-blueprint{
+  html:not([data-theme]) .dx-blueprint{
     --paper:#f3f0e6; --paper-2:#ece8db; --paper-3:#e3decd;
     --grid:rgba(31,84,138,.085); --grid-major:rgba(31,84,138,.16);
     --ink:#17324d; --ink-2:#3b5876; --ink-3:#596b80; --rule:rgba(23,50,77,.28);
@@ -115,6 +115,7 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-mk.bp-wait text{fill:var(--on-hl)}
 .dx-blueprint .bp-mk.bp-done .bp-body{stroke:var(--ok);stroke-opacity:.55;stroke-dasharray:3 2}
 .dx-blueprint .bp-mk.bp-done text{fill:var(--ink-2)}
+.dx-blueprint .bp-mk.bp-done.bp-stop .bp-body{stroke:var(--fail)}
 .dx-blueprint .bp-mk.bp-sel .bp-body{stroke-width:2.6}
 .dx-blueprint .bp-mk.bp-dim{opacity:.25}
 .dx-blueprint .bp-mk:hover .bp-body,.dx-blueprint .bp-mk:focus .bp-body{stroke-width:2.2}
@@ -233,6 +234,12 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-tb .bp-apnote .bp-v{font:600 14px/1.3 var(--f-body);letter-spacing:0;white-space:normal;display:flex;align-items:center;gap:8px}
 .dx-blueprint .bp-tb .bp-apnote .bp-apnow{letter-spacing:.04em;text-transform:none;color:var(--ink-2)}
 .dx-blueprint .bp-aplamp{width:10px;height:10px;border-radius:50%;flex:none;background:var(--agent);box-shadow:0 0 0 3px var(--agent-soft)}
+/* Copilot's Autopilot was seen: a gate-safety warning, red while recent */
+.dx-blueprint .bp-tb .bp-apnote.bp-warn{border:1.5px solid var(--fail);background:var(--fail-soft)}
+.dx-blueprint .bp-tb .bp-apnote.bp-warn .bp-k{color:var(--fail)}
+.dx-blueprint .bp-apnote.bp-warn .bp-aplamp{background:var(--fail);box-shadow:0 0 0 3px var(--fail-soft)}
+.dx-blueprint .bp-tb .bp-apnote.bp-old{border-color:var(--ink-3);background:none}
+.dx-blueprint .bp-apnote.bp-old .bp-aplamp{background:var(--ink-3);box-shadow:none}
 .dx-blueprint .bp-apnote.bp-pend:not(.bp-on) .bp-aplamp{background:var(--hl-line);box-shadow:0 0 0 3px var(--hl-soft)}
 .dx-blueprint .bp-tb .bp-rcell{flex:1 1 auto;min-width:300px}
 .dx-blueprint .bp-rcell .bp-ctl{display:flex;gap:6px;align-items:center;min-width:0}

@@ -1,27 +1,32 @@
 // ===================================================================== definitions
+// Each agent: [stage, what it does]. Its Copilot tools come from its own agents/*.agent.md
+// `tools:` line: build.js writes them into AGENT_TOOLS, so the Crew never drifts from the files.
+// An agent that has "edit" can write; the others are read-only.
+const AGENT_TOOLS = /*@agent-tools*/{};
 const AGENTS = {
-  'intent-mapper': ['Clarify', 'Lists the unknowns before anyone asks you anything: repo, world, decision or yours, with their impact.', ['Read', 'Grep', 'Glob'], false],
-  'verifier': ['Clarify', 'Re-opens each high-impact or web finding, checks the quote, date and version; confirmed, contradicted or unverified.', ['Read', 'Grep', 'Glob', 'Bash', 'WebFetch'], false],
-  'intent-analyst': ['Clarify', 'Reads the draft contract from one angle and asks only what the repo can\'t answer.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'judge': ['Clarify', 'Merges the analysts\' questions, dismisses with reasons, never re-asks.', ['Read'], false],
-  'god-eye': ['Critique', 'Cold reviewer of the contract, design or plan. Approves only what someone could act on without asking.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'researcher': ['Ground', 'Grounds one topic, or scouts clarify\'s unknowns (repo: file:line; web: fetched docs, quoted); every claim is cited or marked UNVERIFIED.', ['Read', 'Grep', 'Glob', 'Bash', 'WebFetch'], false],
-  'option-generator': ['Decide', 'Proposes one design optimised for one prior, without hedging.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'threat-modeler': ['Decide', 'Writes the threat model before the design is decided.', ['Read', 'Grep', 'Glob', 'Bash', 'Write'], true],
-  'architect': ['Decide', 'Decides from findings, options and threats; writes the ADR or no-adr note.', ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit'], true],
-  'planner': ['Plan', 'Writes task contracts and validates them with the CLI.', ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit'], true],
-  'slicer': ['Plan', 'Splits an epic into slices, S00 first.', ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit'], true],
-  'builder': ['Build', 'Builds one task in its own worktree, only inside its allowed paths, and commits on its branch.', ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit'], true],
-  'tester': ['Build', 'Runs factory task verify independently and never edits code.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'integrator': ['Build', 'Merges task branches through the CLI; resolves only textual conflicts.', ['Read', 'Grep', 'Glob', 'Bash', 'Edit'], true],
-  'code-reviewer': ['Challenge', 'Correctness, error handling, fit with the codebase, accepted lessons.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'test-reviewer': ['Challenge', 'Whether the tests really prove the criteria.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'security-reviewer': ['Challenge', 'Injection, authorisation, secrets, dependencies, threat-model mitigations.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'ux-reviewer': ['Challenge', 'States, accessibility and copy when UI files changed.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'finding-verifier': ['Challenge', 'Confirms or refutes one serious finding, sceptical both ways.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'epic-reviewer': ['Challenge', 'Checks merged slices against frozen contracts and ADRs.', ['Read', 'Grep', 'Glob', 'Bash'], false],
-  'lesson-writer': ['Learn', 'Turns confirmed problems into at most three scoped lessons.', ['Read', 'Grep', 'Glob', 'Bash'], false],
+  'intent-mapper': ['Clarify', 'Lists the unknowns before anyone asks you anything: repo, world, decision or yours, with their impact.'],
+  'verifier': ['Clarify', 'Re-opens each high-impact or web finding, checks the quote, date and version; confirmed, contradicted or unverified.'],
+  'intent-analyst': ['Clarify', 'Reads the draft contract from one angle and asks only what the repo can\'t answer.'],
+  'judge': ['Clarify', 'Merges the analysts\' questions, dismisses with reasons, never re-asks.'],
+  'god-eye': ['Critique', 'Cold reviewer of the contract, design or plan. Approves only what someone could act on without asking.'],
+  'researcher': ['Ground', 'Grounds one topic, or scouts clarify\'s unknowns (repo: file:line; web: fetched docs, quoted); every claim is cited or marked UNVERIFIED.'],
+  'option-generator': ['Decide', 'Proposes one design optimised for one prior, without hedging.'],
+  'threat-modeler': ['Decide', 'Writes the threat model before the design is decided.'],
+  'architect': ['Decide', 'Decides from findings, options and threats; writes the ADR or no-adr note.'],
+  'planner': ['Plan', 'Writes task contracts and validates them with the CLI.'],
+  'slicer': ['Plan', 'Splits an epic into slices, S00 first.'],
+  'builder': ['Build', 'Builds one task in its own worktree, only inside its allowed paths, and commits on its branch.'],
+  'tester': ['Build', 'Runs factory task verify independently and never edits code.'],
+  'integrator': ['Build', 'Merges task branches through the CLI; resolves only textual conflicts.'],
+  'code-reviewer': ['Challenge', 'Correctness, error handling, fit with the codebase, accepted lessons.'],
+  'test-reviewer': ['Challenge', 'Whether the tests really prove the criteria.'],
+  'security-reviewer': ['Challenge', 'Injection, authorisation, secrets, dependencies, threat-model mitigations.'],
+  'ux-reviewer': ['Challenge', 'States, accessibility and copy when UI files changed.'],
+  'finding-verifier': ['Challenge', 'Confirms or refutes one serious finding, sceptical both ways; when it can\'t settle it, it says unverifiable and the finding keeps blocking.'],
+  'epic-reviewer': ['Challenge', 'Checks merged slices against frozen contracts and ADRs.'],
+  'lesson-writer': ['Learn', 'Turns confirmed problems into scoped lessons, no more than the job\'s policy allows.'],
 };
+for (const [name, a] of Object.entries(AGENTS)) { a[2] = AGENT_TOOLS[name] || []; a[3] = a[2].includes('edit'); }
 
 const RECIPES = {
   'bug@low': { note: 'Small, low-risk fixes: one task built straight from the contract, code review only.', steps: ['clarify','H1','ground','decompose','realize','reconcile','prove','challenge','ship','H4','distill','close'], lanes: ['code'] },
@@ -137,7 +142,7 @@ const STAGES = [
     nodes: [
       { id: 'skill-distill', type: 'skill', title: 'factory:distill', sub: 'What went wrong, turned into rules', step: 'distill',
         detail: { what: 'Gathers confirmed findings, verify-fix rounds and minors that recur across jobs, and starts the lesson-writer.', skills: ['factory:distill'], cmds: ['factory distill context', 'factory distill done'] } },
-      { id: 'ag-lessons', type: 'agentnode', title: 'lesson-writer', sub: 'At most 3 general, scoped lessons', step: 'distill', role: 'lesson-writer',
+      { id: 'ag-lessons', type: 'agentnode', title: 'lesson-writer', sub: 'General, scoped lessons, within the policy\'s cap per job', step: 'distill', role: 'lesson-writer',
         detail: { what: 'Writes lessons in the project\'s own terms with the globs they apply to. Accepted lessons reach the next plan, build and review.', agents: ['lesson-writer'], cmds: ['factory lessons add'] } },
       { id: 'you-lesson', type: 'you', title: 'You accept or reject', sub: 'accept lesson L5 · reject lesson L5 <why>', step: 'distill',
         detail: { what: 'Nothing is learned without you.', you: ['accept lesson L5', 'reject lesson L5 <why>'] } },

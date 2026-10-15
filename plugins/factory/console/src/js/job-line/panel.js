@@ -41,8 +41,8 @@ function who(it) {
 function agentRowsHtml(list) {
   return `<div class="alist">${list.map((a) => {
     const fam = modelFamily(a.model);
-    const bad = BAD_OUTCOME.has(a.outcome);
-    return `<div class="arow"><span class="mdot ${fam}" title="${esc(a.model || 'session model')}">${esc(modelLetter(a.model))}</span><b title="${esc(a.label)}">${esc(a.label)}</b><span class="o ${bad ? 'bad' : a.outcome && a.outcome !== 'ok' ? 'good' : ''}">${esc(a.outcome || '')}${a.ms ? ` · ${fmtDur(a.ms)}` : ''}</span></div>`;
+    const verdict = a.verdict && a.verdict !== a.outcome ? a.verdict : null; // agent_run's verdict, when the roster's outcome is not already it
+    return `<div class="arow"><span class="mdot ${fam}" title="${esc(a.model || 'session model')}">${esc(modelLetter(a.model))}</span><b title="${esc(a.label)}">${esc(a.label)}</b><span class="o ${outcomeClass(a.outcome)}">${esc(a.outcome || '')}${verdict ? ` <span class="${outcomeClass(verdict)}">· ${esc(verdict)}</span>` : ''}${a.ms ? ` · ${fmtDur(a.ms)}` : ''}</span></div>`;
   }).join('')}</div>`;
 }
 function paintNow(i, S) {
@@ -76,7 +76,12 @@ function paintNow(i, S) {
   $('#now').innerHTML = parts.join('');
 }
 function findingsHtml(list) {
-  return `<div class="tblwrap"><table class="tbl"><tr><th>Lane</th><th>Severity</th><th>Status</th><th>Finding</th></tr>${list.map((f) => `<tr><td class="n">${esc(f.lane || '')}</td><td><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span></td><td class="stt ${esc(f.status || '')}">${esc(f.status || '')}</td><td>${esc(f.summary)}${f.file ? ` <span class="mono">${esc(f.file)}${f.line ? `:${esc(f.line)}` : ''}</span>` : ''}</td></tr>`).join('')}</table></div>`;
+  return `<div class="tblwrap"><table class="tbl"><tr><th>Lane</th><th>Severity</th><th>Status</th><th>Finding</th></tr>${list.map((f) => `<tr><td class="n">${esc(f.lane || '')}</td><td><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span></td><td class="stt ${esc(f.status || '')}">${esc(f.status || '')}${f.status === 'unverified' ? '<br><span class="label">blocking</span>' : ''}</td><td>${esc(f.summary)}${f.file ? ` <span class="mono">${esc(f.file)}${f.line ? `:${esc(f.line)}` : ''}</span>` : ''}${verifierNote(f) ? `<br><span class="vnote">${esc(verifierNote(f))}</span>` : ''}</td></tr>`).join('')}</table></div>`;
+}
+// what the finding-verifier said, when it said something: its verdict, its reason, its evidence
+function verifierNote(f) {
+  if (!f.verifier_status && !f.verification && !f.verification_evidence) return '';
+  return `Verifier: ${f.verifier_status || 'no verdict'}${f.verification ? ` — ${f.verification}` : ''}${f.verification_evidence ? ` (evidence: ${f.verification_evidence})` : ''}`;
 }
 function paintStep(id) {
   const job = LV.job;

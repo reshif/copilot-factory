@@ -99,8 +99,10 @@ function resultText(step, ok, d) {
     case 'post_merge_challenge': {
       const f = d.findings || [];
       const c = f.filter((x) => x.status === 'confirmed').length;
+      // Unverified serious findings (no verifier result, or its verdict "unverifiable") keep blocking.
+      const u = f.filter((x) => x.status === 'unverified' && ['blocker', 'major'].includes(x.severity)).length;
       const lanes = Object.entries(d.lanes || {}).map(([k, v]) => `${k} ${v === 'pass' ? '✓' : '✗'}`).join(' · ');
-      return `Round ${d.round || 1}: ${lanes || 'no lanes'}${c ? ` — ${c} confirmed finding(s)` : ''}${(d.missing || []).length ? ` — missing ${d.missing.join(', ')}` : ''}`;
+      return `Round ${d.round || 1}: ${lanes || 'no lanes'}${c ? ` — ${c} confirmed finding(s)` : ''}${u ? ` — ${u} unverified, blocking` : ''}${(d.missing || []).length ? ` — missing ${d.missing.join(', ')}` : ''}`;
     }
     case 'ship': return d.mode === 'github' ? `Pull request opened${d.url ? ` (${d.url})` : ''}` : 'Branch prepared for a local merge, with the completion report';
     case 'epic_gate': return ok ? 'All slices merged; the epic branch passes its checks' : 'Epic gate not passed yet';
@@ -199,7 +201,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       delete started[e.agent_id];
     }
     // `factory run` (Copilot) times each agent process itself: one agent_run per agent() call.
-    if (e.event === 'agent_run') (hookAgents[e.decision_id || 'none'] = hookAgents[e.decision_id || 'none'] || []).push({ agent_type: e.agent_type, label: e.label, ms: e.ms });
+    if (e.event === 'agent_run') (hookAgents[e.decision_id || 'none'] = hookAgents[e.decision_id || 'none'] || []).push({ agent_type: e.agent_type, label: e.label, ms: e.ms, verdict: typeof e.verdict === 'string' ? e.verdict : null });
   }
   const runningNow = [];
   const staleNow = [];
@@ -244,7 +246,17 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       const d = e.detail || {};
       const outcome = e.ok ? 'ok' : step === 'clarify' && num(d.questions) ? 'ask' : 'fail';
       const item = { t: e.at, type: 'result', step: ids.has(step) ? step : null, raw_step: e.step, ok: Boolean(e.ok), outcome, text: resultText(e.step, e.ok, d) };
-      if (/challenge/.test(e.step) && d.findings) item.findings = d.findings.map((f) => ({ id: String(f.id || ''), lane: String(f.lane || ''), severity: String(f.severity || ''), status: String(f.status || ''), file: f.file ? String(f.file) : null, line: Number.isInteger(f.line) ? f.line : null, summary: short(String(f.summary || ''), 200) }));
+      if (/challenge/.test(e.step) && d.findings) {
+        // the verifier's own verdict and evidence (review.js): "unverifiable" leaves a finding unverified and blocking
+        item.findings = d.findings.map((f) => ({
+          id: String(f.id || ''), lane: String(f.lane || ''), severity: String(f.severity || ''), status: String(f.status || ''), file: f.file ? String(f.file) : null, line: Number.isInteger(f.line) ? f.line : null, summary: short(String(f.summary || ''), 200),
+          ...(f.verifier_status ? { verifier_status: String(f.verifier_status) } : {}),
+          ...(f.verification ? { verification: short(String(f.verification), 300) } : {}),
+          ...(f.verification_evidence ? { verification_evidence: short(String(f.verification_evidence), 300) } : {}),
+        }));
+        // the CLI's lane verdicts, as recorded: the page never parses them back out of the text
+        Object.assign(item, { round: d.round || 1, lanes: d.lanes || {}, required: d.required || [], missing: d.missing || [] });
+      }
       if (e.step === 'prove') item.acs = d.acs || {};
       if (e.step === 'clarify' && (d.categories || d.held)) Object.assign(item, { categories: d.categories || [], held: num(d.held), question_ids: d.question_ids || [] });
       if (e.step === 'clarify' && d.research) item.research = researchView(d.research, intentRounds[d.round], idata);
@@ -255,8 +267,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       const agents = (e.agents || []).map((a) => {
         let i = timed.findIndex((x) => x.label && x.label === a.label);
         if (i < 0) i = timed.findIndex((x) => !x.label && x.agent_type === a.agent_type);
-        const ms = i >= 0 ? timed.splice(i, 1)[0].ms : null;
-        return { label: short(a.label, 100), role: roleOf(a.agent_type), model: a.model || null, retry: Boolean(a.retry), outcome: a.outcome || null, ms };
+        const hit = i >= 0 ? timed.splice(i, 1)[0] : null;
+        return { label: short(a.label, 100), role: roleOf(a.agent_type), model: a.model || null, retry: Boolean(a.retry), outcome: a.outcome || null, ms: hit ? hit.ms : null, ...(hit && hit.verdict ? { verdict: hit.verdict } : {}) };
       });
       push({ t: e.at, type: 'agents', step, workflow: e.workflow, config: e.config, mode: e.mode, decision_id: e.decision_id, status: e.status, runs: e.agent_runs || agents.length, agents });
     } else if (e.kind === 'intent') {
@@ -273,7 +285,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     const step = stepOfDecision[did];
     const last = events.filter((e) => e.decision_id === did && (e.event === 'SubagentStop' || e.event === 'agent_run')).pop();
     if (!last) continue;
-    push({ t: last.ts, type: 'agents', step: ids.has(step) ? step : null, decision_id: did, from: 'hooks', runs: list.length, agents: list.map((a) => ({ label: roleOf(a.agent_type), role: roleOf(a.agent_type), model: null, retry: false, outcome: null, ms: a.ms })) });
+    push({ t: last.ts, type: 'agents', step: ids.has(step) ? step : null, decision_id: did, from: 'hooks', runs: list.length, agents: list.map((a) => ({ label: roleOf(a.agent_type), role: roleOf(a.agent_type), model: null, retry: false, outcome: null, ms: a.ms, ...(a.verdict ? { verdict: a.verdict } : {}) })) });
   }
 
   for (const [aid, r] of Object.entries(rebinds)) push({ t: r.t, type: 'amend', phase: 'rebound', id: aid, steps: r.steps, step: null, text: `${aid} re-bound ${r.steps.map((x) => x.replace(/_/g, ' ')).join(', ')} to the amended contract` });
@@ -312,7 +324,13 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     const s = (state.tasks || {})[t.id] || {};
     return { id: t.id, objective: short(t.objective, 140), depends_on: t.depends_on || [], attempts: s.attempts || 0, outcome: s.outcome || null, pass: s.evidence ? Boolean(s.evidence.pass) : null };
   });
-  const lessons = (readJson(project(root).lessonsFile, { lessons: [] }).lessons || []).filter((l) => l.source_job === id).map((l) => ({ id: l.id, status: l.status, text: short(l.text, 200) }));
+  const lessons = (readJson(project(root).lessonsFile, { lessons: [] }).lessons || []).filter((l) => l.source_job === id).map((l) => ({ id: l.id, status: l.status, text: short(l.text, 200), scope: Array.isArray(l.scope) ? l.scope.map(String) : [], created_at: l.created_at || null, decided_at: l.decided_at || null, ...(l.reason ? { reason: short(String(l.reason), 200) } : {}) }));
+  // the review lanes this job must pass: as the last review recorded them, else as review.js would require them
+  const lastReview = ledger.filter((e) => e.kind === 'step' && e.step === 'challenge' && e.detail && Array.isArray(e.detail.required)).pop();
+  const policy = state.policy || {};
+  const chStep = steps.find((s) => s.id === 'challenge');
+  const stepLanes = ((chStep || {}).lanes || []).filter((l) => l !== 'all');
+  const reviewLanes = lastReview ? lastReview.detail.required : chStep ? [...new Set([...((policy.required_lanes || {})[state.risk] || []), ...stepLanes])] : [];
 
   const job = {
     id,
@@ -335,6 +353,9 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     park: state.park ? { reason: short(state.park.reason, 200), at: state.park.at, from: state.park.from } : null,
     counters: state.counters || {},
     pr: state.pr ? { mode: state.pr.mode, url: state.pr.url || null, merged: Boolean(state.pr.merged), merged_at: state.pr.merged_at || null } : null,
+    review_lanes: reviewLanes.map(String),
+    // the caps the job runs under (policy.limits), so the page never assumes them
+    limits: Object.fromEntries(['max_review_rounds', 'max_verify_fix_rounds', 'max_intent_rounds', 'max_design_critique_rounds', 'max_plan_validate_rounds', 'retry_limit'].filter((k) => Number.isInteger((policy.limits || {})[k])).map((k) => [k, policy.limits[k]])),
     models: ((state.policy || {}).agents || {}).models || {},
     escalation: ((state.policy || {}).agents || {}).builder_escalation || [],
     steps,
@@ -356,6 +377,17 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
   // A cheap revision: the page re-renders only the jobs whose rev changed.
   job.rev = crypto.createHash('sha1').update(JSON.stringify(job)).digest('hex').slice(0, 12);
   return job;
+}
+
+// Copilot's Autopilot, as the prompt hook last saw it (.factory/autopilot.json, autopilot.js):
+// it answers prompts by itself and keeps going past the factory's stops, so it could answer a
+// gate for the user. `recent` is the window in which factory next and factory doctor warn.
+const AUTOPILOT_SEEN = 'Copilot Autopilot seen: it answers prompts by itself and could answer a gate for you';
+function autopilotView(root, nowMs) {
+  const ap = require('./autopilot');
+  const r = readJson(path.join(project(root).dir, 'autopilot.json'), null);
+  if (!r || !r.last_at || Number.isNaN(Date.parse(r.last_at))) return null;
+  return { first_at: r.first_at || r.last_at, last_at: r.last_at, count: Number(r.count) || 1, recent: nowMs - Date.parse(r.last_at) <= ap.WINDOW_MS, window_hours: ap.WINDOW_MS / 3600000 };
 }
 
 function build(root, { job: only, now } = {}) {
@@ -385,8 +417,9 @@ function build(root, { job: only, now } = {}) {
       const health = f.filter((x) => !x.job).map((x) => ({ id: String(x.id), rule: String(x.rule || ''), severity: String(x.severity || ''), status: String(x.status || 'open'), summary: short(String(x.summary || ''), 240), question: short(String(x.question || ''), 240), at: x.latest || x.last_seen || x.first_seen || null }));
       return { findings: f.length, open: f.filter((x) => x.status === 'open').length, runs: (reg.runs || []).length, last_run: (reg.runs || []).slice(-1)[0] ? reg.runs.slice(-1)[0].at || null : null, health };
     })(),
-    // log lines that belong to no job: hooks failing outside a job, unparsed replies
-    factory_events: all.events.filter((e) => !e.job && ['hook_error', 'reply_unparsed', 'stop_block'].includes(e.event)).slice(-100).map((e) => ({ t: e.ts, type: e.event === 'reply_unparsed' ? 'unparsed' : e.event, text: short(e.event === 'hook_error' ? `The ${e.hook || 'factory'} hook failed${e.tool ? ` on ${e.tool}` : ''}: ${e.message || ''}` : e.event === 'reply_unparsed' ? `A message looked like "${e.verb || 'a reply'}" but was not applied ("${e.word || ''}")` : `The stop gate sent the agent back to work`, 200) })),
+    autopilot: autopilotView(root, nowMs),
+    // log lines that belong to no job: hooks failing outside a job, unparsed replies, Autopilot sightings
+    factory_events: all.events.filter((e) => (!e.job && ['hook_error', 'reply_unparsed', 'stop_block'].includes(e.event)) || e.event === 'autopilot_seen').slice(-100).map((e) => ({ t: e.ts, type: e.event === 'reply_unparsed' ? 'unparsed' : e.event === 'autopilot_seen' ? 'autopilot' : e.event, text: short(e.event === 'hook_error' ? `The ${e.hook || 'factory'} hook failed${e.tool ? ` on ${e.tool}` : ''}: ${e.message || ''}` : e.event === 'reply_unparsed' ? `A message looked like "${e.verb || 'a reply'}" but was not applied ("${e.word || ''}")` : e.event === 'autopilot_seen' ? AUTOPILOT_SEEN : `The stop gate sent the agent back to work`, 200) })),
     integrity: checker.hasKey ? { ...checker.tally, status: checker.tally.invalid ? 'tampered' : 'verified' } : { status: 'not_checked' },
     jobs,
   };
@@ -420,7 +453,7 @@ function run(root, { out, job, label, data: dataFile } = {}) {
 // server can poll every few hundred ms without re-reading the logs.
 function watchedFiles(root) {
   const p = project(root);
-  const files = [p.eventsFile, p.decisionsFile, p.currentFile, p.lessonsFile, path.join(p.dir, 'inspect', 'register.json')];
+  const files = [p.eventsFile, p.decisionsFile, p.currentFile, p.lessonsFile, path.join(p.dir, 'inspect', 'register.json'), path.join(p.dir, 'autopilot.json')];
   let ids = [];
   try { ids = fs.readdirSync(p.jobsDir).filter((d) => /^J-\d+$/.test(d)); } catch { /* no jobs yet */ }
   for (const id of ids) {
