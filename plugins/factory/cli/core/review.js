@@ -73,7 +73,13 @@ function record(root, { jobId, payload, step = 'challenge' }) {
     .filter((p) => p.round < round);
   const prevFindings = earlier.flatMap((e) => (e.detail && e.detail.findings) || []);
 
-  const verifications = Object.fromEntries((payload.verifications || []).map((v) => [v.finding_id, v]));
+  // Verdicts on findings carried from an earlier round come marked `carried` (finding ids
+  // repeat across rounds: this round's code-1 need not be the carried code-1).
+  const verifications = Object.fromEntries((payload.verifications || []).filter((v) => !v.carried).map((v) => [v.finding_id, v]));
+  const carriedVerdicts = Object.fromEntries((payload.verifications || []).filter((v) => v.carried).map((v) => [v.finding_id, v]));
+  // Serious findings the last round left unverified (verifier timeout, "unverifiable"): kept
+  // until a verifier settles them, whether or not a reviewer raises them again.
+  const open = isPostMerge || isEpic ? [] : openUnverified(previous);
   const findings = [];
   const lanes = {};
   for (const lane of payload.lanes || []) {
@@ -131,8 +137,36 @@ function record(root, { jobId, payload, step = 'challenge' }) {
     const blocking = findings.filter((f) => f.lane === lane.lane && ['blocker', 'major'].includes(f.severity) && f.status !== 'refuted');
     lanes[lane.lane] = blocking.length ? 'changes' : 'pass';
   }
+  // Carry what was left open. Raised again this round (same finding): this round's copy stands,
+  // settled by its own verdict or the carried one's. Not raised again: carried as it was.
+  for (const p of open) {
+    const v = carriedVerdicts[p.id];
+    const again = findings.find((f) => ['blocker', 'major'].includes(f.severity) && sameFinding(p, f));
+    if (again) {
+      if (again.status === 'unverified' && v && ['confirmed', 'refuted'].includes(v.status)) {
+        again.status = v.status;
+        again.verifier_status = String(v.status);
+        if (v.reason) again.verification = v.reason;
+      }
+      again.notes.push(`left unverified in round ${p.carried ? p.carried.from_round : p.round} as ${p.id}; raised again`);
+      continue;
+    }
+    // Finding ids restart each round: a new finding may already use this one's id.
+    const id = findings.some((f) => f.id === p.id) ? `${p.id.replace(/@r\d+$/, '')}@r${p.carried ? p.carried.from_round : p.round}` : p.id;
+    const c = { id, lane: p.lane, severity: p.severity, file: p.file || null, line: p.line || null, summary: p.summary || '', rule: p.rule || null, notes: [...(p.notes || []).filter((n) => !/^carried/.test(n))] };
+    c.carried = { from_round: p.carried ? p.carried.from_round : p.round, times: ((p.carried && p.carried.times) || 0) + 1 };
+    c.status = v && ['confirmed', 'refuted'].includes(v.status) ? v.status : 'unverified';
+    if (v && v.status) c.verifier_status = String(v.status);
+    if (v && v.reason) c.verification = v.reason;
+    if (v && v.evidence) c.verification_evidence = String(v.evidence).slice(0, 2000);
+    c.notes.push(c.status === 'unverified' ? `carried: unverified since round ${c.carried.from_round}; it keeps blocking until a verifier settles it` : `carried from round ${c.carried.from_round}; re-verified: ${c.status}`);
+    findings.push(c);
+    if (c.status !== 'refuted') lanes[c.lane] = 'changes';
+    else if (!lanes[c.lane]) lanes[c.lane] = 'pass';
+  }
   const missing = required.filter((l) => !lanes[l]);
-  const ok = missing.length === 0 && required.every((l) => lanes[l] === 'pass');
+  const anyUnverified = findings.some((f) => ['blocker', 'major'].includes(f.severity) && f.status === 'unverified');
+  const ok = missing.length === 0 && required.every((l) => lanes[l] === 'pass') && !anyUnverified;
   const dir = path.join(jobPaths(root, state.id).reviewsDir, `round-${round}${isPostMerge ? '-post-merge' : ''}`);
   writeJson(path.join(dir, 'scoreboard.json'), { at: nowIso(), fingerprint: ctx.b.fingerprint, commit, required, lanes, findings, missing });
   const bound = isEpic ? { children: ctx.b.children } : isPostMerge ? {} : { fingerprint: ctx.b.fingerprint };
@@ -148,9 +182,16 @@ function record(root, { jobId, payload, step = 'challenge' }) {
     missing,
     confirmed: confirmed.map((f) => `${f.id} [${f.severity}] ${f.file || ''}${f.line ? `:${f.line}` : ''} ${f.summary}`),
     unverified: unverified.map((f) => f.id),
+    ...(unverified.some((f) => f.carried) ? { carried: unverified.filter((f) => f.carried).map((f) => ({ id: f.id, from_round: f.carried.from_round, times: f.carried.times })) } : {}),
     minor: findings.filter((f) => f.severity === 'minor').length,
     ...(findings.some((f) => f.regression) ? { regressions: findings.filter((f) => f.regression).map((f) => `${f.id} [${f.severity}] ${f.file || ''}${f.line ? `:${f.line}` : ''} was ${f.regression.id} (confirmed in round ${f.regression.round})`) } : {}),
   };
 }
 
-module.exports = { record, requiredLanes };
+// The serious findings a challenge record left unverified (open until a verifier settles them).
+function openUnverified(rec) {
+  const fs = (rec && rec.detail && rec.detail.findings) || [];
+  return fs.filter((f) => ['blocker', 'major'].includes(f.severity) && f.status === 'unverified').map((f) => ({ ...f, round: (rec.detail && rec.detail.round) || 1 }));
+}
+
+module.exports = { record, requiredLanes, openUnverified };

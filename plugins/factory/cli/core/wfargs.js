@@ -464,7 +464,12 @@ function challenge(root, state, ctx, action) {
     prompt_template: prompt('finding-verifier', `${jc}\n- See the change with: \`${diffCmd}\`\n- The finding to verify is given below your pointer to this file.`, 'The finding to verify:\n{{finding}}'),
     schema: schema('verifier'),
     severities: cfg.verifier.severities,
+    // carried findings (left unverified last round) get this multiple of the agent time cap
+    reverify_scale: 2,
   };
+  // Serious findings the last round left unverified: re-verified this round whether or not a
+  // reviewer raises them again (review.record keeps them open until a verifier settles them).
+  const carried = mode ? [] : review.openUnverified(ledger.lastStep(root, state.id, 'challenge')).map((f) => ({ id: f.id, lane: f.lane, severity: f.severity, file: f.file, line: f.line, summary: f.summary, rule: f.rule, from_round: f.carried ? f.carried.from_round : f.round }));
   return base(root, state, 'fanout-judge', {
     config: 'challenge',
     mode,
@@ -475,6 +480,7 @@ function challenge(root, state, ctx, action) {
     judge: null,
     critique: null,
     verifier,
+    carried,
   });
 }
 

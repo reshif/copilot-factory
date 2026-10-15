@@ -12,6 +12,7 @@ Floors are the steps no recipe may omit, per risk level ([`policy/floors.json`](
 | `isolation` | ✅ | ✅ | ✅ | every task's latest evidence passed in its own worktree, on the tree its branch has now |
 | `prove` | ✅ | ✅ | ✅ | a passing `factory verify run` bound to the current fingerprint |
 | `challenge:code` | ✅ | ✅ | ✅ | the code lane passed on the current fingerprint |
+| `no_unverified_serious` | ✅ | ✅ | ✅ | the job's latest review left no blocker/major finding unverified. A finding whose verifier timed out or said `unverifiable` is carried into every later round, whether or not a reviewer raises it again, and re-verified with twice the agent time cap until a verifier confirms or refutes it; after `max_reverify_rounds` (3) the job parks. `ship`, `merged` (H4) and `close` refuse while one is open, and the completion report lists them |
 | `ci_reverify` | ✅ | ✅ | ✅ | the `factory-gate` check succeeded on the merge result (GitHub), or `factory ci verify` passed on the local merge, or you waived it |
 | `human_merge` | ✅ | ✅ | ✅ | the merge commit is recorded (GitHub via `pr sync`, or your `merged <commit>` reply) |
 | `ground` | | ✅ | ✅ | findings recorded for the current contract |

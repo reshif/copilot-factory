@@ -97,6 +97,8 @@ function report(root, state, ctx, fl) {
   L.push(`- Risk level: ${state.risk}${state.risk_proposed && state.risk_proposed !== state.risk ? ` (raised by policy from ${state.risk_proposed})` : ''}`);
   L.push(`- Threat model: ${exists(jp.threatModel) ? `threat-model.md (${docMod.threatIds(readText(jp.threatModel, '')).join(', ') || 'no threat ids'})` : 'none'}`);
   L.push(`- Confirmed serious review findings at this build: ${serious.length}${serious.length ? ` (${serious.map((f) => f.id).join(', ')})` : ''}`);
+  const unverified = floors.openUnverifiedFindings(ctx);
+  L.push(`- Unverified serious review findings (they block ship): ${unverified.length}${unverified.length ? ` (${unverified.map((f) => `${f.id} [${f.severity}] ${f.file || ''}${f.line ? `:${f.line}` : ''} ${f.summary}`.trim()).join('; ')})` : ''}`);
   L.push(`- Waivers: ${Object.keys(state.waivers || {}).length ? Object.entries(state.waivers).map(([f, w]) => `${f} — ${w.reason} (${w.at})`).join('; ') : 'none'}`);
   L.push('', '## Rollout and rollback', '');
   L.push(`- Rollout: merge ${state.branch || 'each slice'} into ${state.base_branch}; CI (factory-gate) re-runs the verify commands in .factory-ship/${state.id}.json on the merge result.`);

@@ -543,7 +543,17 @@ function recChallenge(root, state, env) {
     if (!res.ok) return { status: 'retry', ...res, message: 'Post-merge review incomplete (lanes missing or findings unverified); factory next runs it again.' };
     return { status: 'ok', ...res, message: 'Post-merge review passed.' };
   }
-  return { status: res.ok ? 'ok' : res.confirmed.length ? 'fix' : 'retry', degraded: missingLanes, ...res, message: res.ok ? 'All required lanes pass.' : res.confirmed.length ? 'Confirmed serious findings: factory next schedules a fix round.' : `Lanes missing or findings unverified (${[...res.missing, ...res.unverified].join(', ')}); factory next runs the review again.` };
+  // A serious finding no verifier could settle is re-verified each round (with twice the time),
+  // never dropped; after max_reverify_rounds tries the job parks for the human.
+  if (!res.ok && !res.confirmed.length && (res.carried || []).length) {
+    const L = state.policy.limits || {};
+    const allowed = (L.max_reverify_rounds || 3) + ((state.counters || {}).reverify_bonus || 0);
+    const stuck = res.carried.filter((c) => c.times > allowed);
+    if (stuck.length) {
+      return { status: 'park', park_from: 'reverify', degraded: missingLanes, ...res, park_reason: `Serious review finding(s) still unverified after ${allowed} re-verification round(s): ${stuck.map((c) => c.id).join(', ')}. They block ship until a verifier settles them; "resume" re-verifies once more.`, message: 'Parked: a serious finding could not be verified.' };
+    }
+  }
+  return { status: res.ok ? 'ok' : res.confirmed.length ? 'fix' : 'retry', degraded: missingLanes, ...res, message: res.ok ? 'All required lanes pass.' : res.confirmed.length ? 'Confirmed serious findings: factory next schedules a fix round.' : `Lanes missing or findings unverified (${[...res.missing, ...res.unverified].join(', ')}); factory next runs the review again${(res.carried || []).length ? ', re-verifying the unverified ones with twice the time' : ''}.` };
 }
 
 // Which agents ran, as the workflow saw them: sealed, so the console and the inspector

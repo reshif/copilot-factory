@@ -97,6 +97,8 @@ function floorCovered(recipe, floor) {
       return lanes.includes('all') && stepIndex(recipe, 'challenge') < stepIndex(recipe, 'H4');
     case 'finding_verifiers':
       return has('challenge');
+    case 'no_unverified_serious':
+      return true; // holds by itself: without a challenge step there is nothing to verify
     case 'ci_reverify':
       return has('ship') && has('H4');
     case 'human_merge':

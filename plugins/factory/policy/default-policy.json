@@ -76,6 +76,7 @@
     "retry_limit": 3,
     "max_review_rounds": 3,
     "max_verify_fix_rounds": 3,
+    "max_reverify_rounds": 3,
     "max_parallel_tasks": 4,
     "max_parallel_research": 4,
     "max_parallel_lanes": 4,

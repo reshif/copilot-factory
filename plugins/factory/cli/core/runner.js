@@ -484,7 +484,11 @@ async function runAgent(ctx, prompt, opts) {
   // A time cap from the workflow (opts.timeoutSec: clarify's scout budget) counts from the
   // call, not from the spawn: time spent waiting for a free slot is part of the budget, and
   // an agent whose budget ran out while it waited is not started at all (outcome timeout).
-  const capSec = typeof o.timeoutSec === 'number' && o.timeoutSec > 0 ? Math.min(o.timeoutSec, S.timeoutSec) : null;
+  // opts.timeoutScale (1–4): this agent may take that multiple of the agent cap (a verifier
+  // re-checking a finding that ran out of time before).
+  const scale = typeof o.timeoutScale === 'number' && o.timeoutScale > 1 ? Math.min(4, o.timeoutScale) : 1;
+  const maxSec = S.timeoutSec * scale;
+  const capSec = typeof o.timeoutSec === 'number' && o.timeoutSec > 0 ? Math.min(o.timeoutSec, maxSec) : scale > 1 ? maxSec : null;
   const deadline = capSec ? Date.now() + capSec * 1000 : null;
   const left = () => (deadline ? Math.floor((deadline - Date.now()) / 1000) : S.timeoutSec);
   return ctx.limit(async () => {

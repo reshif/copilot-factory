@@ -193,3 +193,135 @@ test('P1.2: realize reports a dependency_conflict builder as blocked at once, ne
   assert.equal(result.data.tasks[0].outcome, 'blocked');
   assert.match(result.data.tasks[0].summary, /dependency_conflict/);
 });
+
+// ------------------------------------------------------------------------------- P1.1
+
+// bug@low up to a passing proof (control.test.js's toProve, with the builder's reply recorded).
+function toProve(root) {
+  const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.cli(root, ['next']);
+  F.reply(root, 'approve');
+  F.cli(root, ['next']);
+  b = F.cli(root, ['wfargs', 'ground']);
+  F.record(root, F.envelope(b, 'ok', { topics: [{ topic: 't', claims: [], unknowns: [] }], degraded: [] }));
+  F.cli(root, ['next']);
+  F.cli(root, ['plan', 'from-contract']);
+  F.cli(root, ['next']);
+  b = F.cli(root, ['wfargs', 'realize']);
+  const s = F.cli(root, ['task', 'start', 'T1']);
+  F.write(s.worktree, 'src/add.js', 'module.exports = (a, b) => a + b;\n');
+  F.sh(s.worktree, 'git commit -qam fix');
+  F.built(root, 'T1');
+  F.cli(root, ['task', 'verify', 'T1']);
+  F.record(root, F.envelope(b, 'ok', { tasks: [{ id: 'T1', outcome: 'done', attempts: 1 }] }));
+  F.cli(root, ['next']);
+  b = F.cli(root, ['wfargs', 'reconcile']);
+  F.cli(root, ['reconcile', 'run']);
+  F.record(root, F.envelope(b, 'ok', { integrator: { status: 'merged', summary: '' } }));
+  F.cli(root, ['verify', 'run']);
+  return J;
+}
+const CODE1 = { id: 'code-1', severity: 'major', file: 'src/add.js', line: 1, summary: 'an item without reorder_at is never alerted' };
+const challengeRound = (root, data) => {
+  const n = F.cli(root, ['next']);
+  assert.equal(n.config, 'challenge', JSON.stringify(n));
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  return { brief: b, rec: F.record(root, F.envelope(b, 'ok', { degraded: [], verifications: [], ...data }, { fingerprint: b.fingerprint })) };
+};
+
+test('P1.1: an unverified major finding is carried to the next round when the reviewer does not raise it again (e2e finding 1)', () => {
+  const root = F.makeRepo();
+  const J = toProve(root);
+  // round 1: the verifier timed out twice, so code-1 is unverified
+  let { rec } = challengeRound(root, { lanes: [{ lane: 'code', findings: [CODE1] }] });
+  assert.equal(rec.status, 'retry');
+  assert.deepEqual(rec.unverified, ['code-1']);
+  // round 2: the fresh reviewer does not repeat code-1 and nobody verified it
+  const r2 = challengeRound(root, { lanes: [{ lane: 'code', findings: [] }] });
+  assert.equal(r2.brief.carried.length, 1, 'the brief hands the open finding to the workflow');
+  assert.equal(r2.brief.carried[0].id, 'code-1');
+  assert.equal(r2.brief.verifier.reverify_scale, 2, 'it is re-verified with twice the time');
+  rec = r2.rec;
+  assert.equal(rec.status, 'retry', 'not "All required lanes pass"');
+  assert.deepEqual(rec.unverified, ['code-1']);
+  const last = core('ledger').lastStep(root, J, 'challenge');
+  const f = last.detail.findings.find((x) => x.id === 'code-1');
+  assert.equal(f.status, 'unverified');
+  assert.ok(f.carried && f.carried.from_round >= 1);
+  assert.equal(last.detail.lanes.code, 'changes');
+  // ship refuses; the report lists it
+  const ship = F.cli(root, ['ship', '--local']);
+  assert.equal(ship.code, 'floor', JSON.stringify(ship));
+  assert.ok(ship.details.missing.includes('no_unverified_serious'));
+  const rep = F.cli(root, ['report']);
+  const text = fs.readFileSync(rep.report || path.join(F.jobDir(root, J), 'completion-report.md'), 'utf8');
+  assert.match(text, /Unverified serious review findings[^\n]*: 1 \(code-1/);
+  // round 3: the carried finding's verifier settles it (confirmed) → a fix round, not a pass
+  rec = challengeRound(root, { lanes: [{ lane: 'code', findings: [] }], verifications: [{ finding_id: 'code-1', carried: true, status: 'confirmed', reason: 'reproduced' }] }).rec;
+  assert.equal(rec.status, 'fix', JSON.stringify(rec));
+  assert.match(rec.confirmed[0], /^code-1 \[major\]/);
+});
+
+test('P1.1: a carried finding refuted by its verifier stops blocking; one never settled parks after the retry cap', () => {
+  const root = F.makeRepo();
+  toProve(root);
+  challengeRound(root, { lanes: [{ lane: 'code', findings: [CODE1] }] });
+  const rec = challengeRound(root, { lanes: [{ lane: 'code', findings: [] }], verifications: [{ finding_id: 'code-1', carried: true, status: 'refuted', reason: 'covered by the default' }] }).rec;
+  assert.equal(rec.status, 'ok', JSON.stringify(rec));
+  assert.equal(F.cli(root, ['finalize', '--mode', 'before_ship']).results.find((r) => r.floor === 'no_unverified_serious').ok, true);
+
+  const root2 = F.makeRepo();
+  toProve(root2);
+  let last;
+  for (let i = 0; i < 6; i++) {
+    const n = F.cli(root2, ['next']);
+    if (n.action === 'parked') { last = n; break; }
+    last = challengeRound(root2, { lanes: [{ lane: 'code', findings: i === 0 ? [CODE1] : [] }] }).rec;
+    if (last.status === 'park') break;
+  }
+  assert.equal(last.status === 'park' || last.action === 'parked', true, JSON.stringify(last));
+  const st = F.cli(root2, ['job', 'show']);
+  assert.equal(st.status, 'parked');
+  assert.match(st.park.reason, /code-1/);
+  assert.match(F.reply(root2, 'resume').message, /Resumed/);
+  assert.equal(F.cli(root2, ['next']).config, 'challenge', 'resume allows one more re-verification');
+});
+
+test('P1.1: the challenge workflow re-verifies carried findings with twice the time cap', async () => {
+  const brief = {
+    workflow: 'fanout-judge', config: 'challenge', job: 'J-0001', input_hash: 'h', fingerprint: 'f',
+    fanout: [{ id: 'code', agent_type: 'factory:code-reviewer', label: 'review · code', prompt: 'review' }],
+    judge: null, critique: null,
+    verifier: { agent_type: 'factory:finding-verifier', prompt_template: 'verify {{finding}}', severities: ['blocker', 'major'], reverify_scale: 2 },
+    carried: [{ ...CODE1, lane: 'code', from_round: 1 }],
+  };
+  let verifies = 0;
+  const { result, calls } = await H.run(path.join(F.PLUGIN, 'workflows', 'fanout-judge.js'), brief, (prompt, opts) => {
+    if (opts.agentType === 'factory:code-reviewer') return { lane: 'code', findings: [{ id: 'code-1', severity: 'major', file: 'src/other.js', summary: 'a different bug' }] };
+    verifies += 1;
+    return verifies === 1 ? null : { status: 'confirmed', reason: 'ok' };
+  });
+  const v = calls.filter((c) => c.opts.agentType === 'factory:finding-verifier');
+  const carriedCalls = v.filter((c) => /carried/.test(c.opts.label));
+  assert.ok(carriedCalls.length >= 1, v.map((c) => c.opts.label).join(', '));
+  for (const c of carriedCalls) assert.equal(c.opts.timeoutScale, 2);
+  const retry = v.find((c) => /\(retry\)$/.test(c.opts.label));
+  assert.equal(retry.opts.timeoutScale, 2, 'a verifier that ran out of time once gets twice the time');
+  assert.ok(result.data.verifications.some((x) => x.finding_id === 'code-1' && x.carried), 'the carried verdict is marked carried (ids can repeat across rounds)');
+  assert.ok(result.data.verifications.some((x) => x.finding_id === 'code-1' && !x.carried));
+});
+
+test('P1.1: a carried finding keeps its own id when a new finding reuses it', () => {
+  const root = F.makeRepo();
+  const J = toProve(root);
+  challengeRound(root, { lanes: [{ lane: 'code', findings: [CODE1] }] });
+  const other = { id: 'code-1', severity: 'minor', file: 'README.md', summary: 'typo' };
+  challengeRound(root, { lanes: [{ lane: 'code', findings: [other] }] });
+  const ids = core('ledger').lastStep(root, J, 'challenge').detail.findings.map((f) => `${f.id}:${f.status}`);
+  assert.deepEqual(ids.sort(), ['code-1:minor', 'code-1@r1:unverified']);
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  assert.deepEqual(b.carried.map((c) => c.id), ['code-1@r1']);
+});

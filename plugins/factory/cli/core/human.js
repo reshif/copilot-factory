@@ -227,6 +227,7 @@ function resume(root, { jobId, step, channel }) {
     if ((state.counters.intent_rounds || 0) >= IL) state.counters.intent_rounds = IL - 1;
   }
   if (from === 'decompose') oneMore('decompose_rounds', L.max_plan_validate_rounds);
+  if (from === 'reverify') state.counters.reverify_bonus = (state.counters.reverify_bonus || 0) + 1;
   if (from === 'budget') state.policy.limits.max_agent_runs_per_job = Math.ceil(state.policy.limits.max_agent_runs_per_job * 1.5);
   state.repeat = { key: null, count: 0 };
   state.status = 'active';
@@ -277,6 +278,9 @@ function merged(root, { jobId, commit, channel }) {
   }
   if (!git.isAncestor(root, state.pr.head || state.branch, sha)) fail(`${commit} does not contain the shipped job branch.`, 'bad_input');
   if (!git.isAncestor(root, sha, state.base_branch)) fail(`${commit} is not on ${state.base_branch}.`, 'bad_input');
+  // H4 refuses while a serious review finding is still unverified (as ship and close do).
+  const open = require('./floors').openUnverifiedFindings(steps.context(root, state, job.load));
+  if (open.length) fail(`${state.id} still has serious review findings no verifier settled: ${open.map((f) => f.id).join(', ')}. Run factory next to re-verify them before recording the merge.`, 'floor', { missing: ['no_unverified_serious'] });
   confirmTyped(channel, state.id, `record its merge at ${sha.slice(0, 12)}`);
   state.pr.merged = true;
   state.pr.merge_commit = sha;

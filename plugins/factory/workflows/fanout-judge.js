@@ -14,13 +14,15 @@ const brief = (() => {
 
 // Every agent runs as its real factory agent (agents/<role>.md): its system prompt,
 // tool limits and model apply. The brief names it; a missing one is a broken brief.
-function opts(spec, label, model, timeoutSec) {
+function opts(spec, label, model, timeoutSec, scale) {
   if (!spec || !/^factory:[a-z-]+$/.test(spec.agent_type || '')) throw new Error(`Brief item "${label}" has no factory agent_type`)
   const o = { schema: spec.schema, label, agentType: spec.agent_type }
   const m = model || spec.model
   if (m) o.model = m
   // A time cap counted from the call (the runner skips an agent whose budget ran out while it queued).
   if (timeoutSec) o.timeoutSec = timeoutSec
+  // A multiple of the agent time cap (copilot.agent_timeout_seconds), for an agent that ran out of time before.
+  if (scale && scale > 1) o.timeoutScale = scale
   return o
 }
 
@@ -49,12 +51,12 @@ async function one(prompt, spec, label, timeoutSec, longer = false) {
 async function fan(items) {
   if (!items.length) return []
   runs += items.length
-  const first = await pipeline(items, (it) => call(`${it.prompt}${ctxBlock()}`, opts(it, it.label)))
+  const first = await pipeline(items, (it) => call(`${it.prompt}${ctxBlock()}`, opts(it, it.label, null, null, it.scale)))
   const out = first.slice()
   const failed = items.map((it, i) => (out[i] ? null : i)).filter((i) => i !== null)
   if (failed.length) {
     runs += failed.length
-    const again = await pipeline(failed.map((i) => items[i]), (it) => call(`${it.prompt}${ctxBlock()}`, opts(it, `${it.label} (retry)`)))
+    const again = await pipeline(failed.map((i) => items[i]), (it) => call(`${it.prompt}${ctxBlock()}`, opts(it, `${it.label} (retry)`, null, null, it.retry_scale || it.scale)))
     failed.forEach((idx, k) => { out[idx] = again[k] || null })
   }
   return out
@@ -759,22 +761,29 @@ if (brief.config === 'decide') {
 if (brief.config === 'challenge') {
   const lanes = inputs.map((x) => ({ lane: x.id, findings: x.output.findings || [] }))
   const serious = lanes.flatMap((l) => l.findings.filter((f) => (brief.verifier.severities || ['blocker', 'major']).includes(f.severity)).map((f) => ({ ...f, lane: l.lane })))
+  // Findings an earlier round left unverified are re-verified every round until settled, with
+  // twice the time cap; a verifier that runs out of time is retried with twice the cap too.
+  const carried = (brief.config === 'challenge' && brief.carried) || []
+  const scale = brief.verifier.reverify_scale || 2
   let verifications = []
-  if (serious.length) {
-    phase(`challenge: verify ${serious.length} finding(s)`)
-    const items = serious.map((f) => ({
+  if (serious.length || carried.length) {
+    phase(`challenge: verify ${serious.length} finding(s)${carried.length ? ` + ${carried.length} carried` : ''}`)
+    const item = (f, label, sc) => ({
       prompt: brief.verifier.prompt_template.replace('{{finding}}', JSON.stringify(f, null, 2)),
       schema: brief.verifier.schema,
       agent_type: brief.verifier.agent_type,
       model: brief.verifier.model,
-      label: `verify ${f.id}`,
-    }))
+      label,
+      scale: sc,
+      retry_scale: scale,
+    })
+    const items = [...serious.map((f) => item(f, `verify ${f.id}`, null)), ...carried.map((f) => item(f, `verify ${f.id} (carried from round ${f.from_round})`, scale))]
     const res = await fan(items)
-    verifications = res.map((r, i) => (r ? { ...r, finding_id: serious[i].id } : null)).filter(Boolean)
+    verifications = res.map((r, i) => (r ? (i < serious.length ? { ...r, finding_id: serious[i].id } : { ...r, finding_id: carried[i - serious.length].id, carried: true }) : null)).filter(Boolean)
   }
   const confirmed = verifications.filter((v) => v.status === 'confirmed').length
   const unverifiable = verifications.filter((v) => v.status === 'unverifiable').length
-  const summary = `${lanes.length}/${brief.fanout.length} lane(s) reviewed; ${serious.length} serious finding(s), ${confirmed} confirmed${unverifiable ? `, ${unverifiable} unverifiable` : ''}.${degraded.length ? ` Missing lanes: ${degraded.join(', ')}.` : ''}`
+  const summary = `${lanes.length}/${brief.fanout.length} lane(s) reviewed; ${serious.length} serious finding(s)${carried.length ? ` and ${carried.length} carried unverified` : ''}, ${confirmed} confirmed${unverifiable ? `, ${unverifiable} unverifiable` : ''}.${degraded.length ? ` Missing lanes: ${degraded.join(', ')}.` : ''}`
   return envelope(degraded.length ? 'degraded' : 'ok', summary, { lanes, degraded, verifications }, { fingerprint: brief.fingerprint || null, lanes_requested: brief.lanes_requested || null })
 }
 

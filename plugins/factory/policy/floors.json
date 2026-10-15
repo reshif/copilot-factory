@@ -7,6 +7,7 @@
       "isolation",
       "prove",
       "challenge:code",
+      "no_unverified_serious",
       "ci_reverify",
       "human_merge"
     ],

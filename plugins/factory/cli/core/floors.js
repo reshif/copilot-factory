@@ -62,6 +62,10 @@ function check(ctx, floor) {
       const serious = ((r.detail && r.detail.findings) || []).filter((f) => ['blocker', 'major'].includes(f.severity));
       return serious.every((f) => ['confirmed', 'refuted'].includes(f.status));
     }
+    // No blocker/major finding left unverified by the job's latest review (whatever build it
+    // ran on): a verifier timeout never turns into a pass.
+    case 'no_unverified_serious':
+      return openUnverifiedFindings(ctx).length === 0;
     case 'ci_reverify': {
       if (state.waivers && state.waivers.ci_reverify) return true;
       const check = state.policy.ci.required_check;
@@ -95,6 +99,11 @@ function check(ctx, floor) {
   }
 }
 
+function openUnverifiedFindings(ctx) {
+  const all = require('./ledger').steps(ctx.root, ctx.state.id, 'challenge');
+  return require('./review').openUnverified(all.length ? all[all.length - 1] : null);
+}
+
 // mode: 'before_ship' skips floors that can only be met after merge.
 function evaluate(ctx, mode = 'full') {
   const { state } = ctx;
@@ -108,4 +117,4 @@ function evaluate(ctx, mode = 'full') {
   return { mode, risk: state.risk, ok: results.every((r) => r.ok), results, missing: results.filter((r) => !r.ok).map((r) => r.floor) };
 }
 
-module.exports = { evaluate, check, allLanes, uiChanged };
+module.exports = { evaluate, check, allLanes, uiChanged, openUnverifiedFindings };
