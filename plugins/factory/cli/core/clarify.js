@@ -301,7 +301,7 @@ function migrate(v1, state, answers = []) {
     else if (r === 'dismissed' || r === 'dropped') {
       iss.status = 'dropped';
       if (r === 'dismissed') iss.dismissed = true;
-      event(iss, null, 'dropped', 'migration', iss.note);
+      event(iss, null, 'dropped', 'migration', iss.note || `${r} before clarify v2`);
     } else if (r === 'question') {
       iss.status = 'proposed';
       iss.owner = iss.owner === 'design' ? 'design' : 'user';
@@ -693,6 +693,7 @@ function view(root, state, data) {
     trend: tr.trend,
     limits: { ceiling: L.ceiling, no_progress_rounds: L.no_progress, rounds_counted: L.counted, ...(L.before_v2 ? { rounds_before_v2: L.before_v2 } : {}), no_progress_streak: (state.counters && state.counters.clarify_no_progress) || 0 },
     notes: (data.notes || []).slice(-10),
+    dropped: droppedLines(data),
     ...(data.migration ? { migration: data.migration } : {}),
   };
 }
@@ -709,6 +710,10 @@ function statusText(v) {
   if (v.rounds.length) {
     L.push('', 'Round  opened  settled  deferred  asked  progress');
     for (const r of v.rounds) L.push(`${String(r.round).padEnd(6)} ${String(r.opened).padEnd(7)} ${String(r.settled).padEnd(8)} ${String(r.deferred).padEnd(9)} ${String(r.asked).padEnd(6)} ${r.degraded ? 'degraded (not counted)' : r.progress ? 'yes' : 'no'}`);
+  }
+  if ((v.dropped || []).length) {
+    L.push('', 'Dropped:');
+    for (const x of v.dropped) L.push(`  ${x.line}`);
   }
   if (v.issues.some((r) => r.aliases.length)) L.push('', 'Two different issues folded into one? In your own terminal: factory clarify split <U-n> <alias> makes the alias its own issue again.');
   if (v.questions.length) {
@@ -758,6 +763,65 @@ function nextSummary(root, state) {
   }
 }
 
+// ---------------------------------------------------------------- no issue vanishes
+// A guard factory record applies to every clarify round: each issue known before the round (and
+// each alias), and each issue the workflow says it opened, is still in the ledger with a known
+// status; a newly dropped issue carries the actor and the reason that dropped it. prior: the
+// ledger before the round ({ unknowns: [{ id, text, status, aliases: [{ id }] }] }).
+function invariant(prior, data, created = []) {
+  const problems = [];
+  const where = new Map();
+  for (const u of data.unknowns) {
+    where.set(u.id, u);
+    for (const a of u.aliases || []) where.set(a.id, u);
+    if (!STATUSES.includes(u.status)) problems.push(`${u.id} has no known status (${u.status})`);
+  }
+  const before = prior ? prior.unknowns : [];
+  for (const p of before) {
+    if (!where.has(p.id)) problems.push(`${p.id} (${clip(p.text, 60)}) vanished from the ledger`);
+    for (const a of p.aliases || []) if (!where.has(a.id)) problems.push(`${a.id} (an alias of ${p.id}) vanished from the ledger`);
+  }
+  for (const id of created) if (!where.has(id)) problems.push(`${id}, opened this round, vanished from the ledger`);
+  const wasDropped = new Set(before.filter((u) => u.status === 'dropped').map((u) => u.id));
+  for (const u of data.unknowns) {
+    if (u.status !== 'dropped' || wasDropped.has(u.id)) continue;
+    const h = dropEvent(u);
+    if (!h || !h.actor || !String(h.text || '').trim()) problems.push(`${u.id} (${clip(u.text, 60)}) was dropped without a recorded reason and actor`);
+  }
+  return problems;
+}
+// Who dropped an issue, and why: its last drop event.
+function dropEvent(u) {
+  return (u.history || []).slice().reverse().find((x) => ['dropped', 'dismissed'].includes(x.event)) || null;
+}
+// "dropped by judge: <reason>", for H1 and clarify status.
+function droppedLines(data) {
+  return data.unknowns
+    .filter((u) => u.status === 'dropped')
+    .sort((a, b) => num(a.id) - num(b.id))
+    .map((u) => {
+      const h = dropEvent(u) || {};
+      return { id: u.id, subject: u.subject, text: clip(u.text, 160), actor: h.actor || null, reason: clip(h.text || u.note || '', 200), line: `${u.id}: ${clip(u.text, 160).replace(/\s+/g, ' ')} (dropped by ${h.actor || 'unknown'}: ${clip(h.text || u.note || 'no reason recorded', 200).replace(/\s+/g, ' ')})` };
+    });
+}
+
+// What H1 / EH1 must show besides the contract (factory next carries it as `clarify` on the
+// gate): issues dropped, with who dropped them and why.
+function h1Summary(root, state) {
+  try {
+    const intent = require('./intent');
+    const raw = intent.load(root, state.id);
+    if (!raw || raw.tampered) return null;
+    const data = ensure(root, state, raw);
+    const out = {};
+    const dropped = droppedLines(data);
+    if (dropped.length) out.dropped = dropped.map((x) => x.line);
+    return Object.keys(out).length ? { ...out, status_command: `factory clarify status --job ${state.id}` } : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------- the CLI-owned contract sections
 function clarificationLines(data) {
   return data.unknowns
@@ -784,4 +848,5 @@ module.exports = {
   tokens, subjectKey, subjectOf, vocabulary, sameIssue, findSame, isImplementationFact, classify, limits, compatResolution, cleanIssue, settle, event,
   migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, split, inClarify, isNone, defaultValue,
   rows, totals, trend, view, statusText, status, nextSummary, clarificationLines, deferredLines, deferredText, openIds,
+  invariant, droppedLines, h1Summary,
 };

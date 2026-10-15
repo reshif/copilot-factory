@@ -532,7 +532,7 @@ function groundQuestions(list) {
 // The ledger's own proposals are asked even if the judge left them out (research could not
 // settle them, God Eye's blockers, decisions, user issues), with their reason and default.
 function ledgerAsks(questions, dismissed) {
-  const covered = new Set([...(questions || []).map((q) => String(q.unknown || '').toUpperCase()), ...(dismissed || []).map((d) => String(d.unknown || '').toUpperCase())])
+  const covered = new Set([...(questions || []).map((q) => String(q.unknown || '').toUpperCase()), ...(dismissed || []).filter((d) => String(d.reason || '').trim()).map((d) => String(d.unknown || '').toUpperCase())]) // a dismissal without a reason covers nothing (record.js drops nothing for it)
   const cat = (k) => (['intent', 'scope', 'constraint', 'acceptance'].includes(k) ? k : k === 'user' || k === 'decision' ? 'scope' : 'constraint')
   return openQuestions().filter((q) => !covered.has(q.unknown)).map((q) => ({
     question: /\?$/.test(q.ask) ? q.ask : ['repo', 'world'].includes(q.kind) ? `Is this right: ${q.ask}?` : q.ask,

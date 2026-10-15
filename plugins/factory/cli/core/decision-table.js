@@ -441,6 +441,11 @@ function route(root, jobId) {
       job.save(root, state);
     }
     action.gate = state.pending_gate;
+    // H1 / EH1: what the contract alone does not show (dropped issues and why, ...)
+    if (['H1', 'EH1'].includes(action.step)) {
+      const h1 = require('./clarify').h1Summary(root, state);
+      if (h1) action.clarify = h1;
+    }
   } else if (action.action === 'merge') {
     if (state.pr && state.pr.mode === 'github') {
       const justSynced = String(state.last_decision || '').startsWith('cli:H4:');

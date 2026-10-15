@@ -114,3 +114,51 @@ test('1: the job title\'s words are no evidence of identity: credentials do not 
   assert.equal(withV.result.status, 'needs_user');
   assert.ok(withV.result.data.scout.unknowns.some((u) => u.id !== 'U-1' && /credentials/.test(u.text)), 'a new issue in the workflow too');
 });
+
+// ---------------------------------------------------------------- 2. no silent drop
+test('2: a judge dismissal drops an issue only with a reason; H1 shows "dropped by judge: <reason>"; the record refuses a round in which an issue vanishes or is dropped without actor and reason', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const creds = { ...issue('U-1', CREDS, 'decision'), owner: 'user', status: 'proposed', subject: 'device.credentials' };
+  const other = { ...issue('U-2', 'Should the sync delete VLANs missing on the device?', 'decision'), owner: 'user', status: 'proposed', subject: 'sync.prune' };
+  // no reason: nothing is dropped (0.6.0 dropped it for good)
+  let r = round(root, { scout: scoutData([creds, other]), judge: { questions: [], dismissed: [{ question: CREDS, unknown: 'U-1', reason: '' }, { question: other.text, unknown: 'U-2', reason: 'the README will cover it' }] }, critique: APPROVE }, 'ok');
+  let d = ledgerOf(root, J);
+  assert.notEqual(byId(d, 'U-1').status, 'dropped', 'a dismissal without a reason drops nothing');
+  assert.equal(byId(d, 'U-2').status, 'dropped');
+  const h = byId(d, 'U-2').history.slice(-1)[0];
+  assert.deepEqual([h.event, h.actor, h.text], ['dropped', 'judge', 'the README will cover it']);
+  assert.ok(r.questions.some((q) => q.unknown === 'U-1'), 'U-1 is asked instead');
+  // the user answers; the next round reaches H1, which shows the drop and why
+  F.cli(root, ['answer', 'U-1', 'from the Nautobot secrets group of each device']);
+  F.cli(root, ['next']);
+  r = round(root, { scout: scoutData([]), critique: APPROVE }, 'ok');
+  assert.equal(r.status, 'ok', JSON.stringify(r).slice(0, 400));
+  const n = F.cli(root, ['next']);
+  assert.equal(n.step, 'H1');
+  assert.deepEqual(n.clarify.dropped, ['U-2: Should the sync delete VLANs missing on the device? (dropped by judge: the README will cover it)']);
+  assert.match(F.cli(root, ['clarify', 'status', '--job', J]).raw, /Dropped:\n {2}U-2: .*\(dropped by judge: the README will cover it\)/);
+
+  // the guard: a workflow that reports an issue it opened but does not return it
+  const root2 = F.makeRepo();
+  const J2id = newJob(root2);
+  F.cli(root2, ['next']);
+  round(root2, { scout: scoutData([{ ...issue('U-1', SCOPE, 'scope'), owner: 'user', status: 'proposed' }]) });
+  const before = JSON.stringify(ledgerOf(root2, J2id).unknowns);
+  F.cli(root2, ['next']);
+  const bad = round(root2, { scout: scoutData([], { raised: { created: [{ issue: 'U-40', source: 'judge' }], folded: [], notes: [] } }) });
+  assert.equal(bad.code, 'ledger_invariant');
+  assert.match(bad.message, /U-40, opened this round, vanished/);
+  assert.equal(JSON.stringify(ledgerOf(root2, J2id).unknowns), before, 'nothing was recorded');
+
+  // the rule itself: a lost alias, a lost new issue, a drop with no actor or reason
+  const prior = { unknowns: [{ id: 'U-1', text: 'a', status: 'open', aliases: [{ id: 'U-9' }] }, { id: 'U-2', text: 'b', status: 'open', aliases: [] }] };
+  const now = { unknowns: [clarify.cleanIssue({ id: 'U-1', text: 'a', kind: 'user', status: 'proposed' }), clarify.cleanIssue({ id: 'U-2', text: 'b', kind: 'user', status: 'dropped' })] };
+  const p = clarify.invariant(prior, now, ['U-7']);
+  assert.ok(p.some((x) => /U-9 \(an alias of U-1\) vanished/.test(x)));
+  assert.ok(p.some((x) => /U-7, opened this round, vanished/.test(x)));
+  assert.ok(p.some((x) => /U-2 .* dropped without a recorded reason and actor/.test(x)));
+  clarify.event(now.unknowns[1], 2, 'dropped', 'judge', 'does not change the outcome');
+  assert.deepEqual(clarify.invariant(prior, { unknowns: [{ ...now.unknowns[0], aliases: [{ id: 'U-9' }] }, now.unknowns[1], clarify.cleanIssue({ id: 'U-7', text: 'c', kind: 'user' })] }, ['U-7']), []);
+});

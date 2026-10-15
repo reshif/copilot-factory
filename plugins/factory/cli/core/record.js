@@ -99,6 +99,9 @@ function recClarify(root, state, env) {
   const lastLedger = idata && (idata.rounds || []).length ? (idata.rounds[idata.rounds.length - 1].ledger || null) : null;
   const priorIds = new Set(idata ? idata.unknowns.map((u) => u.id) : []);
   const prevTotals = lastLedger && lastLedger.totals ? lastLedger.totals : idata ? clarifyMod.totals(idata) : null;
+  // what the ledger held before this round, for the no-vanishing guard (clarify.invariant)
+  const before = idata ? { unknowns: idata.unknowns.map((u) => ({ id: u.id, text: u.text, status: u.status, aliases: (u.aliases || []).map((a) => ({ id: a.id })) })) } : null;
+  const createdByWf = ((d.scout && d.scout.raised && d.scout.raised.created) || []).map((x) => x.issue).filter((x) => /^U-\d+$/.test(String(x || '')));
   const unappliedBefore = idata ? idata.unknowns.filter((u) => u.status === 'settled' && ['user', 'assumption_accepted'].includes(u.settled_by) && u.answer && !u.applied_round).map((u) => u.id) : [];
   // Grounded intent: fold this round's research and issues into the ledger, re-check what the
   // CLI can check (repo quotes, URLs and quotes, the high-risk second-source rule) and
@@ -139,12 +142,18 @@ function recClarify(root, state, env) {
     for (const x of dismissed) {
       const u = x.unknown && idata.unknowns.find((y) => y.id === String(x.unknown).toUpperCase());
       if (!u || clarifyMod.FINAL.has(u.status) || u.question_id) continue;
+      // a dismissal drops nothing without a reason: every drop carries its actor and why
+      if (!String(x.reason || '').trim()) continue;
       if (/\bdesign\b/i.test(String(x.reason || ''))) Object.assign(u, { owner: 'design', status: 'deferred_to_design', settled_by: 'design_deferral', note: `the judge: ${String(x.reason || '').slice(0, 200)}` });
       else Object.assign(u, { status: 'dropped', dismissed: true, note: `dismissed by the judge: ${String(x.reason || '').slice(0, 200)}` });
       u.resolution = clarifyMod.compatResolution(u);
       clarifyMod.event(u, round, u.status, 'judge', x.reason);
     }
     for (const nt of d.notes || []) (idata.notes = idata.notes || []).push({ round, actor: 'god-eye', ref: nt.ref || null, severity: nt.severity || null, text: String(nt.text || '').slice(0, 300) });
+    // No issue vanishes: every issue ends the round in a known status, and a drop carries its
+    // actor and reason. Anything else is a record error and nothing is written.
+    const broken = clarifyMod.invariant(before, idata, createdByWf);
+    if (broken.length) fail(`The clarify ledger lost track of issues this round, so nothing was recorded: ${broken.join('; ')}.`, 'ledger_invariant', { problems: broken });
   }
   // One writer: the contract editor's revision, checked, then the CLI-owned sections.
   const revision = applyRevision(root, state, d.contract, idata, unappliedBefore, round);
@@ -308,7 +317,7 @@ function foldRaised(clarifyMod, data, priorIds, round, bg) {
 // The ledger's own open proposals (CLI fallback for the workflow's): research could not settle
 // them, God Eye's blockers, decisions and user issues not asked yet.
 function ledgerAsks(clarifyMod, data, judgeQs, dismissed) {
-  const covered = new Set([...(judgeQs || []).map((q) => String(q.unknown || q.same_as || '').toUpperCase()), ...(dismissed || []).map((x) => String(x.unknown || '').toUpperCase())]);
+  const covered = new Set([...(judgeQs || []).map((q) => String(q.unknown || q.same_as || '').toUpperCase()), ...(dismissed || []).filter((x) => String(x.reason || '').trim()).map((x) => String(x.unknown || '').toUpperCase())]); // a dismissal without a reason covers nothing
   const cat = (k) => (['intent', 'scope', 'constraint', 'acceptance'].includes(k) ? k : k === 'user' || k === 'decision' ? 'scope' : 'constraint');
   return data.unknowns
     .filter((u) => u.status === 'proposed' && u.owner === 'user' && !u.question_id && u.impact !== 'low' && !covered.has(u.id))
