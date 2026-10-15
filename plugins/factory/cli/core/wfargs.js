@@ -554,7 +554,8 @@ function realize(root, state, ctx, action) {
   const pendingIds = new Set(pending.map((t) => t.id));
   const waves = (plan.waves || [plan.tasks.map((t) => t.id)]).map((w) => w.filter((id) => pendingIds.has(id))).filter((w) => w.length);
   const jc = jobContext(root, state);
-  const sweep = Boolean((state.policy.agents || {}).sweep_check);
+  const sweepSetting = (state.policy.agents || {}).sweep_check;
+  const sweep = Boolean(sweepSetting !== undefined ? sweepSetting : (require('./policy').load(root).agents || {}).sweep_check);
   const minutes = Math.max(1, Math.round(require('./runner').settings(root, state).timeoutSec / 60));
   // The build environment, as the builder should know it: factory run sets it up in the
   // worktree and starts the builder inside it; task verify runs every command inside it.
@@ -613,8 +614,10 @@ function realize(root, state, ctx, action) {
     waves,
     tasks,
     max_parallel_tasks: state.policy.limits.max_parallel_tasks,
-    // merge each wave into the job branch and run the job's checks before the next (P2.3)
-    integrate_each_wave: state.policy.limits.integrate_each_wave !== false,
+    // merge each wave into the job branch and run the job's checks before the next (P2.3). A
+    // job whose policy snapshot predates the key (started before the upgrade) takes it from the
+    // live .factory/policy.json, so it can be turned off for a job already in flight.
+    integrate_each_wave: (state.policy.limits.integrate_each_wave !== undefined ? state.policy.limits.integrate_each_wave : (require('./policy').load(root).limits || {}).integrate_each_wave) !== false,
     builder_schema: schema('builder'),
     ...(sweep ? { sweep_schema: schema('tester') } : {}),
   });

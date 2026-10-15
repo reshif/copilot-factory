@@ -404,3 +404,16 @@ test('parallel task updates (builders\' task start, the runner\'s verify for sev
   const st = stateOf(root, J);
   assert.deepEqual(ids.filter((id) => (st.tasks[id] || {}).outcome_reason === `r-${id}`), ids, 'every parallel update is kept');
 });
+
+test('upgrade: a job whose policy snapshot predates integrate_each_wave takes it from the live policy', () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  customPlan(root, J, [T1]);
+  F.cli(root, ['next']);
+  const s = stateOf(root, J);
+  delete s.policy.limits.integrate_each_wave; // as a 0.5.3 job's snapshot
+  core('job').save(root, s);
+  assert.equal(F.cli(root, ['wfargs', 'realize']).integrate_each_wave, true, 'on by default');
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ limits: { integrate_each_wave: false } }));
+  assert.equal(F.cli(root, ['wfargs', 'realize']).integrate_each_wave, false, 'the live policy turns it off for the job in flight');
+});
