@@ -1,0 +1,114 @@
+/* A signal box for the Software Factory. The live line is a street: every step of the job's
+   recipe is a stop, stages meet at intersections with signals, the request drives through,
+   fix rounds take the detour. The recipe map is the same factory as a floor plan. */
+:root {
+  --paper: #eef1ef;
+  --sheet: #fafbfa;
+  --bay: #e4e9e6;
+  --ink: #17201e;
+  --muted: #5b6965;
+  --rule: #cbd4d0;
+  --track: #1f6f63;
+  --track-soft: #dcebe7;
+  --signal: #9a6400;
+  --signal-soft: #f6e9cc;
+  --stop: #b5412d;
+  --stop-soft: #f6dfd9;
+  --live: #2d5ea6;
+  --live-soft: #dfe8f6;
+  --skill: #6b5aa6;
+  --skill-soft: #ebe7f6;
+  --asphalt: #d3dad7;
+  --asphalt-edge: #b4bfbb;
+  --lane: #fbfcfb;
+  --sig-housing: #1c2422;
+  --sig-rim: #3a4541;
+  --sig-off: #3b4541;
+  --sig-green: #17a463;
+  --sig-amber: #f2a900;
+  --sig-red: #df3f2b;
+  --ped: #ff7a1a;
+  --sign: #1f6f63;
+  --sign-ink: #f4f7f5;
+  --detour: #f2b01e;
+  --detour-ink: #1c2422;
+  --m-opus: #7a5af5;
+  --m-sonnet: #2d7fd6;
+  --m-haiku: #0f9d8a;
+  --grain-o: 0.035;
+  --bar: #f7f9f8;
+  --rule-2: #b9c4bf;
+  --shadow: 0 10px 28px rgba(23, 32, 30, .14);
+  --display: "Big Shoulders Display", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --road: "Overpass", "Arial Narrow", "Helvetica Neue", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0c1210; --sheet: #121a17; --bay: #0f1714; --ink: #e3ebe7; --muted: #92a29c; --rule: #1f2b27; --bar: #0a0f0d; --rule-2: #33433e; --shadow: 0 10px 30px rgba(0, 0, 0, .45), 0 1px 0 rgba(255, 255, 255, .03) inset;
+    --track: #4fb3a2; --track-soft: #173430; --signal: #e3a83a; --signal-soft: #3a2e14;
+    --stop: #e2735f; --stop-soft: #3d1f19; --live: #82a9ea; --live-soft: #1b2a42;
+    --skill: #b3a4ec; --skill-soft: #272241;
+    --asphalt: #222c2a; --asphalt-edge: #34413e; --lane: #5d6c67;
+    --sig-housing: #070b0a; --sig-rim: #2c3936; --sig-off: #1e2725; --sig-green: #3ddc8c; --sig-amber: #ffc23d; --sig-red: #ff6650; --ped: #ff9640;
+    --sign: #1d5e54; --sign-ink: #e9f2ee; --detour: #e3a83a; --detour-ink: #14100a;
+    --m-opus: #a993ff; --m-sonnet: #6aaeff; --m-haiku: #3fd1bb; --grain-o: 0.05;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0c1210; --sheet: #121a17; --bay: #0f1714; --ink: #e3ebe7; --muted: #92a29c; --rule: #1f2b27; --bar: #0a0f0d; --rule-2: #33433e; --shadow: 0 10px 30px rgba(0, 0, 0, .45), 0 1px 0 rgba(255, 255, 255, .03) inset;
+  --track: #4fb3a2; --track-soft: #173430; --signal: #e3a83a; --signal-soft: #3a2e14;
+  --stop: #e2735f; --stop-soft: #3d1f19; --live: #82a9ea; --live-soft: #1b2a42;
+  --skill: #b3a4ec; --skill-soft: #272241;
+  --asphalt: #222c2a; --asphalt-edge: #34413e; --lane: #5d6c67;
+  --sig-housing: #070b0a; --sig-rim: #2c3936; --sig-off: #1e2725; --sig-green: #3ddc8c; --sig-amber: #ffc23d; --sig-red: #ff6650; --ped: #ff9640;
+  --sign: #1d5e54; --sign-ink: #e9f2ee; --detour: #e3a83a; --detour-ink: #14100a;
+  --m-opus: #a993ff; --m-sonnet: #6aaeff; --m-haiku: #3fd1bb; --grain-o: 0.05;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font: 15px/1.55 var(--body); }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: var(--grain-o);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+.flag { display: inline-block; font: 600 10.5px/1.35 var(--mono); letter-spacing: 0.08em; padding: 3px 7px; border-radius: 2px; border: 1px solid currentColor; }
+.flag.sample { color: var(--signal); }
+.flag.ok { color: var(--track); } .flag.bad { color: var(--stop); } .flag.unk { color: var(--muted); }
+.flag.live { color: var(--track); } .flag.live::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: currentColor; vertical-align: 1px; animation: livepulse 1.6s ease-in-out infinite; }
+.flag.live.off { color: var(--muted); } .flag.live.off::before { animation: none; }
+@keyframes livepulse { 50% { opacity: 0.25; } }
+.lede { color: var(--muted); max-width: 76ch; margin: 12px 0 0; }
+.label { font: 500 11px/1.2 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 3px; }
+
+.lamps { display: inline-flex; gap: 3px; align-items: center; background: var(--sig-housing); padding: 3px 5px; border-radius: 8px; }
+.lamps i { width: 7px; height: 7px; border-radius: 50%; background: var(--sig-off); display: block; }
+.lamps i.done, .lamps i.auto { background: var(--sig-green); }
+.lamps i.running { background: var(--sig-amber); }
+.lamps i.waiting { background: var(--sig-amber); animation: blink 1s steps(1) infinite; }
+.lamps i.failed, .lamps i.blocked { background: var(--sig-red); }
+.lamps i.skipped, .lamps i.none { background: transparent; box-shadow: inset 0 0 0 1px var(--sig-rim); }
+.w-done { color: var(--track); } .w-running { color: var(--signal); } .w-waiting { color: var(--signal); } .w-failed, .w-blocked { color: var(--stop); } .w-pending, .w-skipped { color: var(--muted); }
+
+.jobhead { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 24px; align-items: end; margin: 14px 0 8px; }
+@media (max-width: 860px) { .jobhead { grid-template-columns: minmax(0, 1fr); } }
+.jobhead h2 { font: 800 clamp(24px, 3.4vw, 34px)/1.02 var(--display); text-transform: uppercase; }
+.jobhead .meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; margin-top: 6px; }
+.odo { display: flex; gap: 6px; flex-wrap: wrap; }
+.odo div { background: var(--sig-housing); color: #e8efe9; border-radius: 4px; padding: 6px 10px 5px; min-width: 76px; display: grid; gap: 2px; }
+.odo b { font: 800 22px/1 var(--display); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; display: inline-block; }
+.odo b.tick { animation: tick 260ms ease-out; }
+.odo span { font: 500 9.5px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: #9fb0aa; }
+@keyframes tick { from { transform: translateY(-5px); opacity: .3; } to { transform: none; opacity: 1; } }
+
+.siglegend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: 12.5px; color: var(--muted); margin: 6px 0 8px; }
+.siglegend span { display: inline-flex; align-items: center; gap: 7px; }
+.siglegend svg { overflow: visible; }
+
+/* ---------- live line: street */

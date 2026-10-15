@@ -242,3 +242,17 @@ test('console: clarify research (findings with source and verdict, assumptions, 
   const table = html.slice(html.indexOf('const AGENTS = {'), html.indexOf('const RECIPES'));
   for (const a of agents) assert.ok(table.includes(`'${a}':`), `Crew lists ${a}`);
 });
+
+test('console page: console.html is built from console/src (node console/build.js) and is current', () => {
+  const { build } = require('../console/build');
+  const built = build();
+  const shipped = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
+  assert.ok(built === shipped, 'console.html is stale: run node console/build.js');
+  const manifest = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'console', 'src', 'manifest.json'), 'utf8'));
+  const listed = new Set([...manifest.styles, ...manifest.scripts]);
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const src = path.join(F.PLUGIN, 'console', 'src');
+  for (const f of walk(src).map((x) => path.relative(src, x).split(path.sep).join('/'))) {
+    if (/\.(css|js)$/.test(f)) assert.ok(listed.has(f), `${f} is in src/manifest.json`);
+  }
+});

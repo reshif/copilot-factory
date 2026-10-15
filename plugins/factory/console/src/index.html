@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Software Factory Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Overpass:wght@700;800&display=swap">
+<style>
+/*@styles*/</style>
+
+<div class="app" id="app" data-view="board" data-mpane="main">
+  <header class="bar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><i></i><i class="a" id="mark-a"></i><i class="g"></i></span>
+      <div><h1>Factory Console</h1><div class="proj" id="proj">Software Factory · read-only</div></div>
+    </div>
+    <nav class="nav" role="tablist" aria-label="Views">
+      <button type="button" role="tab" id="nav-board" data-view="board" aria-selected="true">Board</button>
+      <button type="button" role="tab" id="nav-lines" data-view="lines" aria-selected="false">Line map</button>
+      <button type="button" role="tab" id="nav-plan" data-view="plan" aria-selected="false">Recipe map</button>
+      <button type="button" role="tab" id="nav-crew" data-view="crew" aria-selected="false">Crew</button>
+    </nav>
+    <span class="grow"></span>
+    <div class="omni">
+      <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="Filter jobs: is:waiting risk:high or any words" aria-label="Filter jobs. Tokens: is:, risk:, recipe:, gate:, has:, agent:, since:, or free text">
+      <span class="keys" aria-hidden="true"><kbd>/</kbd><kbd>⌘K</kbd></span>
+      <div class="qhelp" id="qhelp" hidden></div>
+    </div>
+    <div class="status">
+      <span class="led" id="led" data-led="snapshot" role="status"><i></i><span>snapshot</span></span>
+      <span class="clk" id="clk"></span>
+      <span class="flags" id="flags"></span>
+    </div>
+    <div class="ibtns">
+      <button type="button" class="ibtn" id="b-notify" aria-pressed="false" aria-label="Desktop notifications when a job needs you" title="Desktop notifications when a job needs you (off)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.2 1.4H2.8z M6.5 13.6a1.6 1.6 0 0 0 3 0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+      <button type="button" class="ibtn" id="b-theme" aria-label="Theme" title="Theme: follows your system"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg></button>
+      <button type="button" class="ibtn" id="b-keys" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 7h1M7 7h1M10 7h2M4 9.6h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+    </div>
+  </header>
+
+  <section class="kpis" id="kpis" aria-label="The floor at a glance. Each tile filters the board."></section>
+
+  <div class="mtabs" role="tablist" aria-label="Panes">
+    <button type="button" role="tab" data-mpane="main" aria-selected="true">Jobs</button>
+    <button type="button" role="tab" data-mpane="rail" aria-selected="false">Filters</button>
+    <button type="button" role="tab" data-mpane="wire" aria-selected="false">The wire</button>
+  </div>
+
+  <div class="floor">
+    <aside class="pane facets" id="rail" aria-label="Filters"></aside>
+
+    <main class="pane mainp" id="main">
+      <!-- BOARD -->
+      <section id="view-board" aria-label="Board">
+        <div class="btool" id="btool">
+          <span class="ttl">Board</span><span class="cnt" id="bcount"></span>
+          <span class="qchips" id="qchips"></span>
+          <span class="grow" style="flex:1"></span>
+          <label class="pick2">Group <select id="groupby" aria-label="Group by"><option value="attention">attention</option><option value="status">status</option><option value="recipe">recipe</option><option value="risk">risk</option><option value="stage">stage</option><option value="epic">epic</option><option value="day">day</option></select></label>
+          <label class="pick2">Sort <select id="sortby" aria-label="Sort by"><option value="urgency">urgency</option><option value="updated">updated</option><option value="created">created</option><option value="id">id</option></select></label>
+        </div>
+        <div class="board" id="board" role="list" aria-label="Jobs"></div>
+      </section>
+
+      <!-- LINE MAP -->
+      <section id="view-lines" class="lmwrap" aria-label="Line map" hidden>
+        <div class="btool">
+          <span class="ttl">Line map</span><span class="cnt" id="lmcount"></span>
+          <span class="grow" style="flex:1"></span>
+          <span class="segb" role="group" aria-label="Time axis"><button type="button" id="lm-sq" aria-pressed="true" title="Shrink the quiet hours so busy minutes get room">Squeeze idle</button><button type="button" id="lm-lin" aria-pressed="false">Linear</button></span>
+          <span class="segb" role="group" aria-label="Zoom"><button type="button" id="lm-out" aria-label="Zoom out">−</button><button type="button" id="lm-in" aria-label="Zoom in">+</button><button type="button" id="lm-fit">Fit</button></span>
+        </div>
+        <div class="lmlegend" id="lmlegend"></div>
+        <div class="lm" id="lm">
+          <div class="lmhead"><div class="c">JOB · TRACKS ↓ STAGES</div><svg id="lm-axis" class="lmax" aria-hidden="true"></svg></div>
+          <div class="lmscroll" id="lm-scroll" tabindex="0" aria-label="Every job as a line on one time axis. Plus and minus zoom, arrows pan.">
+            <div class="lmsizer" id="lm-sizer"><div class="lmlabels" id="lm-labels"></div><div class="lmplot" id="lm-plot"><svg id="lm-svg" role="img" aria-label="Job lines"></svg></div></div>
+          </div>
+          <div class="lmtip" id="lm-tip" hidden></div>
+        </div>
+      </section>
+
+      <!-- JOB -->
+      <section id="view-job" class="jobview" aria-label="Job" hidden>
+        <aside class="pane jlist" id="jlist" aria-label="Jobs (j and k switch)"></aside>
+        <div class="pane jdetail" id="jdetail">
+          <div class="jhead2">
+            <div>
+              <div class="eyebrow"><button type="button" class="tbtn" id="j-back" title="Back to the board (Esc)">← Board</button><span id="j-eyebrow"></span><span class="jprev"><button type="button" class="tbtn" id="j-prev" aria-label="Previous job">↑ k</button><button type="button" class="tbtn" id="j-next" aria-label="Next job">↓ j</button></span></div>
+              <h2 id="j-title"></h2>
+              <div class="meta" id="j-meta"></div>
+            </div>
+            <div class="odo" id="odo" aria-live="off"></div>
+          </div>
+          <div class="jtabs" role="tablist" aria-label="Job views">
+            <button type="button" role="tab" data-jt="line" aria-selected="true">Line</button>
+            <button type="button" role="tab" data-jt="story" aria-selected="false">Story</button>
+            <button type="button" role="tab" data-jt="tasks" aria-selected="false">Tasks<span class="n2" id="n-tasks"></span></button>
+            <button type="button" role="tab" data-jt="events" aria-selected="false">Events<span class="n2" id="n-events"></span></button>
+            <button type="button" role="tab" data-jt="lessons" aria-selected="false">Lessons<span class="n2" id="n-lessons"></span></button>
+            <span style="flex:1"></span>
+            <button type="button" class="tbtn" id="j-wire" aria-pressed="false" title="Show the wire beside this job">Wire ▸</button>
+          </div>
+          <div id="live-body" data-jt="line">
+            <div class="siglegend" id="siglegend"></div>
+            <div class="line">
+              <div>
+                <div class="street" id="street" tabindex="0" aria-label="The job's flow: stages left to right, time top to bottom"></div>
+                <div class="panel transport">
+                  <div class="tbtns">
+                    <button type="button" id="t-prev" aria-label="Previous event" title="Previous event (←)">⏮</button>
+                    <button type="button" id="t-play" class="primary">▶ Replay</button>
+                    <button type="button" id="t-next" aria-label="Next event" title="Next event (→)">⏭</button>
+                    <span class="speed" role="group" aria-label="Speed" id="speed"></span>
+                    <button type="button" id="t-follow" aria-pressed="true" title="Keep the request in view">Follow</button>
+                    <button type="button" id="t-zoom" aria-pressed="true" title="Fit the canvas to the width, or show it at full size">Fit</button>
+                  </div>
+                  <div class="scrub" id="scrub">
+                    <div class="rail"></div><div class="fill" id="s-fill"></div>
+                    <div id="s-ticks"></div>
+                    <input type="range" id="s-range" min="0" max="1000" value="1000" aria-label="Timeline">
+                    <div class="head" id="s-head"></div>
+                  </div>
+                  <div class="clock" id="clock"></div>
+                </div>
+              </div>
+              <aside class="panel now" id="now" aria-live="polite"></aside>
+            </div>
+            <div class="below" id="below"></div>
+          </div>
+          <div id="jt-story" data-jt="story" hidden></div>
+          <div id="jt-tasks" data-jt="tasks" hidden></div>
+          <div id="jt-events" data-jt="events" hidden></div>
+          <div id="jt-lessons" data-jt="lessons" hidden></div>
+        </div>
+      </section>
+
+      <!-- RECIPE MAP -->
+      <section id="view-plan" aria-label="Recipe map" hidden>
+        <p class="lede">The same factory as a floor plan, for any recipe: each bay is a stage with the skills Copilot follows, the workflows that put agents together, the CLI steps that decide and record, and the gates where you decide. Click anything to see what it does.</p>
+        <div class="toolbar">
+          <div class="picker" id="picker" role="group" aria-label="Recipe"></div>
+          <div class="tools-row">
+            <button type="button" id="z-out" aria-label="Zoom out">−</button>
+            <button type="button" id="z-in" aria-label="Zoom in">+</button>
+            <button type="button" id="z-fit">Fit</button>
+            <button type="button" id="z-play" class="primary">Run a request</button>
+          </div>
+        </div>
+        <p class="recipe-note" id="recipe-note"></p>
+        <div class="plant">
+          <div class="canvas" id="canvas">
+            <svg id="svg" role="group" aria-label="Factory floor plan">
+              <defs>
+                <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"></path></marker>
+                <marker id="arr-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--ink)"></path></marker>
+                <marker id="arr-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--stop)"></path></marker>
+                <marker id="arr-human" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--signal)"></path></marker>
+              </defs>
+              <g id="world"></g>
+            </svg>
+            <div class="hint">drag or shift + scroll to pan · ctrl + scroll or pinch to zoom · + − 0 keys</div>
+            <div class="nowcap" id="nowcap" hidden></div>
+          </div>
+          <aside class="panel side" id="side" aria-live="polite"></aside>
+        </div>
+        <div class="legend">
+          <span><span class="sw" style="border-color: var(--skill)"></span>skill: instructions Copilot follows</span>
+          <span><span class="sw" style="border-color: var(--track)"></span>workflow and its agents</span>
+          <span><span class="sw" style="border-color: var(--track); border-style: dashed"></span>read-only agent</span>
+          <span><span class="sw" style="border-color: var(--live)"></span>factory CLI: decides and records</span>
+          <span><span class="sw" style="border-color: var(--signal)"></span>you: gates and replies</span>
+          <span><span class="sw" style="border-color: var(--stop); border-style: dashed"></span>loop back</span>
+        </div>
+      </section>
+
+      <!-- THE CREW -->
+      <section id="view-crew" aria-label="The crew" hidden>
+        <p class="lede">Nineteen agents, each with one role and its own tool limits. Workflows start them by agent type, so a reviewer can't write and a builder can only touch its task's paths. The guard hook enforces the rest.</p>
+        <div class="crew" id="crew"></div>
+      </section>
+    </main>
+
+    <aside class="pane wire" id="wire" aria-label="The wire: every event, newest first">
+      <div class="wireh">
+        <h2><i aria-hidden="true"></i>The wire</h2>
+        <button type="button" class="tbtn" id="w-job" aria-pressed="false" title="Only the selected job">This job</button>
+        <button type="button" class="tbtn" id="w-pause" aria-pressed="false" title="Hold the feed while you read">Pause</button>
+      </div>
+      <div class="pane" id="wbody"><button type="button" class="wnew" id="w-new" hidden></button><ul class="wlist" id="wlist"></ul></div>
+    </aside>
+  </div>
+
+  <footer class="foot2" id="foot"></footer>
+</div>
+
+<div class="toasts" id="toasts" aria-live="assertive"></div>
+<dialog class="dlg pal" id="palette" aria-label="Command palette">
+  <input id="pal-q" type="text" autocomplete="off" spellcheck="false" placeholder="Jump to a job, switch view, toggle a filter…" aria-label="Command" role="combobox" aria-controls="pal-list" aria-expanded="true">
+  <ul id="pal-list" role="listbox"></ul>
+  <div class="pf"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> go</span><span><kbd>esc</kbd> close</span></div>
+</dialog>
+<dialog class="dlg" id="keys" aria-label="Keyboard shortcuts">
+  <div class="keys2">
+    <h2>Keys</h2>
+    <dl>
+      <dt><kbd>j</kbd><kbd>k</kbd></dt><dd>next / previous job (on the board, and inside a job)</dd>
+      <dt><kbd>↵</kbd></dt><dd>open the job under the cursor</dd>
+      <dt><kbd>esc</kbd></dt><dd>back to the board · close a dialog · clear the filter box</dd>
+      <dt><kbd>/</kbd></dt><dd>filter box: <code>is:waiting risk:high recipe:bug@low gate:H2 has:finding has:rework agent:builder since:2d</code> and any words</dd>
+      <dt><kbd>⌘</kbd><kbd>K</kbd></dt><dd>command palette: jump to a job, switch view, toggle filters</dd>
+      <dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>toggle the tiles: your turn · running · parked · stopped · done</dd>
+      <dt><kbd>g</kbd> <kbd>w</kbd></dt><dd>next job waiting for you</dd>
+      <dt><kbd>g</kbd> <kbd>b</kbd> / <kbd>l</kbd></dt><dd>board / line map</dd>
+      <dt><kbd>space</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>on a job's line: play, previous and next event</dd>
+      <dt><kbd>?</kbd></dt><dd>this sheet</dd>
+    </dl>
+  </div>
+</dialog>
+
+<script>
+/*@scripts*/</script>

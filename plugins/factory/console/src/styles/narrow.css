@@ -1,0 +1,61 @@
+@media (max-width: 1180px) {
+  .floor { grid-template-columns: 188px minmax(0, 1fr) 280px; }
+  .kpi .n { font-size: 38px; }
+  .kpi .hk { display: none; }
+}
+@media (max-width: 960px) {
+  .app { height: auto; min-height: 100dvh; display: block; }
+  .bar { padding: 10px 16px; gap: 8px 10px; flex-wrap: wrap; }
+  .brand { order: 1; flex: 1 1 0; }
+  .ibtns { order: 2; }
+  .status { order: 3; flex: 1 1 100%; }
+  .ibtn { width: 32px; height: 32px; }
+  .jtabs #j-wire { display: none; }
+  .jhead2 .meta span[title="policy.agents.models"] { display: none; }
+  .kpi .k { white-space: normal; line-height: 1.15; align-items: flex-start; }
+  .brand h1 { font-size: 22px; }
+  .bar .grow { display: none; }
+  .omni { order: 9; flex: 1 1 100%; max-width: none; margin-left: 0; }
+  .nav { order: 10; flex: 1 1 100%; overflow-x: auto; scrollbar-width: none; }
+  .nav button { flex: 1 0 auto; }
+  .clk { display: none; }
+  .kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; padding: 10px 16px; }
+  .kpi { padding: 7px 8px; grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
+  .kpi .n { grid-row: auto; font-size: 30px; order: 2; }
+  .kpi .k { font-size: 9px; letter-spacing: .08em; gap: 5px; }
+  .kpi .s { display: none; }
+  .mtabs { display: flex; gap: 2px; padding: 8px 16px 0; background: var(--paper); position: sticky; top: 0; z-index: 8; border-bottom: 1px solid var(--rule); }
+  .mtabs button { flex: 1; border: 0; background: none; padding: 9px 6px; font: 600 13px var(--body); color: var(--muted); border-bottom: 2px solid transparent; cursor: pointer; }
+  .mtabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+  .app[data-view="job"] .mtabs, .app[data-view="plan"] .mtabs, .app[data-view="crew"] .mtabs { display: none; }
+  .floor, .app[data-view="job"] .floor, .app[data-view="job"].wire-open .floor { display: block; }
+  .pane { overflow: visible; }
+  .facets, .wire { display: none; border: 0; }
+  .app[data-mpane="rail"]:not([data-view="job"]) .facets { display: grid; }
+  .app[data-mpane="wire"]:not([data-view="job"]) .wire { display: grid; }
+  .app[data-mpane="rail"]:not([data-view="job"]) .mainp, .app[data-mpane="wire"]:not([data-view="job"]) .mainp { display: none; }
+  .mainp { padding: 0 16px 20px; }
+  .app[data-view="plan"] .mainp, .app[data-view="crew"] .mainp { padding: 4px 16px 24px; }
+  .app[data-view="job"] .mainp, .app[data-view="lines"] .mainp { overflow: visible; display: block; }
+  .btool { top: 41px; }
+  .bgh { top: 90px; }
+  .jobview { display: block; }
+  .jlist { display: none; }
+  .jdetail { padding: 0 16px 24px; }
+  .jtabs { margin: 0 -16px 12px; padding: 0 16px; }
+  .jprev { display: flex; }
+  .lm { height: 70vh; }
+  .lmhead, .lmsizer { grid-template-columns: 116px minmax(0, 1fr); }
+  .lml { grid-template-columns: 10px minmax(0, 1fr); }
+  .lml .bti { display: none; }
+  .foot2 { white-space: normal; }
+  .story { grid-template-columns: minmax(0, 1fr); }
+  .nowcard { position: static; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .beacon, .pip.live, .led i, .kpi .k i, .wireh h2 i, .lm .headp { animation: none !important; }
+  .brow.sweep::after, .witem.fresh::after { animation: none; opacity: 0; }
+  .b-turn .beacon { box-shadow: 0 0 0 2px var(--ink); }
+  .toast { animation: none; }
+}
+
