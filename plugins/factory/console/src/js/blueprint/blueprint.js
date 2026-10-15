@@ -832,7 +832,7 @@
       steps.forEach(function (st) {
         out.push({ kind: "step", st: st });
         // the step at work names who is at work on a line of its own when the two do not fit on one
-        if (st.state === "running" && st.roles.length && measure(stepLabel(st), "t-agent", 13, 700) + measure(rolesText(st, key, "bank"), "t2", 13) + 40 > SW) out.push({ kind: "who", st: st });
+        if (st.state === "running" && st.roles.length && measure(stepLabel(st), "t-agent", 13, 700) + measure(rolesText(st, key, "bank"), "t2", 13) + 40 > SW) st.roles.forEach(function (r) { out.push({ kind: "who", st: st, r: r }); }); // one line per role, so none is cut short
       });
       out.push({ kind: lr.more.length ? "more" : "next" });
       return out;
@@ -851,8 +851,8 @@
           return;
         }
         if (row.kind === "who") {
-          var who = row.st.roles.map(function (r) { return stepRole(r.role, r.total, key) + ": " + [r.running ? r.running + " at work" : "", r.ok ? r.ok + " done" : "", r.failed ? r.failed + " failed" : ""].filter(Boolean).join(" · "); }).join(" · ");
-          kids(g, [tx(x + 24, y, "▸ " + who, { "font-size": 13, "class": row.st.roles.some(function (r) { return r.failed; }) ? "t-fail" : "t-agent", "font-weight": 600, "data-fit": SW - 32 })]);
+          var r = row.r, who = stepRole(r.role, r.total, key) + ": " + [r.running ? r.running + " at work" : "", r.ok ? r.ok + " done" : "", r.failed ? r.failed + " failed" : ""].filter(Boolean).join(" · ");
+          kids(g, [tx(x + 24, y, "▸ " + who, { "font-size": 13, "class": r.failed ? "t-fail" : "t-agent", "font-weight": 600, "data-fit": SW - 32 })]);
           return;
         }
         if (row.kind === "fold") { kids(g, [tx(x + 8, y, "✓ " + plural(row.n, "earlier step"), { "font-size": 13, "class": "t3" })]); return; }
