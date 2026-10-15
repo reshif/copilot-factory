@@ -839,6 +839,15 @@ function researchGaps(data) {
   };
 }
 
+// God Eye's blockers and majors in a critique: what it objects to. The workflow sends them as
+// god_eye_objects; a critique from before them (0.6.0 counted them as "approve with notes")
+// is read through this.
+function godEyeObjections(crit) {
+  return ((crit && crit.items) || [])
+    .filter((it) => it && it.issue && ['blocker', 'major'].includes(it.severity))
+    .map((it) => ({ ref: it.ref || null, severity: it.severity, issue: String(it.issue).slice(0, 300), ...(it.suggestion ? { suggestion: String(it.suggestion).slice(0, 300) } : {}) }));
+}
+
 // What H1 / EH1 must show besides the contract (factory next carries it as `clarify` on the
 // gate): issues dropped, with who dropped them and why; research that could not run; what
 // God Eye still objects to.
@@ -856,8 +865,9 @@ function h1Summary(root, state) {
     // God Eye's objections to this very contract (it did not approve; nothing was left to ask)
     const crit = readJson(path.join(jobPaths(root, state.id).critiquesDir, 'intent.json'), null);
     const hash = require('./invalidation').current(root, state).contract;
-    if (crit && crit.hash === hash && Array.isArray(crit.god_eye_objects) && crit.god_eye_objects.length) {
-      out.god_eye_objects = crit.god_eye_objects.map((o) => `${o.severity}${o.ref ? ` (${o.ref})` : ''}: ${clip(o.issue, 240)}${o.suggestion ? ` — suggests: ${clip(o.suggestion, 160)}` : ''}`);
+    const objects = !crit ? [] : Array.isArray(crit.god_eye_objects) ? crit.god_eye_objects : crit.approved_with_notes && !(crit.verdict === 'approve' && crit.intent_confirmed !== false) ? godEyeObjections(crit) : [];
+    if (crit && crit.hash === hash && objects.length) {
+      out.god_eye_objects = objects.map((o) => `${o.severity}${o.ref ? ` (${o.ref})` : ''}: ${clip(o.issue, 240)}${o.suggestion ? ` — suggests: ${clip(o.suggestion, 160)}` : ''}`);
     }
     return Object.keys(out).length ? { ...out, status_command: `factory clarify status --job ${state.id}` } : null;
   } catch {
@@ -891,5 +901,5 @@ module.exports = {
   tokens, subjectKey, subjectOf, vocabulary, sameIssue, findSame, isImplementationFact, classify, limits, compatResolution, cleanIssue, settle, event,
   migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, split, inClarify, isNone, defaultValue,
   rows, totals, trend, view, statusText, status, nextSummary, clarificationLines, deferredLines, deferredText, openIds,
-  invariant, droppedLines, h1Summary, researchGaps,
+  invariant, droppedLines, h1Summary, researchGaps, godEyeObjections,
 };

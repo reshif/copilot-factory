@@ -282,3 +282,29 @@ test('review 1: the job\'s vocabulary never stops the same question from folding
   assert.equal(w.result.status, 'ok', 'nothing new to ask');
   assert.deepEqual(w.result.data.scout.unknowns.map((u) => u.id), ['U-1']);
 });
+
+test('review 6: an envelope without god_eye_objects (a 0.6.0 workflow, mid-upgrade) that calls blockers "approve with notes" is not approval, and a 0.6.0 critique already waiting at H1 shows its objections', () => {
+  const revise = { ...APPROVE, verdict: 'revise', items: [{ issue: 'Scoping was settled without research', severity: 'blocker', ref: 'U-1' }, { issue: 'Wording', severity: 'minor' }] };
+  const settled = { ...issue('U-1', 'How should VLANs be scoped for the six tenants?', 'scope'), owner: 'user', status: 'settled', settled_by: 'user', subject: 'vlan.scoping', subject_explicit: true, answer: 'x' };
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  // what 0.6.0's workflow returned: approved_with_notes true, no god_eye_objects
+  const r = round(root, { scout: scoutData([settled]), critique: revise, approved_with_notes: true, notes: [{ text: 'Wording' }] }, 'ok');
+  assert.equal(r.status, 'ok');
+  assert.equal(r.approved, false);
+  assert.match(r.message, /God Eye did NOT approve the contract \(verdict: revise\): it objects to 1 item\(s\)/);
+  assert.doesNotMatch(r.message, /approved with notes/);
+  const step = require('../cli/core/ledger').steps(root, J, 'clarify').slice(-1)[0];
+  assert.equal(step.detail.approved_with_notes, undefined);
+  assert.deepEqual(F.cli(root, ['next']).clarify.god_eye_objects, ['blocker (U-1): Scoping was settled without research']);
+
+  // a job 0.6.0 already took to H1 "approved with notes": its sealed critique has no god_eye_objects
+  const { seal } = require('../cli/lib/seal');
+  const file = path.join(F.jobDir(root, J), 'critiques', 'intent.json');
+  const c = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete c.god_eye_objects;
+  delete c.seal;
+  fs.writeFileSync(file, JSON.stringify(seal({ ...c, approved_with_notes: true }), null, 2));
+  assert.deepEqual(F.cli(root, ['next']).clarify.god_eye_objects, ['blocker (U-1): Scoping was settled without research']);
+});
