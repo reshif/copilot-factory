@@ -14,6 +14,9 @@
 // The stop gate's record of decisions it already blocked (.factory/stop-blocks.json) is
 // never reset here: it blocks at most once per routing decision, across turns.
 // In an agent process `factory run` started there is no human and no stop gate: nothing to do.
+// Clarify v2: while the current job waits on clarify questions, a numbered reply ("1 yes,
+// 2 trunk ports too", one per line or comma-separated, or "defaults") is recorded as the
+// answers to that question set, through the same path as `factory answer`.
 
 const fs = require('fs');
 const path = require('path');
@@ -44,6 +47,27 @@ function writeTurn(root, rec) {
   }
 }
 
+// A numbered reply to the current clarify questions: recorded as answers, or left alone
+// when the current job has no open question set (it was just a numbered message).
+function answers(root, input, numbered) {
+  const events = require('../cli/core/events');
+  const ctx = events.context(root, null);
+  const text = String(input.prompt).trim().slice(0, 200);
+  let r;
+  try {
+    r = require('../cli/core/clarify').applyNumbered(root, numbered, { jobId: ctx.job || undefined, via: 'chat' });
+  } catch (e) {
+    events.append(root, { event: 'reply_refused', reply: 'answers', code: e.code || null, reason: e.message.slice(0, 200), ...ctx });
+    writeLastReply(root, { at: new Date().toISOString(), text, status: 'refused', reply: 'answers', code: e.code || null, job: ctx.job, decision_id: ctx.decision_id, message: e.message.slice(0, 300) });
+    context(`[factory] Your answers were NOT recorded: ${e.message}`, `[factory] Your answers were NOT recorded: ${e.message.slice(0, 200)}`);
+    return;
+  }
+  if (!r) return;
+  events.append(root, { event: 'reply_applied', reply: 'answers', answered: r.answered.map((a) => a.id || a.issue), ...ctx });
+  writeLastReply(root, { at: new Date().toISOString(), text, status: 'applied', reply: 'answers', job: r.job, decision_id: ctx.decision_id, message: r.message });
+  context(`[factory] ${r.message} Continue with \`factory next\` (skill factory:start); do not record them again.`, `[factory] ${r.message}`);
+}
+
 safe((input) => {
   if (runnerAgent()) return;
   // Autopilot's own continuation prompt: Autopilot is on. Record it for factory next / doctor.
@@ -61,7 +85,9 @@ safe((input) => {
   const human = require('../cli/core/human');
   const parsed = human.parseReply(input.prompt);
   const miss = parsed ? null : human.nearMiss(input.prompt);
-  if (root0) writeTurn(root0, { at: new Date().toISOString(), session: input.sessionId || null, factory: Boolean(parsed || isFactoryPrompt(input.prompt)) });
+  const numbered = !parsed && !miss && root0 ? require('../cli/core/clarify').parseNumbered(input.prompt) : null;
+  if (root0) writeTurn(root0, { at: new Date().toISOString(), session: input.sessionId || null, factory: Boolean(parsed || numbered || isFactoryPrompt(input.prompt)) });
+  if (numbered) return answers(root0, input, numbered);
   if (!parsed && !miss) return;
   const root = root0;
   if (!root) return;

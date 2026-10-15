@@ -92,7 +92,7 @@ function checkWrite(root, absIn, policy) {
   if (r.startsWith('.factory/')) {
     const parts = r.split('/');
     if (parts[1] === 'scratch') return null;
-    if (parts[1] === 'jobs' && parts.length === 4 && JOB_DOCS.test(parts[3])) return null;
+    if (parts[1] === 'jobs' && parts.length === 4 && JOB_DOCS.test(parts[3])) return parts[3] === 'contract.md' ? clarifyLock(root, parts[2]) : null;
     if (parts[1] === 'worktrees' && parts.length >= 4) {
       const scope = taskScope(root, parts[2]);
       const inner = parts.slice(3).join('/');
@@ -107,6 +107,25 @@ function checkWrite(root, absIn, policy) {
   if (r.startsWith('.git/') || r === '.git') return 'Editing git internals is not allowed.';
   if (matchesAny(r, policy.protected_paths)) return `${r} is a protected path (policy.protected_paths).`;
   return null;
+}
+
+// Clarify v2, one writer: while a job is in clarify (a clarify round recorded, H1/EH1 not
+// approved, no amendment open) its contract changes only through the clarify workflow and
+// factory record. The first draft (before round 1: intake, the clarify skill) and
+// amendments after H1 stay writable. Best effort: an unreadable state allows the write.
+function clarifyLock(root, jobId) {
+  let st;
+  try {
+    st = JSON.parse(require('fs').readFileSync(path.join(root, '.factory', 'jobs', jobId, 'state.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!st || !['active', 'parked'].includes(st.status)) return null;
+  const rounds = (st.counters && st.counters.clarify_rounds) || 0;
+  const approved = st.approvals && (st.approvals.H1 || st.approvals.EH1);
+  const amending = st.amendment && ['open', 'submitted'].includes(st.amendment.status);
+  if (rounds < 1 || approved || amending) return null;
+  return `${jobId} is in clarify: its contract is changed only by the clarify workflow (the contract editor) and factory record, not by hand. Record the user's answers with \`factory answer <U-n|Q-n> "<answer>"\` (or --default), add context with \`factory clarify note <U-n|contract> "<note>"\`, see what is open with \`factory clarify status\`, then run \`factory next\`.`;
 }
 
 function checkRead(root, absIn, policy) {
@@ -180,7 +199,7 @@ const KNOWN_VARS = /^(HOME|PWD|OLDPWD|PATH|TMPDIR|TMP|TEMP|USER|SHELL|VIRTUAL_EN
 // (builder), task verify (tester), reconcile run / continue / abort (integrator), doc check
 // (architect, threat modeler, slicer, planner); agent bodies: doc template; lesson-writer:
 // lessons add. Everything else drives the job (next, run, record, wfargs, ship, close, init,
-// use, job new, amend, park, followup, epic, distill, finalize, answer, verify run, evidence,
+// use, job new, amend, park, followup, epic, distill, finalize, answer, clarify note, verify run, evidence,
 // ci, pr, shim, console …) or is the human's (HUMAN_ONLY): the main session's or yours.
 const AGENT_ALLOWED = {
   help: '*',
@@ -189,6 +208,7 @@ const AGENT_ALLOWED = {
   job: ['show', 'list'],
   contract: ['show', 'check'],
   intent: ['show'],
+  clarify: ['status'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
   reconcile: ['run', 'continue', 'abort'],
@@ -199,7 +219,7 @@ const AGENT_ALLOWED = {
 };
 
 // Every top-level factory command (cli/main.js): an agent is refused only a real command.
-const CLI_VERBS = new Set(['help', 'init', 'doctor', 'shim', 'run', 'console', 'job', 'use', 'next', 'why', 'finalize', 'contract', 'intent', 'answer', 'wfargs', 'record', 'plan', 'task', 'reconcile', 'verify', 'evidence', 'report', 'ship', 'pr', 'ci', 'close', 'followup', 'doc', 'distill', 'lessons', 'amend', 'park', 'epic', 'telemetry', 'recipe', ...HUMAN_ONLY]);
+const CLI_VERBS = new Set(['help', 'init', 'doctor', 'shim', 'run', 'console', 'job', 'use', 'next', 'why', 'finalize', 'contract', 'intent', 'clarify', 'answer', 'wfargs', 'record', 'plan', 'task', 'reconcile', 'verify', 'evidence', 'report', 'ship', 'pr', 'ci', 'close', 'followup', 'doc', 'distill', 'lessons', 'amend', 'park', 'epic', 'telemetry', 'recipe', ...HUMAN_ONLY]);
 
 function agentAllowed(a, b) {
   if (!a || !CLI_VERBS.has(a)) return true;
@@ -775,4 +795,4 @@ function normalise(cmd) {
   return parse(cmd).map((c) => c.words.map((w) => w.text).join(' ')).join('; ');
 }
 
-module.exports = { checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
+module.exports = { checkWrite, clarifyLock, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
