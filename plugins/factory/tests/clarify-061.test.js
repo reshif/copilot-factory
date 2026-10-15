@@ -308,3 +308,21 @@ test('review 6: an envelope without god_eye_objects (a 0.6.0 workflow, mid-upgra
   fs.writeFileSync(file, JSON.stringify(seal({ ...c, approved_with_notes: true }), null, 2));
   assert.deepEqual(F.cli(root, ['next']).clarify.god_eye_objects, ['blocker (U-1): Scoping was settled without research']);
 });
+
+test('review 6: the console never says God Eye approved a contract it objects to, and shows the objections at H1', () => {
+  const con = require('../cli/core/console');
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const revise = { ...APPROVE, verdict: 'revise', items: [{ issue: 'Scoping was settled without research', severity: 'blocker', ref: 'U-1' }] };
+  const objects = [{ ref: 'U-1', severity: 'blocker', issue: 'Scoping was settled without research' }];
+  round(root, { scout: scoutData([]), critique: revise, approved_with_notes: false, god_eye_objects: objects }, 'ok');
+  assert.equal(F.cli(root, ['next']).step, 'H1');
+  const j = con.build(root, { job: J }).jobs.find((x) => x.id === J);
+  const res = j.timeline.filter((e) => e.type === 'result' && e.raw_step === 'clarify').slice(-1)[0];
+  assert.doesNotMatch(res.text, /approved/i);
+  assert.match(res.text, /God Eye did not approve: 1 objection\(s\), shown at H1/);
+  assert.deepEqual(j.h1.god_eye_objects, ['blocker (U-1): Scoping was settled without research']);
+  const html = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
+  assert.match(html, /God Eye objects/, 'the page renders them');
+});

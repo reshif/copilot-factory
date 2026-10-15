@@ -4711,6 +4711,7 @@ function nowCard(job) {
     const g = m.gate || job.pending_gate && job.pending_gate.id;
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--sig-amber)"></i>Now · your turn</div>`);
     parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
+    if ((g === 'H1' || g === 'EH1') && job.h1) parts.push(h1Html(job.h1));
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
     else parts.push(`<p>Answer the questions in chat${job.clarify && job.clarify.questions.length ? ` (${job.clarify.questions.map((q) => esc(q.id)).join(', ')}): a numbered reply such as <code>1 yes, 2 …</code>, or <code>defaults</code>` : ''}; the round runs again with your answers.</p>`);
   } else if (m.bucket === 'parked') {
@@ -4722,6 +4723,12 @@ function nowCard(job) {
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--live)"></i>Now · running</div><p><b>${esc(m.stepLabel)}</b> is running${ra.length ? ` with ${ra.length} agent${ra.length === 1 ? '' : 's'} on the floor (${esc(ra.map((a) => roleShort(a.agent_type)).join(', '))})` : ''}. Nothing is needed from you.${(job.stale_agents || []).length ? ` ${job.stale_agents.length} agent(s) started earlier never reported back; their session probably ended.` : ''}</p>`);
   }
   return `<div class="nowcard b-${m.bucket}">${parts.join('')}</div>`;
+}
+// At H1 / EH1, what clarify adds to the contract (as factory next carries it): God Eye's
+// objections (it did not approve), issues dropped and why, research that could not run.
+function h1Html(h) {
+  const list = (head, items, note) => (items && items.length ? `<div class="eh">${esc(head)}</div>${note ? `<p class="meta">${esc(note)}</p>` : ''}<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
+  return `${list('God Eye objects', h.god_eye_objects, 'God Eye did not approve this contract; clarify could not settle these. Approve only to go on over them.')}${list('Dropped', h.dropped)}${h.research_incomplete ? `<p class="meta">${esc(h.research_incomplete)}</p>` : ''}`;
 }
 function agentsProse(agents) {
   const cs = chipsFor(agents);
@@ -6178,6 +6185,8 @@ function toDisplay(data) {
       runs: bpRuns(j),
       // clarify v2: the issue ledger (cli/core/console.js clarifyBlock), for the section view's Clarify block
       clarify: j.clarify || null,
+      // at H1 / EH1: what clarify adds to the contract (God Eye's objections, drops, research gaps)
+      h1: j.h1 || null,
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {
@@ -7676,7 +7685,8 @@ function toDisplay(data) {
         blockers.map(function (b) { return H("div", { "class": "now-block", text: "✗ " + b }); }),
         done && failingT.length ? H("div", { "class": "meta", text: "closed with " + plural(failingT.length, "task") + " still marked failing (" + failingT.map(function (k) { return k.id; }).join(", ") + ")" }) : null,
         j.parked_from && s === "parked" ? H("div", { "class": "meta" }, "parked from ", H("b", { text: j.parked_from })) : null,
-        g && g !== "H4" ? H("div", { "class": "now-gate" }, H("h4", null, gv(g), H("span", { "class": "chip tag", text: g }), H("em", { text: "waiting " + fD(t - enteredAt(j, t)) })), replyBox(chatReply(j, g), termCmd(j, g, t), true),
+        g && g !== "H4" ? H("div", { "class": "now-gate" }, H("h4", null, gv(g), H("span", { "class": "chip tag", text: g }), H("em", { text: "waiting " + fD(t - enteredAt(j, t)) })),
+          (g === "H1" || g === "EH1") && j.h1 ? h1Notes(j.h1) : null, replyBox(chatReply(j, g), termCmd(j, g, t), true),
           j.amendment && j.amendment.reason ? H("p", { "class": "meta" }, "Amendment from ", H("b", { text: j.amendment.from || "?" }), ": " + j.amendment.reason) : null) : null,
         gt && gt.warnings.length ? H("div", { "class": "meta", text: "check warnings: " + gt.warnings.join("; ") }) : null));
       // the latest exchange about this job: your prompt, the reply, God Eye's last revise (B-48)
@@ -7737,6 +7747,12 @@ function toDisplay(data) {
       // 7. history
       out.push(H("section", { "class": "sec-blk hist" }, H("h3", null, "History by station", H("em", { text: plural(j.history.filter(function (h) { return P(h.at) <= t; }).length, "move") })), historyNodes(j, t)));
       fill(secBody, H("div", { "class": "sec-wrap" }, out));
+    }
+    // At H1 / EH1, what clarify adds to the contract: God Eye's objections (it did not approve), drops and why, research gaps
+    function h1Notes(h) {
+      var list = function (head, items, note) { return items && items.length ? H("div", { "class": "meta" }, H("b", { text: head }), note ? " · " + note : null, H("ul", null, items.map(function (x) { return H("li", { text: x }); }))) : null; };
+      return H("div", null, list("God Eye objects", h.god_eye_objects, "God Eye did not approve this contract; clarify could not settle these"), list("Dropped", h.dropped),
+        h.research_incomplete ? H("div", { "class": "meta", text: h.research_incomplete }) : null);
     }
     // The Clarify block: the ledger as factory clarify status prints it (the latest state, not replayed)
     var CL_STATUS = { open: "open", researching: "researching", proposed: "with you", settled: "settled", deferred_to_design: "to design", dropped: "dropped" };

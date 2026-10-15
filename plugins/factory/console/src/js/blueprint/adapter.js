@@ -241,6 +241,8 @@ function toDisplay(data) {
       runs: bpRuns(j),
       // clarify v2: the issue ledger (cli/core/console.js clarifyBlock), for the section view's Clarify block
       clarify: j.clarify || null,
+      // at H1 / EH1: what clarify adds to the contract (God Eye's objections, drops, research gaps)
+      h1: j.h1 || null,
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {

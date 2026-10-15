@@ -81,6 +81,8 @@ function resultText(step, ok, d) {
   d = d || {};
   switch (step) {
     case 'clarify': {
+      // God Eye objects (0.6.1): the round is over, but God Eye did not approve; H1 shows why
+      if (ok && d.approved === false) return `Clarify can do no more; God Eye did not approve: ${num(d.god_eye_objects)} objection(s), shown at H1`;
       if (ok) return 'Contract judged clear; God Eye approved the intent';
       const cats = [...new Set(Array.isArray(d.categories) ? d.categories : [])];
       const held = num(d.held);
@@ -432,6 +434,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     tasks,
     lessons,
     clarify: clarifyBlock(state, idata, jp),
+    // what H1 shows besides the contract (factory next's `clarify` at the gate): drops, research gaps, God Eye's objections
+    h1: state.pending_gate && ['H1', 'EH1'].includes(state.pending_gate.id) ? require('./clarify').h1Summary(root, state) : null,
     intent: idata ? {
       web: idata.web || null,
       unknowns: (idata.unknowns || []).length,
