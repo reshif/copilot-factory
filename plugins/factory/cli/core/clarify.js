@@ -348,9 +348,16 @@ function acceptDefaults(data, state, round) {
 }
 
 // ---------------------------------------------------------------- answers and notes
+// The questions the last clarify round showed, in the order shown (what "1", "2" … in a
+// numbered reply refer to): the ids factory record kept, else the last round's questions.
 function questionSet(state) {
   const log = state.question_log || [];
   if (!log.length) return [];
+  const byId = Object.fromEntries(log.map((q) => [q.id, q]));
+  if (Array.isArray(state.clarify_shown) && state.clarify_shown.length) {
+    const shown = state.clarify_shown.map((id) => byId[id]).filter(Boolean);
+    if (shown.length) return shown;
+  }
   const last = Math.max(...log.map((q) => q.round || 0));
   return log.filter((q) => (q.round || 0) === last);
 }
@@ -453,8 +460,10 @@ function answer(root, { jobId, ref, text, question, acceptDefault = false, via =
   };
 }
 
-// Numbered chat replies ("1 yes, 2 trunk ports too", one per line or comma-separated) as
-// answers to the current question set. null when the text is not that shape.
+// Numbered chat replies ("1 yes, 2 trunk ports too", one per line or comma-separated;
+// "Q-4 no" names the question itself) as answers to the current question set. null when the
+// text is not that shape. An item that ends in "?" is a question to the agent, not an answer:
+// the whole message is then left alone.
 function parseNumbered(text) {
   const t = String(text || '').trim();
   if (!t) return null;
@@ -462,16 +471,21 @@ function parseNumbered(text) {
   const parts = t.includes('\n') ? t.split('\n').map((x) => x.trim()).filter(Boolean) : t.split(/[,;]\s*(?=(?:q-?)?\d{1,2}\s*[.):\-]?\s+\S)/i).map((x) => x.trim());
   const items = [];
   for (const p of parts) {
-    const m = p.match(/^(?:q-?)?(\d{1,2})\s*[.):\-]?\s+(.+)$/i);
+    const m = p.match(/^(q-?)?(\d{1,2})\s*[.):\-]?\s+(.+)$/i);
     if (!m) return null;
-    items.push({ n: Number(m[1]), text: m[2].trim() });
+    const answerText = m[3].trim();
+    if (/\?\s*$/.test(answerText)) return null;
+    items.push({ n: Number(m[2]), ...(m[1] ? { q: `Q-${Number(m[2])}` } : {}), text: answerText });
   }
   if (!items.length) return null;
   return { all_defaults: false, items };
 }
 
 // Apply a numbered reply to the job's current question set. Returns the receipt, or null
-// when the job has no open question set (the hook leaves the message alone then).
+// when the job has no open question set or no item names one of its questions (the hook
+// leaves the message alone then: it was just a numbered message). All or nothing: an item
+// for a question outside the set, the same question twice, or a question already settled
+// refuses the whole reply, so a pasted list never overwrites an answer.
 function applyNumbered(root, parsed, { jobId, via = 'chat' } = {}) {
   const job = require('./job');
   const state = job.resolve(root, jobId);
@@ -482,20 +496,32 @@ function applyNumbered(root, parsed, { jobId, via = 'chat' } = {}) {
   const raw = intent.load(root, state.id);
   if (!raw || raw.tampered) return null;
   const data = ensure(root, state, raw);
+  const issueOf = (q) => resolveRef(data, state, q.id);
   const open = set.filter((q) => {
-    const u = resolveRef(data, state, q.id);
+    const u = issueOf(q);
     return u && u.status === 'proposed';
   });
   if (!open.length) return null;
+  const log = state.question_log || [];
+  const listed = () => set.map((q, i) => `${i + 1} = ${q.id}`).join(', ');
+  const items = parsed.all_defaults
+    ? open.map((q) => ({ q, text: 'default' }))
+    : parsed.items.map((it) => ({ q: it.q ? log.find((x) => x.id === it.q) : set[it.n - 1], text: it.text, n: it.n, label: it.q || String(it.n) }));
+  if (!parsed.all_defaults) {
+    // nothing in it names a question of this set: not an answer set at all
+    if (!items.some((it) => it.q && set.includes(it.q))) return null;
+    const seen = new Set();
+    for (const it of items) {
+      if (!it.q) fail(`There is no question ${it.label}: this round asked ${set.length} (${listed()}). Nothing was recorded.`, 'bad_input');
+      if (seen.has(it.q.id)) fail(`${it.q.id} is answered twice in that reply. Nothing was recorded.`, 'bad_input');
+      seen.add(it.q.id);
+      const u = issueOf(it.q);
+      if (!u) fail(`${it.q.id} is not a clarify question of ${state.id}. Nothing was recorded.`, 'bad_input');
+      if (u.status !== 'proposed') fail(`${it.q.id} (${it.label}) is already settled (${u.status}${u.answer ? `: ${clip(u.answer, 60)}` : ''}), so this reply was not read as answers. To change an answer, say so and run factory answer ${it.q.id} "…". Nothing was recorded.`, 'already_settled');
+    }
+  }
   const rows = [];
-  const items = parsed.all_defaults ? open.map((q) => ({ q, text: 'default' })) : parsed.items.map((it) => ({ q: set[it.n - 1], text: it.text, n: it.n }));
-  for (const it of items) {
-    if (!it.q) fail(`There is no question ${it.n}: this round asked ${set.length} (${set.map((q, i) => `${i + 1} = ${q.id}`).join(', ')}). Nothing was recorded.`, 'bad_input');
-  }
-  for (const it of items) {
-    const r = answer(root, { jobId: state.id, ref: it.q.id, text: it.text, via });
-    rows.push(r);
-  }
+  for (const it of items) rows.push(answer(root, { jobId: state.id, ref: it.q.id, text: it.text, via }));
   return { job: state.id, answered: rows.map((r) => ({ id: r.id, issue: r.issue, answer: r.answer, settled_by: r.settled_by })), message: `Recorded ${rows.length} answer(s): ${rows.map((r) => `${r.id || r.issue} → ${clip(r.answer, 60)}`).join('; ')}.` };
 }
 

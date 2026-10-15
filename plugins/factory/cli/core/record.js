@@ -213,6 +213,10 @@ function recClarify(root, state, env) {
   state.question_log = [...log, ...n.questions.map((q) => ({ id: q.id, round, category: q.category, question: q.question, default: q.default, ...(q.unknown ? { unknown: q.unknown, kind: q.kind, evidence: q.evidence || [], preference: Boolean(q.preference), researchable: Boolean(q.researchable) } : {}) }))];
   state.asked_questions = [...new Set([...(state.asked_questions || []), ...n.questions.map((q) => q.question)])];
   if (researchDetail) state.counters.researchable_asked = (state.counters.researchable_asked || 0) + researchDetail.researchable_asked;
+  // What a numbered chat reply ("1 yes, 2 …") refers to: the questions this round shows, in
+  // order (new ones; else the ones still waiting from earlier rounds).
+  const waitingIds = idata ? idata.unknowns.filter((u) => u.status === 'proposed' && u.question_id && u.impact !== 'low' && !n.questions.some((q) => q.unknown === u.id)).map((u) => u.question_id) : [];
+  state.clarify_shown = n.questions.length ? n.questions.map((q) => q.id) : waitingIds;
   job.save(root, state);
   if (crit) {
     writeJson(path.join(jp.critiquesDir, 'intent.json'), seal({ hash: b.contract, verdict: crit.verdict, intent_confirmed: crit.intent_confirmed !== false, restatement: crit.restatement || null, checklist: crit.checklist || null, items: crit.items, researchable_questions: (crit && crit.researchable_questions) || [], ungrounded_claims: crit.ungrounded_claims || [], approved_with_notes: Boolean(d.approved_with_notes), notes: (d.notes || []).slice(0, 30), at: nowIso() }));
