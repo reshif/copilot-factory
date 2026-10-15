@@ -747,3 +747,24 @@ test('outcome integrity: a serious finding left unverified and never settled, an
   assert.deepEqual(done.evidence, ['T2', 'T3']);
   assert.ok(!rules.evidenceChain({ ...base, ledger: [{ ...roster, agents: roster.agents.filter((a) => !/T2/.test(a.label)) }] }).some((x) => x.rule === 'R5.done_without_builder'));
 });
+
+test('R5.unverified_finding_lost matches a finding by what it is, not by its id: ids restart each round, and a carried one may be renamed', () => {
+  const base = { id: 'J-0001', state: { status: 'active', tasks: {} }, lock: null, ledgerLines: [], decisionLines: [], eventLines: [], events: [], decisions: [] };
+  const at = (s) => `2026-01-01T00:00:0${s}Z`;
+  const lostOne = { id: 'code-1', lane: 'code', severity: 'major', file: 'src/a.js', line: 3, summary: 'a.js drops the last row', status: 'unverified' };
+  // round 2's code-1 is another finding (another file), confirmed and fixed; round 3 passes; a.js's was never settled
+  const other = { id: 'code-1', lane: 'code', severity: 'major', file: 'src/b.js', line: 40, summary: 'b.js leaks a handle', status: 'confirmed' };
+  const job = { ...base, ledger: [
+    { kind: 'step', step: 'challenge', ok: false, at: at(1), detail: { round: 1, findings: [lostOne] } },
+    { kind: 'step', step: 'challenge', ok: false, at: at(2), detail: { round: 2, findings: [other] } },
+    { kind: 'step', step: 'challenge', ok: true, at: at(3), detail: { round: 3, findings: [] } },
+  ] };
+  assert.ok(rules.evidenceChain(job).some((x) => x.rule === 'R5.unverified_finding_lost'), 'another finding that reuses the id does not settle it');
+  // a carried finding renamed because a new one took its id (code-1@r1), still open: not lost
+  const noFile = { id: 'code-1', lane: 'code', severity: 'major', file: null, line: null, summary: 'no input validation anywhere', status: 'unverified' };
+  const carried = { ...base, ledger: [
+    { kind: 'step', step: 'challenge', ok: false, at: at(1), detail: { round: 1, findings: [noFile] } },
+    { kind: 'step', step: 'challenge', ok: false, at: at(2), detail: { round: 2, findings: [{ ...other, status: 'refuted' }, { ...noFile, id: 'code-1@r1', carried: { from_round: 1, times: 1 } }] } },
+  ] };
+  assert.ok(!rules.evidenceChain(carried).some((x) => x.rule === 'R5.unverified_finding_lost'), 'carried under a new id');
+});

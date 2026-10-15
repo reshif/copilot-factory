@@ -176,9 +176,14 @@ function lostFindings(job) {
     for (const x of r.detail.findings.filter((y) => SERIOUS.has(y.severity) && y.status === 'unverified')) {
       const later = rounds.slice(i + 1);
       if (!later.length) continue;
+      // The same finding in a later round: the same issue (file and rule, summary or nearby
+      // line), or the carried copy of this one (its id, possibly renamed "code-1@r1"). An id
+      // alone proves nothing: ids restart every round.
+      const from = x.carried ? x.carried.from_round : r.detail.round || 1;
+      const same = (y) => sameIssue(x, y, false) || (baseId(y.id) === baseId(x.id) && (y.carried ? y.carried.from_round === from : !x.file && !y.file && String(x.summary || '').toLowerCase() === String(y.summary || '').toLowerCase()));
       // settled by a verifier, or by the human (factory finding accept|dismiss, with a reason)
-      const settled = later.some((e) => e.detail.findings.some((y) => (y.id === x.id || sameIssue(x, y, false)) && ['confirmed', 'refuted', 'accepted', 'dismissed'].includes(y.status)));
-      const carried = later[later.length - 1].detail.findings.some((y) => (y.id === x.id || (y.carried && sameIssue(x, y, false))) && y.status === 'unverified');
+      const settled = later.some((e) => e.detail.findings.some((y) => same(y) && ['confirmed', 'refuted', 'accepted', 'dismissed'].includes(y.status)));
+      const carried = later[later.length - 1].detail.findings.some((y) => same(y) && y.status === 'unverified');
       if (settled || carried) continue;
       const passedAfter = later.find((e) => e.ok);
       const shipped = ships.find((t) => t > r.at);
@@ -587,6 +592,7 @@ function jobHealth(job, L, now) {
 // a minor finding matches by rule or summary only.
 const SERIOUS = new Set(['blocker', 'major']);
 const reportedSerious = (x) => SERIOUS.has(x.severity) || (x.notes || []).some((n) => /^downgraded from (blocker|major)/.test(String(n)));
+const baseId = (id) => String(id || '').replace(/@r\d+$/, '');
 function sameIssue(a, b, minor) {
   if (!a.file || a.file !== b.file) return false;
   const rule = a.rule && a.rule === b.rule && a.lane === b.lane;
