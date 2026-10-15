@@ -76,9 +76,10 @@ function faces(x) {
 // The job's own vocabulary (the words of its title, e.g. "Nautobot VLAN sync from Cisco
 // devices") is shared by nearly every issue of that job, so it is no evidence that two issues
 // are the same. It still counts towards the overlap, but a match must also share at least two
-// words outside it. Without this rule "How does the sync get credentials for the Cisco
-// devices?" folded into a settled "Which Cisco devices does the Nautobot VLAN sync read?"
-// (J-0001: the credentials issue vanished as a note on the scoping issue). The workflow keeps
+// words outside it (or the one own word of a face that has only one). Without this rule "How
+// does the sync get credentials for the Cisco devices?" folded into a settled "Which Cisco
+// devices does the Nautobot VLAN sync read?" (J-0001: the credentials issue vanished as a note
+// on the scoping issue). The workflow keeps
 // the same rule (workflows/fanout-judge.js faceMatch), fed by the brief's vocabulary.
 function vocabulary(title) {
   return [...new Set(tokens(title || '').map(wordRoot))];
@@ -101,9 +102,14 @@ function faceMatch(ta, tb, strict, bg) {
   if (!B.size) return true;
   const a = [...ta].filter((t) => !B.has(t));
   const b = new Set([...tb].filter((t) => !B.has(t)));
+  // two shared own words, or as many as the shorter face has (the same question raised again
+  // word for word may have only one word outside the vocabulary); none on both sides: the
+  // faces are the vocabulary alone and already matched on it
+  const need = Math.min(2, a.length, b.size);
+  if (!need) return !a.length && !b.size;
   let own = 0;
   for (const t of a) if (b.has(t)) own += 1;
-  if (own < 2) return false;
+  if (own < need) return false;
   return own / (a.length + b.size - own) >= 0.34 || own / Math.min(a.length, b.size) >= 0.6;
 }
 // Same issue? Deterministic: same_as is handled by the caller; here the subject key, then

@@ -263,3 +263,22 @@ test('6: God Eye revise with blockers on settled issues is never approved-with-n
   assert.match(round(root2, { scout: scoutData(prior.unknowns), critique: APPROVE }, 'ok').message, /^God Eye approved the contract/);
   assert.equal(F.cli(root2, ['next']).clarify, undefined);
 });
+
+// ---------------------------------------------------------------- review of 0.6.1
+test('review 1: the job\'s vocabulary never stops the same question from folding: identical texts and one-word paraphrases fold (CLI and workflow); credentials still do not', async () => {
+  const bg = clarify.vocabulary(TITLE);
+  const SAME = 'Which Cisco devices does the Nautobot VLAN sync read?';
+  assert.equal(clarify.sameIssue({ text: SAME }, { text: SAME }, bg), true, 'the same text raised again is the same issue');
+  assert.equal(clarify.sameIssue({ text: SAME }, { text: 'Which Cisco devices should the Nautobot VLAN sync job read from?' }, bg), true, 'a paraphrase whose only own word is shared');
+  const flask = clarify.vocabulary('Add rate limiting to the Flask API');
+  assert.equal(clarify.sameIssue({ text: 'What rate limit should the Flask API apply?' }, { text: 'What rate limit should the Flask API apply?' }, flask), true);
+  assert.equal(clarify.sameIssue({ text: CREDS }, { text: SAME }, bg), false, 'credentials are still not device scope');
+  assert.equal(clarify.sameIssue({ subject: 'device.credentials', subject_explicit: true, text: CREDS }, { subject: 'sync.device-scope', subject_explicit: true, text: SCOPE }, bg), false);
+
+  // workflow: the settled scope question raised again word for word is folded, not a new issue
+  const prior = { unknowns: [{ ...issue('U-1', SAME, 'scope'), owner: 'user', status: 'settled', settled_by: 'user', subject: 'sync.device-scope', answer: 'all access switches' }], evidence: [], assumptions: [], versions: [] };
+  const judge = () => ({ questions: [{ question: SAME, category: 'scope', why: 'w', default: 'Your call', same_as: 'new', kind: 'user' }], dismissed: [] });
+  const w = await H.run(WF, brief({ prior, next_ids: { U: 1, E: 0, A: 0 }, vocabulary: bg }), crew({ JUDGE: judge }));
+  assert.equal(w.result.status, 'ok', 'nothing new to ask');
+  assert.deepEqual(w.result.data.scout.unknowns.map((u) => u.id), ['U-1']);
+});
