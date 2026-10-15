@@ -6,6 +6,7 @@ function wireGlyph(it) {
     case 'route': return it.action === 'parked' ? ['⏸', 'park'] : it.action === 'gate' || it.action === 'wait' ? ['◇', 'you'] : ['→', 'route'];
     case 'result': return it.ok ? ['✓', 'ok'] : it.outcome === 'ask' ? ['?', 'you'] : ['✕', 'bad'];
     case 'agents': return ['◆', 'agents'];
+    case 'clarify': return it.waiting ? ['?', 'you'] : it.outcome === 'park' ? ['⏸', 'park'] : ['◎', 'route'];
     case 'human': return it.action === 'deny' ? ['✋', 'bad'] : it.action === 'resume' ? ['▶', 'you'] : ['✓', 'you'];
     case 'guard': case 'refused': case 'stop_block': return ['⛔', 'bad'];
     case 'hook_error': case 'autopilot': return ['⚠', 'bad'];

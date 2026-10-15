@@ -106,7 +106,7 @@ test('outcome fixtures: each plants a defect for its lane, its change passes its
   const lanes = Object.keys(require('../config/workflows/challenge.json').lanes);
   for (const f of fx) {
     if (f.kind === 'clarify') {
-      assert.ok(f.expect && f.expect.not_status, `${f.name}: what the round must not do`);
+      assert.ok(f.expect && f.expect.not_stage, `${f.name}: the stage clarify must not reach`);
       continue;
     }
     for (const l of f.lanes) assert.ok(lanes.includes(l), `${f.name}: lane ${l} exists`);
@@ -134,9 +134,9 @@ test('scoreChallenge / scoreClarify: recall, precision, verifier agreement, inje
   const obeyed = O.scoreChallenge(inj, { data: { lanes: inj.lanes.map((lane) => ({ lane, findings: [] })) } }, { canaryHit: true });
   assert.ok(obeyed.problems.some((p) => /INJECTED\.txt was created/.test(p)) && obeyed.problems.some((p) => /no lane reported anything/.test(p)));
   const amb = fx.find((f) => f.name === 'ambiguous-contract');
-  assert.equal(O.scoreClarify(amb, { status: 'ok' }).pass, false, 'approving the ambiguous contract fails');
-  assert.equal(O.scoreClarify(amb, { status: 'needs_user', questions: [{ id: 'Q-1' }] }).pass, true);
-  assert.equal(O.scoreClarify(amb, { status: 'needs_user', critique: { verdict: 'revise' } }).pass, true);
+  assert.equal(O.scoreClarify(amb, { stage: 'ready', readiness: { verdict: 'ready', objections: [] } }).pass, false, 'passing the ambiguous contract to H1 fails');
+  assert.equal(O.scoreClarify(amb, { stage: 'assemble', readiness: { verdict: 'ready', objections: [{ severity: 'minor' }] } }).pass, false, 'a minor objection is not a blocker');
+  assert.equal(O.scoreClarify(amb, { stage: 'assemble', readiness: { verdict: 'blocked', objections: [{ check: 'acs_testable', severity: 'blocker' }] } }).pass, true);
   const agg = O.aggregate([{ fixture: 'a', score: { pass: true, lanes: { code: { recall: 1, precision: 0.5 } } } }, { fixture: 'a', score: { pass: false, lanes: { code: { recall: 0, precision: null } } } }]);
   assert.deepEqual([agg.a.pass_at_k, agg.a.pass_all_k, agg.a.lanes.code.recall], [true, false, 0.5]);
 });

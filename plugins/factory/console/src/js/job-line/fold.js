@@ -63,6 +63,12 @@ function applyItem(job, S, it, i) {
       st.status = it.ok ? (d && d.auto ? 'auto' : 'done') : it.outcome === 'ask' ? 'waiting' : 'failed';
       break;
     }
+    case 'clarify': {
+      // clarify v3's stage lines: waiting on your reply, or at work again
+      const st = it.step && S.steps[it.step];
+      if (st && st.status !== 'done' && st.status !== 'auto') { st.status = it.waiting ? 'waiting' : it.outcome === 'park' ? 'blocked' : 'running'; st.text = it.text; }
+      break;
+    }
     case 'agents': {
       const st = S.steps[it.step || S.pos];
       if (st && st.status === 'pending') st.status = 'running';

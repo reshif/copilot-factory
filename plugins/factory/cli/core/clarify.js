@@ -933,7 +933,7 @@ function applySheet(data, sheet, parsed, word, how = 'reply') {
     } else if (a.choice) {
       const o = d.options.find((x) => x.key === a.choice);
       if (!o) continue;
-      setValue(it, { value: o.text, strength: 'user', source: { kind: 'sheet', ref: d.id, word: word.id, quote: `${d.no} ${a.choice}` }, actor, text: word.text });
+      setValue(it, { value: o.text, strength: 'user', source: { kind: 'sheet', ref: d.id, word: word.id, quote: a.quote || `${d.no} ${a.choice}` }, actor, text: word.text }); // the user's own words when the interviewer quoted them
     } else {
       setValue(it, { value: a.text, strength: 'user', source: { kind: 'word', ref: word.id, quote: a.quote || a.text }, actor, text: word.text });
     }
@@ -1095,6 +1095,7 @@ function clauseOutcome(data, R, c) {
 function byWhom(it) {
   if (it.status === 'deferred') return 'deferred to design';
   if (it.strength === 'user') return 'you';
+  if (it.strength === 'accepted' && ['intent', 'pin', 'scope'].includes(it.kind)) return 'you confirmed it on the read-back';
   if (it.strength === 'accepted') return 'recommended; you accepted';
   if (it.strength === 'evidence') return 'evidence';
   return 'my assumption';
@@ -1373,7 +1374,10 @@ function stagePlan(root, state) {
   } else if (stage === 'check') {
     groups = [[A('check', 'readiness', 'readiness', readinessInput(root, state, data), S.agent_sec['god-eye'], 'readiness')]];
   } else fail(`Clarify is at an unknown stage (${stage}).`, 'internal');
-  return { stage, rev: data.rev || 0, groups, contract_hash: contractHash(root, state) };
+  // what each group is called while it runs (the console's live step list)
+  const PH = { readback: ['read your words back'], redirect: ['read your redirect back'], interpret: ['read your sheet answer'], assemble: ['write the contract'], check: ['readiness check'] };
+  const phases = stage === 'research' ? groups.map((g) => (g.some((a) => a.role === roles.brief.role) ? 'research brief' : `research (${g.map((a) => a.mode).join(', ')})`)) : PH[stage];
+  return { stage, rev: data.rev || 0, groups, phases, contract_hash: contractHash(root, state) };
 }
 
 function writerInput(root, state, data) {
@@ -1442,7 +1446,7 @@ function record(root, state, env) {
       result.note = 'The interviewer could not read that reply: answer by number (e.g. "1 a, 2: <your words>").';
       next = 'sheet_wait';
     } else {
-      const answers = (out.answers || []).filter((a) => norm(w.text).includes(norm(a.quote || '')) && norm(a.quote || '').length >= 2).map((a) => ({ no: Number(a.decision), ...(a.choice === 'defer' ? { defer: true } : ['recommended', 'a', 'b', 'c', 'd', 'e'].includes(a.choice) ? { choice: a.choice } : { text: clip(a.text || a.quote, 400), quote: a.quote }) }));
+      const answers = (out.answers || []).filter((a) => norm(w.text).includes(norm(a.quote || '')) && norm(a.quote || '').length >= 2).map((a) => ({ no: Number(a.decision), ...(a.choice === 'defer' ? { defer: true } : ['recommended', 'a', 'b', 'c', 'd', 'e'].includes(a.choice) ? { choice: a.choice, quote: clip(a.quote, 300) } : { text: clip(a.text || a.quote, 400), quote: a.quote }) }));
       const facts = (out.facts || []).filter((f) => norm(w.text).includes(norm(f.quote || ''))).map((f) => ({ no: Number(f.fact), text: clip(f.text, 400) }));
       const r = applySheet(data, s, { accept: false, answers, facts }, w, 'interpret');
       result.applied = r;
@@ -1510,7 +1514,7 @@ function finish(root, state, data, next, S, result = {}) {
   data.stage = next;
   data.parked = null;
   save(root, state.id, data);
-  ledgerNote(root, state, data, next, { counters: data.counters, failures: data.failures.length });
+  ledgerNote(root, state, data, next, { counters: data.counters, caps: { research_passes: S.research_passes, writer_attempts: S.writer_attempts }, failures: data.failures.length });
   if (next === 'ready') {
     const b = require('./invalidation').current(root, state);
     const last = data.checks[data.checks.length - 1] || {};
@@ -1951,6 +1955,12 @@ function consoleBlock(root, state) {
     questions: s ? s.decisions.filter((d) => !d.answered).map((d) => ({ id: `${d.no}`, question: clip(d.question, 200), recommendation: d.recommendation ? clip((d.options.find((o) => o.key === d.recommendation) || {}).text, 140) : null })) : [],
     items: data.items.slice(0, 80).map((it) => ({ id: it.id, kind: it.kind, text: clip(it.text, 160), value: it.value ? clip(it.value, 140) : null, status: it.status, by: it.strength ? byWhom(it) : null, tag: it.tag })),
     failures: data.failures.slice(0, 20).map((f) => ({ what: clip(f.what, 160), reason: clip(f.reason, 160) })),
+    // research gaps still open (a later pass may have settled an earlier failure)
+    gaps: openFailures(data).slice(0, 20).map((f) => ({ what: clip(f.what, 160), reason: clip(f.reason, 160) })),
+    pins: data.items.filter((it) => it.kind === 'pin' && it.status !== 'dropped').map((it) => ({ id: it.id, text: clip(`${it.system ? `${it.system} ` : ''}${it.value || it.text}`, 80), by: byWhom(it) })),
+    // every finding with its source and the CLI's verdict on it (usable or why not)
+    evidence: data.evidence.slice(0, 60).map((e) => ({ id: e.id, item: e.item, claim: clip(e.claim, 200), source: clip(e.source, 200), version: e.version || null, retrieved_at: e.retrieved_at || null, verdict: e.verdict || null, usable: usable(e) })),
+    dropped: data.items.filter((it) => it.status === 'dropped').map((it) => { const h = [...(it.history || [])].reverse().find((x) => x.event === 'dropped') || {}; return { id: it.id, text: clip(it.text, 160), actor: h.actor || null, reason: h.text || null }; }),
     sheets: data.sheets.length,
     passes: data.research.passes.length,
     checks: data.checks.length,

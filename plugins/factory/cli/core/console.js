@@ -77,6 +77,21 @@ function stepsOf(lock, state) {
   return list;
 }
 
+// Clarify v3's stage lines on the timeline: where clarify went next, in plain words.
+const CLARIFY_STAGE_TEXT = {
+  readback: () => 'Clarify starts again from the read-back',
+  readback_wait: () => 'Read your words back; waiting for your ok or your corrections',
+  research: () => 'Research next: one time-boxed pass, pinned to the versions you confirmed',
+  sheet_wait: (d) => `Decision sheet ready; waiting for your answer${num(d.failures) ? ` (${num(d.failures)} research gap(s) listed)` : ''}`,
+  interpret: () => 'Your sheet answer is in; the interviewer maps it to the decisions',
+  redirect: (d) => `Your redirect${d.redirect ? ` ${d.redirect}` : ''} is in; the interviewer reads it back`,
+  redirect_wait: () => 'Read your redirect back; waiting for your ok',
+  assemble: () => 'The contract writer writes the contract from what was settled',
+  check: () => 'Readiness check: the CLI\'s checks, then God Eye\'s checklist',
+  ready: () => 'Clarify is done: H1 next',
+  park: (d) => `Clarify parked${d.reason ? `: ${d.reason}` : ''}`,
+};
+
 function resultText(step, ok, d) {
   d = d || {};
   switch (step) {
@@ -323,6 +338,10 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
         return { label: short(a.label, 100), role: roleOf(a.agent_type), model: a.model || null, retry: Boolean(a.retry), outcome: a.outcome || null, ms: hit ? hit.ms : null, ...(hit && hit.verdict ? { verdict: hit.verdict } : {}) };
       });
       push({ t: e.at, type: 'agents', step, workflow: e.workflow, config: e.config, mode: e.mode, decision_id: e.decision_id, status: e.status, runs: e.agent_runs || agents.length, agents });
+    } else if (e.kind === 'clarify') {
+      // clarify v3: one line per stage it moved to (cli/core/clarify.js ledgerNote)
+      const d = e.detail || {};
+      push({ t: e.at, type: 'clarify', step: ids.has('clarify') ? 'clarify' : null, stage: String(e.stage || ''), outcome: String(e.outcome || ''), failures: num(d.failures), text: short(CLARIFY_STAGE_TEXT[e.outcome] ? CLARIFY_STAGE_TEXT[e.outcome](d) : `Clarify: ${e.outcome}`, 240), waiting: /_wait$/.test(String(e.outcome || '')) });
     } else if (e.kind === 'intent') {
       intentRounds[e.round] = e; // written just before that round's clarify step entry
     } else if (e.kind === 'error') {

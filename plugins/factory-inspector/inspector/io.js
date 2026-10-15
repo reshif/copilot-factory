@@ -112,6 +112,7 @@ function layout(root) {
       lock: path.join(f, 'jobs', id, 'recipe.lock.json'),
       ledger: path.join(f, 'jobs', id, 'ledger.jsonl'),
       intent: path.join(f, 'jobs', id, 'intent-evidence.json'),
+      clarify: path.join(f, 'jobs', id, 'clarify.json'),
     }),
   };
 }

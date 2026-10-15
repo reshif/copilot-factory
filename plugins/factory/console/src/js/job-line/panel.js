@@ -13,6 +13,7 @@ function describe(it, job = LV.job) {
     }
     case 'result': return [`${stepName(it.step || it.raw_step)}: ${it.ok ? 'passed' : it.outcome === 'ask' ? 'needs you' : 'not passed'}`, it.text];
     case 'agents': return [`${it.workflow ? `${it.workflow}${it.config ? ` · ${it.config}` : ''}` : 'Agents (seen by the hooks)'} ran ${it.runs} agent run${it.runs === 1 ? '' : 's'}`, it.from === 'hooks' ? 'Seen through the hooks (no roster in the envelope)' : `Workflow status: ${it.status}`];
+    case 'clarify': return [it.waiting ? 'Clarify: needs you' : 'Clarify', it.text];
     case 'park': return ['Parked', it.text];
     case 'stopped': return ['Stopped', it.text];
     case 'error': return ['Workflow error', it.text];
@@ -31,6 +32,7 @@ function who(it) {
   if (it.type === 'route') return ['router', 'route'];
   if (it.type === 'human') return ['you', 'you'];
   if (it.type === 'agents') return ['agents', 'agents'];
+  if (it.type === 'clarify') return it.waiting ? ['asks', 'you'] : it.outcome === 'park' ? ['park', 'bad'] : ['clarify', 'route'];
   if (it.type === 'result') return [it.ok ? 'passed' : it.outcome === 'ask' ? 'asks' : 'failed', it.ok ? 'ok' : it.outcome === 'ask' ? 'you' : 'bad'];
   if (['park', 'error', 'guard', 'stopped', 'refused', 'hook_error', 'stop_block', 'unparsed'].includes(it.type)) return [it.type.replace('_', ' '), 'bad'];
   if (it.type === 'created') return ['request', 'you'];

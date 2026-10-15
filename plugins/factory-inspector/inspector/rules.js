@@ -20,6 +20,7 @@ function seals(job) {
   if (job.state && !job.stateSealed) bad.push('state.json');
   if (job.lock && !job.lockSealed) bad.push('recipe.lock.json');
   if (job.intent && job.intentSealed === false) bad.push('intent-evidence.json');
+  if (job.clarify && job.clarifySealed === false) bad.push('clarify.json');
   const ledgerBad = job.ledgerLines.filter((l) => !l.torn && (!l.sealed || (l.rec && l.rec.job && l.rec.job !== job.id))); // torn lines: R11
   if (ledgerBad.length) bad.push(`ledger.jsonl lines ${ledgerBad.map((l) => l.line).slice(0, 10).join(', ')}`);
   const decBad = job.decisionLines.filter((d) => !d.sealed);
@@ -233,6 +234,12 @@ function loops(job) {
     const n = count(rule);
     if (n > allowed) out.push(f({ rule: 'R6.rounds_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:${rule}`, job: job.id, summary: `${n} ${name} rounds, but the cap allows ${allowed} (${max} + ${allowed - max} resume(s)).`, question: `How did ${name} rounds exceed the cap?` }));
   }
+  // clarify v3: each stage line records its counters and the caps it ran under
+  const over3 = job.ledger.filter((e) => e.kind === 'clarify' && e.detail && e.detail.caps && e.detail.counters).filter((e) => ['research_passes', 'writer_attempts'].some((k) => Number(e.detail.counters[k]) > Number(e.detail.caps[k])));
+  if (over3.length) {
+    const e = over3[over3.length - 1];
+    out.push(f({ rule: 'R6.clarify_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:clarify`, job: job.id, summary: `Clarify ran ${e.detail.counters.research_passes} research pass(es) and ${e.detail.counters.writer_attempts} writer attempt(s); its caps were ${e.detail.caps.research_passes} and ${e.detail.caps.writer_attempts}.`, question: 'How did clarify keep running past its caps?' }));
+  }
   const clarifySteps = job.ledger.filter((e) => e.kind === 'step' && e.step === 'clarify');
   const v2 = clarifySteps.filter((e) => e.detail && e.detail.ledger && Number.isInteger(e.detail.ledger.ceiling));
   if (v2.length) {
@@ -240,7 +247,7 @@ function loops(job) {
     // ceiling it ran under (max_intent_rounds, plus what resumes allowed)
     const over = v2.filter((e) => e.detail.ledger.counted > e.detail.ledger.ceiling);
     if (over.length) out.push(f({ rule: 'R6.clarify_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:clarify`, job: job.id, summary: `Clarify ran ${over[over.length - 1].detail.ledger.counted} counted rounds; the ceiling it recorded was ${over[over.length - 1].detail.ledger.ceiling}.`, question: 'How did clarify keep running past its ceiling?' }));
-  } else if (L.max_intent_rounds !== undefined && clarifySteps.length > L.max_intent_rounds + 2 + resumes.filter((r) => r.from === 'clarify').length) {
+  } else if (!over3.length && L.max_intent_rounds !== undefined && clarifySteps.length > L.max_intent_rounds + 2 + resumes.filter((r) => r.from === 'clarify').length) {
     out.push(f({ rule: 'R6.clarify_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:clarify`, job: job.id, summary: `${clarifySteps.length} clarify rounds recorded; the cap is ${L.max_intent_rounds + 2}.`, question: 'How did clarify keep running past its cap?' }));
   }
   return out;
@@ -249,7 +256,7 @@ function loops(job) {
 // ---------------------------------------------------------------- R7 driver fidelity
 // shim (a symlink on PATH) and console (a read-only snapshot / server) change no job state;
 // `intent show` only prints clarify's research.
-const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'clarify:status', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console', 'env:show', 'env:check', 'env:propose']);
+const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'clarify:status', 'clarify:split', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console', 'env:show', 'env:check', 'env:propose']);
 // Steps `factory run` runs itself as child commands (via "run"): task verify after a builder,
 // the environment's setup in a worktree, the per-wave integration. Part of the workflow the
 // decision asked for, never the driver's improvisation.
@@ -260,7 +267,7 @@ const HUMAN_ACTIONS = new Set(['assumption', 'finding']);
 // The human-only verbs. One that went through (ok, channel tty: the CLI accepted the terminal
 // as the user's, with the typed confirmation) is the user acting, a legitimate channel: not a
 // driver deviation. A refused attempt (human_only) is still judged: that was an agent trying.
-const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding', 'env:set', 'lessons:accept', 'lessons:reject', 'lessons:promote', 'clarify:split']);
+const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding', 'env:set', 'lessons:accept', 'lessons:reject', 'lessons:promote', 'proceed']);
 
 function humanFromTerminal(e) {
   return e.event === 'cli' && e.ok !== false && (HUMAN_VERBS.has(cmdKey(e)) || HUMAN_VERBS.has(e.cmd));
@@ -276,11 +283,18 @@ function expectationsFor(d) {
   const wf = (workflow, config) => ({
     required: [(e) => e.cmd === 'wfargs' && e.workflow === workflow && (!config || e.config === config), (e) => e.cmd === 'record' && (e.workflow === workflow || !e.workflow) && (!config || !e.config || e.config === config)],
     requiredLabel: `factory wfargs ${workflow}${config ? ` --config ${config}` : ''} and factory record`,
-    allowed: new Set(['answer', 'clarify:note', 'park', 'task:start', 'task:verify', 'task:state', 'reconcile', 'evidence', 'plan:validate', 'contract', 'wfargs', 'record']),
+    allowed: new Set(['answer', 'clarify:note', 'clarify:reply', 'clarify:redirect', 'park', 'task:start', 'task:verify', 'task:state', 'reconcile', 'evidence', 'plan:validate', 'contract', 'wfargs', 'record']),
   });
   if (d.action === 'workflow') return wf(d.workflow, d.config);
   if (d.action === 'skill') {
-    if (d.skill === 'clarify') return wf('fanout-judge', 'clarify');
+    if (d.skill === 'clarify') {
+      // clarify v3: a stage that runs agents (factory run clarify), or one that waits on the
+      // user's reply (chat, or factory clarify reply from the main session): like a gate, nothing
+      // is required of the driver, and only the reply commands may change state.
+      if (d.clarify && d.clarify.waiting_for_user) return { required: [], allowed: new Set(['answer', 'clarify:reply', 'clarify:note', 'clarify:redirect', 'contract', 'park', 'report']) };
+      if (d.clarify) return wf('clarify', null);
+      return wf('fanout-judge', 'clarify'); // decisions from before v3
+    }
     if (d.skill === 'ship') return { required: [(e) => e.cmd === 'ship'], requiredLabel: 'factory ship', allowed: new Set(['report', 'ship', 'pr', 'ci']) };
     if (d.skill === 'distill') return { required: [(e) => cmdKey(e) === 'distill:done'], requiredLabel: 'factory distill done', allowed: new Set(['distill:write', 'distill:done', 'lessons:add']) };
     if (d.skill === 'amend') return { required: [(e) => e.cmd === 'amend'], requiredLabel: 'factory amend start/submit', allowed: new Set(['amend']) };
@@ -297,7 +311,8 @@ function expectationsFor(d) {
     };
   }
   // gate, wait, parked, done: nothing should change state
-  return { required: [], allowed: new Set(['report', ...(d.action === 'wait' ? ['ci', 'use'] : [])]), quiet: true };
+  // at H1/EH1 the user may redirect clarify instead of denying (factory clarify redirect, clarify v3)
+  return { required: [], allowed: new Set(['report', ...(d.action === 'wait' ? ['ci', 'use'] : []), ...(d.action === 'gate' && ['H1', 'EH1'].includes(d.step) ? ['clarify:redirect'] : [])]), quiet: true };
 }
 
 function driverFidelity(job) {
@@ -580,6 +595,14 @@ function jobHealth(job, L, now) {
   if (reraised >= L.reraised_per_job) out.push(f({ rule: 'R19.issues_reraised', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(clarify.filter((e) => (e.detail.ledger || {}).reraised), 'at'), summary: `Agents raised settled clarify issues again ${reraised} time(s) in ${id} (the ledger folded them as notes; limit ${L.reraised_per_job}).`, question: 'Do the analysts, the judge or God Eye ignore the settled list in their brief, or is a settled answer unclear?' }));
   const dropped = clarify.reduce((n, e) => n + (Number(e.detail.dropped) || 0), 0);
   if (dropped >= L.questions_dropped_per_job) out.push(f({ rule: 'R19.question_overrun', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(clarify.filter((e) => e.detail.dropped), 'at'), summary: `Clarify in ${id} proposed ${dropped} question(s) beyond the round budget or already asked; the CLI dropped them (limit ${L.questions_dropped_per_job}).`, question: 'Does the judge ignore the question budget or the never-re-ask list in its brief?' }));
+  // clarify v3: parks (caps reached, agents that returned nothing), H1 reached with God Eye still
+  // objecting (you said proceed), and research gaps carried to H1
+  const parks3 = job.ledger.filter((e) => e.kind === 'clarify' && e.outcome === 'park');
+  if (parks3.length) out.push(f({ rule: 'R19.clarify_parked', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(parks3, 'at'), summary: `Clarify in ${id} parked ${parks3.length} time(s): ${parks3.slice(-3).map((e) => String((e.detail || {}).reason || 'no reason recorded').slice(0, 120)).join('; ')}.`, question: 'Were the agents failing (time caps, the model), or did the caps stop work that was converging?' }));
+  const objected = clarify.filter((e) => e.ok && e.detail.version === 3 && e.detail.approved === false);
+  if (objected.length) out.push(f({ rule: 'R19.proceeded_past_objections', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(objected, 'at'), summary: `${id} reached H1 with ${objected[objected.length - 1].detail.god_eye_objects || 'some'} God Eye objection(s) still open (you said proceed); H1 showed them as objections, not approval.`, question: 'Were the objections wrong, or was the contract approved with a known gap?' }));
+  const gaps = clarify.filter((e) => e.ok && e.detail.version === 3 && Number(e.detail.failures) > 0);
+  if (gaps.length && Number(gaps[gaps.length - 1].detail.failures) >= L.research_gaps_per_job) out.push(f({ rule: 'R20.research_gaps', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(gaps, 'at'), summary: `Clarify in ${id} reached H1 with ${gaps[gaps.length - 1].detail.failures} research gap(s) recorded (shown at H1 and in the contract's Research gaps).`, question: 'Why could research not settle them: no web access, a time box too small for this risk, or no source for the confirmed version?' }));
   out.push(...groundedIntent(job, L));
   out.push(...reviewRegressions(job), ...reconcileDrops(job));
   return out;

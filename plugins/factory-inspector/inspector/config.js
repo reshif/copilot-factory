@@ -33,6 +33,7 @@ const LIMITS = {
   assumptions_overridden_per_job: 1, // evidence-backed assumptions you changed or dropped (a learning signal)
   clarify_stalled_rounds: 2, // clarify v2 rounds in a row that settled and asked nothing (degraded rounds not counted)
   reraised_per_job: 3, // settled clarify issues raised again by agents (folded as notes by the ledger)
+  research_gaps_per_job: 1, // clarify v3: research gaps recorded when the job reached H1
 };
 const DEFAULTS = { version: 1, mode: 'on', sample_every: 10, settle_after: 20, threshold: 3, recipes: {}, limits: LIMITS, rules_off: [] };
 

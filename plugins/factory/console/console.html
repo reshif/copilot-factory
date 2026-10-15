@@ -1920,15 +1920,13 @@ html[data-theme="light"] .dx-blueprint{
 // Each agent: [stage, what it does]. Its Copilot tools come from its own agents/*.agent.md
 // `tools:` line: build.js writes them into AGENT_TOOLS, so the Crew never drifts from the files.
 // An agent that has "edit" can write; the others are read-only.
-const AGENT_TOOLS = {"architect":["read","search","grep","glob","edit","execute"],"builder":["read","search","grep","glob","edit","execute"],"code-reviewer":["read","search","grep","glob","execute"],"contract-editor":["read","grep","glob"],"epic-reviewer":["read","search","grep","glob","execute"],"finding-verifier":["read","search","grep","glob","execute"],"god-eye":["read","search","grep","glob","execute"],"integrator":["read","search","grep","glob","edit","execute"],"intent-analyst":["read","search","grep","glob"],"intent-mapper":["read","grep","glob"],"judge":["read","search","grep","glob"],"lesson-writer":["read","search","grep","glob","execute"],"option-generator":["read","search","grep","glob"],"planner":["read","search","grep","glob","edit","execute"],"researcher":["read","search","grep","glob","execute","web","web_fetch"],"security-reviewer":["read","search","grep","glob","execute"],"slicer":["read","search","grep","glob","edit","execute"],"test-reviewer":["read","search","grep","glob","execute"],"tester":["read","search","grep","glob"],"threat-modeler":["read","search","grep","glob","edit","execute"],"ux-reviewer":["read","search","grep","glob","execute"],"verifier":["read","grep","glob","web","web_fetch"]};
+const AGENT_TOOLS = {"architect":["read","search","grep","glob","edit","execute"],"brief-writer":["read","grep","glob"],"builder":["read","search","grep","glob","edit","execute"],"code-reviewer":["read","search","grep","glob","execute"],"contract-writer":["read","grep","glob"],"epic-reviewer":["read","search","grep","glob","execute"],"finding-verifier":["read","search","grep","glob","execute"],"god-eye":["read","search","grep","glob","execute"],"integrator":["read","search","grep","glob","edit","execute"],"interviewer":["read","grep","glob"],"lesson-writer":["read","search","grep","glob","execute"],"option-generator":["read","search","grep","glob"],"planner":["read","search","grep","glob","edit","execute"],"researcher":["read","search","grep","glob","execute","web","web_fetch"],"security-reviewer":["read","search","grep","glob","execute"],"slicer":["read","search","grep","glob","edit","execute"],"test-reviewer":["read","search","grep","glob","execute"],"tester":["read","search","grep","glob"],"threat-modeler":["read","search","grep","glob","edit","execute"],"ux-reviewer":["read","search","grep","glob","execute"]};
 const AGENTS = {
-  'intent-mapper': ['Clarify', 'Lists the unknowns before anyone asks you anything: repo, world, decision or yours, with their impact.'],
-  'verifier': ['Clarify', 'Re-opens each high-impact or web finding, checks the quote, date and version; confirmed, contradicted or unverified.'],
-  'intent-analyst': ['Clarify', 'Reads the draft contract from one angle and asks only what the repo can\'t answer.'],
-  'judge': ['Clarify', 'Merges the analysts\' questions, dismisses with reasons, never re-asks.'],
-  'contract-editor': ['Clarify', 'Applies what clarify settled (your answers, accepted defaults, God Eye\'s pointed items) to the contract and returns the text; the CLI checks and writes it.'],
-  'god-eye': ['Critique', 'Cold reviewer of the contract, design or plan. Approves only what someone could act on without asking.'],
-  'researcher': ['Ground', 'Grounds one topic, or scouts clarify\'s unknowns (repo: file:line; web: fetched docs, quoted); every claim is cited or marked UNVERIFIED.'],
+  'interviewer': ['Clarify', 'Reads your words back (intent, scope, your facts quoted, version pins, what research will find out), reads a redirect back as tracked clauses, and maps a free-form sheet answer onto the decisions. One short call per turn.'],
+  'brief-writer': ['Clarify', 'Turns one research pass into one brief: a record per decision (options, evidence, recommendation) and the facts research settled, with the gaps.'],
+  'contract-writer': ['Clarify', 'Writes the contract once from what clarify settled and maps every item to where it says it; the CLI checks it, writes it and adds its own sections.'],
+  'god-eye': ['Critique', 'Cold reviewer: clarify\'s readiness check (a fixed seven-item checklist; a blocker sends clarify back to its stage), the design and the plan. Approves only what someone could act on without asking.'],
+  'researcher': ['Ground', 'Grounds one topic, or researches clarify\'s plan in one time-boxed pass pinned to the versions you confirmed (repo: file:line; docs: fetched for that version, quoted); every claim is cited or marked UNVERIFIED.'],
   'option-generator': ['Decide', 'Proposes one design optimised for one prior, without hedging.'],
   'threat-modeler': ['Decide', 'Writes the threat model before the design is decided.'],
   'architect': ['Decide', 'Decides from findings, options and threats; writes the ADR or no-adr note.'],
@@ -1973,20 +1971,20 @@ const STAGES = [
       { id: 'cli-new', type: 'cli', title: 'factory job new', sub: 'Recipe chosen by rule from work type + risk; policy can only raise risk',
         detail: { what: 'Creates the job branch, the contract template and a sealed snapshot of the rulebook the job promises to follow.', cmds: ['factory job new --title … --type … --risk …'], outputs: ['state.json (sealed)', 'recipe.lock.json (sealed rulebook)', 'contract.md template', 'branch factory/J-0007'] } },
     ] },
-  { id: 'contract', name: 'Contract', sub: 'skill: clarify · workflow: fanout-judge', gapAfter: 50,
-    what: 'The request becomes an outcome contract: a goal, acceptance criteria with evidence types, allowed paths and verify commands. Research comes first, so agents only ask what neither the repo nor the documentation can answer; you approve the exact text.',
+  { id: 'contract', name: 'Contract', sub: 'skill: clarify · workflow: clarify', gapAfter: 50,
+    what: 'The request becomes an outcome contract: a goal, acceptance criteria with evidence types, allowed paths and verify commands. Clarify reads your words back first, researches once against the versions you confirmed, asks at most five decisions on one sheet, writes the contract once and checks it; you approve the exact text.',
     nodes: [
       { id: 'skill-clarify', type: 'skill', title: 'factory:clarify', sub: 'Copilot drafts contract.md from your request and the repo', step: 'clarify',
         detail: { what: 'Fills every section, answers what the repo can answer, and runs factory contract check before any agent sees it.', skills: ['factory:clarify'], cmds: ['factory contract check'], outputs: ['contract.md draft'] } },
-      { id: 'wf-clarify', type: 'workflow', title: 'fanout-judge · clarify', step: 'clarify',
-        groups: [[P('intent map', 'agent', 'intent-mapper')], [P('scout · repo', 'agent', 'researcher'), P('scout · web', 'agent', 'researcher')], [P('verify evidence', 'agent', 'verifier')], [P('analyst · intent (gate)', 'agent', 'intent-analyst')], [P('analyst · ambiguity', 'agent', 'intent-analyst'), P('analyst · constraints', 'agent', 'intent-analyst'), P('analyst · testability', 'agent', 'intent-analyst')], [P('judge', 'agent', 'judge')], [P('god-eye · intent', 'agent', 'god-eye')]],
-        detail: { what: 'Research first (the scout phase): the intent mapper lists the unknowns (repo, world, decision, yours) and their impact; repo scouts answer repo unknowns with file:line quotes, web scouts fetch the docs for the versions the repo uses, within the risk budget; the verifier re-opens high-impact and web findings. Confirmed findings become evidence-backed assumptions (A-n) in the contract, stated, not asked. Then the intent analyst runs first and alone: can it restate the problem, who has it, the outcome and the signal that proves it? While the intent is open, the other three analysts are held back. Then ambiguity, constraints and testability read the contract in parallel. The judge merges, prioritises (intent, scope, constraint, acceptance), drops what research answered, gives every question an id (Q-n) and never re-asks. Only when no questions are left does God Eye read it cold; a question research could answer goes back to the scouts.', agents: ['intent-mapper', 'researcher', 'verifier', 'intent-analyst', 'judge', 'god-eye'], cmds: ['factory run fanout-judge --config clarify', 'factory intent show'], outputs: ['intent-findings.md + intent-evidence.json (sealed)', '## Assumptions (evidence-backed) in the contract', 'questions for you, or an approved contract'], floors: 'contract_approved · intent_grounded (medium, high)' } },
-      { id: 'you-answer', type: 'you', title: 'You answer questions', sub: 'What was found, what is assumed, then only your questions', step: 'clarify',
-        detail: { what: 'One screen: what research found (source, date, verdict), what the factory assumes (A-n, with evidence), then only the questions research could not answer, intent first, at most 5 then 3, each default citing evidence or marked your call. Your answers go into the contract and the round runs again. Rounds are capped; a contract that won\'t converge parks.', you: ['answers in chat', 'change A-n <value>', 'drop A-n'] } },
+      { id: 'wf-clarify', type: 'workflow', title: 'clarify · one stage per run', step: 'clarify',
+        groups: [[P('read-back', 'agent', 'interviewer')], [P('research · repo', 'agent', 'researcher'), P('research · docs', 'agent', 'researcher')], [P('research brief', 'agent', 'brief-writer')], [P('interpret', 'agent', 'interviewer')], [P('contract', 'agent', 'contract-writer')], [P('readiness', 'agent', 'god-eye')]],
+        detail: { what: 'One rule module (cli/core/clarify.js) keeps a ledger of items (I-n), each with its source and strength (you > evidence > accepted > assumption), and routes each by its current state. The interviewer reads your words back (intent, scope, your facts quoted, version pins from repo files or your own words, the research plan); after your ok, one time-boxed research pass runs pinned to those versions (another version\'s docs never confirm a fact) and the brief writer turns it into decision records. You answer one sheet of at most five decisions plus the facts it will assume. The contract writer writes the contract once; the CLI\'s deterministic checks, then God Eye\'s fixed checklist, check it. A blocker sends clarify back to its stage, never into a note. Research gaps, drops and God Eye\'s objections are shown at H1.', agents: ['interviewer', 'researcher', 'brief-writer', 'contract-writer', 'god-eye'], cmds: ['factory run clarify', 'factory clarify reply "<your words>"', 'factory clarify status'], outputs: ['clarify.json (sealed ledger)', 'contract.md with ## Decisions, ## Facts relied on, ## Design may choose, ## Research gaps', 'a read-back, a decision sheet, or a contract ready for H1'], floors: 'contract_approved · intent_grounded (medium, high)' } },
+      { id: 'you-answer', type: 'you', title: 'You confirm and decide', sub: 'ok the read-back, answer one sheet, in plain words', step: 'clarify',
+        detail: { what: 'Two short turns in the common case: ok (or corrections) on the read-back, then one reply to the decision sheet ("ok", "ok, but 2 b", "fact 1: <correction>"). You can reopen any item at any time; agents overturn your words only with stronger evidence, and the sheet asks you first. Clarify parks at fixed caps; "proceed" (you only) goes on with the gaps shown.', you: ['ok', 'ok, but 2 b', 'fact 1: <correction>', 'proceed', 'edit contract.md'] } },
       { id: 'gate-H1', type: 'gate', title: 'H1 · You approve the contract', step: 'H1', alt: 'EH1',
-        detail: { what: 'Approval is bound to the contract\'s hash, and risk is part of that hash. Change it later and the router sends you to an amendment.', you: ['approve', 'deny <what must change>'], floors: 'contract_approved' } },
+        detail: { what: 'H1 shows the goal, what done means, the contract checked against what you said, the decisions and who made them, what design may choose, the research gaps and any God Eye objections (never shown as approval). Approval is bound to the contract\'s hash, and risk is part of that hash. Deny with what must change: clarify reads it back as tracked items and reports each one done or not done.', you: ['approve', 'deny <what must change>'], floors: 'contract_approved' } },
     ],
-    edges: [['wf-clarify', 'you-answer', 'human', 'questions'], ['you-answer', 'wf-clarify', 'loopR', 'answers'], ['wf-clarify', 'gate-H1', 'skipL', 'God Eye approves']],
+    edges: [['wf-clarify', 'you-answer', 'human', 'read-back · sheet'], ['you-answer', 'wf-clarify', 'loopR', 'your words'], ['wf-clarify', 'gate-H1', 'skipL', 'readiness check passes']],
     noAuto: ['wf-clarify>you-answer', 'you-answer>gate-H1'] },
   { id: 'design', name: 'Ground & design', sub: 'workflows: ground · fanout-judge', gapAfter: 50,
     what: 'Facts before decisions. Researchers cite every claim; independent option generators propose designs; the architect decides and God Eye critiques the result cold.',
@@ -2804,6 +2802,12 @@ function applyItem(job, S, it, i) {
       st.status = it.ok ? (d && d.auto ? 'auto' : 'done') : it.outcome === 'ask' ? 'waiting' : 'failed';
       break;
     }
+    case 'clarify': {
+      // clarify v3's stage lines: waiting on your reply, or at work again
+      const st = it.step && S.steps[it.step];
+      if (st && st.status !== 'done' && st.status !== 'auto') { st.status = it.waiting ? 'waiting' : it.outcome === 'park' ? 'blocked' : 'running'; st.text = it.text; }
+      break;
+    }
     case 'agents': {
       const st = S.steps[it.step || S.pos];
       if (st && st.status === 'pending') st.status = 'running';
@@ -3031,6 +3035,7 @@ function rowLines(job, row) {
         for (const f of (it.findings || []).filter((x) => x.status === 'confirmed' || x.status === 'unverified').slice(0, 3)) add(i, `⚑ ${f.id} · ${f.severity} · ${f.status}: ${f.summary}`, f.status === 'confirmed' ? 'bad find' : 'ask find');
         break;
       }
+      case 'clarify': add(i, `${it.waiting ? '?' : it.outcome === 'park' ? '⏸' : '·'} ${it.text}`, it.waiting ? 'ask' : it.outcome === 'park' ? 'bad' : 'wf'); break;
       case 'human': {
         const g = it.gate || stepName(it.step);
         const wait = fmtDur(Date.parse(it.t) - t0);
@@ -3539,6 +3544,7 @@ function describe(it, job = LV.job) {
     }
     case 'result': return [`${stepName(it.step || it.raw_step)}: ${it.ok ? 'passed' : it.outcome === 'ask' ? 'needs you' : 'not passed'}`, it.text];
     case 'agents': return [`${it.workflow ? `${it.workflow}${it.config ? ` · ${it.config}` : ''}` : 'Agents (seen by the hooks)'} ran ${it.runs} agent run${it.runs === 1 ? '' : 's'}`, it.from === 'hooks' ? 'Seen through the hooks (no roster in the envelope)' : `Workflow status: ${it.status}`];
+    case 'clarify': return [it.waiting ? 'Clarify: needs you' : 'Clarify', it.text];
     case 'park': return ['Parked', it.text];
     case 'stopped': return ['Stopped', it.text];
     case 'error': return ['Workflow error', it.text];
@@ -3557,6 +3563,7 @@ function who(it) {
   if (it.type === 'route') return ['router', 'route'];
   if (it.type === 'human') return ['you', 'you'];
   if (it.type === 'agents') return ['agents', 'agents'];
+  if (it.type === 'clarify') return it.waiting ? ['asks', 'you'] : it.outcome === 'park' ? ['park', 'bad'] : ['clarify', 'route'];
   if (it.type === 'result') return [it.ok ? 'passed' : it.outcome === 'ask' ? 'asks' : 'failed', it.ok ? 'ok' : it.outcome === 'ask' ? 'you' : 'bad'];
   if (['park', 'error', 'guard', 'stopped', 'refused', 'hook_error', 'stop_block', 'unparsed'].includes(it.type)) return [it.type.replace('_', ' '), 'bad'];
   if (it.type === 'created') return ['request', 'you'];
@@ -4244,6 +4251,7 @@ function wireGlyph(it) {
     case 'route': return it.action === 'parked' ? ['⏸', 'park'] : it.action === 'gate' || it.action === 'wait' ? ['◇', 'you'] : ['→', 'route'];
     case 'result': return it.ok ? ['✓', 'ok'] : it.outcome === 'ask' ? ['?', 'you'] : ['✕', 'bad'];
     case 'agents': return ['◆', 'agents'];
+    case 'clarify': return it.waiting ? ['?', 'you'] : it.outcome === 'park' ? ['⏸', 'park'] : ['◎', 'route'];
     case 'human': return it.action === 'deny' ? ['✋', 'bad'] : it.action === 'resume' ? ['▶', 'you'] : ['✓', 'you'];
     case 'guard': case 'refused': case 'stop_block': return ['⛔', 'bad'];
     case 'hook_error': case 'autopilot': return ['⚠', 'bad'];
@@ -4425,6 +4433,8 @@ function lmStations(m) {
       const last = st[st.length - 1];
       if (last && last.step === it.step) last.bad = true;
       if (it.outcome === 'ask' && !openWait) { openWait = { t0: t, t1: null, track }; waits.push(openWait); }
+    } else if (it.type === 'clarify') {
+      if (it.waiting && !openWait) { openWait = { t0: t, t1: null, track }; waits.push(openWait); } else if (!it.waiting && openWait) { openWait.t1 = t; openWait = null; }
     } else if (it.type === 'park') {
       openPark = { t0: t, t1: null, track, i };
       parks.push(openPark);
@@ -4713,7 +4723,7 @@ function nowCard(job) {
     parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
     if ((g === 'H1' || g === 'EH1') && job.h1) parts.push(h1Html(job.h1));
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
-    else parts.push(`<p>Answer the questions in chat${job.clarify && job.clarify.questions.length ? ` (${job.clarify.questions.map((q) => esc(q.id)).join(', ')}): a numbered reply such as <code>1 yes, 2 …</code>, or <code>defaults</code>` : ''}; the round runs again with your answers.</p>`);
+    else parts.push(`<p>Reply to clarify in chat, in plain words${job.clarify && job.clarify.questions && job.clarify.questions.length ? ` (${job.clarify.questions.length} decision${job.clarify.questions.length === 1 ? '' : 's'} on the sheet): <code>ok</code> takes the recommendations, <code>ok, but 2 b</code> changes one` : ': <code>ok</code>, or what to change'}. The main session can record it too: <code>factory clarify reply "…"</code>.</p>`);
   } else if (m.bucket === 'parked') {
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--skill)"></i>Now · parked</div><p>${esc((job.park && job.park.reason) || 'Parked.')} Fix what the reason names, then reply:</p>${reply(`resume ${job.id}`)}`);
   } else if (m.bucket === 'stopped') {
@@ -4724,11 +4734,15 @@ function nowCard(job) {
   }
   return `<div class="nowcard b-${m.bucket}">${parts.join('')}</div>`;
 }
-// At H1 / EH1, what clarify adds to the contract (as factory next carries it): God Eye's
-// objections (it did not approve), issues dropped and why, research that could not run.
+// At H1 / EH1, what clarify shows besides the contract (factory next's clarify_h1): the contract
+// checked against your words, the decisions and who made them, what design may choose, research
+// gaps, what was dropped (who, why), and God Eye's objections, which are never approval.
 function h1Html(h) {
-  const list = (head, items, note) => (items && items.length ? `<div class="eh">${esc(head)}</div>${note ? `<p class="meta">${esc(note)}</p>` : ''}<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
-  return `${list('God Eye objects', h.god_eye_objects, 'God Eye did not approve this contract; clarify could not settle these. Approve only to go on over them.')}${list('Dropped', h.dropped)}${h.research_incomplete ? `<p class="meta">${esc(h.research_incomplete)}</p>` : ''}`;
+  const list = (head, items, note, cls) => (items && items.length ? `<div class="eh${cls ? ` ${cls}` : ''}">${esc(head)}</div>${note ? `<p class="meta">${esc(note)}</p>` : ''}<ul>${items.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+  const checked = (h.checked || []).map((c) => `<span class="${c.ok ? 'ok' : 'bad'}">${c.ok ? '✓' : '✗'}</span> “${esc(c.quote)}” → ${esc(c.where)}`);
+  const decisions = (h.decisions || []).map((d) => `<b>${esc(d.item)}</b> ${esc(d.text)}: ${esc(d.value || '')} <span class="meta">(${esc(d.by)})</span>`);
+  const redirects = (h.redirects || []).map((R) => `<b>${esc(R.id)}</b> ${R.done} of ${R.of} done: ${R.clauses.map((c) => `${c.done ? '✓' : '✗'} “${esc(c.quote)}”`).join('; ')}`);
+  return `${list('God Eye objects', (h.god_eye_objects || []).map(esc), 'God Eye did not approve this contract; clarify could not settle these. Approve only to go on over them.', 'bad')}${list('Checked against what you said', checked)}${list('Decisions and who made them', decisions)}${list('Design may choose', (h.design_may_choose || []).map(esc))}${list('Your redirects', redirects)}${list('Research gaps', (h.gaps || []).map((g) => `${esc(g.what)}: ${esc(g.reason)}`), null, 'bad')}${list('Dropped', (h.dropped || []).map(esc))}${h.edited_by_hand ? '<p class="meta">You edited contract.md by hand; the readiness check ran on your text.</p>' : ''}`;
 }
 function agentsProse(agents) {
   const cs = chipsFor(agents);
@@ -4761,23 +4775,25 @@ function researchHtml(x) {
   if (x.researchable_dropped) H.push(`<p>${pl(x.researchable_dropped, 'question')} research had already answered ${x.researchable_dropped === 1 ? 'was' : 'were'} not asked.</p>`);
   return `<div class="evid">${H.join('')}</div>`;
 }
-// Clarify v2: the issue ledger (factory clarify status): every issue with its status, owner
-// and next action, the per-round trend (opened / settled) and what was handed to design.
-const CL_STATUS = { open: 'open', researching: 'researching', proposed: 'with you', settled: 'settled', deferred_to_design: 'to design', dropped: 'dropped' };
-const CL_BY = { evidence: 'by evidence', user: 'by you', assumption_accepted: 'default accepted', design_deferral: 'deferred' };
+// Clarify v3 (factory clarify status): where clarify is, every item with who decided it, every
+// finding with its source and the CLI's verdict, the research gaps, drops and redirects.
+const CL_STAGE = { readback: 'reading your words back', readback_wait: 'waiting for your ok on the read-back', research: 'researching', sheet_wait: 'waiting for your answer to the decision sheet', interpret: 'reading your sheet answer', redirect: 'reading your redirect', redirect_wait: 'waiting for your ok on the redirect', assemble: 'writing the contract', check: 'readiness check', ready: 'done: H1 next' };
+const CL_STATUS = { open: 'open', to_decide: 'on the sheet', decided: 'decided', done: 'done', assumed: 'assumed', deferred: 'to design', dropped: 'dropped' };
+const EV_WORD = { repo: 'repo, quote checked', pinned: 'docs for the confirmed version', docs: 'docs (no version to pin)', other_version: 'documents another version: not used', unpinned: 'a moving page (stable/latest): not used', bad_quote: 'quote not at the cited line: not used', unsourced: 'no source quote: not used' };
 function clarifyHtml(job) {
   const c = job.clarify;
-  if (!c || !c.issues || !c.issues.length) return '';
+  if (!c || c.version !== 3 || !(c.items || []).length) return '';
   const t = c.totals || {};
-  const o = c.open_by_owner || {};
-  const max = Math.max(1, ...c.rounds.map((r) => Math.max(r.opened, r.settled)));
-  const bar = (n, cls) => `<i class="clb ${cls}" style="height:${Math.round((n / max) * 28) + (n ? 2 : 0)}px" title="${n}"></i>`;
-  const trend = c.rounds.length ? `<div class="cltrend" role="img" aria-label="Per round: opened and settled issues">${c.rounds.map((r) => `<span class="clr${r.degraded ? ' deg' : r.progress ? '' : ' np'}" title="round ${r.round}: ${r.opened} opened, ${r.settled} settled, ${r.deferred} deferred, ${r.asked} asked${r.degraded ? ' · degraded, not counted' : r.progress ? '' : ' · no progress'}">${bar(r.opened, 'op')}${bar(r.settled, 'st')}<b>R${r.round}</b></span>`).join('')}<span class="cllg"><i class="clb op"></i>opened <i class="clb st"></i>settled · ${esc(c.trend)}</span></div>` : `<p class="meta">${esc(c.trend)}</p>`;
-  const rows = c.issues.map((r) => `<tr class="cl-${esc(r.status)}"><td class="n">${esc(r.id)}${r.aliases && r.aliases.length ? `<br><span class="meta" title="folded duplicates">= ${esc(r.aliases.join(', '))}</span>` : ''}</td><td><code>${esc(r.subject || '—')}</code><br><span class="meta">${esc(r.title)}</span></td><td><span class="stt ${r.status === 'settled' ? 'done' : r.status === 'proposed' ? 'you' : ''}">${esc(CL_STATUS[r.status] || r.status)}</span>${r.settled_by ? `<br><span class="meta">${esc(CL_BY[r.settled_by] || r.settled_by)}</span>` : ''}</td><td class="n">${esc(r.owner)}</td><td>${esc(r.next)}</td></tr>`).join('');
-  const deferred = (c.deferred || []).length ? `<div class="eh">Handed to design (ground and decide settle these; they do not block H1)</div><ul>${c.deferred.map((d) => `<li><b>${esc(d.id)}</b> <code>${esc(d.subject)}</code> ${esc(d.title)}</li>`).join('')}</ul>` : '';
-  const qs = (c.questions || []).length ? `<div class="eh">Waiting on you</div>${c.questions.map((q) => `<div class="reply"><code>factory answer ${esc(q.id)} "…"</code>${q.default ? `<code>factory answer ${esc(q.id)} --default</code>` : ''}<span class="meta">${esc(q.question)}${q.default ? ` · default: ${esc(q.default)}` : ''}</span></div>`).join('')}` : '';
-  const mig = c.migration ? `<p class="meta">Migrated from the v1 record: ${c.migration.folded} duplicate(s) folded, ${c.migration.matched_answers.length} free-form answer(s) matched${c.migration.matched_answers.length ? ` (${esc(c.migration.matched_answers.join(', '))})` : ''}, ${c.migration.deferred.length} deferred to design.</p>` : '';
-  return `<article class="para clarify"><div class="ph"><h4>Clarify ledger</h4><span class="tm">${t.issues} issues · ${t.closed} closed · open: you ${o.user || 0}, research ${o.research || 0}, design ${o.design || 0}</span></div>${trend}${qs}<div class="tblwrap"><table class="tbl cltbl"><tr><th>Issue</th><th>Subject</th><th>Status</th><th>Owner</th><th>Next</th></tr>${rows}</table></div>${deferred}${mig}</article>`;
+  const rows = c.items.map((r) => `<tr class="cl-${esc(r.status)}"><td class="n">${esc(r.id)}</td><td>${esc(r.text)}${r.value && r.value !== r.text ? `<br><span class="meta">${esc(r.value)}</span>` : ''}</td><td class="n">${esc(r.kind)}</td><td><span class="stt ${['decided', 'done'].includes(r.status) ? 'done' : r.status === 'to_decide' ? 'you' : ''}">${esc(CL_STATUS[r.status] || r.status)}</span></td><td>${esc(r.by || '—')}</td></tr>`).join('');
+  const qs = (c.questions || []).length ? `<div class="eh">Waiting on you (one reply answers them all)</div><ul>${c.questions.map((q) => `<li><b>${esc(q.id)}</b> ${esc(q.question)}${q.recommendation ? ` <span class="meta">recommended: ${esc(q.recommendation)}</span>` : ''}</li>`).join('')}</ul><div class="reply"><code>factory clarify reply "ok"</code><code>factory clarify reply "ok, but 2 b"</code></div>` : '';
+  const ev = (c.evidence || []).filter((e) => e.claim);
+  const evh = ev.length ? `<div class="eh">What research found</div><ul>${ev.map((e) => `<li${e.usable ? '' : ' class="unv"'}><b>${esc(e.id)}</b> ${e.usable ? esc(e.claim) : `“${esc(e.claim)}”`} <span class="src"><code>${esc(e.source)}</code>${e.version ? ` · ${esc(e.version)}` : ''}${e.retrieved_at ? ` · ${esc(e.retrieved_at)}` : ''} · ${esc(EV_WORD[e.verdict] || e.verdict || 'not judged yet')}</span></li>`).join('')}</ul>` : '';
+  const pins = (c.pins || []).length ? `<p class="meta">Versions research is pinned to: ${c.pins.map((p) => `${esc(p.text)} (${esc(p.by)})`).join(', ')}.</p>` : '';
+  const gaps = (c.gaps || []).length ? `<div class="eh bad">Research gaps (what it could not find out)</div><ul>${c.gaps.map((f) => `<li class="unv">${esc(f.what)}: ${esc(f.reason)}</li>`).join('')}</ul>` : '';
+  const drops = (c.dropped || []).length ? `<div class="eh">Dropped (you can reopen any of them)</div><ul>${c.dropped.map((d) => `<li><b>${esc(d.id)}</b> <s>${esc(d.text)}</s> <span class="meta">dropped by ${esc(d.actor || 'unknown')}: ${esc(d.reason || 'no reason recorded')}</span></li>`).join('')}</ul>` : '';
+  const red = (c.redirects || []).length ? `<p class="meta">Redirects: ${c.redirects.map((R) => `${esc(R.id)} (${esc(R.status)}, ${R.clauses} clause${R.clauses === 1 ? '' : 's'})`).join(', ')}.</p>` : '';
+  const mig = c.migration ? `<p class="meta">Migrated from clarify v${esc(c.migration.from)}: ${esc(c.migration.summary)}.</p>` : '';
+  return `<article class="para clarify"><div class="ph"><h4>Clarify</h4><span class="tm">${esc(CL_STAGE[c.stage] || c.stage)} · ${t.items} items · ${t.decided} decided, ${t.assumed} assumed, ${t.deferred} to design, ${t.open} open · ${c.passes} research pass${c.passes === 1 ? '' : 'es'} · ${c.checks} readiness check${c.checks === 1 ? '' : 's'}</span></div>${qs}${pins}<div class="tblwrap"><table class="tbl cltbl"><tr><th>Item</th><th>What</th><th>Kind</th><th>Status</th><th>Decided by</th></tr>${rows}</table></div>${evh}${gaps}${drops}${red}${mig}</article>`;
 }
 function renderStory() {
   const job = LV.job;
@@ -4832,6 +4848,7 @@ function renderStory() {
           else S.push(`<b class="y">You: ${esc(it.action)}</b>${it.reason ? ` — ${esc(it.reason)}` : ''}.`);
           break;
         }
+        case 'clarify': S.push(it.waiting ? `<b class="y">? ${esc(it.text)}.</b>` : it.outcome === 'park' ? `<span class="bad">${esc(it.text)}.</span>` : `${esc(it.text)}.`); break;
         case 'park': S.push(`<span style="color:var(--skill)">⏸ The job was parked: ${esc(it.text)}.</span>`); break;
         case 'stopped': S.push(`<span class="bad">${esc(it.text)}.</span>`); break;
         case 'amend': S.push(`✎ ${esc(it.text)}.`); break;
@@ -5482,7 +5499,7 @@ APP.words = (function () {
   // The decisions only a person makes. `short` finishes "Waiting for you: ...".
   var GATES = {
     // Q is not a recipe gate: clarify asked you questions and waits on your answers (the Board's "Your turn · Clarify").
-    Q: { title: "Answer clarify's questions", short: "questions", tip: "Clarify asked what research could not settle; answer in chat (a question you skip takes its default), or reply change A-n <value> / drop A-n to override an assumption. Then clarify runs its next round." },
+    Q: { title: "Reply to clarify", short: "your reply", tip: "Clarify waits on one reply: ok (or corrections) on the read-back, or one answer to the decision sheet (ok, ok, but 2 b, fact 1: <correction>). Plain words work; factory clarify reply records them without the chat hook." },
     H1: { title: "Approve the contract", short: "contract", tip: "Agree that the contract and its numbered criteria describe what you want (H1 · contract)." },
     H2: { title: "Approve the design", short: "design", tip: "Agree with the approach, written as a design record." },
     H3: { title: "Approve the plan", short: "plan", tip: "Agree with the tasks; approving it starts the build." },
@@ -5526,10 +5543,10 @@ APP.words = (function () {
 
   // Every role in schemas/flow.json: a plain name, and what it does.
   var ROLES = {
-    "intake-classifier": ["Intake", "sorts the request"], "intent-analyst": ["Intent analyst", "finds gaps in the intent"],
-    "intent-mapper": ["Intent mapper", "lists the unknowns before anyone asks you"], verifier: ["Evidence verifier", "re-checks each high-impact finding"],
+    "intake-classifier": ["Intake", "sorts the request"], interviewer: ["Interviewer", "reads your words back before anything slow happens"],
+    "brief-writer": ["Brief writer", "turns one research pass into decisions with evidence"],
     "option-generator": ["Option generator", "proposes one independent design option"],
-    judge: ["Judge", "merges the analysts' reports"], "contract-editor": ["Contract editor", "applies what was settled to the contract"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
+    "contract-writer": ["Contract writer", "writes the contract once from what was settled"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
     researcher: ["Researcher", "finds facts in the code, with sources"], architect: ["Architect", "weighs the options, writes the design record"],
     "threat-modeler": ["Threat modeller", "lists what could be attacked, on high-risk work"], planner: ["Planner", "breaks the work into tasks"],
     slicer: ["Slicer", "splits an epic into slices"], builder: ["Builder", "builds one task"], tester: ["Tester", "checks one task independently"],
@@ -5734,19 +5751,18 @@ APP.epicPick = (function () {
 // to the workflow code: a phase text that no template step matches is still shown, as it ran.
 var RUN_STEPS = (function () {
   var TEMPLATES = {
-    // fanout-judge.js, clarify: scoutPhase() → contract editor (what was settled) → intent gate → fan-out → judge → God Eye (intent) → contract editor (God Eye's items) and God Eye again
-    'fanout-judge:clarify': {
-      next: 'your answers or H1',
+    // clarify.js (v3): one stage per run: the read-back, a research pass (researchers, then the
+    // brief writer), reading a sheet reply or a redirect, the contract writer, the readiness check
+    clarify: {
+      next: 'the next clarify stage, your reply, or H1',
       steps: [
-        { key: 'map', label: 'map the unknowns', match: /^clarify: scout · map the unknowns/, roles: ['intent-mapper'] },
-        { key: 'research', label: 'research the unknowns', match: /^clarify: scout · research/, roles: ['researcher'] },
-        { key: 'verify', label: 'verify findings', match: /^clarify: scout · verify/, roles: ['verifier'] },
-        { key: 'edit', label: 'apply what was settled', match: /^clarify: contract editor \(apply/, roles: ['contract-editor'], optional: true, only_when_run: true },
-        { key: 'gate', label: 'intent gate', match: /^clarify: intent gate/, roles: ['intent-analyst'] },
-        { key: 'fanout', label: 'fan-out', match: /^clarify: fan-out/, roles: ['intent-analyst'] },
-        { key: 'judge', label: 'judge', match: /^clarify: judge/, roles: ['judge'] },
-        { key: 'god-eye', label: 'God Eye (intent)', match: /^clarify: God Eye/, roles: ['god-eye'] },
-        { key: 'revise', label: 'contract editor revises', match: /^clarify: contract editor \(God Eye/, roles: ['contract-editor', 'god-eye'], optional: true, only_when_run: true },
+        { key: 'readback', label: 'read your words back', match: /^clarify: read your words back/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'research', label: 'research (pinned versions)', match: /^clarify: research \(/, roles: ['researcher'], optional: true, only_when_run: true },
+        { key: 'brief', label: 'research brief', match: /^clarify: research brief/, roles: ['brief-writer'], optional: true, only_when_run: true },
+        { key: 'interpret', label: 'read your sheet answer', match: /^clarify: read your sheet answer/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'redirect', label: 'read your redirect back', match: /^clarify: read your redirect back/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'write', label: 'write the contract', match: /^clarify: write the contract/, roles: ['contract-writer'], optional: true, only_when_run: true },
+        { key: 'check', label: 'readiness check', match: /^clarify: readiness check/, roles: ['god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
@@ -5797,7 +5813,7 @@ var RUN_STEPS = (function () {
     for (var i = 0; i < tpl.steps.length; i++) if (tpl.steps[i].match.test(String(text || ''))) return i;
     return -1;
   }
-  // the phase text in plain words: "clarify: scout · research 4 unknown(s) with 2 scout(s)" → "research 4 unknowns" (the scouts are named with the step)
+  // the phase text in plain words: "decide: fan-out (3)" → "fan-out (3)"; "N thing(s)" → "N things"
   function cleanText(text) {
     return String(text || '').replace(/^[a-z-]+: /, '').replace(/^scout · /, '').replace(/ with \d+ scout\(s\)/, '')
       .replace(/(\d+) ([A-Za-z-]+)\(s\)/g, function (_, n, w) { return n + ' ' + w + (n === '1' ? '' : 's'); })
@@ -5978,7 +5994,7 @@ const BP_STEP_STATE = {
 const BP_GATE_OF = { awaiting_answers: 'Q', awaiting_intent_approval: 'H1', awaiting_design_approval: 'H2', awaiting_findings_approval: 'HF', awaiting_plan_approval: 'H3', awaiting_ship_approval: 'HS', awaiting_amendment_approval: 'A', pr_open: 'H4', parked: 'P' };
 const BP_MEANING = {
   received: 'the request is in; the router picks the first step', intent: 'clarify drafts the contract and asks only what the repo cannot answer',
-  awaiting_answers: 'you answer clarify\'s questions in chat; then clarify runs its next round',
+  awaiting_answers: 'you reply to clarify in chat (ok, or what to change); then clarify runs its next stage',
   awaiting_intent_approval: 'you approve the contract (H1)', designing: 'ground and decide: sourced facts, then a design record',
   awaiting_design_approval: 'you approve the design (H2)', awaiting_findings_approval: 'you accept the findings (HF)',
   planning: 'decompose writes the task waves', awaiting_plan_approval: 'you approve the plan (H3)', building: 'builders work in their own worktrees, testers verify each task',
@@ -6013,6 +6029,11 @@ function bpHistory(job) {
     } else if (it.type === 'result' && it.outcome === 'ask' && (it.step || it.raw_step) === 'clarify' && !BP_GATE_OF[cur] && cur !== 'closed') {
       const n = it.questions || (it.question_ids || []).length || Number((/^(\d+) question/.exec(it.text || '') || [])[1]) || 0;
       go(it.t, 'awaiting_answers', 'router', n ? `clarify asked ${n} question(s)` : 'clarify asked you questions');
+    } else if (it.type === 'clarify' && !BP_GATE_OF[cur] && cur !== 'closed' && cur !== 'parked') {
+      // clarify v3: a stage that waits on your reply (read-back, sheet, redirect), and the stage after it
+      if (it.waiting) go(it.t, 'awaiting_answers', 'router', it.text);
+    } else if (it.type === 'clarify' && cur === 'awaiting_answers' && !it.waiting) {
+      go(it.t, 'intent', 'you', 'you replied');
     } else if (it.type === 'park') {
       parkedFrom = cur; go(it.t, 'parked', it.from === 'manual' ? 'you' : 'router', it.text);
     } else if (it.type === 'human' && it.action === 'resume' && cur === 'parked') {
@@ -6120,7 +6141,7 @@ function bpQuestionIds(job) {
 // Workflow runs (cli/core/run-steps.js, in the page as RUN_STEPS): each run as the console recorded it,
 // tagged with the station whose bank it belongs to, for the step list in that bank and the section view.
 // The steps are folded again at the replay time by RUN_STEPS.view(run, t); older data has no runs.
-const BP_RUN_STATION = { 'fanout-judge:clarify': 'intent', 'fanout-judge:decide': 'design', ground: 'design', decompose: 'plan', realize: 'build', reconcile: 'build', 'fanout-judge:challenge': 'review', distill: 'done' };
+const BP_RUN_STATION = { clarify: 'intent', 'fanout-judge:clarify': 'intent', 'fanout-judge:decide': 'design', ground: 'design', decompose: 'plan', realize: 'build', reconcile: 'build', 'fanout-judge:challenge': 'review', distill: 'done' };
 function bpRunStation(run) {
   const st = BP_STEP_STATE[run.step];
   const stage = st ? BP_STAGES.find((s) => s.states.includes(st)) : null;
@@ -6260,7 +6281,7 @@ function toDisplay(data) {
   // the post-merge reviewers, only when a recipe here runs that review: both are filled per render (bankMembers).
   var BANKS = {
     intake: { name: "No agents", members: [] },
-    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["contract-editor", "contract editor"], ["god-eye", "God Eye"]] },
+    intent: { name: "Clarify agents", members: [["interviewer", "interviewer"], ["researcher", "researchers · repo, docs"], ["brief-writer", "brief writer"], ["contract-writer", "contract writer"], ["god-eye", "God Eye"]] },
     design: { name: "Design agents", members: [["researcher", "researcher"], ["option-generator", "option generator"], ["threat-modeler", "threat-modeler"], ["architect", "architect"], ["god-eye", "God Eye"]] },
     plan: { name: "Plan agents", members: [["planner", "planner"], ["god-eye", "God Eye"]] },
     build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["builder", "builder"], ["integrator", "integrator"]] },
@@ -6270,15 +6291,15 @@ function toDisplay(data) {
     done: { name: "Lessons", members: [["lesson-writer", "lesson writer"]] }
   };
   var STEPS = {
-    intake: [["c", "factory job new"]], intent: [["a", "intent map · scouts · verifier"], ["a", "analysts ×4 + judge"], ["a", "God Eye cold review"], ["h", "H1"]],
+    intake: [["c", "factory job new"]], intent: [["a", "read-back · one research pass"], ["a", "decision sheet · contract writer"], ["a", "readiness: CLI checks + God Eye"], ["h", "H1"]],
     design: [["a", "ground: researchers"], ["a", "decide: options · architect"], ["h", "H2"], ["h", "HF"]], plan: [["a", "decompose: planner"], ["c", "plan validate"], ["h", "H3"]],
     build: [["a", "realize: builders per task"], ["c", "task verify per task"], ["a", "reconcile: integrator"]], verify: [["c", "prove: every check"]],
     review: [["a", "challenge: review lanes"], ["a", "finding verifier"]], ship: [["c", "ship: report · PR"], ["h", "HS"], ["h", "H4"]], done: [["a", "distill: lesson writer"], ["c", "close"]]
   };
-  var LOOPS = { intent: "questions", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")
+  var LOOPS = { intent: "your words", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")
   // the return rails: work sent back to Build, each on its own level above the row (up = px above the row's top)
   var RAILS = [{ from: "verify", name: "Checks failed: sent back", up: 38, land: 18 }, { from: "review", name: "Changes asked: sent back", up: 68, land: 0 }, { from: "ship", name: "CI failed: sent back", up: 98, land: -18 }];
-  var NEXT = { received: "intake next", intent: "intent loop running", awaiting_answers: "clarify's next round, once you answer", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "you merge: on GitHub, or locally and reply merged <commit>", merged: "the merge result is verified again", post_merge_review: "review after merge due", learning: "distill proposes lessons, then close checks every floor", closed: "closed", findings_delivered: "findings delivered", amending: "changing the contract and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
+  var NEXT = { received: "intake next", intent: "intent loop running", awaiting_answers: "clarify's next stage, once you reply", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "you merge: on GitHub, or locally and reply merged <commit>", merged: "the merge result is verified again", post_merge_review: "review after merge due", learning: "distill proposes lessons, then close checks every floor", closed: "closed", findings_delivered: "findings delivered", amending: "changing the contract and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
   var STAGE_TONE = { intake: .10, intent: .18, design: .26, plan: .34, build: .48, verify: .56, review: .64, ship: .74, done: .10, change: .3, parked: .2, stopped: .1 };
   var VIEWS = ["line", "globe", "board", "sched", "agents", "learn"];
   var VIEW_NAME = { line: "The line", globe: "Projection", board: "Matrix", sched: "Schedule", agents: "Parts list", learn: "General notes", epics: "Epic register", eflow: "Epic assembly", ebreak: "Epic breakdown" };
@@ -6291,8 +6312,8 @@ function toDisplay(data) {
   var EPIC_VIEWS = { epics: 1, eflow: 1, ebreak: 1 };
   // epics: their own drawing series (sheets 7-9). An epic's process: seven stages, three human gates and an amendment gate.
   var EP_STAGES = [
-    { key: "intent", label: "Intent", gate: "EH1", bank: "Intent agents", loop: "questions", members: [["intent-analyst", "analyst"], ["intent-analyst", "analyst"], ["intent-analyst", "analyst"], ["judge", "judge"], ["god-eye", "God Eye"]],
-      steps: [["a", "analysts ×3 + judge"], ["a", "God Eye cold review"], ["c", "epic intent check"], ["h", "EH1"]] },
+    { key: "intent", label: "Intent", gate: "EH1", bank: "Intent agents", loop: "your words", members: [["interviewer", "interviewer"], ["researcher", "researcher"], ["brief-writer", "brief writer"], ["contract-writer", "contract writer"], ["god-eye", "God Eye"]],
+      steps: [["a", "read-back · research · sheet"], ["a", "readiness: CLI checks + God Eye"], ["c", "epic intent check"], ["h", "EH1"]] },
     { key: "architecture", label: "Architecture", gate: "EH2", bank: "Design agents", loop: "revise", members: [["researcher", "researcher"], ["threat-modeler", "threat model"], ["architect", "architect"], ["god-eye", "God Eye"]],
       steps: [["a", "researcher · threat model · architect"], ["a", "God Eye cold review"], ["c", "contracts check"], ["h", "EH2"]] },
     { key: "slicing", label: "Slicing", gate: "EH3", bank: "Slicer", loop: "revise", members: [["slicer", "slicer"], ["god-eye", "God Eye"]],
@@ -6948,12 +6969,12 @@ function toDisplay(data) {
     }
 
     // an agent bank: every member a named lamp; lit (and naming its job) while that agent is at work
-    var ROLE_NAME = { "intent-mapper": "intent mapper", verifier: "evidence verifier", "option-generator": "option generator", "intent-analyst": "analyst", judge: "judge", "contract-editor": "contract editor", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
+    var ROLE_NAME = { interviewer: "interviewer", "brief-writer": "brief writer", "contract-writer": "contract writer", "option-generator": "option generator", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
       planner: "planner", slicer: "slicer", builder: "builder", tester: "tester", integrator: "integrator", "finding-verifier": "finding verifier", "lesson-writer": "lesson writer" };
     var ROLE_LANE = { "code-reviewer": "code", "test-reviewer": "tests", "security-reviewer": "security", "ux-reviewer": "ux", "epic-reviewer": "conformance" };
     var LANE_ROLE = { code: "code-reviewer", tests: "test-reviewer", security: "security-reviewer", ux: "ux-reviewer", conformance: "epic-reviewer" };
     function roleName(role, key) {
-      if (role === "researcher" && key === "intent") return "scouts · repo, web";
+      if (role === "researcher" && key === "intent") return "researchers · repo, docs";
       if (ROLE_LANE[role]) return wd("lane", ROLE_LANE[role]);
       if (role === "god-eye") return wd("godEye");
       return ROLE_NAME[role] || agentLabel(role);
@@ -7006,11 +7027,11 @@ function toDisplay(data) {
       live.sort(function (a, b) { return bad(b) - bad(a) || P(b.v.started_at) - P(a.v.started_at); });
       return (S.runAt[key] = { key: key, live: live[0] || null, more: live.slice(1), last: last });
     }
-    var STEP_ROLE = { "intent-mapper": ["mapper", "mappers"], researcher: ["researcher", "researchers"], verifier: ["verifier", "verifiers"], "intent-analyst": ["analyst", "analysts"], judge: ["judge", "judges"],
-      "god-eye": ["God Eye", "God Eye"], "contract-editor": ["contract editor", "contract editor"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
+    var STEP_ROLE = { interviewer: ["interviewer", "interviewer"], researcher: ["researcher", "researchers"], "brief-writer": ["brief writer", "brief writer"],
+      "god-eye": ["God Eye", "God Eye"], "contract-writer": ["contract writer", "contract writer"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
       slicer: ["slicer", "slicer"], builder: ["builder", "builders"], tester: ["tester", "testers"], integrator: ["integrator", "integrator"], "finding-verifier": ["verifier", "verifiers"], "lesson-writer": ["lesson writer", "lesson writer"] };
     function stepRole(role, n, key) {
-      if (role === "researcher" && key === "intent") return n === 1 ? "scout" : "scouts";
+      if (role === "researcher" && key === "intent") return n === 1 ? "researcher" : "researchers";
       if (ROLE_LANE[role]) return ROLE_LANE[role] + " lane";
       var w = STEP_ROLE[role]; return w ? w[n === 1 ? 0 : 1] : agentLabel(role);
     }
@@ -7694,7 +7715,7 @@ function toDisplay(data) {
       // 2. path
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Path", H("em", { text: "each stop is a stay at a station · amber stripe = waiting on you · ↺ = " + wd("revise") })), pathHTML(j, t)));
       // 2a. clarify v2: the issue ledger (status, owner, next action), the per-round trend, what went to design
-      if (j.clarify && j.clarify.issues && j.clarify.issues.length) out.push(clarifyBlock(j));
+      if (j.clarify && j.clarify.version === 3 && arr(j.clarify.items).length) out.push(clarifyBlock(j));
       // 2b. workflow runs: each run's steps, as they stood at the replay time, the latest first
       out.push(runsBlock(j, t));
       // 3. tasks by wave
@@ -7751,37 +7772,39 @@ function toDisplay(data) {
     // At H1 / EH1, what clarify adds to the contract: God Eye's objections (it did not approve), drops and why, research gaps
     function h1Notes(h) {
       var list = function (head, items, note) { return items && items.length ? H("div", { "class": "meta" }, H("b", { text: head }), note ? " · " + note : null, H("ul", null, items.map(function (x) { return H("li", { text: x }); }))) : null; };
-      return H("div", null, list("God Eye objects", h.god_eye_objects, "God Eye did not approve this contract; clarify could not settle these"), list("Dropped", h.dropped),
-        h.research_incomplete ? H("div", { "class": "meta", text: h.research_incomplete }) : null);
+      return H("div", null, list("God Eye objects", h.god_eye_objects, "God Eye did not approve this contract; clarify could not settle these"),
+        list("Checked against what you said", arr(h.checked).map(function (c) { return (c.ok ? "✓ " : "✗ ") + "“" + c.quote + "” → " + c.where; })),
+        list("Decisions and who made them", arr(h.decisions).map(function (d) { return d.item + " " + d.text + ": " + (d.value || "") + " (" + d.by + ")"; })),
+        list("Design may choose", h.design_may_choose),
+        list("Research gaps", arr(h.gaps).map(function (g) { return g.what + ": " + g.reason; })),
+        list("Dropped", h.dropped));
     }
-    // The Clarify block: the ledger as factory clarify status prints it (the latest state, not replayed)
-    var CL_STATUS = { open: "open", researching: "researching", proposed: "with you", settled: "settled", deferred_to_design: "to design", dropped: "dropped" };
-    var CL_BY = { evidence: "by evidence", user: "by you", assumption_accepted: "default accepted", design_deferral: "deferred" };
+    // The Clarify block (clarify v3): where clarify is, every item with who decided it, the findings with
+    // their source and verdict, research gaps and drops — the latest state, as factory clarify status prints it
+    var CL_STATUS = { open: "open", to_decide: "on the sheet", decided: "decided", done: "done", assumed: "assumed", deferred: "to design", dropped: "dropped" };
+    var CL_STAGE = { readback: "reading your words back", readback_wait: "waiting for your ok", research: "researching", sheet_wait: "waiting for your sheet answer", interpret: "reading your answer", redirect: "reading your redirect", redirect_wait: "waiting for your ok on the redirect", assemble: "writing the contract", check: "readiness check", ready: "done: H1 next" };
+    var EV_WORD = { repo: "repo, quote checked", pinned: "docs for the confirmed version", docs: "docs (no version to pin)", other_version: "another version: not used", unpinned: "a moving page: not used", bad_quote: "quote not at the line: not used", unsourced: "no quote: not used" };
     function clarifyBlock(j) {
-      var c = j.clarify, tt = c.totals || {}, o = c.open_by_owner || {};
-      var mx = Math.max.apply(null, [1].concat(c.rounds.map(function (r) { return Math.max(r.opened, r.settled); })));
-      var bar = function (n, cls) { return H("i", { "class": "clb " + cls, style: { height: (Math.round((n / mx) * 28) + (n ? 2 : 0)) + "px" }, title: String(n) }); };
-      var trend = c.rounds.length ? H("div", { "class": "cltrend", role: "img", "aria-label": "Per round: issues opened and settled" },
-        c.rounds.map(function (r) {
-          return H("span", { "class": "clr" + (r.degraded ? " deg" : r.progress ? "" : " np"), title: "round " + r.round + ": " + r.opened + " opened, " + r.settled + " settled, " + r.deferred + " deferred, " + r.asked + " asked" + (r.degraded ? " · degraded, not counted" : r.progress ? "" : " · no progress") },
-            bar(r.opened, "op"), bar(r.settled, "st"), H("b", { text: "R" + r.round }));
-        }), H("span", { "class": "cllg" }, H("i", { "class": "clb op" }), "opened ", H("i", { "class": "clb st" }), "settled · " + c.trend)) : H("p", { "class": "meta", text: c.trend });
-      var rows = c.issues.map(function (r) {
+      var c = j.clarify, tt = c.totals || {};
+      var rows = arr(c.items).map(function (r) {
         return H("tr", { "class": "cl-" + r.status },
-          H("td", { "class": "t-mono" }, r.id, r.aliases && r.aliases.length ? H("div", { "class": "meta", title: "folded duplicates", text: "= " + r.aliases.join(", ") }) : null),
-          H("td", null, H("code", { text: r.subject || "—" }), H("div", { "class": "meta", text: r.title })),
-          H("td", null, H("span", { "class": "chip " + (r.status === "settled" ? "ok" : r.status === "proposed" ? "hl" : r.status === "deferred_to_design" ? "tag" : "mute"), text: CL_STATUS[r.status] || r.status }), r.settled_by ? H("div", { "class": "meta", text: CL_BY[r.settled_by] || r.settled_by }) : null),
-          H("td", { "class": "t-mono", text: r.owner }),
-          H("td", { text: r.next }));
+          H("td", { "class": "t-mono", text: r.id }),
+          H("td", null, r.text, r.value && r.value !== r.text ? H("div", { "class": "meta", text: r.value }) : null),
+          H("td", null, H("span", { "class": "chip " + (r.status === "decided" || r.status === "done" ? "ok" : r.status === "to_decide" ? "hl" : r.status === "deferred" ? "tag" : "mute"), text: CL_STATUS[r.status] || r.status })),
+          H("td", { text: r.by || "—" }));
       });
-      var qs = (c.questions || []).length ? H("div", { "class": "clq" }, H("h4", null, "Waiting on you", H("em", { text: plural(c.questions.length, "question") })),
-        c.questions.map(function (q) { return H("div", { "class": "clqi" }, H("b", { text: q.id }), " " + q.question + (q.default ? " (default: " + q.default + ")" : ""), H("div", null, H("code", { text: "factory answer " + q.id + " \"…\"" }), q.default ? H("code", { text: "factory answer " + q.id + " --default" }) : null)); })) : null;
-      var def = (c.deferred || []).length ? H("div", { "class": "cld" }, H("h4", null, "Handed to design", H("em", { text: "ground and decide settle these; they do not block H1" })),
-        H("ul", null, c.deferred.map(function (d) { return H("li", null, H("b", { text: d.id }), " ", H("code", { text: d.subject }), " " + d.title); }))) : null;
-      return H("section", { "class": "sec-blk clarify" }, H("h3", null, "Clarify", H("em", { text: tt.issues + " issues · " + tt.closed + " closed · open: you " + (o.user || 0) + ", research " + (o.research || 0) + ", design " + (o.design || 0) + (c.migrated ? " · migrated from v1" : "") })),
-        trend, qs, H("div", { "class": "cltblw" }, H("table", { "class": "cltbl" }, H("tr", null, H("th", { text: "Issue" }), H("th", { text: "Subject" }), H("th", { text: "Status" }), H("th", { text: "Owner" }), H("th", { text: "Next" })), rows)), def);
+      var qs = arr(c.questions).length ? H("div", { "class": "clq" }, H("h4", null, "Waiting on you", H("em", { text: plural(c.questions.length, "decision") + " · one reply answers them all" })),
+        c.questions.map(function (q) { return H("div", { "class": "clqi" }, H("b", { text: q.id }), " " + q.question + (q.recommendation ? " (recommended: " + q.recommendation + ")" : "")); }),
+        H("div", null, H("code", { text: "factory clarify reply \"ok\"" }), H("code", { text: "factory clarify reply \"ok, but 2 b\"" }))) : null;
+      var ev = arr(c.evidence).filter(function (e) { return e.claim; });
+      var evb = ev.length ? H("div", { "class": "cld" }, H("h4", null, "What research found", H("em", { text: plural(c.passes || 0, "pass") })),
+        H("ul", null, ev.map(function (e) { return H("li", { "class": e.usable ? "" : "unv" }, H("b", { text: e.id }), " " + e.claim + " · ", H("code", { text: e.source }), " · " + (EV_WORD[e.verdict] || e.verdict || "not judged yet")); }))) : null;
+      var gaps = arr(c.gaps).length ? H("div", { "class": "cld" }, H("h4", null, "Research gaps"), H("ul", null, c.gaps.map(function (g) { return H("li", { text: g.what + ": " + g.reason }); }))) : null;
+      var drops = arr(c.dropped).length ? H("div", { "class": "cld" }, H("h4", null, "Dropped", H("em", { text: "you can reopen any of them" })), H("ul", null, c.dropped.map(function (d) { return H("li", { text: d.id + " " + d.text + " — dropped by " + (d.actor || "unknown") + ": " + (d.reason || "no reason recorded") }); }))) : null;
+      return H("section", { "class": "sec-blk clarify" }, H("h3", null, "Clarify", H("em", { text: (CL_STAGE[c.stage] || c.stage) + " · " + (tt.items || 0) + " items · " + (tt.decided || 0) + " decided, " + (tt.assumed || 0) + " assumed, " + (tt.open || 0) + " open" + (c.migration ? " · migrated from v" + c.migration.from : "") })),
+        qs, H("div", { "class": "cltblw" }, H("table", { "class": "cltbl" }, H("tr", null, H("th", { text: "Item" }), H("th", { text: "What" }), H("th", { text: "Status" }), H("th", { text: "Decided by" })), rows)), evb, gaps, drops);
     }
-    var RUN_NAME = { "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
+    var RUN_NAME = { "clarify": "Clarify", "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
     function runName(v) { return RUN_NAME[v.workflow + ":" + v.config] || RUN_NAME[v.workflow] || (v.workflow + (v.config ? " " + v.config : "")); }
     function runsBlock(j, t) {
       var vs = arr(j.runs).map(function (r) { var v = runView(r, t); return v ? { r: r, v: v } : null; }).filter(Boolean).reverse();
@@ -7976,7 +7999,7 @@ function toDisplay(data) {
         if (a.phase === "denied") r.den++; r.last = a;
       });
       var active = {}; S.agents.forEach(function (a) { active["factory:" + a.agent] = 1; });
-      var order = ["factory:intent-mapper", "factory:verifier", "factory:intent-analyst", "factory:judge", "factory:contract-editor", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
+      var order = ["factory:interviewer", "factory:brief-writer", "factory:contract-writer", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
       var keys = order.concat(Object.keys(roles).filter(function (k) { return order.indexOf(k) < 0; }).sort());
       var bw = 260;
       var rowsN = keys.map(function (k, i) {

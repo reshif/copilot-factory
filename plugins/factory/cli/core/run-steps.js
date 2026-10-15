@@ -21,13 +21,13 @@ var RUN_STEPS = (function () {
     clarify: {
       next: 'the next clarify stage, your reply, or H1',
       steps: [
-        { key: 'readback', label: 'read your words back', match: /^clarify: readback/, roles: ['interviewer'], optional: true, only_when_run: true },
-        { key: 'research', label: 'research (pinned versions)', match: /^clarify: research · research · /, roles: ['researcher'], optional: true, only_when_run: true },
-        { key: 'brief', label: 'research brief', match: /^clarify: research · research brief/, roles: ['brief-writer'], optional: true, only_when_run: true },
-        { key: 'interpret', label: 'read your sheet answer', match: /^clarify: interpret/, roles: ['interviewer'], optional: true, only_when_run: true },
-        { key: 'redirect', label: 'read your redirect back', match: /^clarify: redirect/, roles: ['interviewer'], optional: true, only_when_run: true },
-        { key: 'write', label: 'write the contract', match: /^clarify: assemble/, roles: ['contract-writer'], optional: true, only_when_run: true },
-        { key: 'check', label: 'readiness check', match: /^clarify: check/, roles: ['god-eye'], optional: true, only_when_run: true },
+        { key: 'readback', label: 'read your words back', match: /^clarify: read your words back/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'research', label: 'research (pinned versions)', match: /^clarify: research \(/, roles: ['researcher'], optional: true, only_when_run: true },
+        { key: 'brief', label: 'research brief', match: /^clarify: research brief/, roles: ['brief-writer'], optional: true, only_when_run: true },
+        { key: 'interpret', label: 'read your sheet answer', match: /^clarify: read your sheet answer/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'redirect', label: 'read your redirect back', match: /^clarify: read your redirect back/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'write', label: 'write the contract', match: /^clarify: write the contract/, roles: ['contract-writer'], optional: true, only_when_run: true },
+        { key: 'check', label: 'readiness check', match: /^clarify: readiness check/, roles: ['god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them

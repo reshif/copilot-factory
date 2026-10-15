@@ -13,20 +13,33 @@ const H = require('./helpers/workflow-harness');
 
 const instructions = (prompt) => {
   const line = prompt.split('\n').find((l) => l.trim().startsWith('/'));
-  return line ? fs.readFileSync(line.trim(), 'utf8') : prompt;
+  return line ? `${fs.readFileSync(line.trim(), 'utf8')}\n${prompt}` : prompt;
 };
 
+// Clarify v3 through the real workflow script, stage by stage: read-back (nothing to research),
+// ok, contract, readiness. Returns the last record.
+const READY = { intent_clear: true, scope_bounded: true, acs_testable: true, self_consistent: true, facts_honoured: true, instructions_handled: true, decisions_closed: true };
 async function clarify(root) {
-  const brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify'], { allowFail: false });
-  const { result } = await H.run(path.join(F.PLUGIN, 'workflows', 'fanout-judge.js'), JSON.stringify(brief), (prompt, opts) => {
-    if (opts.agentType === 'factory:intent-mapper') return { unknowns: [] };
-    if (opts.agentType === 'factory:intent-analyst') return { focus: 'x', questions: [] };
-    if (opts.agentType === 'factory:judge') return { questions: [], dismissed: [] };
-    if (opts.agentType === 'factory:god-eye') return { verdict: 'approve', items: [] };
-    throw new Error(`unexpected ${opts.agentType}: ${instructions(prompt).slice(0, 80)}`);
-  });
-  assert.ok(Array.isArray(result.agents) && result.agents.length === 7, 'the envelope carries the roster (intent mapper, intent gate + 3 angles, judge, God Eye)');
-  return F.record(root, result);
+  const { grab } = require('./helpers/clarify3-crew');
+  let r = null;
+  for (let i = 0; i < 8; i++) {
+    const n = F.cli(root, ['next']);
+    if (!(n.action === 'skill' && n.skill === 'clarify')) break;
+    if (n.clarify.waiting_for_user) {
+      F.cli(root, ['clarify', 'reply', 'ok'], { allowFail: false });
+      continue;
+    }
+    const brief = F.cli(root, ['wfargs', 'clarify'], { allowFail: false });
+    const { result } = await H.run(path.join(F.PLUGIN, 'workflows', 'clarify.js'), JSON.stringify(brief), (prompt, opts) => {
+      if (opts.agentType === 'factory:interviewer') return { intent: { problem: 'add subtracts', who: 'callers', outcome: 'add sums', success: 'the test passes' }, scope: { in: ['add'], out: [] }, took: [], pins: [], plan: [], questions: [], design_may_choose: [] };
+      if (opts.agentType === 'factory:contract-writer') return { contract: F.contractText(), covers: (grab(instructions(prompt), 'CLARIFY INPUT (JSON):').items || []).map((x) => ({ item: x.id, where: 'Goal' })), uncovered: [] };
+      if (opts.agentType === 'factory:god-eye') return { verdict: 'ready', restatement: { problem: 'add subtracts', outcome: 'add sums' }, checklist: READY, objections: [] };
+      throw new Error(`unexpected ${opts.agentType}: ${instructions(prompt).slice(0, 80)}`);
+    });
+    assert.ok(Array.isArray(result.agents) && result.agents.length === 1, 'the envelope carries the roster (one agent per clarify stage here)');
+    r = F.record(root, result);
+  }
+  return r;
 }
 
 const snapshot = (root) => {
@@ -56,8 +69,8 @@ test('console: steps, timeline and the agents per step, read-only', async () => 
   const ledger = fs.readFileSync(path.join(F.jobDir(root, J), 'ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   const ag = ledger.find((e) => e.kind === 'agents');
   assert.ok(ag && ag.seal, 'agents entry is sealed');
-  assert.equal(ag.workflow, 'fanout-judge');
-  assert.deepEqual([...new Set(ag.agents.map((a) => a.agent_type))].sort(), ['factory:god-eye', 'factory:intent-analyst', 'factory:intent-mapper', 'factory:judge']);
+  assert.equal(ag.workflow, 'clarify');
+  assert.deepEqual([...new Set(ledger.filter((e) => e.kind === 'agents').flatMap((e) => e.agents.map((a) => a.agent_type)))].sort(), ['factory:contract-writer', 'factory:god-eye', 'factory:interviewer']);
   assert.match(ag.decision_id, /^J-\d+-D\d+$/);
 
   const before = snapshot(root);
@@ -82,7 +95,7 @@ test('console: steps, timeline and the agents per step, read-only', async () => 
   for (const t of ['route', 'human', 'agents', 'result']) assert.ok(types.includes(t), `timeline has ${t}`);
   const a = job.timeline.find((t) => t.type === 'agents');
   assert.equal(a.step, 'clarify', 'agents are placed on the step that ran them');
-  assert.equal(a.agents.filter((x) => x.role === 'intent-analyst').length, 4);
+  assert.deepEqual(job.timeline.filter((t) => t.type === 'agents' && t.step === 'clarify').map((t) => t.agents.map((x) => x.role).join()), ['interviewer', 'contract-writer', 'god-eye'], 'one agents event per clarify stage');
   assert.equal(job.timeline.find((t) => t.type === 'human').step, 'H1');
   const park = job.timeline.find((t) => t.type === 'park');
   assert.ok(park && /API owners/.test(park.text), 'a park you asked for is on the timeline, even after a resume clears it from state');
@@ -187,18 +200,18 @@ test('console: a factory run agent is at work from agent_start until its agent_r
   const { jobPaths } = require('../cli/lib/paths');
   const now = Date.parse('2030-01-01T12:00:00.000Z');
   const at = (ms) => new Date(now - ms).toISOString();
-  const start = (id, type, ts) => JSON.stringify({ ts, event: 'agent_start', run_id: id, job: A, agent_type: type, label: type.replace('factory:', ''), workflow: 'fanout-judge' });
+  const start = (id, type, ts) => JSON.stringify({ ts, event: 'agent_start', run_id: id, job: A, agent_type: type, label: type.replace('factory:', ''), workflow: 'clarify' });
   const end = (id, type, ts) => JSON.stringify({ ts, event: 'agent_run', run_id: id, job: A, agent_type: type, ms: 1000, outcome: 'ok' });
   fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), [
-    start('r1', 'factory:intent-mapper', at(5 * 60000)),
-    end('r1', 'factory:intent-mapper', at(4 * 60000)),
-    start('r2', 'factory:intent-analyst', at(3 * 60000)),
-    start('r3', 'factory:intent-analyst', at(3 * 60000)),
+    start('r1', 'factory:interviewer', at(5 * 60000)),
+    end('r1', 'factory:interviewer', at(4 * 60000)),
+    start('r2', 'factory:researcher', at(3 * 60000)),
+    start('r3', 'factory:researcher', at(3 * 60000)),
   ].join('\n') + '\n');
   const lock = path.join(jobPaths(root, A).dir, 'run.lock');
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: at(6 * 60000) }));
   const running = () => build(root, { now: new Date(now).toISOString() }).jobs.find((j) => j.id === A).running_agents.map((x) => x.agent_type);
-  assert.deepEqual(running(), ['factory:intent-analyst', 'factory:intent-analyst'], 'both analysts are at work; the mapper finished');
+  assert.deepEqual(running(), ['factory:researcher', 'factory:researcher'], 'both researchers are at work; the interviewer finished');
   fs.writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, host: require('os').hostname() }));
   assert.deepEqual(running(), [], 'once factory run is gone, its unfinished agents are not at work');
 });
@@ -211,27 +224,24 @@ test('console: workflow runs step by step — steps in order, agents per step, p
   const { jobPaths } = require('../cli/lib/paths');
   const t0 = Date.parse('2030-01-01T12:00:00.000Z');
   const at = (s) => new Date(t0 + s * 1000).toISOString();
-  const base = { job: A, decision_id: null, workflow: 'fanout-judge', config: 'clarify', wf_run: 'W1' };
+  let base = { job: A, decision_id: null, workflow: 'clarify', config: null, mode: 'research', wf_run: 'W1' };
   const lines = [];
   const ev = (s, rec) => lines.push(JSON.stringify({ ts: at(s), ...base, ...rec }));
   const phase = (s, index, text) => ev(s, { event: 'workflow_phase', text, index });
   const start = (s, id, role, label, step) => ev(s, { event: 'agent_start', run_id: id, role, agent_type: `factory:${role}`, label, step });
   const end = (s, id, role, label, step, outcome = 'ok') => ev(s, { event: 'agent_run', run_id: id, role, agent_type: `factory:${role}`, label, step, outcome, ms: 1000 });
-  ev(0, { event: 'workflow_start', mode: null, round: 2, pid: process.pid });
-  phase(1, 0, 'clarify: scout · map the unknowns');
-  start(1, 'm', 'intent-mapper', 'intent map', 0); end(60, 'm', 'intent-mapper', 'intent map', 0);
-  phase(61, 1, 'clarify: scout · research 5 unknown(s) with 3 scout(s)');
-  for (const k of [1, 2, 3]) start(62, `s${k}`, 'researcher', `scout · repo #${k}`, 1);
-  end(120, 's1', 'researcher', 'scout · repo #1', 1); end(121, 's2', 'researcher', 'scout · repo #2', 1, 'timeout'); end(122, 's3', 'researcher', 'scout · repo #3', 1);
-  // no verify phase: the verifier had nothing to re-check; then the intent gate is skipped too (no gate angle)
-  phase(130, 2, 'clarify: fan-out (4)');
-  for (const k of [1, 2, 3, 4]) start(131, `a${k}`, 'intent-analyst', `analyst #${k}`, 2);
-  end(200, 'a1', 'intent-analyst', 'analyst #1', 2); end(201, 'a2', 'intent-analyst', 'analyst #2', 2, 'invalid');
-  start(202, 'a2r', 'intent-analyst', 'analyst #2 (retry)', 2);
-  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), lines.join('\n') + '\n');
+  const flush = () => { fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), lines.join('\n') + '\n'); lines.length = 0; };
+  // clarify v3's research pass: the researchers, then the brief writer
+  ev(0, { event: 'workflow_start', round: null, pid: process.pid });
+  phase(1, 0, 'clarify: research (repo, docs)');
+  start(1, 'r', 'researcher', 'research · repo', 0); start(1, 'd', 'researcher', 'research · docs', 0);
+  end(60, 'r', 'researcher', 'research · repo', 0); end(90, 'd', 'researcher', 'research · docs', 0, 'timeout');
+  phase(91, 1, 'clarify: research brief');
+  start(91, 'b', 'brief-writer', 'research brief', 1);
+  flush();
   const lock = path.join(jobPaths(root, A).dir, 'run.lock');
-  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: at(0), workflow: 'fanout-judge', config: 'clarify' }));
-  const now = new Date(t0 + 300 * 1000).toISOString();
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: at(0), workflow: 'clarify' }));
+  let now = new Date(t0 + 120 * 1000).toISOString();
   const get = () => build(root, { now }).jobs.find((j) => j.id === A);
 
   let j = get();
@@ -239,62 +249,60 @@ test('console: workflow runs step by step — steps in order, agents per step, p
   let r = j.runs[0];
   assert.equal(j.runs_live.running, 'W1', 'the run in progress');
   assert.equal(r.status, 'running');
-  assert.equal(r.round, 2);
   assert.equal(r.stage, null, 'no routing decision in this log: no step, no stage');
   const row = (st) => [st.state, st.label, st.roles.map((x) => `${x.role} ${x.total}/${x.running}/${x.ok}/${x.failed}/${x.retries}`).join(', ')];
   assert.deepEqual(r.steps.map(row), [
-    ['done', 'map the unknowns', 'intent-mapper 1/0/1/0/0'],
-    ['done', 'research 5 unknowns', 'researcher 3/0/2/1/0'],
-    ['skipped', 'verify findings', ''],
-    ['skipped', 'intent gate', ''],
-    ['running', 'fan-out (4)', 'intent-analyst 5/3/1/1/1'],
-    ['pending', 'judge', ''],
-    ['pending', 'God Eye (intent)', ''],
-  ]);
-  assert.deepEqual([r.at, r.of], [3, 5], 'step 3 of 5: skipped steps are not counted');
-  assert.equal(r.next, 'your answers or H1');
-  assert.deepEqual(r.steps[5].planned, ['judge'], 'a pending step names who will run it');
-  assert.deepEqual(r.steps.slice(0, 2).map((x) => [x.started_at, x.ended_at]), [[at(1), at(61)], [at(61), at(130)]], 'a step runs from its phase to the next one');
+    ['done', 'research (repo, docs)', 'researcher 2/0/1/1/0'],
+    ['running', 'research brief', 'brief-writer 1/1/0/0/0'],
+  ], 'a clarify run shows only the stage it runs: no pending steps of other stages');
+  assert.deepEqual([r.at, r.of], [2, 2]);
+  assert.equal(r.next, 'the next clarify stage, your reply, or H1');
+  assert.deepEqual(r.steps.map((x) => [x.started_at, x.ended_at]), [[at(1), at(91)], [at(91), null]], 'a step runs from its phase to the next one');
 
   // replay: the same run as it stood during the research
-  const v = RS.view(r, t0 + 90 * 1000);
-  assert.deepEqual(v.steps.map(row), [
-    ['done', 'map the unknowns', 'intent-mapper 1/0/1/0/0'],
-    ['running', 'research 5 unknowns', 'researcher 3/3/0/0/0'],
-    ['pending', 'verify findings', ''],
-    ['pending', 'intent gate', ''],
-    ['pending', 'fan-out', ''],
-    ['pending', 'judge', ''],
-    ['pending', 'God Eye (intent)', ''],
-  ]);
+  const v = RS.view(r, t0 + 30 * 1000);
+  assert.deepEqual(v.steps.map(row), [['running', 'research (repo, docs)', 'researcher 2/2/0/0/0']]);
   assert.equal(v.status, 'running');
   assert.equal(RS.view(r, t0 - 1000), null, 'before the run started there is nothing');
 
-  // the run ends: the steps it never took are skipped, and the station remembers its last run
-  lines.length = 0;
-  end(240, 'a2r', 'intent-analyst', 'analyst #2 (retry)', 2); end(241, 'a3', 'intent-analyst', 'analyst #3', 2); end(242, 'a4', 'intent-analyst', 'analyst #4', 2);
-  phase(250, 3, 'clarify: judge');
-  start(251, 'j', 'judge', 'judge', 3); end(280, 'j', 'judge', 'judge', 3);
-  ev(281, { event: 'workflow_end', outcome: 'ok', status: 'needs_user', ms: 281000 });
-  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), lines.join('\n') + '\n');
+  // the run ends
+  end(150, 'b', 'brief-writer', 'research brief', 1);
+  ev(151, { event: 'workflow_end', outcome: 'ok', status: 'degraded', ms: 151000 });
+  flush();
+  now = new Date(t0 + 200 * 1000).toISOString();
   j = get();
   r = j.runs[0];
   assert.equal(r.status, 'done');
-  assert.equal(r.result, 'needs_user');
+  assert.equal(r.result, 'degraded');
   assert.equal(j.runs_live.running, null);
-  assert.deepEqual(r.steps.map((x) => x.state), ['done', 'done', 'skipped', 'skipped', 'done', 'done', 'skipped']);
-  assert.deepEqual(r.steps[4].roles, [{ role: 'intent-analyst', total: 5, running: 0, ok: 4, failed: 1, retries: 1 }]);
+  assert.deepEqual(r.steps.map((x) => x.state), ['done', 'done']);
   assert.equal(r.at, null);
 
+  // a workflow with fixed steps (decide): the steps ahead are pending, the ones it jumped skipped
+  base = { job: A, decision_id: null, workflow: 'fanout-judge', config: 'decide', mode: null, wf_run: 'W2' };
+  ev(300, { event: 'workflow_start', round: 1, pid: process.pid });
+  phase(301, 0, 'decide: fan-out (2)');
+  start(301, 'o1', 'option-generator', 'option 1', 0); start(301, 'o2', 'option-generator', 'option 2', 0);
+  flush();
+  now = new Date(t0 + 310 * 1000).toISOString();
+  const d = get().runs[1];
+  assert.deepEqual(d.steps.map((x) => [x.state, x.label]), [['running', 'fan-out (2)'], ['pending', 'architect decides'], ['pending', 'God Eye (design)'], ['pending', 'architect revises']]);
+  assert.deepEqual(d.steps[1].planned, ['architect'], 'a pending step names who will run it');
+  ev(320, { event: 'workflow_phase', text: 'decide: God Eye (design) round 1', index: 1 });
+  flush();
+  now = new Date(t0 + 330 * 1000).toISOString();
+  assert.deepEqual(get().runs[1].steps.map((x) => x.state), ['done', 'skipped', 'running', 'pending'], 'a step the run passed without its phase is skipped');
+
   // a run with no end whose factory run is gone was cut off
-  lines.length = 0;
-  ev(400, { event: 'workflow_start', wf_run: 'W2', mode: null, round: 3, pid: process.pid });
-  ev(401, { event: 'workflow_phase', wf_run: 'W2', text: 'clarify: intent gate (1)', index: 0 });
-  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), lines.join('\n') + '\n');
-  assert.equal(get().runs[1].status, 'running');
-  assert.equal(get().runs[1].visit, 2, 'the second clarify run of this job');
+  base = { job: A, decision_id: null, workflow: 'clarify', config: null, mode: 'research', wf_run: 'W3' };
+  ev(400, { event: 'workflow_start', round: null, pid: process.pid });
+  ev(401, { event: 'workflow_phase', text: 'clarify: research (repo)', index: 0 });
+  flush();
+  now = new Date(t0 + 410 * 1000).toISOString();
+  assert.equal(get().runs[2].status, 'running');
+  assert.equal(get().runs[2].visit, 2, 'the second research pass of this job');
   fs.writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, host: require('os').hostname() }));
-  const cut = get().runs[1];
+  const cut = get().runs[2];
   assert.equal(cut.status, 'failed');
   assert.match(cut.error, /interrupted/);
   assert.deepEqual(cut.steps.filter((x) => x.text).map((x) => x.state), ['failed']);
@@ -306,14 +314,21 @@ test('console: workflow run templates follow the workflow sources; realize waves
   const src = (f) => fs.readFileSync(path.join(F.PLUGIN, 'workflows', f), 'utf8');
   const texts = (f) => [...src(f).matchAll(/phase\((['`])(.*?)\1\)/g)].map((m) => m[2].replace(/\$\{brief\.config\}/g, 'CFG').replace(/\$\{[^}]*\}/g, '1'));
   const fj = texts('fanout-judge.js');
-  assert.ok(fj.length >= 10, fj.join(' | '));
+  assert.ok(fj.length >= 4, fj.join(' | '));
   for (const t of fj) {
-    const cfgs = t.startsWith('CFG') ? ['clarify', 'decide', 'challenge'] : [t.split(':')[0]];
+    const cfgs = t.startsWith('CFG') ? ['decide', 'challenge'] : [t.split(':')[0]];
     for (const c of cfgs) {
       const tpl = RS.TEMPLATES[`fanout-judge:${c}`];
       assert.ok(tpl && RS.matchStep(tpl, t.replace('CFG', c)) >= 0, `fanout-judge ${c}: "${t}" has a template step`);
     }
   }
+  // clarify v3: the phase texts come from the CLI's stage plan (workflows/clarify.js prints them as `clarify: <text>`)
+  const cs = fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'clarify.js'), 'utf8');
+  const ph = [...(/const PH = \{([^\n]*)\};/.exec(cs) || ['', ''])[1].matchAll(/'([^']+)'\]/g)].map((m) => m[1]);
+  assert.equal(ph.length, 5, ph.join(' | '));
+  assert.match(cs, /'research brief' : `research \(\$\{/);
+  for (const t of [...ph, 'research brief', 'research (repo, docs)', 'research (repo)', 'research (docs)']) assert.ok(RS.matchStep(RS.TEMPLATES.clarify, `clarify: ${t}`) >= 0, `clarify: "${t}" has a template step`);
+  assert.match(src('clarify.js'), /phase\(`clarify: \$\{\(brief\.phases/, 'the clarify workflow prints the CLI\'s phase texts');
   for (const w of ['ground', 'decompose', 'realize', 'reconcile']) for (const t of texts(`${w}.js`)) assert.ok(RS.matchStep(RS.TEMPLATES[w], t) >= 0, `${w}: "${t}"`);
   assert.ok(RS.matchStep(RS.TEMPLATES.decompose, 'decompose: God Eye (plan) round 1') === 1 && RS.matchStep(RS.TEMPLATES.decompose, 'decompose: plan round 2') === 0);
   // realize: the waves still ahead are pending, a wave the run jumped (all its tasks skipped) is skipped
@@ -327,13 +342,13 @@ test('console: workflow run templates follow the workflow sources; realize waves
   const A = F.cli(root, ['job', 'new', '--title', 'Old log', '--type', 'bug', '--risk', 'low']).job;
   const now = Date.parse('2030-01-01T12:00:00.000Z');
   fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), [
-    JSON.stringify({ ts: new Date(now - 60000).toISOString(), event: 'agent_start', run_id: 'x', job: A, agent_type: 'factory:intent-analyst', label: 'analyst', workflow: 'fanout-judge' }),
+    JSON.stringify({ ts: new Date(now - 60000).toISOString(), event: 'agent_start', run_id: 'x', job: A, agent_type: 'factory:researcher', label: 'research · repo', workflow: 'clarify' }),
   ].join('\n') + '\n');
   fs.writeFileSync(path.join(require('../cli/lib/paths').jobPaths(root, A).dir, 'run.lock'), JSON.stringify({ pid: process.pid, host: require('os').hostname() }));
   const j = require('../cli/core/console').build(root, { now: new Date(now).toISOString() }).jobs.find((x) => x.id === A);
   assert.deepEqual(j.runs, []);
   assert.deepEqual(j.runs_live, { running: null, last_by_stage: {} });
-  assert.deepEqual(j.running_agents.map((x) => x.agent_type), ['factory:intent-analyst']);
+  assert.deepEqual(j.running_agents.map((x) => x.agent_type), ['factory:researcher']);
 });
 
 test('console page: one data slot, self-contained, and a static file says it is a snapshot', () => {
@@ -348,52 +363,66 @@ test('console page: one data slot, self-contained, and a static file says it is 
   assert.ok(!html.includes('/*__FACTORY_DATA__*/'), 'the slot is filled');
 });
 
-test('console: clarify research (findings with source and verdict, assumptions, overrides) per round, from the ledger and intent-evidence.json', () => {
+test('console: clarify v3 — items with who decided them, findings with source and verdict (another version never used), gaps and the stage line per step', () => {
   const root = F.makeRepo();
-  const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium']).job;
+  const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium', '--request', 'fix add on nautobot 2.4 so the cart totals add up']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  F.cli(root, ['next']);
-  const scout = {
-    ran: true, round: 1, web: { enabled: true, reason: null, available: true }, map: { ran: true, ok: true },
-    unknowns: [
-      { id: 'U-1', text: 'Where is add?', kind: 'repo', impact: 'high', draft: 'add is in src/add.js', research: 'repo', resolution: 'assumption', evidence: ['E-1'], researched: true },
-      { id: 'U-2', text: 'Is + numeric addition per ECMAScript?', kind: 'world', impact: 'medium', draft: 'ECMAScript + adds numbers', research: 'web', resolution: 'question', evidence: ['E-2'], researched: true },
-    ],
-    evidence: [
-      { id: 'E-1', unknown: 'U-1', claim: 'add is in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high', scout: 'repo', verdict: 'confirmed' },
-      { id: 'E-2', unknown: 'U-2', claim: 'ECMAScript + adds two numbers', source: 'https://tc39.es/ecma262/', source_tier: 'standard', retrieved_at: '2026-10-14', quote: 'Return ? operation(lnum, rnum).', confidence: 'high', scout: 'web', verdict: 'unverified' },
-    ],
-    assumptions: [], scouts: [{ label: 'scout · repo #1', mode: 'repo', unknowns: ['U-1'], outcome: 'ok' }, { label: 'scout · web #1', mode: 'web', unknowns: ['U-2'], outcome: 'ok' }], verifiers: 1, degraded: [],
+  const NB = 'https://docs.nautobot.com/projects/core/en';
+  const stage = (outputs) => {
+    const brief = F.cli(root, ['wfargs', 'clarify'], { allowFail: false });
+    const out = {};
+    for (const g of brief.groups) for (const a of g) out[a.label] = outputs(a, brief);
+    return F.record(root, F.envelope(brief, 'ok', { stage: brief.stage, rev: brief.rev, outputs: out }));
   };
-  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  const r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [], researchable_questions: [] }, scout }));
-  assert.equal(r.status, 'needs_user');
-  F.reply(root, 'change A-1 add lives in lib/add.js');
-  const dataFile = path.join(os.tmpdir(), `console-intent-${process.pid}-${Date.now()}.json`);
+  assert.equal(F.cli(root, ['next']).clarify.stage, 'readback');
+  stage(() => ({ intent: { problem: 'add subtracts', who: 'the cart', outcome: 'add sums', success: 'the test passes' }, scope: { in: ['add'], out: [] }, took: [], pins: [{ system: 'nautobot', version: '2.4', source: 'user', quote: 'nautobot 2.4' }], plan: [{ item: 'new', what: 'Where is add and what does it do?', tag: 'repo', pins: [], impact: 'high' }, { item: 'new', what: 'Does Nautobot scope VLANs by location?', tag: 'docs', pins: ['nautobot'], impact: 'high' }], questions: [], design_may_choose: [] }));
+  F.cli(root, ['clarify', 'reply', 'ok'], { allowFail: false });
+  assert.equal(F.cli(root, ['next']).clarify.stage, 'research');
+  stage((a, brief) => {
+    const plan = (tag) => brief.groups.flat().find((x) => x.label === `research · ${tag}`);
+    void plan;
+    if (a.label === 'research · repo') return { mode: 'repo', versions: [], evidence: [{ plan: 'P-1', claim: 'add is in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high' }], unresolved: [] };
+    if (a.label === 'research · docs') return { mode: 'docs', web_available: true, versions: [], evidence: [
+      { plan: 'P-2', claim: 'Nautobot 2.4 VLAN groups can be assigned to a location', source: `${NB}/v2.4.4/user-guide/core-data-model/ipam/vlangroup/`, source_tier: 'official', system: 'nautobot', version: '2.4.4', quote: 'A VLAN group may be assigned to a location.', retrieved_at: '2026-10-14', confidence: 'high' },
+      { plan: 'P-2', claim: 'Nautobot 3 VLANs have many locations', source: `${NB}/stable/user-guide/core-data-model/ipam/vlan/`, source_tier: 'official', system: 'nautobot', version: '3.0', quote: 'A VLAN may be assigned to multiple locations.', retrieved_at: '2026-10-14', confidence: 'high' },
+    ], unresolved: [] };
+    return { summary: 's', records: [], facts: [{ plan: 'P-1', statement: 'add is in src/add.js and subtracts', evidence: ['src/add.js:1'] }, { plan: 'P-2', statement: 'VLAN groups can be assigned to a location', evidence: [`${NB}/v2.4.4/user-guide/core-data-model/ipam/vlangroup/`, `${NB}/stable/user-guide/core-data-model/ipam/vlan/`] }], gaps: [] };
+  });
+  assert.equal(F.cli(root, ['next']).clarify.stage, 'sheet_wait');
+  const dataFile = path.join(os.tmpdir(), `console-clarify-${process.pid}-${Date.now()}.json`);
   F.cli(root, ['console', '--out', `${dataFile}.html`, '--data', dataFile]);
-  const job = JSON.parse(fs.readFileSync(dataFile, 'utf8')).jobs.find((j) => j.id === J);
-  const res = job.timeline.find((t) => t.type === 'result' && t.step === 'clarify');
-  const x = res.research;
-  assert.equal(x.unknowns, 2);
-  assert.equal(x.scouts, 2);
-  assert.equal(x.verifiers, 1);
-  assert.deepEqual(x.findings.map((f) => [f.id, f.verdict]), [['E-1', 'confirmed'], ['E-2', 'unverified']], 'confirmed first');
-  assert.equal(x.findings[1].claim, 'ECMAScript + adds two numbers');
-  assert.equal(x.findings[1].source, 'https://tc39.es/ecma262/');
-  assert.equal(x.findings[1].retrieved_at, '2026-10-14');
-  assert.deepEqual(x.assumptions_list.map((a) => [a.id, a.overridden]), [['A-1', false]], 'as it stood that round');
-  assert.equal(x.asked[0].researchable, true);
-  assert.match(x.asked[0].reason, /E-2 unverified/);
-  const h = job.timeline.find((t) => t.type === 'human' && t.action === 'change_assumption');
-  assert.equal(h.assumption, 'A-1');
-  assert.equal(h.value, 'add lives in lib/add.js');
-  assert.equal(h.was, 'add is in src/add.js and subtracts');
-  assert.deepEqual(job.intent.overridden, ['A-1']);
-  // the page knows the two new roles, the scout phase on the recipe map and renders the research
+  let job = JSON.parse(fs.readFileSync(dataFile, 'utf8')).jobs.find((j) => j.id === J);
+  const c = job.clarify;
+  assert.equal(c.version, 3);
+  assert.equal(c.stage, 'sheet_wait');
+  assert.equal(c.waiting_for_user, true);
+  assert.deepEqual(c.evidence.map((e) => [e.source.replace(NB, ''), e.verdict, e.usable]), [
+    ['src/add.js:1', 'repo', true],
+    ['/v2.4.4/user-guide/core-data-model/ipam/vlangroup/', 'pinned', true],
+    ['/stable/user-guide/core-data-model/ipam/vlan/', 'unpinned', false],
+  ], 'a moving page (stable) is shown, and never used for the confirmed 2.4');
+  assert.deepEqual(c.pins.map((p) => [p.text, p.by]), [['nautobot 2.4', 'you']]);
+  assert.ok(c.items.some((it) => it.kind === 'fact' && it.by === 'evidence'), 'facts research settled say so');
+  const lines = job.timeline.filter((t) => t.type === 'clarify');
+  assert.deepEqual(lines.map((t) => t.outcome), ['readback_wait', 'research', 'sheet_wait']);
+  assert.ok(lines.every((t) => t.step === 'clarify'));
+  assert.equal(lines[2].waiting, true);
+  assert.match(lines[2].text, /Decision sheet ready; waiting for your answer/);
+  // the rest of clarify: ok, contract, readiness → H1, and the result line says so
+  F.cli(root, ['clarify', 'reply', 'ok'], { allowFail: false });
+  F.clarify(root);
+  assert.equal(F.cli(root, ['next']).step, 'H1');
+  F.cli(root, ['console', '--out', `${dataFile}.html`, '--data', dataFile]);
+  job = JSON.parse(fs.readFileSync(dataFile, 'utf8')).jobs.find((j) => j.id === J);
+  assert.match(job.timeline.find((t) => t.type === 'result' && t.step === 'clarify').text, /Contract passed its readiness check after 1 research pass/);
+  assert.ok(job.h1 && Array.isArray(job.h1.decisions), 'H1 carries the decisions, gaps, drops and objections');
+  // the page knows the clarify v3 roles and renders the clarify block and its stage lines
   const html = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
-  for (const role of ['intent-mapper', 'verifier']) assert.match(html, new RegExp(`'${role}': \\['Clarify'`));
-  assert.match(html, /P\('intent map', 'agent', 'intent-mapper'\)[\s\S]*P\('verify evidence', 'agent', 'verifier'\)/);
-  assert.match(html, /function researchHtml/);
+  for (const role of ['interviewer', 'brief-writer', 'contract-writer']) assert.match(html, new RegExp(`'${role}': \\['Clarify'`));
+  for (const role of ['intent-mapper', 'intent-analyst', 'judge', 'contract-editor']) assert.ok(!html.includes(`'${role}': ['Clarify'`), `${role} is retired`);
+  assert.match(html, /P\('read-back', 'agent', 'interviewer'\)[\s\S]*P\('research brief', 'agent', 'brief-writer'\)[\s\S]*P\('readiness', 'agent', 'god-eye'\)/);
+  assert.match(html, /function clarifyHtml/);
+  assert.match(html, /case 'clarify':/);
   const agents = fs.readdirSync(path.join(F.PLUGIN, 'agents')).map((f) => f.replace(/\.agent\.md$/, ''));
   const table = html.slice(html.indexOf('const AGENTS = {'), html.indexOf('const RECIPES'));
   for (const a of agents) assert.ok(table.includes(`'${a}':`), `Crew lists ${a}`);

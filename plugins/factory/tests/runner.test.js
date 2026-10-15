@@ -109,7 +109,6 @@ test('factory run --dry-run prints the brief and the copilot commands, maps mode
   assert.equal(iv.agent_type, 'factory:interviewer');
   assert.equal(iv.model, 'haiku');
   assert.equal(iv.model_id, 'claude-haiku-4.5', 'project model_ids override the default');
-  assert.equal(runner.settings(root, F.cli(root, ['job', 'show'])).modelIds.opus, undefined, 'the default ids live in the policy');
   assert.equal(require('../cli/core/policy').load(root).agents.model_ids.opus, 'claude-opus-5.5', 'default model_ids from the supported-models list');
   const cmd = iv.command;
   assert.equal(cmd[0], FAKE);
@@ -150,7 +149,7 @@ test('factory run clarify: agents as copilot processes, envelope recorded in-pro
   assert.ok(fs.existsSync(check.workflow.envelope_file));
   assert.ok(fs.existsSync(check.result_file));
   assert.ok(!fs.existsSync(path.join(F.jobDir(root, J), 'run.lock')), 'the run lock is released');
-  assert.match(rb.__stderr, /\[factory run\] phase: clarify: readback · read-back/);
+  assert.match(rb.__stderr, /\[factory run\] phase: clarify: read your words back/);
   const calls = h.log();
   assert.deepEqual(calls.map((c) => c.agent), ['factory:interviewer', 'factory:contract-writer', 'factory:god-eye']);
   for (const c of calls) {
@@ -210,7 +209,7 @@ test('factory run logs each workflow step as it starts (workflow_phase), the run
   assert.deepEqual(mine.map((e) => e.event), ['workflow_start', ...r.workflow.phases.map(() => 'workflow_phase'), 'workflow_end'], 'start, one line per step, end');
   const phases = mine.filter((e) => e.event === 'workflow_phase');
   assert.deepEqual(phases.map((e) => e.text), r.workflow.phases, 'the steps in the order the workflow ran them');
-  assert.deepEqual(phases.map((e) => e.text), ['clarify: research · research · repo, research · docs', 'clarify: research · research brief']);
+  assert.deepEqual(phases.map((e) => e.text), ['clarify: research (repo, docs)', 'clarify: research brief']);
   assert.deepEqual(phases.map((e) => e.index), [0, 1]);
   const run = mine[0].wf_run;
   assert.match(run, /^[0-9a-f-]{36}$/);
@@ -238,7 +237,7 @@ test('factory run logs each workflow step as it starts (workflow_phase), the run
   assert.equal(rr.step, 'clarify');
   assert.equal(rr.stage, 'contract');
   assert.equal(rr.status, 'done');
-  assert.deepEqual(rr.steps.map((s) => [s.state, s.label, s.roles.map((x) => `${x.role}×${x.total}`).join(',')]), [['done', 'research (pinned versions)', 'researcher×2'], ['done', 'research brief', 'brief-writer×1']]);
+  assert.deepEqual(rr.steps.map((s) => [s.state, s.label, s.roles.map((x) => `${x.role}×${x.total}`).join(',')]), [['done', 'research (repo, docs)', 'researcher×2'], ['done', 'research brief', 'brief-writer×1']]);
   assert.deepEqual(job.runs_live, { running: null, last_by_stage: { contract: run } });
 });
 
@@ -457,7 +456,7 @@ test('the printed result is the RECORDED result: the writer\'s contract has prob
   assert.match(t.stdout, /agents: 1 \(1 ok\)/);
   assert.match(t.stdout, /full result: .*\.result\.json/);
   assert.ok(lines.length < 25, `compact: ${lines.length} lines`);
-  assert.match(F.cli(root, ['clarify', 'status']), /stage check/);
+  assert.match(F.cli(root, ['clarify', 'status']).raw, /stage check/);
 });
 
 test('God Eye: a note is shown at H1 as a remark; a blocker goes back to its stage (the writer), never into a note', () => {
@@ -479,7 +478,6 @@ test('God Eye: a note is shown at H1 as a remark; a blocker goes back to its sta
     const base = ${JSON.stringify(CLARIFY)};
     if (c.agent === 'factory:god-eye' && c.n === 0) return { ...base['factory:god-eye'], verdict: 'blocked', checklist: { ...base['factory:god-eye'].checklist, acs_testable: false }, objections: [{ check: 'acs_testable', severity: 'blocker', stage: 'assemble', ref: 'AC-1', issue: 'AC-1 does not say what add(-1, 1) returns', fix: 'add(-1, 1) returns 0' }] };
     if (c.agent === 'factory:contract-writer' && c.n === 1) {
-      if (!/add\(-1, 1\) returns 0/.test(c.instructions)) return { exit: 5, stderr: 'the blocker did not reach the writer' };
       return { ...base['factory:contract-writer'], contract: base['factory:contract-writer'].contract.replace('(evidence: test)', 'and add(-1, 1) returns 0 (evidence: test)') };
     }
     return base[c.agent];
@@ -492,6 +490,10 @@ test('God Eye: a note is shown at H1 as a remark; a blocker goes back to its sta
   F.cli(root, ['next']);
   assert.equal(h.run(root, ['clarify']).status, 'ok');
   assert.deepEqual(h.log().map((c) => c.agent.replace('factory:', '')), ['interviewer', 'contract-writer', 'god-eye', 'contract-writer', 'god-eye']);
+  const second = h.log()[3];
+  const runFile = flagOf(second.argv, '-p').split('\n')[1].trim();
+  const briefFile = fs.readFileSync(runFile, 'utf8').split('\n').map((l) => l.trim()).find((l) => l.startsWith('/') && l.endsWith('.md'));
+  assert.match(fs.readFileSync(briefFile, 'utf8'), /"fix": "add\(-1, 1\) returns 0"/, 'the blocker reached the writer');
   assert.match(fs.readFileSync(path.join(F.jobDir(root, 'J-0001'), 'contract.md'), 'utf8'), /add\(-1, 1\) returns 0 \(evidence: test\)/, 'the CLI wrote the writer\'s fix');
 });
 
@@ -654,9 +656,8 @@ test('bug@low through factory run: clarify, ground, realize (integrating its wav
   const J = newJob(root);
   const h = harness(CREW, { FAKE_CREW: JSON.stringify({ finding: 'major', verdict: 'refuted' }) });
   const step = (expect, check) => {
-    let n = F.cli(root, ['next']);
-    if (n.action === 'skill' && n.skill === 'clarify') n = { workflow: 'fanout-judge', config: 'clarify' }; // the clarify skill's round
-    else assert.equal(n.action, 'workflow', JSON.stringify(n));
+    const n = F.cli(root, ['next']);
+    assert.equal(n.action, 'workflow', JSON.stringify(n));
     assert.equal(n.workflow, expect.workflow, JSON.stringify(n));
     const args = runArgs(n);
     const dry = h.run(root, [...args, '--dry-run']);
@@ -671,26 +672,33 @@ test('bug@low through factory run: clarify, ground, realize (integrating its wav
     if (check) check(r);
     return r;
   };
-  step({ workflow: 'fanout-judge', dry: ['contract-editor', 'god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-mapper', 'judge', 'researcher', 'researcher', 'verifier'] }, (r) => {
-    // the scout phase ran first: map → repo scout → verifier, then the usual clarify crew
-    assert.deepEqual(roles(r), ['god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-mapper', 'judge', 'researcher', 'verifier']);
-    assert.deepEqual(r.agents.map((a) => a.label).slice(0, 3), ['intent map', 'scout · repo #1', 'verify evidence #1'], 'research comes before the analysts');
-    assert.ok(r.agents.filter((a) => /^(scout|verify)/.test(a.label)).every((a) => a.time_cap_sec === 120), 'scouts and the verifier run under the low-risk 2-minute cap');
-    assert.deepEqual(r.findings.map((f) => [f.id, f.verdict, f.source]), [['E-1', 'confirmed', 'src/add.js:1']]);
-    assert.deepEqual(r.assumptions.map((a) => [a.id, a.evidence]), [['A-1', ['E-1']]]);
-    assert.ok(fs.existsSync(r.intent_findings) && fs.existsSync(r.intent_evidence));
-    assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /## Assumptions \(evidence-backed\)\n<!--[^\n]*-->\n- A-1: add is implemented in src\/add\.js and subtracts \(evidence: E-1\)/);
-    const doc = require('../cli/core/doc');
-    assert.deepEqual(doc.checkFile(r.intent_findings, { type: 'intent-findings' }).problems, []);
-  });
+  // clarify v3 through factory run, stage by stage, each dry-run first; the user says ok twice
+  const stages = [];
+  for (let i = 0; i < 10; i++) {
+    const n = F.cli(root, ['next']);
+    if (!(n.action === 'skill' && n.skill === 'clarify')) break;
+    if (n.clarify.waiting_for_user) {
+      F.cli(root, ['clarify', 'reply', 'ok']);
+      continue;
+    }
+    const dry = h.run(root, ['clarify', '--dry-run']);
+    assert.equal(dry.preflight.ok, true, JSON.stringify(dry.preflight));
+    const r = h.run(root, ['clarify']);
+    assert.equal(r.__code, 0, JSON.stringify(r) + r.__stderr);
+    stages.push([n.clarify.stage, roles(r).join('+'), r.status, dry.agents.length === r.agents.length]);
+  }
+  assert.deepEqual(stages, [['readback', 'interviewer', 'needs_user', true], ['research', 'brief-writer+researcher', 'needs_user', true], ['assemble', 'contract-writer', 'continue', true], ['check', 'god-eye', 'ok', true]]);
+  const L = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8'));
+  assert.deepEqual(L.evidence.map((e) => [e.id, e.verdict, e.source]), [['E-1', 'repo', 'src/add.js:1']]);
+  assert.deepEqual(L.items.filter((x) => x.kind === 'fact').map((x) => [x.strength, x.value]), [['evidence', 'add is implemented in src/add.js and subtracts']], 'settled by the repo line, shown under facts I\'ll assume');
+  assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /## Facts relied on\n<!--[^\n]*-->\n- add is implemented in src\/add\.js and subtracts \(src\/add\.js:1, E-1\)/);
   assert.equal(F.cli(root, ['next']).step, 'H1');
   F.reply(root, 'approve');
   step({ workflow: 'ground', dry: ['researcher', 'researcher', 'researcher', 'researcher'] }, (r) => {
     assert.deepEqual(roles(r), ['researcher', 'researcher', 'researcher', 'researcher'], 'one probe per topic');
     const runnerFile = fs.readFileSync(h.log().filter((c) => c.agent === 'factory:researcher').pop().argv.find((a) => /instructions for this run/.test(a)).split('\n')[1].trim(), 'utf8');
     const brief = fs.readFileSync(runnerFile.split('\n')[1].trim(), 'utf8');
-    assert.match(brief, /Intent research from clarify[\s\S]*U-1 \[repo\][\s\S]*assumed \(A-1\)[\s\S]*E-1 \(U-1, confirmed\)/, 'ground reuses the clarify evidence');
-    assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'findings.md'), 'utf8'), /related: \[intent-findings\.md\][\s\S]*Builds on the intent research from clarify/);
+    assert.match(brief, /Research from clarify[\s\S]*Facts clarify settled[\s\S]*add is implemented in src\/add\.js and subtracts/, 'ground reuses the clarify research');
     assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'findings.md'), 'utf8'), /add subtracts/);
   });
   assert.match(F.cli(root, ['next']).command, /plan from-contract/);
@@ -720,7 +728,7 @@ test('bug@low through factory run: clarify, ground, realize (integrating its wav
     assert.deepEqual(flagsOf(c.argv, '--allow-tool'), p.allow, `${role}: --allow-tool`);
     assert.deepEqual(flagsOf(c.argv, '--deny-tool'), p.deny, `${role}: --deny-tool`);
   }
-  for (const r of ['builder', 'code-reviewer', 'finding-verifier', 'researcher', 'judge', 'verifier']) assert.ok(seen.has(r), `${r} ran`);
+  for (const r of ['builder', 'code-reviewer', 'finding-verifier', 'researcher', 'interviewer', 'brief-writer', 'contract-writer', 'god-eye']) assert.ok(seen.has(r), `${r} ran`);
   assert.ok(!seen.has('integrator'), 'every wave was integrated by the CLI; the integrator only runs when that could not finish');
   const argvOf = (role) => h.log().find((c) => c.agent === `factory:${role}`).argv;
   const builder = argvOf('builder');
@@ -730,17 +738,17 @@ test('bug@low through factory run: clarify, ground, realize (integrating its wav
   assert.deepEqual(flagsOf(reviewer, '--allow-tool'), ['shell'], 'a reviewer may run commands…');
   for (const d of ['write', 'url', 'memory', 'shell(git commit:*)', 'shell(touch:*)', 'shell(sed -i:*)']) assert.ok(flagsOf(reviewer, '--deny-tool').includes(d), `…but not ${d}`);
   assert.deepEqual(flagsOf(argvOf('researcher'), '--allow-tool'), ['shell', 'url'], 'web roles get url');
-  assert.deepEqual(flagsOf(argvOf('judge'), '--allow-tool'), [], 'the judge only reads');
+  assert.deepEqual(flagsOf(argvOf('interviewer'), '--allow-tool'), [], 'the interviewer only reads');
   // Tier 4: the quality signals come out of what this run logged.
   const t = F.cli(root, ['telemetry', 'report']);
   const q = t.quality;
   assert.ok(q.roles.builder.runs >= 1 && q.roles.builder.correction_turn_rate === 0 && q.roles.builder.null_result_rate === 0, JSON.stringify(q.roles.builder));
-  assert.equal(q.god_eye.intent.approve, q.god_eye.intent.verdicts, 'God Eye approved the contract; its verdict is logged with the agent_run');
-  assert.equal(q.god_eye.intent.revise_rate, 0);
+  assert.equal(q.god_eye.readiness.approve, q.god_eye.readiness.verdicts, 'God Eye found the contract ready; its verdict is logged with the agent_run');
+  assert.equal(q.god_eye.readiness.revise_rate, 0);
   assert.deepEqual(q.lanes.code, { raised: 1, verified: 1, refuted: 1, unverified: 0, refute_rate: 1, unverified_rate: 0 }, 'the finding-verifier refuted the one code finding');
   assert.deepEqual(q.parks, {});
   const md = spawnSync('node', [F.BIN, 'telemetry', 'report', '--format', 'md'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '' } }).stdout;
-  assert.match(md, /## Quality signals[\s\S]*\| builder \|[\s\S]*\| code \| 1 \| 1 \| 1 \| 1 \|[\s\S]*\| intent \|/);
+  assert.match(md, /## Quality signals[\s\S]*\| builder \|[\s\S]*\| code \| 1 \| 1 \| 1 \| 1 \|[\s\S]*\| readiness \| 1 \| 1 \| 0 \| 0 \|/);
 });
 
 test('tool permissions follow the tools: list of each agent; policy adds patterns or restores allow-all', () => {
@@ -780,9 +788,14 @@ test('standard@medium through factory run: decide with --threat-model, H2, decom
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   const h = harness(CREW);
-  let n = F.cli(root, ['next']);
-  assert.equal(h.run(root, runArgs({ workflow: 'fanout-judge', config: 'clarify' })).status, 'ok');
-  assert.equal(F.cli(root, ['next']).step, 'H1');
+  let n;
+  for (let i = 0; i < 10; i++) {
+    n = F.cli(root, ['next']);
+    if (!(n.action === 'skill' && n.skill === 'clarify')) break;
+    if (n.clarify.waiting_for_user) F.cli(root, ['clarify', 'reply', 'ok']);
+    else assert.equal(h.run(root, ['clarify']).__code, 0);
+  }
+  assert.equal(n.step, 'H1');
   F.reply(root, 'approve');
   n = F.cli(root, ['next']);
   assert.equal(n.workflow, 'ground');

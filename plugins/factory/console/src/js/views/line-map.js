@@ -96,6 +96,8 @@ function lmStations(m) {
       const last = st[st.length - 1];
       if (last && last.step === it.step) last.bad = true;
       if (it.outcome === 'ask' && !openWait) { openWait = { t0: t, t1: null, track }; waits.push(openWait); }
+    } else if (it.type === 'clarify') {
+      if (it.waiting && !openWait) { openWait = { t0: t, t1: null, track }; waits.push(openWait); } else if (!it.waiting && openWait) { openWait.t1 = t; openWait = null; }
     } else if (it.type === 'park') {
       openPark = { t0: t, t1: null, track, i };
       parks.push(openPark);

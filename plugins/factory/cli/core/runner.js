@@ -724,7 +724,7 @@ async function runAgent(ctx, prompt, opts) {
     }
     // (a short cap from the brief, e.g. a time-boxed clarify researcher, still starts: the floor is
     // half its budget, at most 5 s)
-    if (deadline && left() < Math.min(5, Math.max(1, Math.floor(capSec / 2)))) {
+    if (deadline && deadline - Date.now() < Math.min(5000, capSec * 500)) {
       const rec = { label: o.label || role, role, agent_type: agentType, model: o.model || null, model_id: model, cwd, ms: 0, exit: null, retry: false, spawns: 0, outcome: 'timeout', time_cap_sec: capSec, errors: [`its ${capSec}s time budget ran out before a slot was free; not started`] };
       ctx.runs.push(rec);
       events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, ...rec });

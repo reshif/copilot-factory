@@ -9,9 +9,9 @@
 //   FACTORY_SECRET_FILE=<scratch-dir>/secret factory console --root <root> --out c.html --data d.json
 //
 // Jobs it leaves behind:
-//   J-0001 standard@medium  Rate-limit the public search API — full run: research first (repo
-//          and web scouts, a verifier), clarify questions and answers, H1 denied once, an
-//          evidence-backed assumption overridden (change A-2), a researcher retried, a design
+//   J-0001 standard@medium  Rate-limit the public search API — full run: clarify v3 (read-back,
+//          one research pass on repo and docs, a decision sheet answered in plain words), H1
+//          denied once (a redirect read back), a later redirect, a researcher retried, a design
 //          revision, a planner round that failed validation, a builder retry on a stronger
 //          model, a guard denial, a confirmed security finding and fix round, a review re-run
 //          for a missing lane, local ship, merge, a lesson, close.             → closed
@@ -122,9 +122,38 @@ function instructions(p) {
   return l && fs.existsSync(l.trim()) ? `${fs.readFileSync(l.trim(), 'utf8')}\n${p}` : p;
 }
 
+// The first JSON value after a marker in an agent's brief (clarify's CLARIFY INPUT, the INPUTS of an earlier group).
+function grabJson(text, marker) {
+  const i = String(text).indexOf(marker);
+  if (i < 0) return null;
+  const rest = text.slice(i + marker.length).trimStart();
+  for (let end = rest.length; end > 0; end = Math.max(rest.lastIndexOf('}', end - 1), rest.lastIndexOf(']', end - 1))) {
+    try {
+      return JSON.parse(rest.slice(0, end + (end < rest.length ? 1 : 0)));
+    } catch {
+      /* shorter */
+    }
+    if (end <= 0) break;
+  }
+  return null;
+}
+const clarifyInput = (text) => grabJson(text, 'CLARIFY INPUT (JSON):') || {};
+// The interviewer maps your plain-words sheet answer: sc.answers lists, per decision (matched by
+// its question), the words that answer it and the option they mean.
+function interpret(sc, inp) {
+  const answers = [];
+  for (const d of inp.sheet.decisions) {
+    const a = (sc.answers || []).find((x) => x.match.test(d.question));
+    if (!a || !inp.reply.text.includes(a.quote)) continue;
+    const o = d.options.find((x) => a.option.test(x.text));
+    answers.push({ decision: d.no, choice: o ? o.key : 'other', text: o ? o.text : a.quote, quote: a.quote });
+  }
+  return { answers, facts: [], unclear: answers.length ? [] : [inp.reply.text] };
+}
+
 // ---- agents: parallel calls start together; each takes 1–7 minutes ---------------------
 const DUR = {
-  'intent-mapper': [1, 2.5], verifier: [1, 3], 'intent-analyst': [1, 3.5], judge: [1, 3], 'god-eye': [2, 5], researcher: [1.5, 5], 'option-generator': [2, 5],
+  interviewer: [0.3, 1], 'brief-writer': [1, 3], 'contract-writer': [1.5, 4], 'god-eye': [2, 5], researcher: [1.5, 5], 'option-generator': [2, 5],
   'threat-modeler': [3, 6], architect: [4, 7], planner: [3, 7], builder: [3, 7], tester: [1, 3], integrator: [1, 2.5],
   'code-reviewer': [2, 6], 'test-reviewer': [2, 5], 'security-reviewer': [3, 7], 'finding-verifier': [2, 5],
 };
@@ -270,38 +299,58 @@ function crew(J, sc, st) {
     const retry = /\(retry\)$/.test(label);
     const role = type.replace('factory:', '');
     switch (role) {
-      // The clarify scout phase: map the unknowns, research them, verify the findings.
-      case 'intent-mapper':
-        return { unknowns: (sc.intentMap || DEFAULT_INTENT_MAP).map(({ text, kind, impact, draft, research, search, options }) => ({ text, kind, impact, draft, research, search, ...(options ? { options } : {}) })) };
-      case 'verifier': {
-        const ids = [...new Set([...text.matchAll(/"id": "(E-\d+)"/g)].map((m) => m[1]))];
-        return { verdicts: ids.map((id) => ({ evidence_id: id, verdict: 'confirmed', confidence: 'high', reason: 'Re-opened the source: the quote is there and applies to the version in use.', quote_found: true, version_applies: true, second_source: /"source": "https?:/.test(text) ? { source: 'https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3', quote: 'Retry-After = HTTP-date / delay-seconds' } : { source: 'src/server.js:2', quote: "'/search': require('./search')," } })) };
+      // Clarify v3: the interviewer reads back, maps a sheet answer or a redirect; the research
+      // pass (researchers, then the brief writer); the contract writer; God Eye's readiness check.
+      case 'interviewer': {
+        const inp = clarifyInput(text);
+        if (inp.mode === 'interpret') return interpret(sc, inp);
+        if (inp.mode === 'redirect') return { clauses: sc.redirect ? sc.redirect(inp.redirect.text, inp) : [{ quote: inp.redirect.text, item: 'new', action: 'instruction', text: inp.redirect.text, tag: null }] };
+        const map = sc.intentMap || DEFAULT_INTENT_MAP;
+        const known = (t) => ((inp.items || []).find((x) => x.text === t) || {}).id || 'new';
+        const it = require(path.join(PLUGIN, 'cli', 'core', 'contract')).parse(fs.readFileSync(path.join(dir(), 'contract.md'), 'utf8')).intent || {};
+        return {
+          intent: { problem: it.problem || 'see the request', who: it.who || 'the API\'s callers', outcome: it.outcome || 'as the request says', success: it.success || 'the verify commands pass' },
+          scope: { in: [], out: [] },
+          took: [],
+          pins: [{ system: 'node', version: '20.11.1', source: 'repo', file: '.nvmrc:1', quote: '20.11.1' }],
+          plan: map.filter((u) => !(u.kind === 'user' && u.impact === 'low')).map((u) => ({ item: known(u.text), what: u.text, tag: u.kind === 'world' ? 'docs' : u.kind === 'repo' ? 'repo' : 'decision', pins: [], impact: u.impact, ...(u.options ? { options: u.options } : {}) })),
+          questions: [],
+          design_may_choose: map.filter((u) => u.kind === 'user' && u.impact === 'low').map((u) => u.draft),
+        };
       }
-      case 'intent-analyst': {
-        const focus = label.replace('analyst · ', '');
-        const qs = ((sc.questions && sc.questions(st.round)) || []).filter((q) => q.focus === focus);
-        return { focus, questions: qs.map(({ question, why }) => ({ question, why, blocking: true })), assumptions: sc.assumptions ? sc.assumptions[focus] || [] : [] };
+      case 'brief-writer': {
+        const inp = clarifyInput(text);
+        const ev = (grabJson(text, 'INPUTS (JSON):') || []).flatMap((x) => (x.output && x.output.evidence) || []);
+        const map = sc.intentMap || DEFAULT_INTENT_MAP;
+        const of = (p) => map.find((u) => u.text === p.what) || {};
+        const records = inp.plan.filter((p) => p.tag === 'decision').map((p) => {
+          const u = of(p);
+          const opts = (u.options || ['yes', 'no']).map((t, i) => ({ key: 'abcde'[i], text: t, consequences: (u.consequences || [])[i] || `The contract says ${t}.` }));
+          return { plan: p.id, decision: u.draft || p.what, options: opts, evidence: ev.filter((e) => e.plan === p.id).map((e) => e.source), recommendation: u.recommend || 'a', why: u.why || 'No source decides it: a preference. The first option is the smaller change.' };
+        });
+        const facts = inp.plan.filter((p) => p.tag !== 'decision').flatMap((p) => { const e = ev.filter((x) => x.plan === p.id); return e.length ? [{ plan: p.id, statement: e[0].claim, evidence: e.map((x) => x.source) }] : []; });
+        const gaps = inp.plan.filter((p) => p.tag !== 'decision' && !ev.some((x) => x.plan === p.id)).map((p) => ({ plan: p.id, why: 'no researcher found a source' }));
+        return { summary: `${records.length} decision(s), ${facts.length} fact(s) settled`, records, facts, gaps };
       }
-      case 'judge': {
-        const qs = (sc.questions && sc.questions(st.round)) || [];
-        return { questions: qs.map(({ question, why, unknown, kind }) => ({ question, why, category: 'scope', default: 'Your call', unknown: unknown || 'new', kind: kind || 'user', preference: true })), dismissed: sc.dismissed && st.round === 1 ? sc.dismissed : [] };
+      case 'contract-writer': {
+        const inp = clarifyInput(text);
+        return { contract: fs.readFileSync(path.join(dir(), 'contract.md'), 'utf8'), covers: (inp.items || []).map((x) => ({ item: x.id, where: 'Goal' })), uncovered: [] };
       }
       case 'god-eye': {
+        if (/^readiness/.test(label)) return { verdict: 'ready', restatement: { problem: 'as the contract says', outcome: 'as the contract says' }, checklist: { intent_clear: true, scope_bounded: true, acs_testable: true, self_consistent: true, facts_honoured: true, instructions_handled: true, decisions_closed: true }, objections: [] };
         const m = label.match(/design #(\d+)/);
         if (m && sc.designCritique) return sc.designCritique(Number(m[1]));
         return { verdict: 'approve', items: [] };
       }
       case 'researcher': {
-        if (/^scout · (repo|web)/.test(label)) {
-          const mode = label.includes('web') ? 'web' : 'repo';
-          const ids = [...new Set([...text.matchAll(/"id": "(U-\d+)"/g)].map((m) => m[1]))];
+        if (/^research · (repo|docs)/.test(label)) {
+          const inp = clarifyInput(text);
           const map = sc.intentMap || DEFAULT_INTENT_MAP;
-          // unknown ids follow the map's order (U-1, U-2, …) for the first round
-          const evidence = ids.flatMap((id) => {
-            const u = map[Number(id.slice(2)) - 1];
+          const evidence = (inp.plan || []).flatMap((p) => {
+            const u = map.find((x) => x.text === p.what);
             if (!u || !u.evidence) return [];
-            const e = { unknown: id, ...u.evidence };
-            // a real scout cites the line the quote is on today
+            const e = { plan: p.id, ...u.evidence };
+            // a real researcher cites the line the quote is on today
             const m = /^([^:]+):\d+$/.exec(e.source_tier === 'repo' ? e.source : '');
             const lines = m && fs.existsSync(path.join(root, m[1])) ? fs.readFileSync(path.join(root, m[1]), 'utf8').split('\n') : null;
             const at = lines ? lines.findIndex((l) => l.includes(e.quote)) : -1;
@@ -309,7 +358,7 @@ function crew(J, sc, st) {
             if (lines) e.source = `${m[1]}:${at + 1}`;
             return [e];
           });
-          return { mode, ...(mode === 'web' ? { web_available: true, fetched: evidence.map((e) => e.source) } : {}), versions: [{ name: 'node', version: '20.11.1', source: '.nvmrc:1' }], evidence, unresolved: ids.filter((id) => !evidence.some((e) => e.unknown === id)).map((id) => ({ unknown: id, reason: 'nothing in the repo or the docs settles it' })) };
+          return { mode: inp.mode, ...(inp.mode === 'docs' ? { web_available: true } : {}), versions: [{ name: 'node', version: '20.11.1', source: '.nvmrc:1' }], evidence, unresolved: (inp.plan || []).filter((p) => p.tag !== 'decision' && !evidence.some((e) => e.plan === p.id)).map((p) => ({ plan: p.id, reason: 'nothing in the repo or the docs settles it' })) };
         }
         const topic = label.replace('ground · ', '').replace(' (retry)', '');
         if (sc.researcherFailsOnce === topic && !retry) return null;
@@ -398,12 +447,17 @@ async function drive(J, sc, st, { stopAt } = {}) {
     const n = ok(cli(['next', '--job', J]), 'next');
     if (stopAt && stopAt(n)) return n;
     if (n.action === 'skill' && n.skill === 'clarify') {
-      st.round = (st.round || 0) + 1;
-      const r = await runWorkflow(J, { workflow: 'fanout-judge', config: 'clarify' }, cr);
-      if (r.status === 'needs_user') {
-        if (!sc.onQuestions) throw new Error(`${J}: unexpected questions ${JSON.stringify(r)}`);
-        if ((await sc.onQuestions(r.questions || [])) === 'stop') return n;
-      } else if (r.status !== 'ok') throw new Error(`${J}: clarify ${JSON.stringify(r)}`);
+      const c = n.clarify || {};
+      if (c.run) {
+        const r = await runWorkflow(J, { workflow: 'clarify' }, cr);
+        if (r.error) throw new Error(`${J}: clarify ${JSON.stringify(r)}`);
+      } else if (c.waiting_for_user) {
+        // you read the screen and reply in a few words: ok, or what the scenario says
+        const said = c.stage === 'sheet_wait' && sc.onSheet ? await sc.onSheet(c.screen) : c.stage === 'readback_wait' && sc.onReadback ? await sc.onReadback(c.screen) : 'ok';
+        if (said === 'stop') return n;
+        human(1, 4);
+        ok(cli(['clarify', 'reply', '--job', J, said]), `clarify reply (${c.stage})`);
+      } else throw new Error(`${J}: clarify neither runs nor waits: ${JSON.stringify(n)}`);
     } else if (n.action === 'gate') {
       const g2 = sc.gate ? await sc.gate(n) : null;
       if (g2 === 'stop') return n;
@@ -550,25 +604,22 @@ function sc1(J) {
       DEFAULT_INTENT_MAP[0],
       DEFAULT_INTENT_MAP[1],
       { text: 'What must a 429 response carry, per the HTTP standards?', kind: 'world', impact: 'high', draft: 'A 429 response may carry Retry-After; Retry-After is a whole number of seconds', research: 'web', search: 'RFC 6585, RFC 9110 Retry-After',
-        evidence: { claim: 'RFC 6585 defines 429 Too Many Requests and says the response MAY include a Retry-After header', source: 'https://www.rfc-editor.org/rfc/rfc6585#section-4', source_tier: 'standard', retrieved_at: new Date(clock.now()).toISOString().slice(0, 10), quote: 'The response representations SHOULD include details explaining the condition, and MAY include a Retry-After header indicating how long to wait before making a new request.', applies_to_version: 'RFC 6585 (2012)', confidence: 'high' } },
-      { text: 'Is the limit per API key or per client address?', kind: 'user', impact: 'high', draft: 'Limit per API key or per IP address?', research: 'none', options: ['per API key', 'per IP address'] },
-      { text: 'Must the limit hold across instances?', kind: 'decision', impact: 'high', draft: 'Must the limit hold across both API instances, or is per-instance acceptable?', research: 'repo', options: ['shared store (Redis)', 'per instance'] },
+        evidence: { claim: 'RFC 6585 defines 429 Too Many Requests and says the response MAY include a Retry-After header', source: 'https://www.rfc-editor.org/rfc/rfc6585#section-4', source_tier: 'standard', retrieved_at: new Date(clock.now()).toISOString().slice(0, 10), quote: 'The response representations SHOULD include details explaining the condition, and MAY include a Retry-After header indicating how long to wait before making a new request.', system: 'http', version: 'RFC 6585', confidence: 'high' } },
+      { text: 'Is the limit per API key or per client address?', kind: 'user', impact: 'high', draft: 'Limit per API key or per IP address?', research: 'none', options: ['per API key', 'per IP address'], why: 'Partners call through shared NAT gateways: one IP can carry many API keys, so per API key is fairer.' },
+      { text: 'Must the limit hold across instances?', kind: 'decision', impact: 'high', draft: 'Must the limit hold across both API instances, or is per-instance acceptable?', research: 'repo', options: ['per instance', 'shared store (Redis)'], why: 'Two instances sit behind the load balancer; per instance doubles the effective limit but needs no new dependency.' },
     ],
-    questions: (round) => (round === 1
-      ? [
-          { focus: 'ambiguity', question: 'Limit per API key or per IP address?', why: 'Partners call through shared NAT gateways: one IP can carry many API keys', unknown: 'U-4' },
-          { focus: 'constraints', question: 'Must the limit hold across both API instances, or is per-instance acceptable?', why: 'Two instances sit behind the load balancer; per-instance doubles the effective limit', unknown: 'U-5', kind: 'decision' },
-        ]
-      : []),
-    dismissed: [{ question: 'Should limits differ per pricing plan?', reason: 'Non-goal in the contract' }],
-    assumptions: { testability: ['Tests can drive the limiter with an injected clock'] },
-    onQuestions: async (qs) => {
+    answers: [
+      { match: /API key or per client/, quote: 'Per API key. Most traffic carries one.', option: /API key/ },
+      { match: /instances/, quote: 'Per instance is fine for now; we only run two.', option: /per instance/ },
+    ],
+    // the denial and the later redirect, read back as clauses
+    redirect: (t) => (/anonymous/.test(t)
+      ? [{ quote: 'Also cover anonymous callers', item: 'new', action: 'fix', text: 'Anonymous callers (no API key) are limited by IP address', tag: null }]
+      : [{ quote: t, item: 'new', action: 'instruction', text: 'The service moves to Node 22 before this ships: nothing may depend on Node 20 only', tag: null }]),
+    onSheet: async () => {
       human(25, 45);
-      ok(cli(['answer', '--job', J, '--question', qs[0].question, '--answer', 'Per API key. Most traffic carries one.']), 'answer');
-      wait(between(2, 4) * M);
-      ok(cli(['answer', '--job', J, '--question', qs[1].question, '--answer', 'Per instance is fine for now; we only run two.']), 'answer');
-      wait(between(3, 6) * M); // the main session writes the answers into the contract
-      writeContract(J, contract(C1v2));
+      writeContract(J, contract(C1v2)); // you edit the draft as you answer: contract.md is yours to edit
+      return 'Per API key. Most traffic carries one. Per instance is fine for now; we only run two.';
     },
     gate: async (n) => {
       if (n.step === 'H1' && !denied) {
@@ -580,10 +631,10 @@ function sc1(J) {
         return 'handled';
       }
       if (n.step === 'H1' && !changed) {
-        // You override one evidence-backed assumption: clarify re-checks, H1 comes back.
+        // You redirect once more at H1: the interviewer reads it back, clarify re-checks, H1 comes back.
         changed = true;
         human(6, 12);
-        ok(reply('change A-2 Node 22: the service moves to it before this ships'), 'change A-2');
+        ok(cli(['clarify', 'redirect', '--job', J, 'Node 22: the service moves to it before this ships']), 'clarify redirect');
         return 'handled';
       }
       return null;
@@ -728,8 +779,9 @@ const C2 = {
 const C2v2 = { ...C2, constraints: [...C2.constraints, 'Lines end with \\r\\n and the file ends with one, like the spreadsheet export merchandising compares it with'] };
 function sc2() {
   return {
-    questions: (round) => (round === 1 ? [{ focus: 'ambiguity', question: 'Should the file end with a line break after the last row?', why: 'Merchandising diffs it against the spreadsheet export, which ends with \\r\\n' }] : []),
-    onQuestions: async () => 'stop',
+    intentMap: [DEFAULT_INTENT_MAP[0], { text: 'Should the file end with a line break after the last row?', kind: 'user', impact: 'high', draft: 'Should the file end with a line break after the last row?', research: 'none', options: ['\\r\\n after every row, the last one too', 'no line break after the last row'], why: 'Merchandising diffs it against the spreadsheet export, which ends with \\r\\n' }],
+    answers: [{ match: /line break/, quote: 'Yes: \\r\\n line endings and one at the end, like the spreadsheet export.', option: /last one too/ }],
+    onSheet: async () => 'stop',
     options: [],
   };
 }
@@ -1042,7 +1094,7 @@ function sc8() {
   gitDate();
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({
     agents: {
-      models: { architect: 'opus', 'god-eye': 'opus', planner: 'opus', 'threat-modeler': 'opus', 'security-reviewer': 'opus', builder: 'sonnet', 'code-reviewer': 'sonnet', 'test-reviewer': 'sonnet', 'finding-verifier': 'sonnet', tester: 'haiku', researcher: 'haiku', 'intent-analyst': 'haiku', integrator: 'haiku' },
+      models: { architect: 'opus', 'god-eye': 'opus', planner: 'opus', 'threat-modeler': 'opus', 'security-reviewer': 'opus', builder: 'sonnet', 'code-reviewer': 'sonnet', 'test-reviewer': 'sonnet', 'finding-verifier': 'sonnet', tester: 'haiku', researcher: 'haiku', interviewer: 'haiku', integrator: 'haiku' },
       builder_escalation: ['opus'],
     },
   }, null, 2));
@@ -1126,9 +1178,9 @@ function sc8() {
 
   at(2, 18, 21);
   use(J2);
-  ok(cli(['answer', '--job', J2, '--question', 'Should the file end with a line break after the last row?', '--answer', 'Yes: \\r\\n line endings and one at the end, like the spreadsheet export.']), 'answer');
-  wait(between(3, 6) * M);
   writeContract(J2, contract(C2v2));
+  ok(cli(['clarify', 'reply', '--job', J2, 'Yes: \\r\\n line endings and one at the end, like the spreadsheet export.']), 'clarify reply');
+  wait(between(3, 6) * M);
   await drive(J2, sc2(), st2, { stopAt: (n) => n.action === 'gate' && n.step === 'H1' }); // waits for you at H1
 
   // ---------------- this morning: you, then the factory, working on J-0003 ----------------

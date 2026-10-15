@@ -5,13 +5,15 @@
 // role owns (ADR, threat model, plan). FAKE_CREW (JSON) tunes it:
 //   { "finding": "major" }   the code reviewer reports one finding of that severity
 //   { "verdict": "refuted" } what the finding verifier says: confirmed, refuted (default) or unverifiable
-//   { "world": true }        the intent mapper also finds a world unknown (a web scout runs)
-//   { "web": "down" }        the web scout reports no web access
-//   { "evidence": "contradicted" } what the evidence verifier says (default confirmed)
+//   { "world": true }        clarify's read-back also plans a docs item (the docs researcher finds it)
+//   { "web": "down" }        clarify's docs researcher reports no web access
 
 const fs = require('fs');
 const path = require('path');
 const F = require('./fixture');
+
+// The first JSON value after a marker in an agent's brief (the clarify crew's parser).
+const { grab } = require('./clarify3-crew');
 
 const sc = () => {
   try {
@@ -30,37 +32,28 @@ module.exports = (c) => {
   const nested = (t) => t.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/') && l.endsWith('.md') && fs.existsSync(l)).map((l) => fs.readFileSync(l, 'utf8')).join('\n');
   const text = `${c.instructions || ''}\n${nested(c.instructions || '')}`;
   switch (c.role) {
-    case 'intent-mapper': {
-      // The scout phase: one repo unknown the repo answers, optionally one world unknown.
-      const unknowns = [{ text: 'Where is add implemented and what does it do today?', kind: 'repo', impact: 'high', draft: 'add is implemented in src/add.js and subtracts', research: 'repo', search: 'src/add.js' }];
-      if (S.world) unknowns.push({ text: 'Does the ECMAScript spec define + on two numbers as addition?', kind: 'world', impact: 'medium', draft: 'ECMAScript defines + on numbers as numeric addition', research: 'web', search: 'tc39.es ecma262' });
-      unknowns.push({ text: 'Should non-numbers be rejected?', kind: 'user', impact: 'low', draft: 'Leave non-numbers as they are?', research: 'none' });
-      return { unknowns };
+    // clarify v3: the read-back plans one repo item (and a docs one with S.world)
+    case 'interviewer':
+      return { intent: { problem: 'add(2, 3) returns -1', who: 'callers of src/add.js', outcome: 'add returns the sum', success: 'tests/add.test.js passes' }, scope: { in: ['add'], out: [] }, took: [], pins: [], plan: [{ item: 'new', what: 'Where is add implemented and what does it do today?', tag: 'repo', pins: [], impact: 'high' }, ...(S.world ? [{ item: 'new', what: 'Does the ECMAScript spec define + on two numbers as addition?', tag: 'docs', pins: [], impact: 'medium' }] : [])], questions: [], design_may_choose: [] };
+    case 'brief-writer': {
+      const inp = grab(text, 'CLARIFY INPUT (JSON):') || { plan: [] };
+      const ev = (grab(text, 'INPUTS (JSON):') || []).flatMap((x) => (x.output && x.output.evidence) || []);
+      return { summary: 'add subtracts', records: [], facts: inp.plan.flatMap((p) => { const e = ev.filter((x) => x.plan === p.id); return e.length ? [{ plan: p.id, statement: e[0].claim, evidence: e.map((x) => x.source) }] : []; }), gaps: [] };
     }
-    case 'verifier': {
-      const ids = [...text.matchAll(/"id": "(E-\d+)"/g)].map((m) => m[1]);
-      return { verdicts: [...new Set(ids)].map((id) => ({ evidence_id: id, verdict: S.evidence || 'confirmed', confidence: 'high', reason: 'quote found at the source', quote_found: S.evidence !== 'unverified', version_applies: true, second_source: null })) };
+    case 'contract-writer': {
+      const inp = grab(text, 'CLARIFY INPUT (JSON):') || { items: [] };
+      return { contract: fs.readFileSync(path.join(jd, 'contract.md'), 'utf8'), covers: inp.items.map((x) => ({ item: x.id, where: 'Goal' })), uncovered: [] };
     }
-    case 'intent-analyst':
-      return { focus: 'x', questions: [] };
-    case 'contract-editor': {
-      // returns the contract as it is (or the revised text it was given), applying nothing
-      const m = text.match(/----- BEGIN CONTRACT -----\n([\s\S]*?)\n----- END CONTRACT -----/);
-      return { contract: m ? m[1] : fs.readFileSync(path.join(jd, 'contract.md'), 'utf8'), applied: [], skipped: [] };
-    }
-    case 'judge':
-      return { questions: [], dismissed: [] };
     case 'god-eye':
-      if (/intent_confirmed/.test(text)) return { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'add subtracts', outcome: 'add sums' }, items: [], researchable_questions: [] };
+      if (/Focus: \*\*readiness/.test(text)) return { verdict: 'ready', restatement: { problem: 'add subtracts', outcome: 'add sums' }, checklist: { intent_clear: true, scope_bounded: true, acs_testable: true, self_consistent: true, facts_honoured: true, instructions_handled: true, decisions_closed: true }, objections: [] };
       return { verdict: 'approve', items: [] };
     case 'researcher': {
-      if (/Mode: \*\*repo\*\*/.test(text)) {
-        return { mode: 'repo', versions: [{ name: 'node', version: process.versions.node, source: 'process.versions' }], evidence: [{ unknown: (text.match(/"id": "(U-\d+)"/) || [])[1] || 'U-1', claim: 'add is implemented in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high' }], unresolved: [] };
-      }
-      if (/Mode: \*\*web\*\*/.test(text)) {
-        const u = (text.match(/"id": "(U-\d+)"/) || [])[1] || 'U-2';
-        if (S.web === 'down') return { mode: 'web', web_available: false, evidence: [], unresolved: [{ unknown: u, reason: 'web_fetch failed: no network' }], fetched: [] };
-        return { mode: 'web', web_available: true, evidence: [{ unknown: u, claim: 'ECMAScript defines + on two numbers as numeric addition', source: 'https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator', source_tier: 'standard', retrieved_at: '2026-10-14', quote: 'Return ? operation(lnum, rnum).', applies_to_version: 'ES2025', confidence: 'high' }], unresolved: [], fetched: ['https://tc39.es/ecma262/'] };
+      const inp = grab(text, 'CLARIFY INPUT (JSON):');
+      if (inp && inp.mode === 'repo') return { mode: 'repo', versions: [{ name: 'node', version: process.versions.node, source: 'process.versions' }], evidence: inp.plan.filter((p) => p.tag === 'repo').map((p) => ({ plan: p.id, claim: 'add is implemented in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b; // bug: should add', confidence: 'high' })), unresolved: [] };
+      if (inp && inp.mode === 'docs') {
+        const docs = inp.plan.filter((p) => p.tag === 'docs');
+        if (S.web === 'down') return { mode: 'docs', web_available: false, evidence: [], unresolved: inp.plan.map((p) => ({ plan: p.id, reason: 'web_fetch failed: no network' })) };
+        return { mode: 'docs', web_available: true, evidence: docs.map((p) => ({ plan: p.id, claim: 'ECMAScript defines + on two numbers as numeric addition', source: 'https://tc39.es/ecma262/2025/#sec-applystringornumericbinaryoperator', source_tier: 'standard', system: 'ecmascript', quote: 'Return ? operation(lnum, rnum).', version: 'ES2025', retrieved_at: '2026-10-14', confidence: 'high' })), unresolved: [] };
       }
       return { topic: 'codebase', claims: [{ claim: 'add subtracts', source: 'src/add.js:1' }], unknowns: [] };
     }

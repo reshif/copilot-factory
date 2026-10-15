@@ -51,7 +51,7 @@
   // the post-merge reviewers, only when a recipe here runs that review: both are filled per render (bankMembers).
   var BANKS = {
     intake: { name: "No agents", members: [] },
-    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["contract-editor", "contract editor"], ["god-eye", "God Eye"]] },
+    intent: { name: "Clarify agents", members: [["interviewer", "interviewer"], ["researcher", "researchers · repo, docs"], ["brief-writer", "brief writer"], ["contract-writer", "contract writer"], ["god-eye", "God Eye"]] },
     design: { name: "Design agents", members: [["researcher", "researcher"], ["option-generator", "option generator"], ["threat-modeler", "threat-modeler"], ["architect", "architect"], ["god-eye", "God Eye"]] },
     plan: { name: "Plan agents", members: [["planner", "planner"], ["god-eye", "God Eye"]] },
     build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["builder", "builder"], ["integrator", "integrator"]] },
@@ -61,15 +61,15 @@
     done: { name: "Lessons", members: [["lesson-writer", "lesson writer"]] }
   };
   var STEPS = {
-    intake: [["c", "factory job new"]], intent: [["a", "intent map · scouts · verifier"], ["a", "analysts ×4 + judge"], ["a", "God Eye cold review"], ["h", "H1"]],
+    intake: [["c", "factory job new"]], intent: [["a", "read-back · one research pass"], ["a", "decision sheet · contract writer"], ["a", "readiness: CLI checks + God Eye"], ["h", "H1"]],
     design: [["a", "ground: researchers"], ["a", "decide: options · architect"], ["h", "H2"], ["h", "HF"]], plan: [["a", "decompose: planner"], ["c", "plan validate"], ["h", "H3"]],
     build: [["a", "realize: builders per task"], ["c", "task verify per task"], ["a", "reconcile: integrator"]], verify: [["c", "prove: every check"]],
     review: [["a", "challenge: review lanes"], ["a", "finding verifier"]], ship: [["c", "ship: report · PR"], ["h", "HS"], ["h", "H4"]], done: [["a", "distill: lesson writer"], ["c", "close"]]
   };
-  var LOOPS = { intent: "questions", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")
+  var LOOPS = { intent: "your words", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")
   // the return rails: work sent back to Build, each on its own level above the row (up = px above the row's top)
   var RAILS = [{ from: "verify", name: "Checks failed: sent back", up: 38, land: 18 }, { from: "review", name: "Changes asked: sent back", up: 68, land: 0 }, { from: "ship", name: "CI failed: sent back", up: 98, land: -18 }];
-  var NEXT = { received: "intake next", intent: "intent loop running", awaiting_answers: "clarify's next round, once you answer", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "you merge: on GitHub, or locally and reply merged <commit>", merged: "the merge result is verified again", post_merge_review: "review after merge due", learning: "distill proposes lessons, then close checks every floor", closed: "closed", findings_delivered: "findings delivered", amending: "changing the contract and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
+  var NEXT = { received: "intake next", intent: "intent loop running", awaiting_answers: "clarify's next stage, once you reply", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "you merge: on GitHub, or locally and reply merged <commit>", merged: "the merge result is verified again", post_merge_review: "review after merge due", learning: "distill proposes lessons, then close checks every floor", closed: "closed", findings_delivered: "findings delivered", amending: "changing the contract and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
   var STAGE_TONE = { intake: .10, intent: .18, design: .26, plan: .34, build: .48, verify: .56, review: .64, ship: .74, done: .10, change: .3, parked: .2, stopped: .1 };
   var VIEWS = ["line", "globe", "board", "sched", "agents", "learn"];
   var VIEW_NAME = { line: "The line", globe: "Projection", board: "Matrix", sched: "Schedule", agents: "Parts list", learn: "General notes", epics: "Epic register", eflow: "Epic assembly", ebreak: "Epic breakdown" };
@@ -82,8 +82,8 @@
   var EPIC_VIEWS = { epics: 1, eflow: 1, ebreak: 1 };
   // epics: their own drawing series (sheets 7-9). An epic's process: seven stages, three human gates and an amendment gate.
   var EP_STAGES = [
-    { key: "intent", label: "Intent", gate: "EH1", bank: "Intent agents", loop: "questions", members: [["intent-analyst", "analyst"], ["intent-analyst", "analyst"], ["intent-analyst", "analyst"], ["judge", "judge"], ["god-eye", "God Eye"]],
-      steps: [["a", "analysts ×3 + judge"], ["a", "God Eye cold review"], ["c", "epic intent check"], ["h", "EH1"]] },
+    { key: "intent", label: "Intent", gate: "EH1", bank: "Intent agents", loop: "your words", members: [["interviewer", "interviewer"], ["researcher", "researcher"], ["brief-writer", "brief writer"], ["contract-writer", "contract writer"], ["god-eye", "God Eye"]],
+      steps: [["a", "read-back · research · sheet"], ["a", "readiness: CLI checks + God Eye"], ["c", "epic intent check"], ["h", "EH1"]] },
     { key: "architecture", label: "Architecture", gate: "EH2", bank: "Design agents", loop: "revise", members: [["researcher", "researcher"], ["threat-modeler", "threat model"], ["architect", "architect"], ["god-eye", "God Eye"]],
       steps: [["a", "researcher · threat model · architect"], ["a", "God Eye cold review"], ["c", "contracts check"], ["h", "EH2"]] },
     { key: "slicing", label: "Slicing", gate: "EH3", bank: "Slicer", loop: "revise", members: [["slicer", "slicer"], ["god-eye", "God Eye"]],
@@ -739,12 +739,12 @@
     }
 
     // an agent bank: every member a named lamp; lit (and naming its job) while that agent is at work
-    var ROLE_NAME = { "intent-mapper": "intent mapper", verifier: "evidence verifier", "option-generator": "option generator", "intent-analyst": "analyst", judge: "judge", "contract-editor": "contract editor", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
+    var ROLE_NAME = { interviewer: "interviewer", "brief-writer": "brief writer", "contract-writer": "contract writer", "option-generator": "option generator", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
       planner: "planner", slicer: "slicer", builder: "builder", tester: "tester", integrator: "integrator", "finding-verifier": "finding verifier", "lesson-writer": "lesson writer" };
     var ROLE_LANE = { "code-reviewer": "code", "test-reviewer": "tests", "security-reviewer": "security", "ux-reviewer": "ux", "epic-reviewer": "conformance" };
     var LANE_ROLE = { code: "code-reviewer", tests: "test-reviewer", security: "security-reviewer", ux: "ux-reviewer", conformance: "epic-reviewer" };
     function roleName(role, key) {
-      if (role === "researcher" && key === "intent") return "scouts · repo, web";
+      if (role === "researcher" && key === "intent") return "researchers · repo, docs";
       if (ROLE_LANE[role]) return wd("lane", ROLE_LANE[role]);
       if (role === "god-eye") return wd("godEye");
       return ROLE_NAME[role] || agentLabel(role);
@@ -797,11 +797,11 @@
       live.sort(function (a, b) { return bad(b) - bad(a) || P(b.v.started_at) - P(a.v.started_at); });
       return (S.runAt[key] = { key: key, live: live[0] || null, more: live.slice(1), last: last });
     }
-    var STEP_ROLE = { "intent-mapper": ["mapper", "mappers"], researcher: ["researcher", "researchers"], verifier: ["verifier", "verifiers"], "intent-analyst": ["analyst", "analysts"], judge: ["judge", "judges"],
-      "god-eye": ["God Eye", "God Eye"], "contract-editor": ["contract editor", "contract editor"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
+    var STEP_ROLE = { interviewer: ["interviewer", "interviewer"], researcher: ["researcher", "researchers"], "brief-writer": ["brief writer", "brief writer"],
+      "god-eye": ["God Eye", "God Eye"], "contract-writer": ["contract writer", "contract writer"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
       slicer: ["slicer", "slicer"], builder: ["builder", "builders"], tester: ["tester", "testers"], integrator: ["integrator", "integrator"], "finding-verifier": ["verifier", "verifiers"], "lesson-writer": ["lesson writer", "lesson writer"] };
     function stepRole(role, n, key) {
-      if (role === "researcher" && key === "intent") return n === 1 ? "scout" : "scouts";
+      if (role === "researcher" && key === "intent") return n === 1 ? "researcher" : "researchers";
       if (ROLE_LANE[role]) return ROLE_LANE[role] + " lane";
       var w = STEP_ROLE[role]; return w ? w[n === 1 ? 0 : 1] : agentLabel(role);
     }
@@ -1485,7 +1485,7 @@
       // 2. path
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Path", H("em", { text: "each stop is a stay at a station · amber stripe = waiting on you · ↺ = " + wd("revise") })), pathHTML(j, t)));
       // 2a. clarify v2: the issue ledger (status, owner, next action), the per-round trend, what went to design
-      if (j.clarify && j.clarify.issues && j.clarify.issues.length) out.push(clarifyBlock(j));
+      if (j.clarify && j.clarify.version === 3 && arr(j.clarify.items).length) out.push(clarifyBlock(j));
       // 2b. workflow runs: each run's steps, as they stood at the replay time, the latest first
       out.push(runsBlock(j, t));
       // 3. tasks by wave
@@ -1542,37 +1542,39 @@
     // At H1 / EH1, what clarify adds to the contract: God Eye's objections (it did not approve), drops and why, research gaps
     function h1Notes(h) {
       var list = function (head, items, note) { return items && items.length ? H("div", { "class": "meta" }, H("b", { text: head }), note ? " · " + note : null, H("ul", null, items.map(function (x) { return H("li", { text: x }); }))) : null; };
-      return H("div", null, list("God Eye objects", h.god_eye_objects, "God Eye did not approve this contract; clarify could not settle these"), list("Dropped", h.dropped),
-        h.research_incomplete ? H("div", { "class": "meta", text: h.research_incomplete }) : null);
+      return H("div", null, list("God Eye objects", h.god_eye_objects, "God Eye did not approve this contract; clarify could not settle these"),
+        list("Checked against what you said", arr(h.checked).map(function (c) { return (c.ok ? "✓ " : "✗ ") + "“" + c.quote + "” → " + c.where; })),
+        list("Decisions and who made them", arr(h.decisions).map(function (d) { return d.item + " " + d.text + ": " + (d.value || "") + " (" + d.by + ")"; })),
+        list("Design may choose", h.design_may_choose),
+        list("Research gaps", arr(h.gaps).map(function (g) { return g.what + ": " + g.reason; })),
+        list("Dropped", h.dropped));
     }
-    // The Clarify block: the ledger as factory clarify status prints it (the latest state, not replayed)
-    var CL_STATUS = { open: "open", researching: "researching", proposed: "with you", settled: "settled", deferred_to_design: "to design", dropped: "dropped" };
-    var CL_BY = { evidence: "by evidence", user: "by you", assumption_accepted: "default accepted", design_deferral: "deferred" };
+    // The Clarify block (clarify v3): where clarify is, every item with who decided it, the findings with
+    // their source and verdict, research gaps and drops — the latest state, as factory clarify status prints it
+    var CL_STATUS = { open: "open", to_decide: "on the sheet", decided: "decided", done: "done", assumed: "assumed", deferred: "to design", dropped: "dropped" };
+    var CL_STAGE = { readback: "reading your words back", readback_wait: "waiting for your ok", research: "researching", sheet_wait: "waiting for your sheet answer", interpret: "reading your answer", redirect: "reading your redirect", redirect_wait: "waiting for your ok on the redirect", assemble: "writing the contract", check: "readiness check", ready: "done: H1 next" };
+    var EV_WORD = { repo: "repo, quote checked", pinned: "docs for the confirmed version", docs: "docs (no version to pin)", other_version: "another version: not used", unpinned: "a moving page: not used", bad_quote: "quote not at the line: not used", unsourced: "no quote: not used" };
     function clarifyBlock(j) {
-      var c = j.clarify, tt = c.totals || {}, o = c.open_by_owner || {};
-      var mx = Math.max.apply(null, [1].concat(c.rounds.map(function (r) { return Math.max(r.opened, r.settled); })));
-      var bar = function (n, cls) { return H("i", { "class": "clb " + cls, style: { height: (Math.round((n / mx) * 28) + (n ? 2 : 0)) + "px" }, title: String(n) }); };
-      var trend = c.rounds.length ? H("div", { "class": "cltrend", role: "img", "aria-label": "Per round: issues opened and settled" },
-        c.rounds.map(function (r) {
-          return H("span", { "class": "clr" + (r.degraded ? " deg" : r.progress ? "" : " np"), title: "round " + r.round + ": " + r.opened + " opened, " + r.settled + " settled, " + r.deferred + " deferred, " + r.asked + " asked" + (r.degraded ? " · degraded, not counted" : r.progress ? "" : " · no progress") },
-            bar(r.opened, "op"), bar(r.settled, "st"), H("b", { text: "R" + r.round }));
-        }), H("span", { "class": "cllg" }, H("i", { "class": "clb op" }), "opened ", H("i", { "class": "clb st" }), "settled · " + c.trend)) : H("p", { "class": "meta", text: c.trend });
-      var rows = c.issues.map(function (r) {
+      var c = j.clarify, tt = c.totals || {};
+      var rows = arr(c.items).map(function (r) {
         return H("tr", { "class": "cl-" + r.status },
-          H("td", { "class": "t-mono" }, r.id, r.aliases && r.aliases.length ? H("div", { "class": "meta", title: "folded duplicates", text: "= " + r.aliases.join(", ") }) : null),
-          H("td", null, H("code", { text: r.subject || "—" }), H("div", { "class": "meta", text: r.title })),
-          H("td", null, H("span", { "class": "chip " + (r.status === "settled" ? "ok" : r.status === "proposed" ? "hl" : r.status === "deferred_to_design" ? "tag" : "mute"), text: CL_STATUS[r.status] || r.status }), r.settled_by ? H("div", { "class": "meta", text: CL_BY[r.settled_by] || r.settled_by }) : null),
-          H("td", { "class": "t-mono", text: r.owner }),
-          H("td", { text: r.next }));
+          H("td", { "class": "t-mono", text: r.id }),
+          H("td", null, r.text, r.value && r.value !== r.text ? H("div", { "class": "meta", text: r.value }) : null),
+          H("td", null, H("span", { "class": "chip " + (r.status === "decided" || r.status === "done" ? "ok" : r.status === "to_decide" ? "hl" : r.status === "deferred" ? "tag" : "mute"), text: CL_STATUS[r.status] || r.status })),
+          H("td", { text: r.by || "—" }));
       });
-      var qs = (c.questions || []).length ? H("div", { "class": "clq" }, H("h4", null, "Waiting on you", H("em", { text: plural(c.questions.length, "question") })),
-        c.questions.map(function (q) { return H("div", { "class": "clqi" }, H("b", { text: q.id }), " " + q.question + (q.default ? " (default: " + q.default + ")" : ""), H("div", null, H("code", { text: "factory answer " + q.id + " \"…\"" }), q.default ? H("code", { text: "factory answer " + q.id + " --default" }) : null)); })) : null;
-      var def = (c.deferred || []).length ? H("div", { "class": "cld" }, H("h4", null, "Handed to design", H("em", { text: "ground and decide settle these; they do not block H1" })),
-        H("ul", null, c.deferred.map(function (d) { return H("li", null, H("b", { text: d.id }), " ", H("code", { text: d.subject }), " " + d.title); }))) : null;
-      return H("section", { "class": "sec-blk clarify" }, H("h3", null, "Clarify", H("em", { text: tt.issues + " issues · " + tt.closed + " closed · open: you " + (o.user || 0) + ", research " + (o.research || 0) + ", design " + (o.design || 0) + (c.migrated ? " · migrated from v1" : "") })),
-        trend, qs, H("div", { "class": "cltblw" }, H("table", { "class": "cltbl" }, H("tr", null, H("th", { text: "Issue" }), H("th", { text: "Subject" }), H("th", { text: "Status" }), H("th", { text: "Owner" }), H("th", { text: "Next" })), rows)), def);
+      var qs = arr(c.questions).length ? H("div", { "class": "clq" }, H("h4", null, "Waiting on you", H("em", { text: plural(c.questions.length, "decision") + " · one reply answers them all" })),
+        c.questions.map(function (q) { return H("div", { "class": "clqi" }, H("b", { text: q.id }), " " + q.question + (q.recommendation ? " (recommended: " + q.recommendation + ")" : "")); }),
+        H("div", null, H("code", { text: "factory clarify reply \"ok\"" }), H("code", { text: "factory clarify reply \"ok, but 2 b\"" }))) : null;
+      var ev = arr(c.evidence).filter(function (e) { return e.claim; });
+      var evb = ev.length ? H("div", { "class": "cld" }, H("h4", null, "What research found", H("em", { text: plural(c.passes || 0, "pass") })),
+        H("ul", null, ev.map(function (e) { return H("li", { "class": e.usable ? "" : "unv" }, H("b", { text: e.id }), " " + e.claim + " · ", H("code", { text: e.source }), " · " + (EV_WORD[e.verdict] || e.verdict || "not judged yet")); }))) : null;
+      var gaps = arr(c.gaps).length ? H("div", { "class": "cld" }, H("h4", null, "Research gaps"), H("ul", null, c.gaps.map(function (g) { return H("li", { text: g.what + ": " + g.reason }); }))) : null;
+      var drops = arr(c.dropped).length ? H("div", { "class": "cld" }, H("h4", null, "Dropped", H("em", { text: "you can reopen any of them" })), H("ul", null, c.dropped.map(function (d) { return H("li", { text: d.id + " " + d.text + " — dropped by " + (d.actor || "unknown") + ": " + (d.reason || "no reason recorded") }); }))) : null;
+      return H("section", { "class": "sec-blk clarify" }, H("h3", null, "Clarify", H("em", { text: (CL_STAGE[c.stage] || c.stage) + " · " + (tt.items || 0) + " items · " + (tt.decided || 0) + " decided, " + (tt.assumed || 0) + " assumed, " + (tt.open || 0) + " open" + (c.migration ? " · migrated from v" + c.migration.from : "") })),
+        qs, H("div", { "class": "cltblw" }, H("table", { "class": "cltbl" }, H("tr", null, H("th", { text: "Item" }), H("th", { text: "What" }), H("th", { text: "Status" }), H("th", { text: "Decided by" })), rows)), evb, gaps, drops);
     }
-    var RUN_NAME = { "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
+    var RUN_NAME = { "clarify": "Clarify", "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
     function runName(v) { return RUN_NAME[v.workflow + ":" + v.config] || RUN_NAME[v.workflow] || (v.workflow + (v.config ? " " + v.config : "")); }
     function runsBlock(j, t) {
       var vs = arr(j.runs).map(function (r) { var v = runView(r, t); return v ? { r: r, v: v } : null; }).filter(Boolean).reverse();
@@ -1767,7 +1769,7 @@
         if (a.phase === "denied") r.den++; r.last = a;
       });
       var active = {}; S.agents.forEach(function (a) { active["factory:" + a.agent] = 1; });
-      var order = ["factory:intent-mapper", "factory:verifier", "factory:intent-analyst", "factory:judge", "factory:contract-editor", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
+      var order = ["factory:interviewer", "factory:brief-writer", "factory:contract-writer", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
       var keys = order.concat(Object.keys(roles).filter(function (k) { return order.indexOf(k) < 0; }).sort());
       var bw = 260;
       var rowsN = keys.map(function (k, i) {

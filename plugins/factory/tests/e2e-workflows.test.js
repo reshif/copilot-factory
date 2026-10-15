@@ -10,9 +10,10 @@ const path = require('path');
 const F = require('./helpers/fixture');
 const H = require('./helpers/workflow-harness');
 
+const { grab } = require('./helpers/clarify3-crew');
 const instructions = (prompt) => {
   const line = prompt.split('\n').find((l) => l.trim().startsWith('/'));
-  return line ? fs.readFileSync(line.trim(), 'utf8') : prompt;
+  return line ? `${fs.readFileSync(line.trim(), 'utf8')}\n${prompt}` : prompt;
 };
 
 async function runWorkflow(root, next, agents) {
@@ -33,12 +34,22 @@ test('bug@low through the real workflow scripts', async () => {
 
   // Agents are told apart by the factory agent type the workflow started them as.
   const agents = (type, full) => {
-    if (type === 'factory:intent-mapper') return { unknowns: [{ text: 'Where is add?', kind: 'repo', impact: 'high', draft: 'add lives in src/add.js', research: 'repo' }] };
-    if (type === 'factory:verifier') return { verdicts: [{ evidence_id: 'E-1', verdict: 'confirmed', confidence: 'high', reason: 'line 1 says so', quote_found: true }] };
-    if (type === 'factory:intent-analyst') return { focus: 'x', questions: [] };
-    if (type === 'factory:judge') return { questions: [], dismissed: [] };
-    if (type === 'factory:god-eye') return { verdict: 'approve', items: [], researchable_questions: [] };
-    if (type === 'factory:researcher' && /Mode: \*\*repo\*\*/.test(full)) return { mode: 'repo', evidence: [{ unknown: 'U-1', claim: 'add lives in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high' }], unresolved: [] };
+    // clarify v3: read-back, research, brief, contract, readiness
+    if (type === 'factory:interviewer') return { intent: { problem: 'add(2, 3) returns -1', who: 'callers of src/add.js', outcome: 'add returns the sum', success: 'the add test passes' }, scope: { in: ['add'], out: [] }, took: [], pins: [], plan: [{ item: 'new', what: 'Where is add implemented and what does it do today?', tag: 'repo', pins: [], impact: 'high' }], questions: [], design_may_choose: [] };
+    if (type === 'factory:researcher' && /CLARIFY INPUT/.test(full)) {
+      const inp = grab(full, 'CLARIFY INPUT (JSON):');
+      return { mode: 'repo', versions: [], evidence: inp.plan.map((p) => ({ plan: p.id, claim: 'add lives in src/add.js and subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b;', confidence: 'high' })), unresolved: [] };
+    }
+    if (type === 'factory:brief-writer') {
+      const inp = grab(full, 'CLARIFY INPUT (JSON):');
+      const ev = (grab(full, 'INPUTS (JSON):') || []).flatMap((x) => (x.output && x.output.evidence) || []);
+      return { summary: 'add subtracts', records: [], facts: inp.plan.map((p) => ({ plan: p.id, statement: ev[0].claim, evidence: [ev[0].source] })), gaps: [] };
+    }
+    if (type === 'factory:contract-writer') {
+      const inp = grab(full, 'CLARIFY INPUT (JSON):');
+      return { contract: F.contractText(), covers: inp.items.map((x) => ({ item: x.id, where: 'Goal' })), uncovered: [] };
+    }
+    if (type === 'factory:god-eye') return { verdict: 'ready', restatement: { problem: 'add subtracts', outcome: 'add sums' }, checklist: { intent_clear: true, scope_bounded: true, acs_testable: true, self_consistent: true, facts_honoured: true, instructions_handled: true, decisions_closed: true }, objections: [] };
     if (type === 'factory:researcher') return { topic: 'codebase', claims: [{ claim: 'add subtracts', source: 'src/add.js:1' }], unknowns: [] };
     if (type === 'factory:builder') {
       const s = F.cli(root, ['task', 'start', 'T1'], { allowFail: false });
@@ -56,10 +67,20 @@ test('bug@low through the real workflow scripts', async () => {
 
   let n = F.cli(root, ['next']);
   assert.equal(n.skill, 'clarify');
-  let r = await runWorkflow(root, { workflow: 'fanout-judge', config: 'clarify' }, agents);
-  assert.equal(r.status, 'ok', JSON.stringify(r));
-  assert.deepEqual(r.assumptions.map((a) => a.id), ['A-1'], 'the repo finding became an evidence-backed assumption');
-  assert.equal(F.cli(root, ['next']).step, 'H1');
+  let r;
+  const stages = [];
+  for (let g = 0; g < 10 && n.skill === 'clarify'; g++) {
+    stages.push(n.clarify.stage);
+    if (n.clarify.run) {
+      r = await runWorkflow(root, { workflow: 'clarify' }, agents);
+      assert.ok(!r.error, JSON.stringify(r));
+    } else F.cli(root, ['clarify', 'reply', 'ok'], { allowFail: false });
+    n = F.cli(root, ['next']);
+  }
+  assert.deepEqual(stages, ['readback', 'readback_wait', 'research', 'sheet_wait', 'assemble', 'check'], 'read-back, ok, one research pass, the sheet (only facts to assume), ok, contract, readiness');
+  const facts = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8')).items.filter((it) => it.kind === 'fact');
+  assert.ok(facts.some((it) => it.strength === 'evidence' && it.status === 'decided'), 'the repo finding settled the fact');
+  assert.equal(n.step, 'H1');
   F.reply(root, 'approve');
 
   for (let guard = 0; guard < 20; guard++) {
@@ -87,7 +108,7 @@ test('bug@low through the real workflow scripts', async () => {
   // every workflow run left a sealed roster of the agents it started
   const ledger = fs.readFileSync(path.join(F.jobDir(root, F.cli(root, ['job', 'show']).id), 'ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   const ran = ledger.filter((e) => e.kind === 'agents').flatMap((e) => e.agents.map((a) => a.agent_type));
-  for (const t of ['factory:intent-mapper', 'factory:verifier', 'factory:intent-analyst', 'factory:researcher', 'factory:builder', 'factory:code-reviewer']) assert.ok(ran.includes(t), `roster names ${t}`);
+  for (const t of ['factory:interviewer', 'factory:brief-writer', 'factory:contract-writer', 'factory:god-eye', 'factory:researcher', 'factory:builder', 'factory:code-reviewer']) assert.ok(ran.includes(t), `roster names ${t}`);
   assert.equal(ran.length, state.counters.agent_runs, 'the roster matches the counted agent runs');
   assert.ok(!ran.includes('factory:tester'), 'no LLM tester: task verify decides');
 });

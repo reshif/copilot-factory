@@ -41,7 +41,7 @@ function nowCard(job) {
     parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
     if ((g === 'H1' || g === 'EH1') && job.h1) parts.push(h1Html(job.h1));
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
-    else parts.push(`<p>Answer the questions in chat${job.clarify && job.clarify.questions.length ? ` (${job.clarify.questions.map((q) => esc(q.id)).join(', ')}): a numbered reply such as <code>1 yes, 2 …</code>, or <code>defaults</code>` : ''}; the round runs again with your answers.</p>`);
+    else parts.push(`<p>Reply to clarify in chat, in plain words${job.clarify && job.clarify.questions && job.clarify.questions.length ? ` (${job.clarify.questions.length} decision${job.clarify.questions.length === 1 ? '' : 's'} on the sheet): <code>ok</code> takes the recommendations, <code>ok, but 2 b</code> changes one` : ': <code>ok</code>, or what to change'}. The main session can record it too: <code>factory clarify reply "…"</code>.</p>`);
   } else if (m.bucket === 'parked') {
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--skill)"></i>Now · parked</div><p>${esc((job.park && job.park.reason) || 'Parked.')} Fix what the reason names, then reply:</p>${reply(`resume ${job.id}`)}`);
   } else if (m.bucket === 'stopped') {
@@ -52,11 +52,15 @@ function nowCard(job) {
   }
   return `<div class="nowcard b-${m.bucket}">${parts.join('')}</div>`;
 }
-// At H1 / EH1, what clarify adds to the contract (as factory next carries it): God Eye's
-// objections (it did not approve), issues dropped and why, research that could not run.
+// At H1 / EH1, what clarify shows besides the contract (factory next's clarify_h1): the contract
+// checked against your words, the decisions and who made them, what design may choose, research
+// gaps, what was dropped (who, why), and God Eye's objections, which are never approval.
 function h1Html(h) {
-  const list = (head, items, note) => (items && items.length ? `<div class="eh">${esc(head)}</div>${note ? `<p class="meta">${esc(note)}</p>` : ''}<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
-  return `${list('God Eye objects', h.god_eye_objects, 'God Eye did not approve this contract; clarify could not settle these. Approve only to go on over them.')}${list('Dropped', h.dropped)}${h.research_incomplete ? `<p class="meta">${esc(h.research_incomplete)}</p>` : ''}`;
+  const list = (head, items, note, cls) => (items && items.length ? `<div class="eh${cls ? ` ${cls}` : ''}">${esc(head)}</div>${note ? `<p class="meta">${esc(note)}</p>` : ''}<ul>${items.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+  const checked = (h.checked || []).map((c) => `<span class="${c.ok ? 'ok' : 'bad'}">${c.ok ? '✓' : '✗'}</span> “${esc(c.quote)}” → ${esc(c.where)}`);
+  const decisions = (h.decisions || []).map((d) => `<b>${esc(d.item)}</b> ${esc(d.text)}: ${esc(d.value || '')} <span class="meta">(${esc(d.by)})</span>`);
+  const redirects = (h.redirects || []).map((R) => `<b>${esc(R.id)}</b> ${R.done} of ${R.of} done: ${R.clauses.map((c) => `${c.done ? '✓' : '✗'} “${esc(c.quote)}”`).join('; ')}`);
+  return `${list('God Eye objects', (h.god_eye_objects || []).map(esc), 'God Eye did not approve this contract; clarify could not settle these. Approve only to go on over them.', 'bad')}${list('Checked against what you said', checked)}${list('Decisions and who made them', decisions)}${list('Design may choose', (h.design_may_choose || []).map(esc))}${list('Your redirects', redirects)}${list('Research gaps', (h.gaps || []).map((g) => `${esc(g.what)}: ${esc(g.reason)}`), null, 'bad')}${list('Dropped', (h.dropped || []).map(esc))}${h.edited_by_hand ? '<p class="meta">You edited contract.md by hand; the readiness check ran on your text.</p>' : ''}`;
 }
 function agentsProse(agents) {
   const cs = chipsFor(agents);
@@ -89,23 +93,25 @@ function researchHtml(x) {
   if (x.researchable_dropped) H.push(`<p>${pl(x.researchable_dropped, 'question')} research had already answered ${x.researchable_dropped === 1 ? 'was' : 'were'} not asked.</p>`);
   return `<div class="evid">${H.join('')}</div>`;
 }
-// Clarify v2: the issue ledger (factory clarify status): every issue with its status, owner
-// and next action, the per-round trend (opened / settled) and what was handed to design.
-const CL_STATUS = { open: 'open', researching: 'researching', proposed: 'with you', settled: 'settled', deferred_to_design: 'to design', dropped: 'dropped' };
-const CL_BY = { evidence: 'by evidence', user: 'by you', assumption_accepted: 'default accepted', design_deferral: 'deferred' };
+// Clarify v3 (factory clarify status): where clarify is, every item with who decided it, every
+// finding with its source and the CLI's verdict, the research gaps, drops and redirects.
+const CL_STAGE = { readback: 'reading your words back', readback_wait: 'waiting for your ok on the read-back', research: 'researching', sheet_wait: 'waiting for your answer to the decision sheet', interpret: 'reading your sheet answer', redirect: 'reading your redirect', redirect_wait: 'waiting for your ok on the redirect', assemble: 'writing the contract', check: 'readiness check', ready: 'done: H1 next' };
+const CL_STATUS = { open: 'open', to_decide: 'on the sheet', decided: 'decided', done: 'done', assumed: 'assumed', deferred: 'to design', dropped: 'dropped' };
+const EV_WORD = { repo: 'repo, quote checked', pinned: 'docs for the confirmed version', docs: 'docs (no version to pin)', other_version: 'documents another version: not used', unpinned: 'a moving page (stable/latest): not used', bad_quote: 'quote not at the cited line: not used', unsourced: 'no source quote: not used' };
 function clarifyHtml(job) {
   const c = job.clarify;
-  if (!c || !c.issues || !c.issues.length) return '';
+  if (!c || c.version !== 3 || !(c.items || []).length) return '';
   const t = c.totals || {};
-  const o = c.open_by_owner || {};
-  const max = Math.max(1, ...c.rounds.map((r) => Math.max(r.opened, r.settled)));
-  const bar = (n, cls) => `<i class="clb ${cls}" style="height:${Math.round((n / max) * 28) + (n ? 2 : 0)}px" title="${n}"></i>`;
-  const trend = c.rounds.length ? `<div class="cltrend" role="img" aria-label="Per round: opened and settled issues">${c.rounds.map((r) => `<span class="clr${r.degraded ? ' deg' : r.progress ? '' : ' np'}" title="round ${r.round}: ${r.opened} opened, ${r.settled} settled, ${r.deferred} deferred, ${r.asked} asked${r.degraded ? ' · degraded, not counted' : r.progress ? '' : ' · no progress'}">${bar(r.opened, 'op')}${bar(r.settled, 'st')}<b>R${r.round}</b></span>`).join('')}<span class="cllg"><i class="clb op"></i>opened <i class="clb st"></i>settled · ${esc(c.trend)}</span></div>` : `<p class="meta">${esc(c.trend)}</p>`;
-  const rows = c.issues.map((r) => `<tr class="cl-${esc(r.status)}"><td class="n">${esc(r.id)}${r.aliases && r.aliases.length ? `<br><span class="meta" title="folded duplicates">= ${esc(r.aliases.join(', '))}</span>` : ''}</td><td><code>${esc(r.subject || '—')}</code><br><span class="meta">${esc(r.title)}</span></td><td><span class="stt ${r.status === 'settled' ? 'done' : r.status === 'proposed' ? 'you' : ''}">${esc(CL_STATUS[r.status] || r.status)}</span>${r.settled_by ? `<br><span class="meta">${esc(CL_BY[r.settled_by] || r.settled_by)}</span>` : ''}</td><td class="n">${esc(r.owner)}</td><td>${esc(r.next)}</td></tr>`).join('');
-  const deferred = (c.deferred || []).length ? `<div class="eh">Handed to design (ground and decide settle these; they do not block H1)</div><ul>${c.deferred.map((d) => `<li><b>${esc(d.id)}</b> <code>${esc(d.subject)}</code> ${esc(d.title)}</li>`).join('')}</ul>` : '';
-  const qs = (c.questions || []).length ? `<div class="eh">Waiting on you</div>${c.questions.map((q) => `<div class="reply"><code>factory answer ${esc(q.id)} "…"</code>${q.default ? `<code>factory answer ${esc(q.id)} --default</code>` : ''}<span class="meta">${esc(q.question)}${q.default ? ` · default: ${esc(q.default)}` : ''}</span></div>`).join('')}` : '';
-  const mig = c.migration ? `<p class="meta">Migrated from the v1 record: ${c.migration.folded} duplicate(s) folded, ${c.migration.matched_answers.length} free-form answer(s) matched${c.migration.matched_answers.length ? ` (${esc(c.migration.matched_answers.join(', '))})` : ''}, ${c.migration.deferred.length} deferred to design.</p>` : '';
-  return `<article class="para clarify"><div class="ph"><h4>Clarify ledger</h4><span class="tm">${t.issues} issues · ${t.closed} closed · open: you ${o.user || 0}, research ${o.research || 0}, design ${o.design || 0}</span></div>${trend}${qs}<div class="tblwrap"><table class="tbl cltbl"><tr><th>Issue</th><th>Subject</th><th>Status</th><th>Owner</th><th>Next</th></tr>${rows}</table></div>${deferred}${mig}</article>`;
+  const rows = c.items.map((r) => `<tr class="cl-${esc(r.status)}"><td class="n">${esc(r.id)}</td><td>${esc(r.text)}${r.value && r.value !== r.text ? `<br><span class="meta">${esc(r.value)}</span>` : ''}</td><td class="n">${esc(r.kind)}</td><td><span class="stt ${['decided', 'done'].includes(r.status) ? 'done' : r.status === 'to_decide' ? 'you' : ''}">${esc(CL_STATUS[r.status] || r.status)}</span></td><td>${esc(r.by || '—')}</td></tr>`).join('');
+  const qs = (c.questions || []).length ? `<div class="eh">Waiting on you (one reply answers them all)</div><ul>${c.questions.map((q) => `<li><b>${esc(q.id)}</b> ${esc(q.question)}${q.recommendation ? ` <span class="meta">recommended: ${esc(q.recommendation)}</span>` : ''}</li>`).join('')}</ul><div class="reply"><code>factory clarify reply "ok"</code><code>factory clarify reply "ok, but 2 b"</code></div>` : '';
+  const ev = (c.evidence || []).filter((e) => e.claim);
+  const evh = ev.length ? `<div class="eh">What research found</div><ul>${ev.map((e) => `<li${e.usable ? '' : ' class="unv"'}><b>${esc(e.id)}</b> ${e.usable ? esc(e.claim) : `“${esc(e.claim)}”`} <span class="src"><code>${esc(e.source)}</code>${e.version ? ` · ${esc(e.version)}` : ''}${e.retrieved_at ? ` · ${esc(e.retrieved_at)}` : ''} · ${esc(EV_WORD[e.verdict] || e.verdict || 'not judged yet')}</span></li>`).join('')}</ul>` : '';
+  const pins = (c.pins || []).length ? `<p class="meta">Versions research is pinned to: ${c.pins.map((p) => `${esc(p.text)} (${esc(p.by)})`).join(', ')}.</p>` : '';
+  const gaps = (c.gaps || []).length ? `<div class="eh bad">Research gaps (what it could not find out)</div><ul>${c.gaps.map((f) => `<li class="unv">${esc(f.what)}: ${esc(f.reason)}</li>`).join('')}</ul>` : '';
+  const drops = (c.dropped || []).length ? `<div class="eh">Dropped (you can reopen any of them)</div><ul>${c.dropped.map((d) => `<li><b>${esc(d.id)}</b> <s>${esc(d.text)}</s> <span class="meta">dropped by ${esc(d.actor || 'unknown')}: ${esc(d.reason || 'no reason recorded')}</span></li>`).join('')}</ul>` : '';
+  const red = (c.redirects || []).length ? `<p class="meta">Redirects: ${c.redirects.map((R) => `${esc(R.id)} (${esc(R.status)}, ${R.clauses} clause${R.clauses === 1 ? '' : 's'})`).join(', ')}.</p>` : '';
+  const mig = c.migration ? `<p class="meta">Migrated from clarify v${esc(c.migration.from)}: ${esc(c.migration.summary)}.</p>` : '';
+  return `<article class="para clarify"><div class="ph"><h4>Clarify</h4><span class="tm">${esc(CL_STAGE[c.stage] || c.stage)} · ${t.items} items · ${t.decided} decided, ${t.assumed} assumed, ${t.deferred} to design, ${t.open} open · ${c.passes} research pass${c.passes === 1 ? '' : 'es'} · ${c.checks} readiness check${c.checks === 1 ? '' : 's'}</span></div>${qs}${pins}<div class="tblwrap"><table class="tbl cltbl"><tr><th>Item</th><th>What</th><th>Kind</th><th>Status</th><th>Decided by</th></tr>${rows}</table></div>${evh}${gaps}${drops}${red}${mig}</article>`;
 }
 function renderStory() {
   const job = LV.job;
@@ -160,6 +166,7 @@ function renderStory() {
           else S.push(`<b class="y">You: ${esc(it.action)}</b>${it.reason ? ` — ${esc(it.reason)}` : ''}.`);
           break;
         }
+        case 'clarify': S.push(it.waiting ? `<b class="y">? ${esc(it.text)}.</b>` : it.outcome === 'park' ? `<span class="bad">${esc(it.text)}.</span>` : `${esc(it.text)}.`); break;
         case 'park': S.push(`<span style="color:var(--skill)">⏸ The job was parked: ${esc(it.text)}.</span>`); break;
         case 'stopped': S.push(`<span class="bad">${esc(it.text)}.</span>`); break;
         case 'amend': S.push(`✎ ${esc(it.text)}.`); break;

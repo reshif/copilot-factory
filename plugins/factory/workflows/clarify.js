@@ -38,7 +38,7 @@ const outputs = {}
 const failed = []
 for (let g = 0; g < brief.groups.length; g++) {
   const group = brief.groups[g]
-  phase(`clarify: ${brief.stage} · ${group.map((a) => a.label).join(', ')}`)
+  phase(`clarify: ${(brief.phases && brief.phases[g]) || `${brief.stage} · ${group.map((a) => a.label).join(', ')}`}`)
   const inputs = Object.entries(outputs).filter(([, v]) => v).map(([label, output]) => ({ label, output }))
   const res = await pipeline(group, (a) => one(a, inputs))
   group.forEach((a, i) => {

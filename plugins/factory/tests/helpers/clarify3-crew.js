@@ -612,7 +612,10 @@ S.e1 = { ...S.b, readback: () => ({ __timeout: true }) };
 S.e2 = { ...S.b, docs: (inp) => ({ mode: 'docs', web_available: false, versions: [], evidence: [], unresolved: inp.plan.map((p) => ({ plan: p.id, reason: 'web_fetch failed: no network' })), failed_sources: [] }) };
 S.e3 = { ...S.b, sheet: () => 'ok', check: () => verdict([{ check: 'intent_clear', severity: 'blocker', stage: 'assemble', ref: 'Goal', issue: 'The goal could be sharper', fix: '' }]) };
 S.e4 = { ...S.b, docs: () => ({ __timeout: true }) };
-S.e5 = { ...S.b, brief: () => ({ __fail: true }) };
+// (e5, the simulation's) every agent fails every time and nobody steps in
+const failAll = () => ({ __fail: true });
+S.e5 = { ...S.b, readback: failAll, redirect: failAll, interpret: failAll, repo: failAll, docs: failAll, brief: failAll, writer: failAll, check: failAll };
+S.e6 = { ...S.b, brief: () => ({ __fail: true }) };
 
 function verdict(objections) {
   const ck = { intent_clear: true, scope_bounded: true, acs_testable: true, self_consistent: true, facts_honoured: true, instructions_handled: true, decisions_closed: true };
@@ -658,3 +661,4 @@ module.exports = (c) => {
 };
 module.exports.SCENARIOS = S;
 module.exports.earlier = earlier;
+module.exports.grab = grab;

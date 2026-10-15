@@ -34,7 +34,7 @@ const BP_STEP_STATE = {
 const BP_GATE_OF = { awaiting_answers: 'Q', awaiting_intent_approval: 'H1', awaiting_design_approval: 'H2', awaiting_findings_approval: 'HF', awaiting_plan_approval: 'H3', awaiting_ship_approval: 'HS', awaiting_amendment_approval: 'A', pr_open: 'H4', parked: 'P' };
 const BP_MEANING = {
   received: 'the request is in; the router picks the first step', intent: 'clarify drafts the contract and asks only what the repo cannot answer',
-  awaiting_answers: 'you answer clarify\'s questions in chat; then clarify runs its next round',
+  awaiting_answers: 'you reply to clarify in chat (ok, or what to change); then clarify runs its next stage',
   awaiting_intent_approval: 'you approve the contract (H1)', designing: 'ground and decide: sourced facts, then a design record',
   awaiting_design_approval: 'you approve the design (H2)', awaiting_findings_approval: 'you accept the findings (HF)',
   planning: 'decompose writes the task waves', awaiting_plan_approval: 'you approve the plan (H3)', building: 'builders work in their own worktrees, testers verify each task',
@@ -69,6 +69,11 @@ function bpHistory(job) {
     } else if (it.type === 'result' && it.outcome === 'ask' && (it.step || it.raw_step) === 'clarify' && !BP_GATE_OF[cur] && cur !== 'closed') {
       const n = it.questions || (it.question_ids || []).length || Number((/^(\d+) question/.exec(it.text || '') || [])[1]) || 0;
       go(it.t, 'awaiting_answers', 'router', n ? `clarify asked ${n} question(s)` : 'clarify asked you questions');
+    } else if (it.type === 'clarify' && !BP_GATE_OF[cur] && cur !== 'closed' && cur !== 'parked') {
+      // clarify v3: a stage that waits on your reply (read-back, sheet, redirect), and the stage after it
+      if (it.waiting) go(it.t, 'awaiting_answers', 'router', it.text);
+    } else if (it.type === 'clarify' && cur === 'awaiting_answers' && !it.waiting) {
+      go(it.t, 'intent', 'you', 'you replied');
     } else if (it.type === 'park') {
       parkedFrom = cur; go(it.t, 'parked', it.from === 'manual' ? 'you' : 'router', it.text);
     } else if (it.type === 'human' && it.action === 'resume' && cur === 'parked') {
@@ -176,7 +181,7 @@ function bpQuestionIds(job) {
 // Workflow runs (cli/core/run-steps.js, in the page as RUN_STEPS): each run as the console recorded it,
 // tagged with the station whose bank it belongs to, for the step list in that bank and the section view.
 // The steps are folded again at the replay time by RUN_STEPS.view(run, t); older data has no runs.
-const BP_RUN_STATION = { 'fanout-judge:clarify': 'intent', 'fanout-judge:decide': 'design', ground: 'design', decompose: 'plan', realize: 'build', reconcile: 'build', 'fanout-judge:challenge': 'review', distill: 'done' };
+const BP_RUN_STATION = { clarify: 'intent', 'fanout-judge:clarify': 'intent', 'fanout-judge:decide': 'design', ground: 'design', decompose: 'plan', realize: 'build', reconcile: 'build', 'fanout-judge:challenge': 'review', distill: 'done' };
 function bpRunStation(run) {
   const st = BP_STEP_STATE[run.step];
   const stage = st ? BP_STAGES.find((s) => s.states.includes(st)) : null;

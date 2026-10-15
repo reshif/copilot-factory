@@ -21,11 +21,10 @@ test('R14 step_failures: clarify/ground rounds that asked the user are not failu
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'Sync VLAN', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  // clarify v3 waits on the user three times (a read-back you correct twice): waiting is not failing
   for (let i = 1; i <= 3; i++) {
-    F.cli(root, ['next']);
-    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-    const r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [{ question: `Scope question ${i}?`, why: 'w', blocking: false, category: 'scope', default: 'd' }], dismissed: [] }, critique: { verdict: 'approve', intent_confirmed: true, items: [] } }));
-    assert.equal(r.status, 'needs_user');
+    assert.equal(F.clarify(root, { until: 'readback_wait' }).stage, 'readback_wait');
+    if (i < 3) assert.ok(!F.cli(root, ['clarify', 'reply', `Also scope question ${i}: keep the old VLAN names`]).error);
   }
   spawnSync('node', [BIN, 'run', '--job', J], { cwd: root, encoding: 'utf8' });
   const rulesFound = I.report(root).findings.map((x) => x.rule);
@@ -45,11 +44,10 @@ test('R21 review regression: from the real CLI (blocked again: medium) and from 
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'Sync VLAN', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
   F.cli(root, ['next']);
   F.reply(root, 'approve');
-  b = F.cli(root, ['wfargs', 'ground']);
+  let b = F.cli(root, ['wfargs', 'ground']);
   F.record(root, F.envelope(b, 'ok', { topics: [{ topic: 'codebase', claims: [{ claim: 'x', source: 'src/add.js:1' }], unknowns: [] }], degraded: [] }));
   F.cli(root, ['next']);
   F.cli(root, ['plan', 'from-contract']);

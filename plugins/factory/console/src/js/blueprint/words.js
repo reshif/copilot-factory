@@ -22,7 +22,7 @@ APP.words = (function () {
   // The decisions only a person makes. `short` finishes "Waiting for you: ...".
   var GATES = {
     // Q is not a recipe gate: clarify asked you questions and waits on your answers (the Board's "Your turn · Clarify").
-    Q: { title: "Answer clarify's questions", short: "questions", tip: "Clarify asked what research could not settle; answer in chat (a question you skip takes its default), or reply change A-n <value> / drop A-n to override an assumption. Then clarify runs its next round." },
+    Q: { title: "Reply to clarify", short: "your reply", tip: "Clarify waits on one reply: ok (or corrections) on the read-back, or one answer to the decision sheet (ok, ok, but 2 b, fact 1: <correction>). Plain words work; factory clarify reply records them without the chat hook." },
     H1: { title: "Approve the contract", short: "contract", tip: "Agree that the contract and its numbered criteria describe what you want (H1 · contract)." },
     H2: { title: "Approve the design", short: "design", tip: "Agree with the approach, written as a design record." },
     H3: { title: "Approve the plan", short: "plan", tip: "Agree with the tasks; approving it starts the build." },
@@ -66,10 +66,10 @@ APP.words = (function () {
 
   // Every role in schemas/flow.json: a plain name, and what it does.
   var ROLES = {
-    "intake-classifier": ["Intake", "sorts the request"], "intent-analyst": ["Intent analyst", "finds gaps in the intent"],
-    "intent-mapper": ["Intent mapper", "lists the unknowns before anyone asks you"], verifier: ["Evidence verifier", "re-checks each high-impact finding"],
+    "intake-classifier": ["Intake", "sorts the request"], interviewer: ["Interviewer", "reads your words back before anything slow happens"],
+    "brief-writer": ["Brief writer", "turns one research pass into decisions with evidence"],
     "option-generator": ["Option generator", "proposes one independent design option"],
-    judge: ["Judge", "merges the analysts' reports"], "contract-editor": ["Contract editor", "applies what was settled to the contract"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
+    "contract-writer": ["Contract writer", "writes the contract once from what was settled"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
     researcher: ["Researcher", "finds facts in the code, with sources"], architect: ["Architect", "weighs the options, writes the design record"],
     "threat-modeler": ["Threat modeller", "lists what could be attacked, on high-risk work"], planner: ["Planner", "breaks the work into tasks"],
     slicer: ["Slicer", "splits an epic into slices"], builder: ["Builder", "builds one task"], tester: ["Tester", "checks one task independently"],

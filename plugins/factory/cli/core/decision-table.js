@@ -509,6 +509,8 @@ function record(root, state, al, result) {
       skill: result.skill || null,
       mode: result.mode || null,
       scope: result.scope || null,
+      // clarify v3: which stage, and whether it runs agents or waits on the user (the inspector's R7)
+      ...(result.skill === 'clarify' && result.clarify && result.clarify.stage ? { clarify: { stage: result.clarify.stage, run: Boolean(result.clarify.run), waiting_for_user: Boolean(result.clarify.waiting_for_user) } } : {}),
       node: state.parent ? `${state.parent}/${state.id}` : state.id,
       recipe: state.recipe.id,
       recipe_version: state.recipe.version,

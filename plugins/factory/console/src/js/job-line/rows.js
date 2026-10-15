@@ -67,6 +67,7 @@ function rowLines(job, row) {
         for (const f of (it.findings || []).filter((x) => x.status === 'confirmed' || x.status === 'unverified').slice(0, 3)) add(i, `⚑ ${f.id} · ${f.severity} · ${f.status}: ${f.summary}`, f.status === 'confirmed' ? 'bad find' : 'ask find');
         break;
       }
+      case 'clarify': add(i, `${it.waiting ? '?' : it.outcome === 'park' ? '⏸' : '·'} ${it.text}`, it.waiting ? 'ask' : it.outcome === 'park' ? 'bad' : 'wf'); break;
       case 'human': {
         const g = it.gate || stepName(it.step);
         const wait = fmtDur(Date.parse(it.t) - t0);

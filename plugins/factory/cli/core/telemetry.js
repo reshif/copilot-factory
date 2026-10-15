@@ -16,7 +16,7 @@ const DAY = 864e5;
 // Grounded intent: how often a researchable question still reached the user, how often the
 // user overrode what research assumed, and what the scout phase cost (runs and agent time,
 // from the runner's agent_run lines for clarify's scout labels).
-const SCOUT_LABEL = /^(intent map|scout · (repo|web)|verify evidence)/;
+const SCOUT_LABEL = /^(intent map|scout · (repo|web)|verify evidence|research · (repo|docs)|research brief)/;
 let EVENTS = null;
 function scoutEvents(root) {
   if (EVENTS && EVENTS.root === root) return EVENTS.byJob;
@@ -30,7 +30,7 @@ function scoutEvents(root) {
       } catch {
         continue;
       }
-      if (e.event !== 'agent_run' || e.config !== 'clarify' || !SCOUT_LABEL.test(String(e.label || ''))) continue;
+      if (e.event !== 'agent_run' || (e.config !== 'clarify' && e.workflow !== 'clarify') || !SCOUT_LABEL.test(String(e.label || ''))) continue;
       (byJob[e.job] = byJob[e.job] || []).push(e);
     }
   } catch {
@@ -168,7 +168,8 @@ function readEventLog(root) {
 
 function focusOf(label) {
   const m = /god-eye · (intent|design|plan)/.exec(String(label || ''));
-  return m ? m[1] : 'other';
+  if (m) return m[1];
+  return /^readiness/.test(String(label || '')) ? 'readiness' : 'other'; // clarify v3's readiness check
 }
 
 function quality(root, { cutoff, jobIds, perJob }) {
@@ -186,7 +187,7 @@ function quality(root, { cutoff, jobIds, perJob }) {
     if (role === 'god-eye' && e.outcome === 'ok' && e.verdict) {
       const g = (godEye[focusOf(e.label)] = godEye[focusOf(e.label)] || { verdicts: 0, approve: 0, revise: 0 });
       g.verdicts += 1;
-      if (e.verdict === 'approve') g.approve += 1;
+      if (e.verdict === 'approve' || e.verdict === 'ready') g.approve += 1;
       else g.revise += 1;
     }
   }
@@ -244,6 +245,11 @@ function report(root, { sinceDays = 30 } = {}) {
     for (const k of ['escaped_defects_30d', 'reverts_30d', 'agent_runs', 'wall_hours', 'review_fix_rounds', 'verify_fix_rounds', 'gate_denials']) r[k] += m[k];
     const ri = r.intent;
     for (const k of ['questions_asked', 'researchable_questions_asked', 'assumptions', 'assumptions_overridden', 'scout_runs', 'scout_seconds', 'rework_after_h1']) ri[k] += m.intent[k] || 0;
+    if (m.clarify) {
+      const rc = (r.clarify = r.clarify || { jobs: 0, user_turns: 0, research_passes: 0, decisions: 0, decided_by_user: 0, recommendations_accepted: 0, redirects: 0, readiness_checks: 0, failures: 0, proceeded: 0 });
+      rc.jobs += 1;
+      for (const k of Object.keys(rc)) if (k !== 'jobs') rc[k] += k === 'proceeded' ? (m.clarify.proceeded ? 1 : 0) : m.clarify[k] || 0;
+    }
     if (m.intent.time_to_h1_hours !== null) {
       ri.h1_hours += m.intent.time_to_h1_hours;
       ri.h1_jobs += 1;
@@ -276,10 +282,17 @@ function toMarkdown(r) {
   for (const [id, x] of Object.entries(r.by_recipe)) {
     L.push(`| ${id} | ${x.jobs} | ${x.merged} | ${x.escaped_defects_30d} | ${x.reverts_30d} | ${x.avg_agent_runs} | ${x.avg_wall_hours} | ${x.review_fix_rounds} | ${x.verify_fix_rounds} | ${x.gate_denials} | ${x.parked_jobs} |`);
   }
-  L.push('', '## Grounded intent', '', 'Research before questions: a researchable question that still reached you, or an assumption you overrode, is a signal to improve the scouts or the mapper.', '', '| Recipe | Questions asked | Researchable asked | Rate | Assumptions | Overridden | Scout runs | Scout time (s) | Avg hours to H1 | Rework after H1 |', '|---|---|---|---|---|---|---|---|---|---|');
+  L.push('', '## Clarify', '', 'What clarify cost you (your turns, redirects) and what it could not do (research gaps, God Eye objections you proceeded past). Many decisions you overrode point at the research brief; many gaps at `intent_research` or the time box.', '', '| Recipe | Jobs | Your turns | Research passes | Research runs | Research time (s) | Decisions | Decided by you | Recommendations accepted | Redirects | Readiness checks | Research gaps | Proceeded past God Eye | Avg hours to H1 | Rework after H1 |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const [id, x] of Object.entries(r.by_recipe)) {
     const i = x.intent || {};
-    L.push(`| ${id} | ${i.questions_asked || 0} | ${i.researchable_questions_asked || 0} | ${i.researchable_question_rate ?? '—'} | ${i.assumptions || 0} | ${i.assumptions_overridden || 0} | ${i.scout_runs || 0} | ${i.scout_seconds || 0} | ${i.avg_time_to_h1_hours ?? '—'} | ${i.rework_after_h1 || 0} |`);
+    const c = x.clarify || {};
+    L.push(`| ${id} | ${c.jobs || 0} | ${c.user_turns || 0} | ${c.research_passes || 0} | ${i.scout_runs || 0} | ${i.scout_seconds || 0} | ${c.decisions || 0} | ${c.decided_by_user || 0} | ${c.recommendations_accepted || 0} | ${c.redirects || 0} | ${c.readiness_checks || 0} | ${c.failures || 0} | ${c.proceeded || 0} | ${i.avg_time_to_h1_hours ?? '—'} | ${i.rework_after_h1 || 0} |`);
+  }
+  // jobs approved under clarify v1/v2 (intent-evidence.json): the old research-before-questions signals
+  const legacy = Object.entries(r.by_recipe).filter(([, x]) => x.intent && (x.intent.questions_asked || x.intent.assumptions));
+  if (legacy.length) {
+    L.push('', '### Clarify v2 jobs', '', '| Recipe | Questions asked | Researchable asked | Rate | Assumptions | Overridden |', '|---|---|---|---|---|---|');
+    for (const [id, x] of legacy) L.push(`| ${id} | ${x.intent.questions_asked || 0} | ${x.intent.researchable_questions_asked || 0} | ${x.intent.researchable_question_rate ?? '—'} | ${x.intent.assumptions || 0} | ${x.intent.assumptions_overridden || 0} |`);
   }
   L.push('', '## Review lanes', '', '| Recipe | Lane | Raised | Confirmed | Refuted | Unverified | Minor | Precision |', '|---|---|---|---|---|---|---|---|');
   for (const [id, x] of Object.entries(r.by_recipe)) {

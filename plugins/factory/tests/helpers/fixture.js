@@ -284,7 +284,8 @@ function built(root, taskId, { job, result = { status: 'done', summary: 'built b
 // that plans nothing, the user's "ok", the contract writer returning the contract on disk (or
 // `contract`), God Eye's checklist all true. Leaves the job at gate H1 (factory next shows it).
 // `checklist` overrides God Eye's answers; `objections` adds its objections.
-function clarify(root, { contract = null, readback = null, objections = [], checklist = {} } = {}) {
+// `until`: stop when clarify reaches that stage, before its agents run (an eval runs them for real).
+function clarify(root, { contract = null, readback = null, objections = [], checklist = {}, until = null } = {}) {
   const J = require('../../cli/core/job').resolve(root).id;
   const file = path.join(jobDir(root, J), 'contract.md');
   if (contract) fs.writeFileSync(file, contract);
@@ -295,6 +296,7 @@ function clarify(root, { contract = null, readback = null, objections = [], chec
     const n = cli(root, ['next']);
     if (!(n.action === 'skill' && n.skill === 'clarify')) break;
     const c = n.clarify || {};
+    if (until && c.stage === until) return { status: 'at', stage: c.stage };
     if (c.waiting_for_user) {
       results.push(cli(root, ['clarify', 'reply', 'ok']));
       continue;

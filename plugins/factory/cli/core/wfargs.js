@@ -191,7 +191,7 @@ function clarifyBrief(root, state) {
     prompt: prompt(a.role, `${jc}\n- Clarify stage: **${plan.stage}**.\n- ${CLARIFY_TASK[a.mode] || ''}\n\nCLARIFY INPUT (JSON):\n${JSON.stringify(a.input, null, 1)}`),
     schema: schema(CLARIFY_SCHEMA[a.schema] || a.schema),
   })));
-  return base(root, state, 'clarify', { config: null, stage: plan.stage, rev: plan.rev, input_hash: inputHash({ stage: plan.stage, rev: plan.rev, contract: plan.contract_hash }), groups });
+  return base(root, state, 'clarify', { config: null, stage: plan.stage, rev: plan.rev, phases: plan.phases, input_hash: inputHash({ stage: plan.stage, rev: plan.rev, contract: plan.contract_hash }), groups });
 }
 
 // ---------------------------------------------------------------- fanout-judge: decide

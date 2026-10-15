@@ -295,9 +295,20 @@ test('(e4) the docs researcher times out: one more pass, then the gap is on the 
   assert.equal(lib.researched, false);
 });
 
-test('(e5) the brief writer fails in both passes: the job parks with the failure named', () => {
-  const rec = drive({ ...B, crew: 'e5', onPark: () => null }, quiet);
+test('(e5) every agent fails every time and nobody steps in: the job parks after one retry, names the agent, and never loops', () => {
+  const rec = drive({ ...B, crew: 'e5', onPark: (n) => (n === 1 ? 'resume' : null) }, quiet);
   report('e5', rec);
+  assert.equal(rec.end.action, 'parked');
+  assert.equal(rec.parks.length, 2, 'parked, resumed once by the user, parked again');
+  for (const p of rec.parks) assert.match(p, /The interviewer failed twice at the readback stage \(failed/);
+  assert.equal(rec.agentRuns.length, 4, 'two attempts per run, one run per park: bounded');
+  assert.ok(rec.agentRuns.every((r) => r.outcome === 'failed'));
+  assert.equal(rec.ledger.stage, 'readback', 'nothing moved on without an agent');
+});
+
+test('(e6) the brief writer fails in both passes: the job parks with the failure named', () => {
+  const rec = drive({ ...B, crew: 'e6', onPark: () => null }, quiet);
+  report('e6', rec);
   assert.equal(rec.end.action, 'parked');
   assert.match(rec.end.reason, /brief writer/);
   assert.equal(rec.ledger.research.passes.length, 2);
