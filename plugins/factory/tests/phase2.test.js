@@ -215,3 +215,56 @@ test('P2.5: a verify refusal is the next attempt\'s input, word for word', async
   const second = calls.filter((c) => c.opts.agentType === 'factory:builder')[1];
   assert.match(second.prompt, /task verify refused \(dirty_worktree\): T1 has uncommitted changes[\s\S]*M src\/add.js/);
 });
+
+// ------------------------------------------------------------------ P2.2 task packet
+
+test('P2.2: task show returns the task packet: ADR Decision and diagram, this task\'s criterion rows, findings on its paths, interfaces, siblings', () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  const jd = F.jobDir(root, J);
+  // a two-criterion contract, an ADR and findings, as decide and ground leave them
+  fs.writeFileSync(path.join(jd, 'contract.md'), F.contractText({ ac: '- AC-1: add(2, 3) returns 5 (evidence: test)\n- AC-2: sub(5, 3) returns 2 (evidence: test)' }));
+  fs.writeFileSync(path.join(jd, 'adr-001-fix.md'), F.adrText({ job: J, acs: ['AC-1', 'AC-2'], decision: 'We will fix add in src/add.js and add sub in src/sub.js; src/index.js re-exports both.' }));
+  fs.writeFileSync(path.join(jd, 'findings.md'), '# Findings\n\n## Topics\n\n### codebase\n- add subtracts — `src/add.js:1`\n- the CLI calls sub from src/sub.js — `src/cli.js:4`\n- nothing tests the README — **UNVERIFIED**\n');
+  const plan = {
+    interfaces: [{ name: 'add(a, b)', kind: 'function', file: 'src/add.js', owner: 'T1' }, { name: 'sub(a, b)', kind: 'function', file: 'src/sub.js', owner: 'T2' }],
+    tasks: [
+      { id: 'T1', objective: 'Fix add (ADR 001 Decision)', allowed_paths: ['src/add.js'], depends_on: [], criteria_ids: ['AC-1'], verify_commands: VC },
+      { id: 'T2', objective: 'Add sub', allowed_paths: ['src/sub.js'], depends_on: [], criteria_ids: ['AC-2'], verify_commands: [{ cmd: 'true', covers: ['AC-2'] }], consumes: ['add(a, b)'] },
+    ],
+  };
+  customPlan(root, J, plan);
+  const show = F.cli(root, ['task', 'show', 'T1', '--job', J]);
+  const p = show.packet;
+  assert.ok(p, JSON.stringify(show).slice(0, 500));
+  assert.equal(p.adr, `.factory/jobs/${J}/adr-001-fix.md`);
+  assert.match(p.decision, /src\/index\.js re-exports both/);
+  assert.match(p.diagram, /^```mermaid\nflowchart/);
+  assert.deepEqual(p.criteria_rows.map((r) => r.ac), ['AC-1'], 'only this task\'s rows of "How each acceptance criterion is met"');
+  assert.deepEqual(p.findings.map((f) => f.source), ['src/add.js:1'], 'only the findings on this task\'s paths');
+  assert.deepEqual(p.interfaces.owns.map((i) => [i.name, i.consumers]), [['add(a, b)', ['T2']]]);
+  assert.deepEqual(p.interfaces.consumes, []);
+  assert.deepEqual(p.siblings.map((t) => [t.id, t.objective, t.consumes]), [['T2', 'Add sub', ['add(a, b)']]]);
+  const p2 = F.cli(root, ['task', 'show', 'T2', '--job', J]).packet;
+  assert.deepEqual(p2.interfaces.consumes.map((i) => [i.name, i.owner, i.file]), [['add(a, b)', 'T1', 'src/add.js']]);
+  // the builder brief points at it
+  F.cli(root, ['next']);
+  const b = F.cli(root, ['wfargs', 'realize']);
+  const brief = fs.readFileSync(b.tasks.T1.builder_prompt.split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
+  assert.match(brief, /its `packet` is your part of the approved design: the ADR's Decision and diagram/);
+});
+
+test('P2.2: every review lane gets the design record and the plan; the code lane checks design conformance', () => {
+  const root = F.makeRepo();
+  const J = toProve(root);
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'adr-001-fix.md'), F.adrText({ job: J }));
+  // the ADR is a design input after the fact here; the review brief names whatever is recorded
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  for (const lane of b.fanout) {
+    const text = fs.readFileSync(lane.prompt.split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
+    assert.match(text, /Design record \(approved at H2\): .*adr-001-fix\.md — its Decision and Architecture diagram/, lane.id);
+    assert.match(text, /Plan \(approved at H3\): .*plan\.json/, lane.id);
+  }
+  const body = fs.readFileSync(path.join(F.PLUGIN, 'agents', 'code-reviewer.agent.md'), 'utf8');
+  assert.match(body, /Design conformance:[\s\S]*implements the Decision[\s\S]*"design:<what departs>"/);
+});

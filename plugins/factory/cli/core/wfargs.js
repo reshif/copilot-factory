@@ -445,6 +445,13 @@ function challenge(root, state, ctx, action) {
   })();
   const ls = lessons.inScope(root, changed);
   const jc = jobContext(root, state);
+  // What the human approved, for every lane: the design record (H2) and the plan (H3).
+  const designFiles = invalidation.designFiles(root, state.id).filter((f) => f.endsWith('.md'));
+  const designRefs = [
+    designFiles.length ? `- Design record (approved at H2): ${designFiles.join(', ')} — its Decision and Architecture diagram are what the change must implement.` : '',
+    require('fs').existsSync(jp.plan) ? `- Plan (approved at H3): ${jp.plan} — each task's objective, paths and interfaces.` : '',
+    require('fs').existsSync(jp.findings) ? `- Findings: ${jp.findings}` : '',
+  ].filter(Boolean).map((l) => `${l}\n`).join('');
   const fanout = lanes.map((lane) => {
     const role = cfg.lanes[lane];
     if (!role) fail(`No reviewer configured for lane "${lane}"`, 'plugin_broken');
@@ -454,7 +461,7 @@ function challenge(root, state, ctx, action) {
       label: `review · ${lane}`,
       prompt: prompt(
         role,
-        `${jc}\n- Lane: **${lane}**\n- See the change with: \`${diffCmd}\`\n- Changed files: ${changed.join(', ') || '(see diff)'}\n${extra}\n- Accepted lessons to check (a broken lesson is a finding with rule "lesson:<id>"):\n${ls.map((l) => `  - ${l.id}: ${l.text}`).join('\n') || '  - (none)'}\n- Finding ids start with "${lane}-".`,
+        `${jc}\n- Lane: **${lane}**\n- See the change with: \`${diffCmd}\`\n- Changed files: ${changed.join(', ') || '(see diff)'}\n${designRefs}${extra}\n- Accepted lessons to check (a broken lesson is a finding with rule "lesson:<id>"):\n${ls.map((l) => `  - ${l.id}: ${l.text}`).join('\n') || '  - (none)'}\n- Finding ids start with "${lane}-".`,
       ),
       schema: schema('reviewer'),
     };
@@ -584,7 +591,7 @@ function realize(root, state, ctx, action) {
       ...(sweep ? { sweep: agentSpec(state, 'tester') } : {}),
       builder_prompt: prompt(
         'builder',
-        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\`\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${envNote}${fixNote ? `\n${fixNote}` : ''}`,
+        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\` — its \`packet\` is your part of the approved design: the ADR's Decision and diagram, this task's rows of "How each acceptance criterion is met", the findings on your paths, the interfaces you own or consume, and the other tasks' objectives. Build to it.\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${envNote}${fixNote ? `\n${fixNote}` : ''}`,
         'Attempt {{attempt}}. What the previous attempt left (task verify\'s failing commands and output, or its builder\'s reply), if any:\n{{failures}}',
       ),
       ...(sweep

@@ -210,7 +210,7 @@ function lastFailures(t) {
 
 function show(root, jobId, taskId) {
   const state = job.resolve(root, jobId);
-  const { task } = planTask(root, state, taskId);
+  const { plan, task } = planTask(root, state, taskId);
   const parsed = contractMod.parse(contractMod.read(root, state.id));
   const t = state.tasks[taskId] || {};
   const evidence = t.evidence ? readJson(t.evidence.file, null) : null;
@@ -233,6 +233,8 @@ function show(root, jobId, taskId) {
     fix_findings: fixFindings,
     verify_failures: verifyFailures,
     lessons: lessons.inScope(root, task.allowed_paths),
+    // the approved design as this task needs it, and where it sits in the plan
+    packet: require('./packet').build(root, state, plan, task),
   };
 }
 

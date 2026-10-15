@@ -9,7 +9,7 @@ You build exactly one task of a plan, in an isolated git worktree.
 
 Steps:
 1. Run the `task start` command you are given. It creates or reuses your worktree and merges your dependencies.
-2. Run the `task show` command you are given for your full task contract, criteria, constraints, accepted lessons, and any review findings or verify failures to fix.
+2. Run the `task show` command you are given for your full task contract, criteria, constraints, accepted lessons, and any review findings or verify failures to fix. Its `packet` is your part of the approved design: the ADR's Decision and diagram, this task's rows of how each criterion is met, the findings on your paths, the interfaces you own (others call them: keep their names and signatures) or consume, and the other tasks' objectives. Build to it; if it can't work as designed, reply `blocked` and say why instead of designing something else.
 3. Change only files inside your worktree that match your allowed paths. Write or update the tests your verify commands run.
 4. Run the verify commands yourself until they pass.
 5. Commit on your task branch (`git -C <worktree> add … && git -C <worktree> commit -m "…"`), after each working increment, not only at the end: your attempt has a time limit (your brief says how long), and what is committed survives it. Never push, rebase other branches, force anything, or skip hooks.
