@@ -160,7 +160,7 @@ function recClarify(root, state, env) {
   const warnings = enforce ? [] : grounded.map((x) => `intent_grounded (advisory at low risk): ${x}`);
   // The round, measured.
   const degradedRound = env.status === 'degraded';
-  const measure = idata ? measureRound(clarifyMod, idata, { round, priorIds, prevTotals, asked: n.questions.length, degraded: degradedRound, revised: Boolean(revision && revision.written) }) : null;
+  const measure = idata ? measureRound(clarifyMod, idata, { round, priorIds, prevTotals, asked: n.questions.length, degraded: degradedRound, revised: Boolean(revision && revision.effective) }) : null;
   if (idata) {
     if (!(idata.rounds || []).some((r) => r.round === round)) idata.rounds = [...(idata.rounds || []), { round, at: nowIso(), scouted: false, mapped: false, scouts: [], verifiers: 0, degraded: (d.degraded || []).slice(0, 20) }];
     idata.rounds[idata.rounds.length - 1].ledger = measure;
@@ -374,6 +374,8 @@ function applyRevision(root, state, c, data, unappliedBefore, round) {
     else {
       writeText(jobPaths(root, state.id).contract, next.endsWith('\n') ? next : `${next}\n`);
       out.written = true;
+      out.changed = next.replace(/\s+$/, '') !== String(cur).replace(/\s+$/, '');
+      out.problems_fixed = Math.max(0, pb - pa);
     }
   }
   if (data && edits.some((e) => e.ok)) {
@@ -387,6 +389,13 @@ function applyRevision(root, state, c, data, unappliedBefore, round) {
     }
     if (out.written) for (const nt of data.notes || []) if (nt.ref === 'contract') nt.applied = true;
   }
+  // Progress, for the no-progress rule: a revision that changed the text AND applied
+  // something it was given (a settled issue, a note, a denial) or fixed a contract problem.
+  // A rewrite that applies nothing is not progress, or an editor rewording every round
+  // would keep clarify from ever parking before its ceiling.
+  const newlyApplied = unappliedBefore.filter((id) => appliedRefs.has(id)).length;
+  const handled = edits.some((e) => e.ok && (e.requested || []).some((r) => ['user note', 'gate denial'].includes(r.from)));
+  out.effective = Boolean(out.written && out.changed && (newlyApplied > 0 || out.problems_fixed > 0 || handled));
   return out;
 }
 

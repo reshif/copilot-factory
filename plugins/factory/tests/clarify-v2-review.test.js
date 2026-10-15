@@ -137,3 +137,33 @@ test('contract editor: when the CLI refuses the revision God Eye approved, the r
   assert.ok(J);
 });
 
+test('progress: a revision that changes nothing, or rewords without applying anything, is not progress; a gate denial goes to the editor once', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const ge = { ...APPROVE, verdict: 'revise', items: [{ ref: 'Goal', severity: 'minor', issue: 'wordy' }] };
+  // the same text back: written or not, it is not progress
+  let r = round(root, { scout: scoutData([]), critique: ge, ...editorEnv(J2.CONTRACT) }, 'ok');
+  assert.equal(r.clarify.round.revised, false);
+  // a reworded goal that applies nothing it was asked for
+  F.cli(root, ['next']);
+  r = round(root, { scout: scoutData([]), critique: ge, ...editorEnv(J2.CONTRACT.replace('A sync job reads', 'A synchronisation job reads')) }, 'ok');
+  assert.equal(r.clarify.round.revised, false);
+  assert.equal(r.clarify.round.progress, false);
+  // two rounds with no progress: not converging (the rewording did not keep it going)
+  assert.equal(r.status, 'park');
+  F.reply(root, 'resume');
+  F.cli(root, ['next']);
+  // a denial: the editor gets it in the round right after, not in every round after that
+  const job = require('../cli/core/job');
+  const st = job.load(root, J);
+  st.denials = [...(st.denials || []), { gate: 'H1', reason: 'say which VLANs are reserved', at: new Date().toISOString() }];
+  job.save(root, st);
+  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  assert.ok(b.editor.todo.some((t) => t.from === 'gate denial'));
+  r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, scout: scoutData([]), critique: ge, ...editorEnv(J2.CONTRACT.replace('## Constraints\n', '## Constraints\n- VLANs 3968-4094 are reserved and never synced\n'), { requested: [{ from: 'gate denial' }] }) }));
+  assert.equal(r.clarify.round.revised, true, 'applying the denial is progress');
+  b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  assert.ok(!b.editor.todo.some((t) => t.from === 'gate denial'), 'the denial was handled last round');
+});
+

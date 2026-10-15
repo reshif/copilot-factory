@@ -252,8 +252,11 @@ function clarify(root, state, ctx, acceptDegraded) {
   }
   for (const n of newNotes) todo.push({ from: 'user note', ref: n.issue || 'contract', note: n.text });
   if (clarifyMod.inClarify(state)) for (const pr of problems) todo.push({ from: 'contract check', problem: pr });
+  // a gate denial goes to the editor once: in the first round after it (God Eye and the
+  // analysts keep seeing it in the job context until the gate is approved)
   const denial = denialNotes(state, ['H1', 'EH1']);
-  if (denial && clarifyMod.inClarify(state)) todo.push({ from: 'gate denial', note: denial.replace(/^- /, '') });
+  const denialNew = (state.denials || []).some((x) => ['H1', 'EH1'].includes(x.gate) && (!since || String(x.at || '') > since));
+  if (denial && denialNew && clarifyMod.inClarify(state)) todo.push({ from: 'gate denial', note: denial.replace(/^- /, '') });
   const ed = cfg.editor ? {
     ...agentSpec(state, cfg.editor.role),
     label: 'contract editor',
