@@ -228,7 +228,7 @@ function agentAllowed(a, b) {
 }
 
 function isHumanOnly(a, b) {
-  return HUMAN_ONLY.has(a) || (a === 'lessons' && ['accept', 'reject', 'promote'].includes(b)) || (a === 'ci' && b === 'install');
+  return HUMAN_ONLY.has(a) || (a === 'lessons' && ['accept', 'reject', 'promote'].includes(b)) || (a === 'ci' && b === 'install') || (a === 'clarify' && b === 'split');
 }
 
 function humanMessage(a, b) {

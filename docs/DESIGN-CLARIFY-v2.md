@@ -73,11 +73,16 @@ Every agent output that raises an issue (mapper unknowns, analyst and judge ques
 Eye items and researchable questions) carries `same_as` (`"U-n"` or `"new"`) and a `subject`.
 
 1. `same_as: "U-n"` naming a live issue (or one of its aliases) attaches to it.
-2. Otherwise the subject key is compared: equal normalised keys are the same issue.
+2. Otherwise the subject keys are compared: equal keys are the same issue when at least one
+   side's key was given by an agent (a key derived from the text's first words is no identity
+   on its own).
 3. Otherwise significant tokens are compared (subject and text, lower-cased, stop words out,
-   plurals stripped, a few synonyms: `cli`/`syntax`/`cmd` → `command`, `NX-OS` → `nxos`):
-   at least 3 shared tokens and Jaccard ≥ 0.5 or overlap coefficient ≥ 0.75. When both sides
-   carry an agent-given subject that differs, Jaccard ≥ 0.6 is required.
+   plurals stripped, a few synonyms: `cli`/`syntax`/`cmd` → `command`, `NX-OS` → `nxos`; for
+   the comparison also `-ed`/`-ing`/`-e` endings): at least 3 shared tokens and Jaccard ≥ 0.5
+   or overlap coefficient ≥ 0.75. When a word is swapped for another (each side lacks as
+   many of the other's tokens), at least 5 shared tokens are required (the swapped word may
+   be the point: "native VLAN" vs "allowed VLANs", "leaf" vs "spine"). When both sides carry an agent-given subject that
+   differs, Jaccard ≥ 0.6 is required.
 
 A match against an open issue attaches (aliases, evidence, question); against a settled one
 it becomes a note. The rule is deterministic, so the workflow and the CLI agree, and the
@@ -108,6 +113,8 @@ and the decide inputs, and `groundedProblems` / `intent_grounded` ignore them.
   comma-separated) as answers to the current question set (the last clarify round's Q-ids),
   through the same function.
 - `factory clarify note U-n "…"` adds context for the next round.
+- `factory clarify split U-n <alias>` (human-only, the user's terminal) undoes a wrong fold: the
+  alias becomes its own issue again (asked, researched or deferred next round as a new raise).
 
 Gating is unchanged from `factory answer` today: it is the main session's (the user's
 relay), never a factory agent's (`FACTORY_RUNNER`, the CLI and the guard both refuse it).
@@ -194,9 +201,10 @@ migrates in memory only, so it works right after an upgrade with no new round:
 
 ## Known limits
 
-- The token rule can fold two issues that differ in one distinctive word ("native VLAN" vs
-  "allowed VLANs"); agent-given subjects that differ raise the bar, and a folded issue shows
-  its aliases in `factory clarify status`.
+- The token rule keeps short texts one telling word apart, but longer texts that share five or
+  more words can still be folded ("Does the Nautobot interface VLAN API expose tagged VLANs?"
+  vs "… the native VLAN?"): no word rule tells that apart from a paraphrase. A folded issue
+  shows its aliases in `factory clarify status`, and `factory clarify split` undoes it.
 - The implementation-fact rule is a keyword rule; it only applies to repo and world issues
   without an agent-given owner.
 - The contract editor rewrites the whole text; the CLI rejects a revision that adds contract

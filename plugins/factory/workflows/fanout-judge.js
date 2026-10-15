@@ -124,23 +124,39 @@ function subjectOf(raw) {
   if (raw && raw.subject && subjectKey(raw.subject)) return { subject: subjectKey(raw.subject), explicit: true }
   return { subject: tokens((raw && (raw.text || raw.question)) || '').slice(0, 4).join('.'), explicit: false }
 }
+// For comparing faces only (subject keys keep tokens()): "failed"/"fails", "required"/"require"
+// and "allowed"/"allows" meet on one root.
+function wordRoot(w) {
+  let x = w
+  if (x.length > 5 && x.endsWith('ing')) x = x.slice(0, -3)
+  else if (x.length > 4 && x.endsWith('ed')) x = x.slice(0, -2)
+  if (x.length > 4 && x.endsWith('e')) x = x.slice(0, -1)
+  return x
+}
 function faces(x) {
   const subj = tokens(normText(x.subject).replace(/[._/:-]+/g, ' '))
   const out = [new Set([...subj, ...tokens(x.text || x.question || '')])]
   for (const a of x.aliases || []) out.push(new Set(tokens(a.text || '')))
-  return out.filter((f) => f.size)
+  return out.map((f) => new Set([...f].map(wordRoot))).filter((f) => f.size)
 }
 function faceMatch(ta, tb, strict) {
   let shared = 0
   for (const t of ta) if (tb.has(t)) shared += 1
   if (shared < 3) return false
+  // a word swapped for another ("native VLAN" / "allowed VLANs", "leaf" / "spine", "add" /
+  // "remove"): that difference may be the point, so fold only on a wide common core. (One side
+  // saying more, "in scope?" / "in scope (leaf, spine, border)?", is not a swap.)
+  const onlyA = ta.size - shared
+  const onlyB = tb.size - shared
+  if (onlyA && onlyA === onlyB && shared < 5) return false
   const jac = shared / (ta.size + tb.size - shared)
   const ovl = shared / Math.min(ta.size, tb.size)
   return strict ? jac >= 0.6 : jac >= 0.5 || ovl >= 0.75
 }
 function sameIssue(a, b) {
-  // equal subject keys: agent-given, or derived with at least two tokens ("repo" alone says nothing)
-  if (a.subject && a.subject === b.subject && (a.subject_explicit || b.subject_explicit || a.subject.includes('.'))) return true
+  // equal subject keys given by an agent; a derived key (the text's first words) is no identity
+  // on its own ("nautobot.interface.vlan.api" starts two different questions): the words decide
+  if (a.subject && a.subject === b.subject && (a.subject_explicit || b.subject_explicit)) return true
   const strict = Boolean(a.subject_explicit && b.subject_explicit && a.subject !== b.subject)
   const fa = faces(a)
   const fb = faces(b)

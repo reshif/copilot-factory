@@ -58,16 +58,31 @@ function subjectOf(raw) {
   return { subject: tokens((raw && (raw.text || raw.question)) || '').slice(0, 4).join('.'), explicit: false };
 }
 // The faces an issue is known by: its subject and text, and each alias's text.
+// For comparing faces only (subject keys keep tokens()): "failed"/"fails", "required"/"require"
+// and "allowed"/"allows" meet on one root.
+function wordRoot(w) {
+  let x = w;
+  if (x.length > 5 && x.endsWith('ing')) x = x.slice(0, -3);
+  else if (x.length > 4 && x.endsWith('ed')) x = x.slice(0, -2);
+  if (x.length > 4 && x.endsWith('e')) x = x.slice(0, -1);
+  return x;
+}
 function faces(x) {
   const subj = tokens(norm(x.subject).replace(/[._/:-]+/g, ' '));
   const out = [new Set([...subj, ...tokens(x.text || x.question || '')])];
   for (const a of x.aliases || []) out.push(new Set(tokens(a.text || '')));
-  return out.filter((f) => f.size);
+  return out.map((f) => new Set([...f].map(wordRoot))).filter((f) => f.size);
 }
 function faceMatch(ta, tb, strict) {
   let shared = 0;
   for (const t of ta) if (tb.has(t)) shared += 1;
   if (shared < 3) return false;
+  // a word swapped for another ("native VLAN" / "allowed VLANs", "leaf" / "spine", "add" /
+  // "remove"): that difference may be the point, so fold only on a wide common core. (One side
+  // saying more, "in scope?" / "in scope (leaf, spine, border)?", is not a swap.)
+  const onlyA = ta.size - shared;
+  const onlyB = tb.size - shared;
+  if (onlyA && onlyA === onlyB && shared < 5) return false;
   const jac = shared / (ta.size + tb.size - shared);
   const ovl = shared / Math.min(ta.size, tb.size);
   return strict ? jac >= 0.6 : jac >= 0.5 || ovl >= 0.75;
@@ -75,8 +90,9 @@ function faceMatch(ta, tb, strict) {
 // Same issue? Deterministic: same_as is handled by the caller; here the subject key, then
 // significant tokens of any face (the issue or one of its aliases).
 function sameIssue(a, b) {
-  // equal subject keys: agent-given, or derived with at least two tokens ("repo" alone says nothing)
-  if (a.subject && a.subject === b.subject && (a.subject_explicit || b.subject_explicit || a.subject.includes('.'))) return true;
+  // equal subject keys given by an agent; a derived key (the text's first words) is no identity
+  // on its own ("nautobot.interface.vlan.api" starts two different questions): the words decide
+  if (a.subject && a.subject === b.subject && (a.subject_explicit || b.subject_explicit)) return true;
   const strict = Boolean(a.subject_explicit && b.subject_explicit && a.subject !== b.subject);
   const fa = faces(a);
   const fb = faces(b);
@@ -552,6 +568,40 @@ function note(root, { jobId, ref, text, via = 'cli' }) {
   return { job: state.id, ref: R || 'contract', message: `Noted for ${R || 'the contract'}; clarify takes it into account next round (run factory next).` };
 }
 
+// `factory clarify split U-n <alias>` (human-only): undo a wrong fold. The alias becomes its own
+// issue again, owned and placed as its parent would have been for a new raise (asked next
+// round, researched next round, or deferred to design); the parent keeps its status.
+function split(root, { jobId, ref, alias, channel = 'tty' }) {
+  require('./human').requireHumanChannel(channel);
+  const job = require('./job');
+  const intent = require('./intent');
+  const state = job.resolve(root, jobId);
+  if (state.approvals && (state.approvals.H1 || state.approvals.EH1)) fail(`${state.id}'s contract is approved: clarify's issues no longer change (start an amendment instead).`, 'approved');
+  const raw = intent.load(root, state.id);
+  if (!raw) fail(`${state.id} has no clarify ledger yet: clarify has not run.`, 'no_ledger');
+  if (raw.tampered) fail(`${state.id}'s intent-evidence.json fails its seal.`, 'tampered');
+  const data = ensure(root, state, raw);
+  const R = String(ref || '').trim().toUpperCase();
+  const A = String(alias || '').trim().toUpperCase();
+  // "split U-7 U-19", or just "split U-19" (the alias names its parent)
+  const parent = data.unknowns.find((u) => (A ? u.id === R : (u.aliases || []).some((a) => a.id === R)));
+  const aliasId = A || R;
+  if (!parent) fail(`${state.id} has no issue ${A ? R : `with the alias ${R}`}.`, 'bad_input');
+  const a = (parent.aliases || []).find((x) => x.id === aliasId);
+  if (!a) fail(`${aliasId} is not folded into ${parent.id}${(parent.aliases || []).length ? ` (its aliases: ${parent.aliases.map((x) => x.id).join(', ')})` : ' (it has no aliases)'}.`, 'bad_input');
+  if (data.unknowns.some((u) => u.id === aliasId)) fail(`${aliasId} is already an issue of its own.`, 'bad_input');
+  const round = (state.counters.clarify_rounds || 0) + 1;
+  parent.aliases = parent.aliases.filter((x) => x.id !== aliasId);
+  event(parent, round, 'split', 'user', `${aliasId} is a different issue`);
+  const owner = parent.owner === 'design' ? 'design' : ['repo', 'world'].includes(parent.kind) && parent.owner === 'research' ? 'research' : 'user';
+  const u = cleanIssue({ id: aliasId, text: a.text, kind: parent.kind, impact: parent.impact, owner, source: 'split', round }, { round });
+  event(u, round, 'split', 'user', `split from ${parent.id}: not the same issue`);
+  data.unknowns = [...data.unknowns, u].sort((x, y) => num(x.id) - num(y.id));
+  intent.save(root, state.id, data);
+  intent.render(root, state, data);
+  return { job: state.id, issue: u.id, from: parent.id, status: u.status, owner: u.owner, message: `${u.id} is its own issue again (${u.status}, owner ${u.owner}); ${parent.id} keeps its status. Run factory next: clarify ${u.owner === 'user' ? 'asks about it' : u.owner === 'research' ? 'researches it' : 'hands it to design'}.` };
+}
+
 // ---------------------------------------------------------------- views
 function nextAction(u, state) {
   if (u.status === 'settled') return u.settled_by === 'evidence' ? `none (evidence ${u.evidence.join(', ') || u.assumption || ''})`.trim() : 'none';
@@ -627,6 +677,7 @@ function statusText(v) {
     L.push('', 'Round  opened  settled  deferred  asked  progress');
     for (const r of v.rounds) L.push(`${String(r.round).padEnd(6)} ${String(r.opened).padEnd(7)} ${String(r.settled).padEnd(8)} ${String(r.deferred).padEnd(9)} ${String(r.asked).padEnd(6)} ${r.degraded ? 'degraded (not counted)' : r.progress ? 'yes' : 'no'}`);
   }
+  if (v.issues.some((r) => r.aliases.length)) L.push('', 'Two different issues folded into one? In your own terminal: factory clarify split <U-n> <alias> makes the alias its own issue again.');
   if (v.questions.length) {
     L.push('', 'Answer with:');
     for (const c of v.answer_commands) L.push(`  ${c}`);
@@ -694,6 +745,6 @@ function deferredText(data) {
 module.exports = {
   KINDS, OWNERS, STATUSES, SETTLED_BY, FINAL, QUESTION_KINDS,
   tokens, subjectKey, subjectOf, sameIssue, findSame, isImplementationFact, classify, limits, compatResolution, cleanIssue, settle, event,
-  migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, inClarify, isNone, defaultValue,
+  migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, split, inClarify, isNone, defaultValue,
   rows, totals, trend, view, statusText, status, nextSummary, clarificationLines, deferredLines, deferredText, openIds,
 };

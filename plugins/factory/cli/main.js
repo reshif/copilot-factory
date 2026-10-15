@@ -54,6 +54,7 @@ Contract   contract show · contract check [--plan-fields]
            answer <U-n|Q-n> "<answer>" · answer <U-n|Q-n> --default · answer --id Q-n --answer "…" · answer --question "…" --answer "…"
 Clarify    clarify status [--json]   (the issue ledger: id, subject, status, owner, next action; per-round trend)
            clarify note <U-n|contract> "<note>"   (context for the next clarify round)
+           clarify split <U-n> <alias U-n>   (human-only: undo a wrong fold; the alias becomes its own issue)
 Intent     intent show   (clarify's research: unknowns, cited evidence, evidence-backed assumptions, grounding problems)
 Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config clarify|decide|challenge] [--mode m] [--scope s] [--lanes a,b]
            [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
@@ -224,7 +225,8 @@ function run(argv) {
     case 'clarify':
       if (sub === 'status') return C('clarify').status(R(), { jobId: J, json: Boolean(opt.json) });
       if (sub === 'note') return C('clarify').note(R(), { jobId: J, ref: pos[2], text: opt.text || pos.slice(3).join(' ') });
-      return fail('clarify status [--json] | clarify note <U-n|contract> "<note>"', 'bad_input');
+      if (sub === 'split') return C('clarify').split(R(), { jobId: J, ref: pos[2], alias: pos[3], channel: tty });
+      return fail('clarify status [--json] | clarify note <U-n|contract> "<note>" | clarify split <U-n> [<alias U-n>]', 'bad_input');
     case 'wfargs': {
       const brief = C('wfargs').build(R(), {
         jobId: J,
@@ -444,7 +446,7 @@ function logCommand(argv, res, err) {
     if (pos[0] === 'next') Object.assign(extra, { action: r.action || null, step: r.step || null });
     // A human-only command that went through came from a terminal the CLI accepted as yours
     // (TTY, typed confirmation): the inspector reads it as a human action, not the driver's.
-    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1]))) extra.channel = 'tty';
+    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1])) || (pos[0] === 'clarify' && pos[1] === 'split')) extra.channel = 'tty';
     events.append(root, {
       event: 'cli',
       cmd: pos[0],

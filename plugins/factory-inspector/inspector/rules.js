@@ -203,7 +203,7 @@ const HUMAN_ACTIONS = new Set(['assumption']);
 // The human-only verbs. One that went through (ok, channel tty: the CLI accepted the terminal
 // as the user's, with the typed confirmation) is the user acting, a legitimate channel: not a
 // driver deviation. A refused attempt (human_only) is still judged: that was an agent trying.
-const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'lessons:accept', 'lessons:reject', 'lessons:promote']);
+const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'lessons:accept', 'lessons:reject', 'lessons:promote', 'clarify:split']);
 
 function humanFromTerminal(e) {
   return e.event === 'cli' && e.ok !== false && (HUMAN_VERBS.has(cmdKey(e)) || HUMAN_VERBS.has(e.cmd));

@@ -167,3 +167,58 @@ test('progress: a revision that changes nothing, or rewords without applying any
   assert.ok(!b.editor.todo.some((t) => t.from === 'gate denial'), 'the denial was handled last round');
 });
 
+// ---------------------------------------------------------------- dedup and its undo
+test('dedup: issues that differ in one telling word are not folded; long paraphrases still are', () => {
+  const same = (a, b) => clarify.sameIssue({ ...clarify.subjectOf(a), subject_explicit: Boolean(a.subject), text: a.text, subject: clarify.subjectOf(a).subject }, { ...clarify.subjectOf(b), subject_explicit: Boolean(b.subject), text: b.text, subject: clarify.subjectOf(b).subject });
+  assert.equal(same({ text: 'Which VLAN is the native VLAN on trunk ports?' }, { text: 'Which VLANs are allowed on trunk ports?' }), false);
+  assert.equal(same({ subject: 'nxos.native-vlan', text: 'Which VLAN is the native VLAN on NX-OS trunk ports?' }, { subject: 'nxos.allowed-vlans', text: 'Which VLANs are allowed on NX-OS trunk ports?' }), false);
+  assert.equal(same({ text: 'Should the sync remove VLANs on the trunk that are not in Nautobot?' }, { text: 'Should the sync add VLANs on the trunk that are in Nautobot?' }), false);
+  assert.equal(same({ text: 'Does the sync run on leaf switches?' }, { text: 'Does the sync run on spine switches?' }), false);
+  assert.equal(same({ text: 'Does the Nautobot interface VLAN API list tagged members?' }, { text: 'Does the Nautobot interface VLAN API need a token?' }), false, 'a derived subject (the same first words) is not identity');
+  // the limit of a word rule: longer texts one telling word apart still fold (as the NX-OS
+  // paraphrases below must); factory clarify split undoes such a fold
+  assert.equal(same({ text: 'Does Nautobot interface VLAN API expose tagged VLANs?' }, { text: 'Does Nautobot interface VLAN API expose the native VLAN?' }), true);
+  // the J-0002 paraphrases still fold
+  assert.equal(same({ text: 'Which NX-OS CLI command sets the allowed VLAN list on a trunk interface?' }, { text: 'What is the exact NX-OS syntax for switchport trunk allowed vlan?' }), true);
+  assert.equal(same({ text: 'Confirm the NX-OS command form for configuring trunk allowed VLANs' }, { text: 'Which command does NX-OS accept to set allowed VLANs on trunk ports?' }), true);
+  // the workflow's copy agrees
+  const wf = fs.readFileSync(path.join(F.PLUGIN, 'workflows', 'fanout-judge.js'), 'utf8');
+  assert.match(wf, /onlyA && onlyA === onlyB && shared < 5/);
+});
+
+test('factory clarify split U-n <alias>: a wrong fold is undone (human-only), and the issue is asked again', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  round(root, { scout: scoutData([
+    user('U-1', 'Which NX-OS CLI command sets the allowed VLAN list on a trunk interface?', { kind: 'decision', aliases: [{ id: 'U-2', text: 'Which NX-OS command sets the native VLAN on a trunk interface?' }] }),
+  ]) });
+  let d = ledgerOf(root, J);
+  assert.deepEqual(d.unknowns.map((u) => u.id), ['U-1']);
+  // status names the way to undo a fold
+  const txt = spawnSync('node', [F.BIN, 'clarify', 'status'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '' } }).stdout;
+  assert.match(txt, /\[aliases U-2\][\s\S]*factory clarify split <U-n> <alias>/);
+  // the user's own terminal (the CLI's test seam stands in for it); not a pipe, not an agent shell
+  const human = require('../cli/core/human');
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !human.AGENT_ENV.some(([a]) => a === k)));
+  const term = (args, env = {}) => JSON.parse(spawnSync('node', [F.BIN, ...args], { cwd: root, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '', ...env } }).stdout);
+  assert.equal(term(['clarify', 'split', 'U-1', 'U-2']).code, 'human_only');
+  const r = term(['clarify', 'split', 'U-1', 'U-2'], { FACTORY_TEST_HUMAN: human.testToken() });
+  assert.equal(r.issue, 'U-2', JSON.stringify(r));
+  d = ledgerOf(root, J);
+  const u2 = d.unknowns.find((u) => u.id === 'U-2');
+  assert.ok(u2, 'U-2 is an issue again');
+  assert.deepEqual([u2.status, u2.owner], ['proposed', 'user']);
+  assert.equal(d.unknowns.find((u) => u.id === 'U-1').aliases.length, 0);
+  assert.ok(u2.history.some((h) => h.event === 'split'));
+  assert.ok(d.unknowns.find((u) => u.id === 'U-1').history.some((h) => h.event === 'split'));
+  // the next round asks it
+  F.cli(root, ['next']);
+  const r2 = round(root, { scout: scoutData(d.unknowns) });
+  assert.ok(r2.questions.some((q) => q.unknown === 'U-2'), JSON.stringify(r2.questions));
+  // human-only: the guard refuses it from the chat agent and from factory agents; the CLI refuses agents
+  assert.ok(guardRules.checkBash(root, 'factory clarify split U-1 U-2', guardRules.loadPolicy(root), { agent: false }));
+  const agent = spawnSync('node', [F.BIN, 'clarify', 'split', 'U-1', 'U-2'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', FACTORY_RUNNER: '1' } });
+  assert.equal(JSON.parse(agent.stdout).code, 'agent_not_allowed');
+});
+
