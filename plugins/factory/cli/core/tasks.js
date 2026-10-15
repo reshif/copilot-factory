@@ -68,8 +68,11 @@ function fixMarker(wt, kind) {
 }
 
 // Outcomes after which a task's branch is not worth building on: the next `task start` (a
-// resume, an amendment) restarts it from the job branch plus its dependencies.
-const FAILED = ['blocked', 'exhausted', 'not_verified', 'skipped_dependency'];
+// resume, an amendment) restarts it from the job branch plus its dependencies. An exhausted
+// task is not among them: its retries ran out, but its commits (a `wip:` one included) are
+// what the next attempt continues from, in the same Copilot session (P2.4); a scope
+// violation in its last attempt still restarts it (restartReason).
+const FAILED = ['blocked', 'not_verified', 'skipped_dependency'];
 
 // Why this start must restart the task's branch (once per failure), or null: the task ended
 // failed in an earlier run, or its last attempt changed files outside its paths.
@@ -156,7 +159,7 @@ function start(root, jobId, taskId) {
 // it records what this attempt's builder returned, which `task verify` and taskDone require.
 // A builder that returned nothing after `task start` refused with dependency_conflict did not
 // crash: its result becomes the typed blocked result it should have replied with.
-function afterBuilder(root, jobId, taskId, result, { startedAt, label } = {}) {
+function afterBuilder(root, jobId, taskId, result, { startedAt, label, sessionId, resumed, wip, outcome: run } = {}) {
   const state = job.load(root, jobId);
   const t = state.tasks[taskId] || {};
   let r = result || null;
@@ -165,9 +168,44 @@ function afterBuilder(root, jobId, taskId, result, { startedAt, label } = {}) {
     r = { status: 'blocked', blocked_reason: 'dependency_conflict', summary: se.message, needs_paths: [] };
   }
   const outcome = !r ? 'no_result' : r.status === 'done' ? 'done' : 'blocked';
-  state.tasks[taskId] = { ...t, builder: { attempt: t.attempts || 0, outcome, at: nowIso(), label: label || null, ...(r && r.blocked_reason ? { blocked_reason: r.blocked_reason } : {}) } };
+  const attempt = t.attempts || 0;
+  const builder = { attempt, outcome, at: nowIso(), label: label || null, ...(r && r.blocked_reason ? { blocked_reason: r.blocked_reason } : {}), ...(sessionId ? { session_id: sessionId } : {}), ...(wip ? { wip_commit: wip } : {}) };
+  const entry = { builder: outcome, ...(run && run !== 'ok' ? { run } : {}), ...(r && r.summary ? { summary: String(r.summary).slice(0, 400) } : {}), ...(r && (r.needs_paths || []).length ? { needs_paths: r.needs_paths } : {}), ...(sessionId ? { session_id: sessionId, resumed: Boolean(resumed) } : {}), ...(wip ? { wip_commit: wip } : {}), builder_at: builder.at };
+  state.tasks[taskId] = { ...t, builder, history: noteAttempt(t.history, attempt, entry) };
   job.save(root, state);
   return r;
+}
+
+// The task's attempt history, one entry per attempt (builder reply, then task verify's
+// result), across `factory run` invocations: task show returns it and a later realize
+// continues from it. The last HISTORY attempts are kept.
+const HISTORY = 6;
+function noteAttempt(history, attempt, fields) {
+  const h = Array.isArray(history) ? history.map((x) => ({ ...x })) : [];
+  let e = h.find((x) => x.attempt === attempt);
+  if (!e) {
+    e = { attempt };
+    h.push(e);
+  }
+  Object.assign(e, fields);
+  return h.sort((a, b) => a.attempt - b.attempt).slice(-HISTORY);
+}
+
+// What the last attempt left for the next one: the raw verify failures (command, exit code,
+// output tail) or what its builder said, as text lines. Empty when there is nothing to carry.
+function lastFailures(t) {
+  const h = (t && t.history) || [];
+  const e = h[h.length - 1];
+  if (!e) return [];
+  const out = [];
+  if (e.builder && e.builder !== 'done') out.push(`Attempt ${e.attempt}: the builder ${e.builder === 'no_result' ? `returned no result${e.run ? ` (${e.run})` : ''}` : `replied ${e.builder}`}${e.summary ? `: ${e.summary}` : ''}.${e.wip_commit ? ` Its uncommitted work was saved as ${e.wip_commit.slice(0, 10)} (wip:) on the task branch.` : ''}`);
+  if (e.verify && !e.verify.pass) {
+    if (e.verify.refused) out.push(`Attempt ${e.attempt}: task verify refused (${e.verify.refused})${e.verify.message ? `: ${e.verify.message}` : ''}`);
+    for (const f of e.verify.failures || []) out.push(`Attempt ${e.attempt}: \`${f.cmd}\` exited ${f.code}. Output (tail):\n${String(f.tail || '').split('\n').map((l) => `      ${l}`).join('\n')}`);
+    for (const p of e.verify.scope_violations || []) out.push(`Attempt ${e.attempt}: ${p} was changed but is outside this task's allowed paths (or protected).`);
+    if (e.verify.no_changes) out.push(`Attempt ${e.attempt}: no change was committed on the task branch.`);
+  }
+  return out;
 }
 
 function show(root, jobId, taskId) {
@@ -188,6 +226,8 @@ function show(root, jobId, taskId) {
     worktree: taskWorktree(root, state.id, taskId),
     branch: steps.taskBranch(state, taskId),
     attempts: t.attempts || 0,
+    // every recorded attempt: the builder's reply (and its Copilot session), task verify's raw result
+    history: t.history || [],
     needs_work: t.needs_work || null,
     last_evidence: evidence ? { pass: evidence.pass, failures: evidence.commands.filter((c) => !c.pass), scope_violations: evidence.scope_violations } : null,
     fix_findings: fixFindings,
@@ -279,7 +319,9 @@ function verify(root, jobId, taskId) {
   };
   writeJson(file, ev);
   const fresh = job.load(root, state.id);
-  fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), evidence: { id, file, pass, tree: ev.tree, at: ev.at, builder_at: b.at } };
+  const tail = (x, n) => (String(x || '').length > n ? `…${String(x).slice(-n)}` : String(x || ''));
+  const verifyEntry = { pass, at: ev.at, evidence_id: id, failures: commands.filter((c) => !c.pass).map((c) => ({ cmd: c.cmd, code: c.code, ...(c.flaky ? { flaky: true } : {}), tail: tail(c.output, 1500) })), ...(scopeViolations.length ? { scope_violations: scopeViolations } : {}), ...(changed.length ? {} : { no_changes: true }) };
+  fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), evidence: { id, file, pass, tree: ev.tree, at: ev.at, builder_at: b.at }, history: noteAttempt((fresh.tasks[taskId] || {}).history, t.attempts || 0, { verify: verifyEntry }) };
   if (pass) delete fresh.tasks[taskId].needs_work;
   job.save(root, fresh);
   return {
@@ -302,4 +344,4 @@ function setState(root, jobId, taskId, value, reason) {
   return { job: state.id, task: taskId, state: value };
 }
 
-module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, legacyAttempt, FAILED };
+module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, legacyAttempt, lastFailures, noteAttempt, FAILED };

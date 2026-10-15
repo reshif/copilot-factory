@@ -60,7 +60,10 @@ let runs = 0
 const checks = []
 const T = brief.tasks
 const st = {}
-for (const id of Object.keys(T)) st[id] = { outcome: 'pending', attempts: 0, failures: [], swept: [], summary: '' }
+// attempts counts this run's attempts (the retry limit applies per run); attempt_base is what
+// earlier runs used, so numbering and the failure history continue across `factory run`s.
+for (const id of Object.keys(T)) st[id] = { outcome: 'pending', attempts: 0, failures: (T[id].previous_failures || []).slice(), swept: [], summary: '' }
+const attemptNo = (id) => (T[id].attempt_base || 0) + st[id].attempts + 1
 const BAD = ['blocked', 'exhausted', 'skipped_dependency']
 const cap = Math.max(1, brief.max_parallel_tasks || 4)
 
@@ -103,9 +106,13 @@ for (let w = 0; w < brief.waves.length; w++) {
     const built = await runAll(active, (id) => {
       const s = st[id]
       const prompt = T[id].builder_prompt
-        .replace('{{attempt}}', String(s.attempts + 1))
-        .replace('{{failures}}', s.failures.length ? s.failures.map((f) => `  - ${f}`).join('\n') : '  - (none)')
-      return call(prompt, opts({ ...T[id].builder, schema: brief.builder_schema }, `build ${id} #${s.attempts + 1}`, builderModel(T[id].builder, s.attempts + 1)))
+        .replace('{{attempt}}', () => String(attemptNo(id)))
+        .replace('{{failures}}', () => (s.failures.length ? s.failures.map((f) => `  - ${f}`).join('\n') : '  - (none)'))
+      // After a failed attempt the builder continues its previous Copilot session (the runner
+      // resumes it when it has one), with the raw failure as this turn's input.
+      const o = opts({ ...T[id].builder, schema: brief.builder_schema }, `build ${id} #${attemptNo(id)}`, builderModel(T[id].builder, s.attempts + 1))
+      if (s.failures.length) o.resume = true
+      return call(prompt, o)
     })
     const toVerify = []
     for (const id of active) {
@@ -124,7 +131,7 @@ for (let w = 0; w < brief.waves.length; w++) {
       // attempt: verifying the branch would only re-check an older state. The attempt is spent.
       if (!b) {
         s.attempts += 1
-        s.failures = [`Attempt ${s.attempts}: the builder returned no result (crashed, timed out or replied without the JSON); nothing was verified. Check the worktree for its unfinished work.`]
+        s.failures = [`Attempt ${attemptNo(id) - 1}: the builder returned no result (crashed, timed out or replied without the JSON); nothing was verified. Its uncommitted work, if any, was saved as a \`wip:\` commit on the task branch: continue from it.`]
         if (s.attempts >= (T[id].retry_limit || 3)) {
           s.outcome = 'exhausted'
           s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures[0]}`
@@ -150,7 +157,7 @@ for (let w = 0; w < brief.waves.length; w++) {
         s.outcome = 'done'
         continue
       }
-      s.failures = verifyFailures(v)
+      s.failures = verifyFailures(v).map((f) => `Attempt ${attemptNo(id) - 1}: ${f}`)
       if (s.attempts >= (T[id].retry_limit || 3)) {
         s.outcome = 'exhausted'
         s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures.slice(0, 2).join('; ')}`

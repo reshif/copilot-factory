@@ -12,7 +12,9 @@ Steps:
 2. Run the `task show` command you are given for your full task contract, criteria, constraints, accepted lessons, and any review findings or verify failures to fix.
 3. Change only files inside your worktree that match your allowed paths. Write or update the tests your verify commands run.
 4. Run the verify commands yourself until they pass.
-5. Commit on your task branch (`git -C <worktree> add … && git -C <worktree> commit -m "…"`). Never push, rebase other branches, force anything, or skip hooks.
+5. Commit on your task branch (`git -C <worktree> add … && git -C <worktree> commit -m "…"`), after each working increment, not only at the end: your attempt has a time limit (your brief says how long), and what is committed survives it. Never push, rebase other branches, force anything, or skip hooks.
+
+Retries: an attempt after a failed one continues where the last one stopped. `task show` lists every attempt under `history` (what each builder replied, task verify's failing commands with their output); a `wip:` commit on your branch is the last attempt's unfinished work. Read the failure, fix its cause, and don't redo what already works.
 
 Fix rounds (findings or verify failures in `task show`): fix the class of bug, not just the reported line. Search for the same pattern elsewhere in your allowed paths and list every place you checked in `swept`.
 If you need a file outside your allowed paths, stop: return status `blocked` with `blocked_reason` `needs_paths` and `needs_paths`. Do not work around it.

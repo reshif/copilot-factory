@@ -565,6 +565,35 @@ function unavailable(r) {
   return null;
 }
 
+// The time-up turn a builder gets in its own session when its time cap is reached.
+const GRACE_TURN = (sec) => [
+  `Time is up for this attempt. You have about ${sec} seconds left: do not start anything new.`,
+  'Commit what works now on the task branch (`git add -A && git commit -m "wip: <what is done, what is left>"`), then reply with the JSON object:',
+  'status "done" only if the task is finished and its verify commands passed; otherwise status "blocked" with a summary of what is done, what is left and what you would try next (the next attempt continues from your commits and that summary).',
+].join('\n');
+
+// The first line that says what went wrong (an error code or message), not the stack tail.
+function errorLine(stderr) {
+  const lines = String(stderr || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const hit = lines.find((l) => /\b(error|refused|denied|conflict|failed|not found|cannot|unable)\b|^[A-Z][A-Za-z]*Error\b|"code":/i.test(l) && !/^at\s/.test(l));
+  return (hit || lines[lines.length - 1] || '').slice(0, 300);
+}
+
+// Commit what a builder left uncommitted in its task worktree: "wip:" on the task branch, so a
+// timed-out or crashed attempt's work survives for the next attempt. Returns the commit or null.
+function commitWip(wt, label, why) {
+  const git = require('../lib/git');
+  try {
+    if (!exists(path.join(wt, '.git')) || !git.status(wt)) return null;
+    if (git.ok(wt, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])) git.run(wt, ['merge', '--abort'], { allowFail: true });
+    git.run(wt, ['add', '-A']);
+    const r = git.run(wt, ['commit', '-q', '-m', `wip: ${label} (${why}; uncommitted work saved by factory run)`], { allowFail: true });
+    return r.code === 0 ? git.revParse(wt, 'HEAD') : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------- deterministic steps
 
 // The factory CLI run as a child of `factory run` (async, so running agents and their timers
@@ -614,6 +643,18 @@ async function verifyTask(ctx, taskId) {
   const v = j.error
     ? { task: taskId, pass: false, error: { code: j.code || 'internal', message: String(j.message || '').slice(0, 2000) } }
     : { task: taskId, pass: r.code === 0 && j.pass === true, evidence_id: j.evidence_id || null, failures: j.failures || [], scope_violations: j.scope_violations || [], no_changes: Boolean(j.no_changes), ...(j.legacy ? { legacy: j.legacy } : {}) };
+  if (v.error) {
+    // a refusal (dirty worktree, missing dependency, no builder result) is this attempt's result too
+    try {
+      const job = require('./job');
+      const st = job.load(ctx.root, ctx.brief.job);
+      const t = st.tasks[taskId] || {};
+      st.tasks[taskId] = { ...t, history: require('./tasks').noteAttempt(t.history, t.attempts || 0, { verify: { pass: false, refused: v.error.code, message: v.error.message.slice(0, 1500), at: new Date().toISOString() } }) };
+      job.save(ctx.root, st);
+    } catch {
+      /* the history is a convenience; the refusal is in the result either way */
+    }
+  }
   ctx.checks.push({ step: 'verify', task: taskId, pass: v.pass, code: v.error ? v.error.code : null, ms: r.ms });
   ctx.say(`verify ${taskId}: ${v.pass ? 'pass' : v.error ? `refused (${v.error.code})` : 'fail'} in ${(r.ms / 1000).toFixed(1)}s`);
   return v;
@@ -662,7 +703,23 @@ async function runAgent(ctx, prompt, opts) {
       ctx.say(`${rec.label} (${agentType}) not started: time budget spent while queued`);
       return null;
     }
-    const sessionId = S.resumeForRetry ? crypto.randomUUID() : null;
+    // A task's builder (realize "build T1 #n"). Attempt 2+ (o.resume) continues the previous
+    // attempt's Copilot session: `--session-id <id>` resumes a session that exists (Copilot CLI
+    // reference, "--session-id ID": "If the ID matches an existing session or task, that
+    // session or task is resumed"), the same mechanism the format-correction turn uses. The id
+    // is kept in the task's state, so a later `factory run` continues it too.
+    const bt = ctx.brief.workflow === 'realize' && /^build (\S+)/.exec(o.label || '');
+    const taskId = bt && ctx.brief.tasks && ctx.brief.tasks[bt[1]] ? bt[1] : null;
+    let resumedFrom = null;
+    if (taskId && o.resume && S.resumeForRetry) {
+      try {
+        const prev = ((require('./job').load(ctx.root, ctx.brief.job).tasks || {})[taskId] || {}).builder;
+        if (prev && prev.session_id) resumedFrom = prev.session_id;
+      } catch {
+        resumedFrom = null;
+      }
+    }
+    const sessionId = resumedFrom || (S.resumeForRetry ? crypto.randomUUID() : null);
     const perm = toolPermissions(role, agentTools(role), S.copilot);
     // agent_start now, agent_run (same run_id) when it ends: the console shows the agent as
     // at work in between. No hook does this: each agent is its own `copilot -p` process, not a
@@ -670,13 +727,13 @@ async function runAgent(ctx, prompt, opts) {
     const runId = crypto.randomUUID();
     const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
     const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail] });
-    const spawnOnce = async (text, retryTurn = false) => {
+    const spawnOnce = async (text, retryTurn = false, capSecOverride = null) => {
       if (ctx.unavailable) {
         if (retryTurn) closeUnavailable(ctx.unavailable.detail); // its first turn already started it
         throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
       }
-      if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, pid: process.pid });
-      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm }), { cwd, env, timeoutSec: Math.max(1, left()) });
+      if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, session_id: sessionId, ...(resumedFrom ? { resumed_session: true } : {}), pid: process.pid });
+      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm }), { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()) });
       const u = unavailable(r);
       if (u) {
         closeUnavailable(u.detail, r); // closes this agent's agent_start
@@ -691,16 +748,24 @@ async function runAgent(ctx, prompt, opts) {
     let result = null;
     let errors = [];
     let retry = false;
+    let grace = false;
     const ok = (r) => r.code === 0 && !r.timedOut;
-    if (ok(runs[0])) {
-      const c = check(o.schema, replyText(runs[0].stdout));
+    // A builder that ran out of time gets one short turn in the same session to commit what
+    // works and reply, instead of losing the attempt's work and its reasoning.
+    if (taskId && runs[0].timedOut && sessionId) {
+      grace = true;
+      const graceSec = Math.max(30, Math.min(180, Math.round(S.timeoutSec / 10)));
+      runs.push(await spawnOnce(`${GRACE_TURN(graceSec)}${replyBlock(o.schema)}`, true, graceSec));
+    }
+    if (ok(runs[runs.length - 1])) {
+      const c = check(o.schema, replyText(runs[runs.length - 1].stdout));
       result = c.obj;
       errors = c.errors;
-      if (!result && (!deadline || left() >= 5)) {
+      if (!result && !grace && (!deadline || left() >= 5)) {
         retry = true;
         const fix = correction(o.schema, errors);
         runs.push(await spawnOnce(S.resumeForRetry ? fix : `${full}\n\n${fix}`, true));
-        const last = runs[1];
+        const last = runs[runs.length - 1];
         if (ok(last)) {
           const c2 = check(o.schema, replyText(last.stdout));
           result = c2.obj;
@@ -709,13 +774,17 @@ async function runAgent(ctx, prompt, opts) {
       }
     }
     const last = runs[runs.length - 1];
-    const rawOutcome = result ? 'ok' : last.timedOut ? 'timeout' : last.code !== 0 ? 'failed' : 'invalid';
+    const rawOutcome = result ? 'ok' : runs[0].timedOut || last.timedOut ? 'timeout' : last.code !== 0 ? 'failed' : 'invalid';
     // A task's builder: record what this attempt returned (task verify and taskDone need it);
-    // an empty reply after a dependency_conflict becomes the typed blocked result.
-    const bt = ctx.brief.workflow === 'realize' && /^build (\S+)/.exec(o.label || '');
-    if (bt && ctx.brief.tasks && ctx.brief.tasks[bt[1]]) {
+    // an empty reply after a dependency_conflict becomes the typed blocked result. Work it left
+    // uncommitted (it timed out, crashed or never replied) is committed as "wip:" on the task
+    // branch, so the next attempt continues from it instead of losing it.
+    let wip = null;
+    if (taskId) {
+      if (rawOutcome !== 'ok' && typeof cwd === 'string') wip = commitWip(cwd, o.label || role, rawOutcome);
+      if (wip) ctx.note(`${o.label}: its uncommitted work was saved as ${wip.slice(0, 10)} (wip:) on the task branch`);
       try {
-        result = require('./tasks').afterBuilder(ctx.root, ctx.brief.job, bt[1], result, { startedAt: startedAt, label: o.label });
+        result = require('./tasks').afterBuilder(ctx.root, ctx.brief.job, taskId, result, { startedAt: startedAt, label: o.label, sessionId, resumed: Boolean(resumedFrom), wip, outcome: rawOutcome });
       } catch (e) {
         ctx.note(`could not record ${o.label}'s result: ${e.message}`);
       }
@@ -733,9 +802,13 @@ async function runAgent(ctx, prompt, opts) {
       retry,
       spawns: runs.length,
       outcome,
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...(resumedFrom ? { resumed_session: true } : {}),
+      ...(grace ? { grace_turn: true } : {}),
+      ...(wip ? { wip_commit: wip } : {}),
       ...(capSec ? { time_cap_sec: capSec } : {}),
       ...(result && typeof result.verdict === 'string' ? { verdict: result.verdict } : {}), // god-eye's approve/revise, for telemetry
-      ...(rawOutcome === 'ok' ? {} : { errors: (last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${String(last.stderr || '').trim().slice(-300)}`] : errors).slice(0, 5) }),
+      ...(rawOutcome === 'ok' ? {} : { errors: (runs[0].timedOut ? [`timed out after ${capSec || S.timeoutSec}s${grace ? `; its time-up turn ${last.timedOut ? 'timed out too' : ok(last) ? 'replied without a valid result' : `failed (exit ${last.code})`}` : ''}`] : last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${errorLine(last.stderr)}`] : errors).slice(0, 5) }),
     };
     ctx.runs.push(rec);
     events.append(ctx.root, {

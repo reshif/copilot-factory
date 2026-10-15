@@ -548,6 +548,7 @@ function realize(root, state, ctx, action) {
   const waves = (plan.waves || [plan.tasks.map((t) => t.id)]).map((w) => w.filter((id) => pendingIds.has(id))).filter((w) => w.length);
   const jc = jobContext(root, state);
   const sweep = Boolean((state.policy.agents || {}).sweep_check);
+  const minutes = Math.max(1, Math.round(require('./runner').settings(root, state).timeoutSec / 60));
   const tasks = {};
   for (const t of pending) {
     const wt = taskWorktree(root, state.id, t.id);
@@ -558,10 +559,15 @@ function realize(root, state, ctx, action) {
       : t.id && state.tasks[t.id] && state.tasks[t.id].needs_work === 'amendment'
         ? '- The contract or plan was amended; rebuild this task against the amended version.'
         : '';
+    const st = state.tasks[t.id] || {};
     tasks[t.id] = {
       id: t.id,
-      // Where this task's builder and tester work (`factory run` starts them there).
+      // Where this task's builder works (`factory run` starts it there).
       worktree: wt,
+      // Attempts already made (earlier `factory run`s): numbering continues, and what the last
+      // one left (task verify's raw failures, or the builder's reply) is the next one's input.
+      attempt_base: st.attempts || 0,
+      previous_failures: require('./tasks').lastFailures(st),
       // depends_on plus earlier-wave tasks on overlapping paths: a failed one skips this task.
       depends_on: require('./plan').effectiveDeps(plan.tasks, t.id),
       retry_limit: t.retry_limit || state.policy.limits.retry_limit,
@@ -572,8 +578,8 @@ function realize(root, state, ctx, action) {
       ...(sweep ? { sweep: agentSpec(state, 'tester') } : {}),
       builder_prompt: prompt(
         'builder',
-        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\`\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.${fixNote ? `\n${fixNote}` : ''}`,
-        'Attempt {{attempt}}. Previous tester failures, if any:\n{{failures}}',
+        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\`\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${fixNote ? `\n${fixNote}` : ''}`,
+        'Attempt {{attempt}}. What the previous attempt left (task verify\'s failing commands and output, or its builder\'s reply), if any:\n{{failures}}',
       ),
       ...(sweep
         ? {
