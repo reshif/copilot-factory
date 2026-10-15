@@ -339,7 +339,7 @@ function driverFidelity(job) {
   const viaChat = human.filter((d) => d.channel === 'chat');
   if ((fromTty.length || viaTty.length) && !viaChat.length) {
     const verbs = [...new Set(fromTty.map((e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}`).concat(viaTty.map((d) => String(d.action).replace(/^human\./, ''))))].slice(0, 5);
-    out.push(f({ rule: 'R7.terminal_approvals', class: 'gap', severity: 'low', subject: `${job.id}:terminal`, job: job.id, summary: `The human actions in ${job.id} came from the terminal (${verbs.join(', ')}), none from a chat reply. That is a legitimate channel, but chat replies may not be reaching the factory (the prompt hook not running).`, evidence: [...fromTty.map((e) => e.ts), ...viaTty.map((d) => d.ts)].filter(Boolean).slice(0, 6), question: 'Do chat replies like "approve" work in this setup? If not, check the hooks (README: Use it in VS Code — harness, Chat: Configure Hooks, the "GitHub Copilot Chat Hooks" output, chat.useHooks, Workspace Trust; /plugin list in the CLI).' }));
+    out.push(f({ rule: 'R7.terminal_approvals', class: 'gap', severity: 'low', subject: `${job.id}:terminal`, job: job.id, summary: `The human actions in ${job.id} came from the terminal (${verbs.join(', ')}), none from a chat reply. That is a legitimate channel, but chat replies may not be reaching the factory (the prompt hook not running).`, evidence: [...fromTty.map((e) => e.ts), ...viaTty.map((d) => d.ts)].filter(Boolean).slice(0, 6), question: 'Do chat replies like "approve" work in this setup? If not, check the hooks (README: Use it in VS Code — harness, Chat: Configure Hooks, the VS Code logs for hook errors, the hooks node check of factory doctor, chat.useHooks, Workspace Trust; /plugin list in the CLI).' }));
   }
   return out;
 }

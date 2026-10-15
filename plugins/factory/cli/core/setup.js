@@ -164,12 +164,45 @@ function doctor(cwd) {
     }
   }
   copilotChecks(add, root);
+  for (const c of hookNodeChecks()) add(c.name, c.ok, c.detail, 'warning');
   const ap = root ? require('./autopilot').recent(root) : null;
   if (ap) add('copilot autopilot', false, `Autopilot continuations were seen in this project (last ${ap.last_at}): Autopilot keeps going past the factory's stops. Use interactive mode for factory work`, 'warning');
   const rc = recipes.checkAll();
   for (const [id, errs] of Object.entries(rc)) add(`recipe ${id}`, errs.length === 0, errs.length ? errs.join('; ') : 'valid');
   const ready = checks.every((c) => c.ok || c.level !== 'error');
   return { ready, checks };
+}
+
+// The Node the hooks would run under. The hook launchers run `node` from whatever PATH the
+// harness gives a non-interactive shell, which is not always the doctor's own Node: Ubuntu's
+// apt nodejs (12.x) at /usr/bin/node, while your shell uses nvm. hooks/lib.js (and the CLI
+// modules hooks load) use ?. and ?? (Node 14+); an older Node fails every hook with a
+// SyntaxError, and the launchers then let everything through. run(file, args) -> { status,
+// stdout, stderr } is for tests.
+const HOOK_NODE_MIN = 14;
+function nodeMajor(v) {
+  const m = /^v?(\d+)\./.exec(String(v || '').trim());
+  return m ? Number(m[1]) : null;
+}
+function hookNodeChecks(run = (file, args) => spawnSync(file, args, { encoding: 'utf8', timeout: 15000 })) {
+  if (process.platform === 'win32') return [];
+  const out = [];
+  const login = run('bash', ['-lc', 'command -v node; node --version']);
+  const lines = String((login && login.stdout) || '').trim().split('\n').map((x) => x.trim()).filter(Boolean);
+  const where = lines.find((x) => x.startsWith('/')) || null;
+  const version = lines.find((x) => /^v\d+\./.test(x)) || null;
+  const major = nodeMajor(version);
+  if (!login || login.error || !lines.length) out.push({ name: 'hooks node', ok: false, detail: 'bash -lc found no node: the factory hooks will be off where the harness runs them through bash (install Node 14+ on the PATH a login shell sees)' });
+  else if (major === null) out.push({ name: 'hooks node', ok: false, detail: `bash -lc: could not read the Node version (${lines.join(' ').slice(0, 120)})` });
+  else out.push({ name: 'hooks node', ok: major >= HOOK_NODE_MIN, detail: major >= HOOK_NODE_MIN ? `bash -lc: ${where || 'node'} ${version} (the hooks need ${HOOK_NODE_MIN}+)` : `bash -lc: ${where || 'node'} ${version} is too old for the factory hooks (they need Node ${HOOK_NODE_MIN}+; hooks/lib.js uses ?.): every hook fails and the guard allows everything. Put a newer Node first on the PATH your login shell and VS Code server get` });
+  const sys = run('/usr/bin/node', ['--version']);
+  if (sys && !sys.error && sys.status === 0) {
+    const v = String(sys.stdout || '').trim();
+    const mj = nodeMajor(v);
+    if (mj !== null && mj < HOOK_NODE_MIN) out.push({ name: 'hooks node (/usr/bin/node)', ok: false, detail: `/usr/bin/node is ${v}, too old for the factory hooks (they need Node ${HOOK_NODE_MIN}+). A harness that runs hooks with the system PATH (no nvm) gets this one: remove it or install Node ${HOOK_NODE_MIN}+ there` });
+    else if (mj !== null) out.push({ name: 'hooks node (/usr/bin/node)', ok: true, detail: `/usr/bin/node ${v}` });
+  }
+  return out;
 }
 
 // The Copilot CLI that \`factory run\` drives, and settings that would let a session
@@ -254,4 +287,4 @@ function shim({ dir, force = false } = {}) {
   return { dir: target, linked, skipped, on_path: onPath, ...(onPath ? {} : { hint: `${target} is not on your PATH: add  export PATH="${target}:$PATH"  to your shell profile` }) };
 }
 
-module.exports = { init, doctor, shim, ensureExcludes, ensureGitSetup, EXCLUDES };
+module.exports = { HOOK_NODE_MIN, hookNodeChecks, init, doctor, shim, ensureExcludes, ensureGitSetup, EXCLUDES };

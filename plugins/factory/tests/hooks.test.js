@@ -117,7 +117,8 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
       // flat root lookup: no nested ${…:-${…}} and no ${PLUGIN_ROOT} / ${CLAUDE_PLUGIN_ROOT} token VS Code would rewrite
       assert.match(h.bash, /R=\$PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$COPILOT_PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$CLAUDE_PLUGIN_ROOT;/);
       assert.doesNotMatch(h.bash + h.powershell, /\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}|\$\{[^}]*\$\{/);
-      assert.match(h.bash, new RegExp(`\\.js" ${ev} \\|\\| echo "\\[\\$H\\] hook failed \\(exit \\$\\?\\); allowed" >&2; exit 0$`), 'node, then exit 0 whatever happened');
+      assert.ok(h.bash.endsWith(`.js" ${ev} || { c=$?; V=$(node -v 2>/dev/null); case "$V" in v[0-9].*|v1[0-3].*) echo "[$H] node $V is too old for the factory hooks (they need Node 14 or newer): factory hooks are off (the guard allows everything)" >&2;; *) echo "[$H] hook failed (exit $c); allowed" >&2;; esac; }; exit 0`), 'node, then exit 0 whatever happened (naming a too-old node)');
+      assert.ok(h.powershell.includes("-lt 14) { [Console]::Error.WriteLine(\"[$h] node $v is too old for the factory hooks (they need Node 14 or newer)"), ev);
       assert.match(h.powershell, /; exit 0$/);
       assert.doesNotMatch(h.bash, /\bexec node\b/);
       const script = h.bash.match(/hooks\/([\w-]+\.js)/)[1];
@@ -145,6 +146,14 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
     const r = run({ PLUGIN_ROOT: F.PLUGIN, PATH: `${fakeNodeDir}:${process.env.PATH}` });
     assert.deepEqual([r.status, r.stdout], [0, ''], `node exit ${code}`);
     assert.match(r.stderr, new RegExp(`\\[factory:guard\\] hook failed \\(exit ${code}\\); allowed`));
+  }
+  // a node too old for the hooks' syntax (Ubuntu's apt nodejs 12): one line naming its version, exit 0, no deny
+  fs.writeFileSync(path.join(fakeNodeDir, 'node'), '#!/bin/sh\nif [ "$1" = "-v" ]; then echo v12.22.9; exit 0; fi\necho "SyntaxError: Unexpected token ." >&2\nexit 1\n', { mode: 0o755 });
+  for (const [ev, list] of Object.entries(H.hooks)) {
+    const r = run({ PLUGIN_ROOT: F.PLUGIN, PATH: `${fakeNodeDir}:${process.env.PATH}` }, list[0].bash);
+    assert.deepEqual([r.status, r.stdout], [0, ''], ev);
+    assert.match(r.stderr, /^\[factory:[\w-]+\] node v12\.22\.9 is too old for the factory hooks \(they need Node 14 or newer\): factory hooks are off/m, ev);
+    assert.doesNotMatch(r.stderr, /hook failed/, ev);
   }
   // no node on PATH: every hook exits 0 with a warning (a non-zero preToolUse exit would deny every tool)
   const noNode = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nonode-'));
@@ -470,8 +479,9 @@ test('factory next: a notice when chat replies are not reaching the factory (dea
   let n = toH1(root, J);
   assert.equal(n.step, 'H1');
   assert.match(n.notice, /Chat replies aren't reaching the factory: no chat prompt has ever reached/);
-  for (const re of [/Chat: Configure Hooks/, /GitHub Copilot Chat Hooks/, /chat\.useHooks/, /Workspace Trust/, /\/plugin list/, /Session Target/, new RegExp(`factory approve H1 --job ${J}`), /run this in your own terminal/, /it will ask you to type a code shown there/]) assert.match(n.notice, re);
+  for (const re of [/Chat: Configure Hooks/, /VS Code's logs/, /factory doctor/, /hooks node/, /chat\.useHooks/, /Workspace Trust/, /\/plugin list/, /Session Target/, new RegExp(`factory approve H1 --job ${J}`), /run this in your own terminal/, /it will ask you to type a code shown there/]) assert.match(n.notice, re);
   assert.doesNotMatch(n.notice, /type (it )?back|paste (it|the code) (back|here)|tell me/i, 'the notice never asks the user to bring the code back to the chat');
+  assert.doesNotMatch(n.notice, /GitHub Copilot Chat Hooks/, 'no Output channel name that may not exist');
   assert.equal(F.cli(root, ['next']).notice, undefined, 'once per wait');
   // hooks ran before the gate, then nothing since it opened: said on the next look
   root = F.makeRepo();
@@ -813,4 +823,42 @@ test('guard: terminal emulators are allowed unless they wrap the factory CLI; th
     assert.ok(isDeny(r), `denied: ${c}`);
     assert.match(JSON.parse(r.stdout).permissionDecisionReason, /\(command: ".+"\)$/, 'the reason quotes the command it saw');
   }
+});
+
+// The Node the hooks need: what their code uses (and the CLI modules they load), the number the
+// launchers check and factory doctor's check, kept in step.
+test('hooks need Node 14 (?. and ??): nothing newer in their code; doctor checks the Node a login shell and /usr/bin/node would give them', () => {
+  const setup = require('../cli/core/setup');
+  assert.equal(setup.HOOK_NODE_MIN, 14);
+  const seen = new Set();
+  const queue = fs.readdirSync(path.join(F.PLUGIN, 'hooks')).filter((f) => f.endsWith('.js')).map((f) => path.join(F.PLUGIN, 'hooks', f));
+  while (queue.length) {
+    const f = queue.pop();
+    if (seen.has(f)) continue;
+    seen.add(f);
+    for (const m of fs.readFileSync(f, 'utf8').matchAll(/require\('(\.[^']+)'\)/g)) {
+      const p = path.resolve(path.dirname(f), m[1]).replace(/(\.js)?$/, '.js');
+      if (fs.existsSync(p)) queue.push(p);
+    }
+  }
+  const NEWER = [[/(\?\?=|\|\|=|&&=)/, 'logical assignment (15)'], [/\.replaceAll\(/, 'replaceAll (15)'], [/\.at\(-?\d/, '.at() (16.6)'], [/Object\.hasOwn\b/, 'Object.hasOwn (16.9)'], [/\bstructuredClone\(/, 'structuredClone (17)'], [/\.findLast(Index)?\(/, 'findLast (18)'], [/\.to(Sorted|Reversed|Spliced)\(/, 'toSorted (20)'], [/require\('node:/, 'node: imports (14.18/16)']];
+  const found = [];
+  for (const f of seen) {
+    const code = fs.readFileSync(f, 'utf8').split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+    for (const [re, what] of NEWER) if (re.test(code)) found.push(`${path.relative(F.PLUGIN, f)}: ${what}`);
+  }
+  assert.deepEqual(found, [], 'raise HOOK_NODE_MIN, the launchers and the notice together');
+  assert.match(fs.readFileSync(path.join(F.PLUGIN, 'hooks', 'lib.js'), 'utf8'), /\?\.[a-z]/, 'and 14 is needed: lib.js uses ?.');
+  // doctor: the Node a login shell finds, and /usr/bin/node
+  const stub = (login, sys) => (file) => (file === 'bash' ? { status: 0, stdout: login } : sys ? { status: 0, stdout: sys } : { error: new Error('ENOENT') });
+  let c = setup.hookNodeChecks(stub('/usr/bin/node\nv12.22.9\n', 'v12.22.9\n'));
+  assert.deepEqual(c.map((x) => [x.name, x.ok]), [['hooks node', false], ['hooks node (/usr/bin/node)', false]]);
+  assert.match(c[0].detail, /bash -lc: \/usr\/bin\/node v12\.22\.9 is too old for the factory hooks \(they need Node 14\+/);
+  c = setup.hookNodeChecks(stub('/home/u/.nvm/versions/node/v20.11.0/bin/node\nv20.11.0\n', 'v12.22.9\n'));
+  assert.deepEqual(c.map((x) => [x.name, x.ok]), [['hooks node', true], ['hooks node (/usr/bin/node)', false]], 'nvm in a login shell, but an old system node a bare PATH would find');
+  c = setup.hookNodeChecks(stub('/usr/local/bin/node\nv22.1.0\n', null));
+  assert.deepEqual(c.map((x) => [x.name, x.ok]), [['hooks node', true]]);
+  const d = F.cli(F.makeRepo(), ['doctor']);
+  const hn = d.checks.find((x) => x.name === 'hooks node');
+  assert.ok(hn && hn.ok, JSON.stringify(hn));
 });
