@@ -192,3 +192,36 @@ test('4: two degraded clarify rounds in a row park the job, naming the failing a
   F.cli(root, ['next']);
   assert.equal(failed().status, 'park');
 });
+
+// ---------------------------------------------------------------- 5. hidden failures shown
+test('5: a failed intent mapper and an unavailable web are said in the round result and at H1; defaults from agent memory are labelled', () => {
+  // the mapper never returned; an analyst question still makes the round needs_user (0.6.0 hid it)
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  let r = round(root, { scout: scoutData([], { map: { ran: true, ok: false }, degraded: ['intent-mapper'] }), judge: { questions: [{ question: 'Which devices are in scope?', category: 'scope', why: 'w', default: 'Your call', same_as: 'new', subject: 'scope.devices', kind: 'user' }], dismissed: [] } });
+  assert.equal(r.status, 'needs_user');
+  assert.match(r.research_incomplete, /^Research incomplete: intent-mapper failed or timed out/);
+  assert.match(r.message, /^Research incomplete: intent-mapper failed or timed out/);
+
+  // the web is down: a world fact asked with the mapper's draft as its default
+  const root2 = F.makeRepo();
+  const J2id = newJob(root2);
+  F.cli(root2, ['next']);
+  const world = { ...issue('U-1', 'Does Nautobot 2.4 scope VLANs by location?', 'world'), owner: 'research', status: 'proposed', subject: 'nautobot.vlan.scope', default: 'VLANs are scoped by location groups', reason: 'not verified: no web access (no network or no web tool)' };
+  r = round(root2, { scout: scoutData([world], { web: { enabled: true, available: false } }) });
+  assert.equal(r.status, 'needs_user');
+  assert.match(r.research_incomplete, /web unavailable, so these items rest on agent knowledge: U-1 Does Nautobot 2\.4 scope VLANs by location\?/);
+  // nobody answers: the default is accepted next round, labelled as agent memory
+  F.cli(root2, ['next']);
+  r = round(root2, { scout: scoutData([], { web: { enabled: true, available: null } }), critique: APPROVE }, 'ok'); // no web scout ran this round
+  assert.equal(r.status, 'ok', JSON.stringify(r).slice(0, 300));
+  assert.match(r.message, /^Research incomplete: web unavailable, so these items rest on agent knowledge: U-1 .*\(default accepted: VLANs are scoped by location groups\)/);
+  const text = fs.readFileSync(path.join(F.jobDir(root2, J2id), 'contract.md'), 'utf8');
+  assert.match(text, /## Clarifications \(settled\)[\s\S]*U-1 \(Q-1\): Does Nautobot 2\.4 scope VLANs by location\? → VLANs are scoped by location groups \(default accepted; from agent memory, the web was unavailable\)/);
+  const n = F.cli(root2, ['next']);
+  assert.equal(n.step, 'H1');
+  assert.match(n.clarify.research_incomplete, /web unavailable, so these items rest on agent knowledge: U-1/);
+  // research that ran fully adds nothing
+  assert.equal(clarify.researchGaps({ rounds: [{ mapped: true, map_ok: true }], web: { enabled: true, available: true }, unknowns: [] }), null);
+});

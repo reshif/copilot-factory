@@ -805,8 +805,36 @@ function droppedLines(data) {
     });
 }
 
+// What research could not do, so nobody mistakes the ledger for researched: the intent mapper
+// never returned (no round mapped the unknowns), or the web was unavailable and world facts
+// rest on what an agent remembered. Shown in every round result while it holds,
+// and at H1. null when research was complete.
+const needsWeb = (u) => u.kind === 'world' || u.research === 'web';
+function fromMemory(data, u) {
+  const w = data.web || {};
+  if (w.available !== false || !needsWeb(u) || (u.evidence || []).length) return false;
+  return u.status === 'proposed' || u.status === 'open' || u.status === 'researching' || (u.status === 'settled' && u.settled_by === 'assumption_accepted');
+}
+function researchGaps(data) {
+  const rounds = data.rounds || [];
+  const w = data.web || {};
+  const parts = [];
+  const mapperFailed = rounds.some((r) => r.mapped && r.map_ok === false) && !rounds.some((r) => r.mapped && r.map_ok);
+  if (mapperFailed) parts.push('intent-mapper failed or timed out, so the unknowns were never mapped (the ledger holds only what other agents raised)');
+  if (w.available === false) parts.push('web unavailable');
+  if (!parts.length) return null;
+  const memory = data.unknowns.filter((u) => fromMemory(data, u)).sort((a, b) => num(a.id) - num(b.id));
+  const items = memory.map((u) => `${u.id} ${clip(u.text, 100).replace(/\s+/g, ' ')}${u.status === 'settled' ? ` (default accepted: ${clip(u.answer, 80)})` : ''}`);
+  return {
+    mapper_failed: mapperFailed,
+    web: w.available === false ? 'unavailable' : w.enabled === false ? 'off' : 'on',
+    agent_knowledge: memory.map((u) => u.id),
+    text: `Research incomplete: ${parts.join('; ')}${items.length ? `, so these items rest on agent knowledge: ${items.join('; ')}` : ''}.`,
+  };
+}
+
 // What H1 / EH1 must show besides the contract (factory next carries it as `clarify` on the
-// gate): issues dropped, with who dropped them and why.
+// gate): issues dropped, with who dropped them and why; research that could not run.
 function h1Summary(root, state) {
   try {
     const intent = require('./intent');
@@ -816,6 +844,8 @@ function h1Summary(root, state) {
     const out = {};
     const dropped = droppedLines(data);
     if (dropped.length) out.dropped = dropped.map((x) => x.line);
+    const gaps = researchGaps(data);
+    if (gaps) out.research_incomplete = gaps.text;
     return Object.keys(out).length ? { ...out, status_command: `factory clarify status --job ${state.id}` } : null;
   } catch {
     return null;
@@ -827,7 +857,7 @@ function clarificationLines(data) {
   return data.unknowns
     .filter((u) => u.status === 'settled' && ['user', 'assumption_accepted'].includes(u.settled_by) && u.answer)
     .sort((a, b) => num(a.id) - num(b.id))
-    .map((u) => `- ${u.id}${u.question_id ? ` (${u.question_id})` : ''}: ${clip(u.text, 200).replace(/\s+/g, ' ')} → ${clip(u.answer, 300).replace(/\s+/g, ' ')} (${u.settled_by === 'user' ? 'answered by user' : 'default accepted'})`);
+    .map((u) => `- ${u.id}${u.question_id ? ` (${u.question_id})` : ''}: ${clip(u.text, 200).replace(/\s+/g, ' ')} → ${clip(u.answer, 300).replace(/\s+/g, ' ')} (${u.settled_by === 'user' ? 'answered by user' : fromMemory(data, u) ? 'default accepted; from agent memory, the web was unavailable' : 'default accepted'})`);
 }
 function deferredLines(data) {
   return data.unknowns
@@ -848,5 +878,5 @@ module.exports = {
   tokens, subjectKey, subjectOf, vocabulary, sameIssue, findSame, isImplementationFact, classify, limits, compatResolution, cleanIssue, settle, event,
   migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, split, inClarify, isNone, defaultValue,
   rows, totals, trend, view, statusText, status, nextSummary, clarificationLines, deferredLines, deferredText, openIds,
-  invariant, droppedLines, h1Summary,
+  invariant, droppedLines, h1Summary, researchGaps,
 };

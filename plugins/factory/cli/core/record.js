@@ -245,9 +245,12 @@ function recClarify(root, state, env) {
   const stepDetail = (extra) => ({ ...extra, round, questions: n.questions.length, question_ids: n.questions.map((q) => q.id), categories: n.questions.map((q) => q.category), intent_open: n.intent_open, held: n.held.length, dropped: n.dropped.length, degraded: d.degraded || [], contract_problems: probs, ...(researchDetail ? { research: researchDetail } : {}), ...(ledgerDetail ? { ledger: ledgerDetail } : {}), ...(d.approved_with_notes ? { approved_with_notes: true } : {}), ...(revision ? { contract_revision: { written: revision.written, applied: revision.applied.length, ...(revision.rejected ? { rejected: revision.rejected } : {}) } } : {}) });
   const askedNow = n.questions.length || waiting.length;
   ledger.append(root, state.id, { kind: 'step', step: 'clarify', ok, bound: { contract: b.contract }, detail: stepDetail(askedNow && !ok ? { outcome: 'needs_user' } : {}) });
-  const extra = { ...grounding, ...(warnings.length ? { warnings } : {}) };
+  // a failed mapper or an unavailable web is said in every round result while it holds
+  const gaps = idata ? clarifyMod.researchGaps(idata) : null;
+  const gapNote = gaps ? `${gaps.text} ` : '';
+  const extra = { ...grounding, ...(warnings.length ? { warnings } : {}), ...(gaps ? { research_incomplete: gaps.text } : {}) };
   const notesText = (d.notes || []).length ? ` God Eye's notes (${d.notes.length}) are recorded.` : '';
-  if (ok) return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', restatement: (crit && crit.restatement) || null, ...extra, ...(d.approved_with_notes ? { notes: d.notes || [] } : {}), message: `God Eye ${d.approved_with_notes ? 'approved with notes' : 'approved the contract and confirmed the intent'}.${notesText}${idata && intentMod.liveAssumptions(idata).length ? ' The evidence-backed assumptions are in the contract; the user can override one with "change A-n <value>" or "drop A-n".' : ''} Next: present it for your approval.` };
+  if (ok) return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', restatement: (crit && crit.restatement) || null, ...extra, ...(d.approved_with_notes ? { notes: d.notes || [] } : {}), message: `${gapNote}God Eye ${d.approved_with_notes ? 'approved with notes' : 'approved the contract and confirmed the intent'}.${notesText}${idata && intentMod.liveAssumptions(idata).length ? ' The evidence-backed assumptions are in the contract; the user can override one with "change A-n <value>" or "drop A-n".' : ''} Next: present it for your approval.` };
   const answerHow = 'The user answers in chat with a numbered reply ("1 yes, 2 …", or "defaults"), or record each with factory answer Q-n "…" (factory answer Q-n --default accepts the default); an unanswered question takes its default next round. Do not edit the contract (the guard refuses it during clarify): run factory next.';
   if (n.questions.length) {
     return {
@@ -257,7 +260,7 @@ function recClarify(root, state, env) {
       held: n.held.length,
       ...(waiting.length ? { waiting: waiting.map((u) => ({ id: u.question_id, issue: u.id, question: u.draft })) } : {}),
       ...extra,
-      message: `${unconfirmed ? 'God Eye could not confirm the intent from the contract (its restatement is in the question). ' : ''}Show what research found (findings) and what the factory assumes (assumptions: the user may reply "change A-n <value>" or "drop A-n"), then ask these ${n.questions.length} question(s) as one numbered list (id, question, options, default, and whether the default rests on evidence or is the user's call).${n.intent_open ? ` Intent comes first: ${n.held.length} other question(s) wait until it is settled.` : ''} ${answerHow}`,
+      message: `${gapNote}${unconfirmed ? 'God Eye could not confirm the intent from the contract (its restatement is in the question). ' : ''}Show what research found (findings) and what the factory assumes (assumptions: the user may reply "change A-n <value>" or "drop A-n"), then ask these ${n.questions.length} question(s) as one numbered list (id, question, options, default, and whether the default rests on evidence or is the user's call).${n.intent_open ? ` Intent comes first: ${n.held.length} other question(s) wait until it is settled.` : ''} ${answerHow}`,
     };
   }
   if (degradedRound && (C.clarify_degraded_streak || 0) <= 1) {
@@ -271,7 +274,7 @@ function recClarify(root, state, env) {
     return { status: 'park', park_from: 'clarify', missing: d.degraded || [], ...extra, park_reason: `Clarify stopped: agent(s) failed in ${C.clarify_degraded_streak} clarify rounds in a row: ${who}.${(d.degraded || []).includes('intent-mapper') ? ' The intent mapper failed, so nothing was mapped or researched.' : ''} Running it again as is learns nothing. Reply "resume" to try again (the next failure parks again); to go on without the failed angle, resume and run factory run fanout-judge --config clarify --accept-degraded.`, message: `Parked: ${who} failed in ${C.clarify_degraded_streak} clarify rounds in a row.` };
   }
   if (waiting.length) {
-    return { status: 'needs_user', questions: waiting.map((u) => { const q = (state.question_log || []).find((x) => x.id === u.question_id) || {}; return { id: u.question_id, category: q.category || 'scope', question: q.question || u.draft, why: u.reason || 'Still open: only you can settle it.', default: u.default || q.default || 'None: answer needed', unknown: u.id, kind: u.kind, waiting: true }; }), ...extra, message: `Still waiting for the answer to ${waiting.map((u) => u.question_id).join(', ')} (no default to fall back on). Show them again as one numbered list. ${answerHow}` };
+    return { status: 'needs_user', questions: waiting.map((u) => { const q = (state.question_log || []).find((x) => x.id === u.question_id) || {}; return { id: u.question_id, category: q.category || 'scope', question: q.question || u.draft, why: u.reason || 'Still open: only you can settle it.', default: u.default || q.default || 'None: answer needed', unknown: u.id, kind: u.kind, waiting: true }; }), ...extra, message: `${gapNote}Still waiting for the answer to ${waiting.map((u) => u.question_id).join(', ')} (no default to fall back on). Show them again as one numbered list. ${answerHow}` };
   }
   job.save(root, state);
   const stalled = (C.clarify_no_progress || 0) >= CL.no_progress;
