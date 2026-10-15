@@ -4,7 +4,7 @@
 // role does (task start/verify, reconcile run, doc check) and writing the documents its
 // role owns (ADR, threat model, plan). FAKE_CREW (JSON) tunes it:
 //   { "finding": "major" }   the code reviewer reports one finding of that severity
-//   { "verdict": "refuted" } what the finding verifier says (default refuted)
+//   { "verdict": "refuted" } what the finding verifier says: confirmed, refuted (default) or unverifiable
 //   { "world": true }        the intent mapper also finds a world unknown (a web scout runs)
 //   { "web": "down" }        the web scout reports no web access
 //   { "evidence": "contradicted" } what the evidence verifier says (default confirmed)
@@ -60,7 +60,7 @@ module.exports = (c) => {
       return { topic: 'codebase', claims: [{ claim: 'add subtracts', source: 'src/add.js:1' }], unknowns: [] };
     }
     case 'option-generator':
-      return { title: 'Fix in place', summary: 'Change the operator', pros: ['small'], cons: [] };
+      return { title: 'Fix in place', summary: 'Change the operator', criteria: [{ id: 'AC-1', how: 'add returns a + b' }], touches: ['src/add.js'], pros: ['small'], cons: [] };
     case 'threat-modeler': {
       const file = path.join(jd, 'threat-model.md');
       fs.writeFileSync(file, F.threatModelText({ job: J }));
@@ -103,7 +103,7 @@ module.exports = (c) => {
       return { lane, findings };
     }
     case 'finding-verifier':
-      return { finding_id: 'code-1', status: S.verdict || 'refuted', reason: 'checked the code' };
+      return { finding_id: 'code-1', status: S.verdict || 'refuted', evidence: 'read src/add.js:1', reason: 'checked the code' };
     default:
       return { exit: 1, stderr: `crew: no script for ${c.agent}` };
   }

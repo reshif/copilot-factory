@@ -1,0 +1,106 @@
+{
+  "architect": {
+    "role": "architect",
+    "schema": "architect"
+  },
+  "builder": {
+    "role": "builder",
+    "schema": "builder"
+  },
+  "builder.blocked": {
+    "role": "builder",
+    "schema": "builder"
+  },
+  "code-reviewer": {
+    "role": "code-reviewer",
+    "schema": "reviewer"
+  },
+  "code-reviewer.clean": {
+    "role": "code-reviewer",
+    "schema": "reviewer"
+  },
+  "test-reviewer": {
+    "role": "test-reviewer",
+    "schema": "reviewer"
+  },
+  "security-reviewer": {
+    "role": "security-reviewer",
+    "schema": "reviewer"
+  },
+  "ux-reviewer": {
+    "role": "ux-reviewer",
+    "schema": "reviewer"
+  },
+  "epic-reviewer": {
+    "role": "epic-reviewer",
+    "schema": "reviewer"
+  },
+  "finding-verifier": {
+    "role": "finding-verifier",
+    "schema": "verifier"
+  },
+  "finding-verifier.unverifiable": {
+    "role": "finding-verifier",
+    "schema": "verifier"
+  },
+  "god-eye": {
+    "role": "god-eye",
+    "schema": "critique"
+  },
+  "god-eye.intent": {
+    "role": "god-eye",
+    "schema": "intent-critique"
+  },
+  "integrator": {
+    "role": "integrator",
+    "schema": "integrator"
+  },
+  "intent-analyst": {
+    "role": "intent-analyst",
+    "schema": "analyst"
+  },
+  "intent-mapper": {
+    "role": "intent-mapper",
+    "schema": "intent-map"
+  },
+  "judge": {
+    "role": "judge",
+    "schema": "judge"
+  },
+  "lesson-writer": {
+    "role": "lesson-writer",
+    "schema": "lessons"
+  },
+  "option-generator": {
+    "role": "option-generator",
+    "schema": "option"
+  },
+  "planner": {
+    "role": "planner",
+    "schema": "planner"
+  },
+  "slicer": {
+    "role": "slicer",
+    "schema": "planner"
+  },
+  "researcher": {
+    "role": "researcher",
+    "schema": "researcher"
+  },
+  "researcher.scout": {
+    "role": "researcher",
+    "schema": "scout"
+  },
+  "tester": {
+    "role": "tester",
+    "schema": "tester"
+  },
+  "threat-modeler": {
+    "role": "threat-modeler",
+    "schema": "threat"
+  },
+  "verifier": {
+    "role": "verifier",
+    "schema": "evidence-check"
+  }
+}

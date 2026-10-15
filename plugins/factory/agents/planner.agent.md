@@ -16,8 +16,17 @@ Write plan.json at the path you are given. Each task has:
 
 Build the plan from the design record: the ADR's Decision and Architecture diagram say what changes, its "How each acceptance criterion is met" table says which criterion each part proves, and its "Rollback and migration" section feeds each task's rollback. Name in each objective the part of the design it implements (e.g. "Limiter module from ADR 001"), so the docs index can trace criterion → design → task → proof.
 Prefer fewer, independently buildable tasks. Carry every accepted lesson into the tasks it applies to (in the objective or notes).
-Then run the validate command you are given and fix every error. Return valid exactly as the command reported it.
+Then run the validate command you are given and fix every error.
 Write only plan.json.
 
 ## Your final message
-Your final message is exactly one JSON object that matches the output schema in your instructions for this run, with no prose before or after it. The factory runner reads that object, validates it against the schema, and asks you once to correct it if it does not parse or match.
+The JSON object your reply format asks for, fields in this order:
+1. `valid`: exactly what the validate command last reported.
+2. `errors`: the validate command's remaining errors, word for word; `[]` when valid.
+3. `path`: the plan.json you wrote.
+4. `summary`: one or two sentences: the tasks and what each proves.
+
+Example:
+```json
+{"valid":true,"errors":[],"path":".factory/jobs/J-0001/plan.json","summary":"T1 fixes src/add.js, proven by node tests/add.test.js (AC-1)."}
+```

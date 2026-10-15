@@ -173,7 +173,8 @@ test('2 lost fix: reconcile refuses a conflict resolution that drops an already-
   core('job').save(root, st);
   assert.equal(F.cli(root, ['task', 'verify', 'T4', '--job', J]).pass, true);
   const brief = F.cli(root, ['wfargs', 'reconcile']);
-  assert.match(fs.readFileSync(brief.integrator.prompt.split('\n')[1].trim(), 'utf8'), /never choosing a side/);
+  assert.match(fs.readFileSync(brief.integrator.prompt.split('\n')[1].trim(), 'utf8'), /reconcile continue/);
+  assert.match(fs.readFileSync(path.join(F.PLUGIN, 'agents', 'integrator.agent.md'), 'utf8'), /never picks a side[\s\S]*Never `git checkout --ours\/--theirs`/);
   const r = F.cli(root, ['reconcile', 'run', '--job', J]);
   assert.equal(r.status, 'textual_conflict');
   const t2merge = F.sh(root, `git rev-parse ${st.branch}`);

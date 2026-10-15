@@ -739,15 +739,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
 // ---------------------------------------------------------------- factory distill write
 
 // The lesson-writer's reply when `factory distill write` starts it.
-const LESSON_REPLY = {
-  type: 'object',
-  required: ['lessons'],
-  properties: {
-    lessons: { type: 'array', items: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, text: { type: 'string' } } } },
-    nothing_to_learn: { type: 'boolean' },
-    note: { type: 'string' },
-  },
-};
+const LESSON_REPLY = require('../../schemas/agent-outputs/lessons.json');
 
 // `factory distill write`: runs the lesson-writer as its own Copilot session (copilot -p
 // --agent factory:lesson-writer, the same flags, add-dirs, model mapping and FACTORY_*
@@ -805,7 +797,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     const prompt = [
       `# Distill job ${state.id}: ${state.title}`,
       '',
-      `Write at most ${left} lesson(s) from this job (fewer is better; none is fine). Do not restate a lesson that already exists (already_proposed below, and ${path.join(root, '.factory', 'lessons', 'lessons.json')}).`,
+      `You may write at most ${left} lesson(s) from this job. Lessons that already exist: already_proposed below, and ${path.join(root, '.factory', 'lessons', 'lessons.json')}.`,
       'Record each lesson with exactly this command (one per lesson):',
       `  ${cli} lessons add --job ${state.id} --text "<lesson>" --scope "<glob>,<glob>" --why "<finding id: what went wrong>"`,
       'The command prints the lesson with its id (L<n>). Run no other factory command.',
@@ -814,8 +806,6 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
       '```json',
       JSON.stringify(context, null, 2),
       '```',
-      '',
-      'This run expects a JSON reply (below) instead of the short list your instructions mention: `lessons` holds every lesson you recorded ({ id, text }), empty with nothing_to_learn true if there was nothing worth a lesson.',
     ].join('\n');
     let reply;
     try {
@@ -916,4 +906,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { run, distillWrite, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };
+module.exports = { run, distillWrite, runAgent, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };

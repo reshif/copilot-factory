@@ -1,0 +1,1 @@
+{"verdict":"revise","items":[{"issue":"ADR 001 says callers in src/cart/ use add, but no src/cart/ exists; only tests/add.test.js calls it.","severity":"major","suggestion":"Name the real callers or drop the claim."}]}

@@ -15,4 +15,13 @@ Write slices.json at the path you are given:
 Then run the validate command you are given and fix every error. Write only slices.json.
 
 ## Your final message
-Your final message is exactly one JSON object that matches the output schema in your instructions for this run, with no prose before or after it. The factory runner reads that object, validates it against the schema, and asks you once to correct it if it does not parse or match.
+The JSON object your reply format asks for, fields in this order:
+1. `valid`: exactly what the validate command last reported.
+2. `errors`: the validate command's remaining errors, word for word; `[]` when valid.
+3. `path`: the slices.json you wrote.
+4. `summary`: one or two sentences: the slices and what each delivers.
+
+Example:
+```json
+{"valid":true,"errors":[],"path":".factory/jobs/J-0002/slices.json","summary":"S00 freezes the add contract and the flag; S01 ships the fix behind it."}
+```

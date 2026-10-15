@@ -1,0 +1,1 @@
+{"lane":"conformance","findings":[{"id":"conformance-1","severity":"blocker","file":"src/add.js","line":1,"summary":"ADR 001 decided that add returns the sum, but the merged code still subtracts.","rule":"adr-001"}]}

@@ -1,0 +1,1 @@
+{"path":".factory/jobs/J-0001/threat-model.md","threats":[{"threat":"TH-1 (Tampering): a caller passes strings, and add concatenates instead of adding","mitigation":"Reject non-numbers with a TypeError","severity":"medium"}]}

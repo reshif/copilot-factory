@@ -1,2 +1,6 @@
-{ "type": "object", "required": ["finding_id", "status", "reason"], "properties": {
-  "finding_id": { "type": "string" }, "status": { "enum": ["confirmed", "refuted"] }, "reason": { "type": "string" } } }
+{ "$comment": "finding-verifier (challenge): one blocker/major finding re-checked. unverifiable keeps the finding blocking, like no result; the review runs again.",
+  "type": "object", "required": ["finding_id", "status", "evidence", "reason"], "properties": {
+  "finding_id": { "type": "string" },
+  "status": { "enum": ["confirmed", "refuted", "unverifiable"] },
+  "evidence": { "type": "string" },
+  "reason": { "type": "string" } } }

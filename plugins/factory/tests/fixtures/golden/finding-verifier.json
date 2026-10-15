@@ -1,0 +1,1 @@
+{"finding_id":"code-1","status":"confirmed","evidence":"src/add.js:1 is `(a, b) => a - b`; `node tests/add.test.js` printed \"add(2,3) = -1\" and exited 1.","reason":"add subtracts, so AC-1 fails as the finding says."}
