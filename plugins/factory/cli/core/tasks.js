@@ -143,6 +143,9 @@ function start(root, jobId, taskId) {
     start_commit: !restart && t.start_commit && git.isAncestor(root, t.start_commit, head) ? t.start_commit : head,
     attempts: (t.attempts || 0) + 1,
     last_attempt_at: nowIso(),
+    // This start ran under a factory that records each attempt's builder reply: from here on
+    // task verify needs that reply (see legacyAttempt for tasks started before it did).
+    builder_tracking: BUILDER_TRACKING,
     ...(restart ? { restarted_for: restart.key, restarted: { reason: restart.reason, backup, at: nowIso() } } : {}),
   };
   job.save(root, fresh);
@@ -210,6 +213,15 @@ function lastProveFailures(root, state) {
   return rec && rec.detail ? (rec.detail.commands || []).filter((c) => !c.pass).map((c) => ({ cmd: c.cmd, code: c.code, flaky: c.flaky, output: c.output })) : [];
 }
 
+// Builder replies are recorded from 0.6.0 on (tasks.afterBuilder). A task whose attempts were
+// started by an older factory (no builder_tracking, no builder record at all) is legacy: a
+// job that was mid-build when the factory was upgraded. Its current attempt may be verified
+// once without a builder record (an event says so); its next `task start` tracks it.
+const BUILDER_TRACKING = 1;
+function legacyAttempt(t) {
+  return Boolean(t && !t.builder && (t.attempts || 0) > 0 && !t.builder_tracking);
+}
+
 function verify(root, jobId, taskId) {
   const state = job.resolve(root, jobId);
   const { task } = planTask(root, state, taskId);
@@ -220,7 +232,17 @@ function verify(root, jobId, taskId) {
   const t = state.tasks[taskId] || {};
   // Done means this attempt's builder succeeded: a crashed, blocked or timed-out builder
   // leaves an older branch state, which must not be counted as its work.
-  const b = t.builder;
+  const legacy = legacyAttempt(t);
+  if (legacy && t.legacy_verify && t.legacy_verify.attempt === (t.attempts || 0)) {
+    fail(`${taskId} was started before this factory recorded builder replies, and its one verification without a builder record (attempt ${t.legacy_verify.attempt}, ${t.legacy_verify.at}) is used. Rebuild it: factory next routes realize, whose builder records its reply.`, 'no_builder_result', { builder: null, attempt: t.attempts || 0, legacy: true });
+  }
+  const b = legacy ? { attempt: t.attempts || 0, outcome: 'done', at: `legacy:${t.last_attempt_at || t.started_at || ''}`, legacy: true } : t.builder;
+  if (legacy) {
+    const fresh0 = job.load(root, state.id);
+    fresh0.tasks[taskId] = { ...(fresh0.tasks[taskId] || {}), legacy_verify: { attempt: t.attempts || 0, at: nowIso() } };
+    job.save(root, fresh0);
+    require('./events').append(root, { event: 'legacy_verify', job: state.id, task: taskId, attempt: t.attempts || 0, reason: 'task started before builder replies were recorded (factory upgraded mid-build): verified once without a builder record' });
+  }
   if (!b || b.attempt !== (t.attempts || 0) || b.outcome !== 'done') {
     const why = !b ? 'no builder has replied for it yet' : b.attempt !== (t.attempts || 0) ? `its builder's last reply was for attempt ${b.attempt}, not this attempt (${t.attempts || 0})` : `this attempt's builder ${b.outcome === 'no_result' ? 'returned no result (crashed, timed out or replied without the JSON)' : `returned ${b.outcome}${b.blocked_reason ? ` (${b.blocked_reason})` : ''}`}`;
     fail(`${taskId} cannot be verified: ${why}. Only work its builder finished counts; the next attempt builds again.`, 'no_builder_result', { builder: b || null, attempt: t.attempts || 0 });
@@ -253,6 +275,7 @@ function verify(root, jobId, taskId) {
     commands,
     pass,
     builder_at: b.at,
+    ...(legacy ? { legacy: true } : {}),
   };
   writeJson(file, ev);
   const fresh = job.load(root, state.id);
@@ -267,6 +290,7 @@ function verify(root, jobId, taskId) {
     failures: commands.filter((c) => !c.pass).map((c) => ({ cmd: c.cmd, code: c.code, flaky: c.flaky, output: c.output })),
     scope_violations: scopeViolations,
     no_changes: changed.length === 0,
+    ...(legacy ? { legacy: 'verified once without a builder record: this task was started before the factory recorded builder replies' } : {}),
   };
 }
 
@@ -278,4 +302,4 @@ function setState(root, jobId, taskId, value, reason) {
   return { job: state.id, task: taskId, state: value };
 }
 
-module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, FAILED };
+module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, legacyAttempt, FAILED };
