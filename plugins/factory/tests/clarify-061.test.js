@@ -162,3 +162,33 @@ test('2: a judge dismissal drops an issue only with a reason; H1 shows "dropped 
   clarify.event(now.unknowns[1], 2, 'dropped', 'judge', 'does not change the outcome');
   assert.deepEqual(clarify.invariant(prior, { unknowns: [{ ...now.unknowns[0], aliases: [{ id: 'U-9' }] }, now.unknowns[1], clarify.cleanIssue({ id: 'U-7', text: 'c', kind: 'user' })] }, ['U-7']), []);
 });
+
+// ---------------------------------------------------------------- 4. degraded rounds park
+test('4: two degraded clarify rounds in a row park the job, naming the failing agent(s); resume, then --accept-degraded, goes on', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const failed = (extra = {}) => {
+    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+    return F.record(root, F.envelope(b, 'degraded', { analysts: [], degraded: ['intent-analyst:intent', 'intent-analyst:scope'], judge: { questions: [], dismissed: [] }, scout: scoutData([]), ...extra }));
+  };
+  let r = failed();
+  assert.equal(r.status, 'retry', 'the first degraded round is retried once, automatically');
+  F.cli(root, ['next']);
+  r = failed();
+  assert.equal(r.status, 'park', JSON.stringify(r).slice(0, 300));
+  assert.match(r.park_reason, /agent\(s\) failed in 2 clarify rounds in a row: intent-analyst:intent, intent-analyst:scope/);
+  assert.match(r.park_reason, /--accept-degraded/);
+  let st = job.load(root, J);
+  assert.equal(st.status, 'parked');
+  assert.match(st.park.reason, /intent-analyst:intent/);
+  assert.equal(clarify.limits(st).counted, 0, 'degraded rounds still do not count towards the ceiling');
+  F.reply(root, 'resume');
+  st = job.load(root, J);
+  assert.equal(st.counters.clarify_degraded_streak, 0, 'resume resets the streak');
+  assert.equal(F.cli(root, ['next']).skill, 'clarify');
+  // the same agents keep failing: one automatic retry, then parked again (never an endless loop)
+  assert.equal(failed().status, 'retry');
+  F.cli(root, ['next']);
+  assert.equal(failed().status, 'park');
+});

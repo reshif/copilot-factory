@@ -277,8 +277,11 @@ test('still invalid after the corrective turn → null, like a failed agent: the
   assert.equal(first.workflow.status, 'degraded', 'the workflow envelope is nested under workflow');
   F.cli(root, ['next']);
   const r = h.run(root, ['fanout-judge', '--config', 'clarify']);
-  assert.equal(r.status, 'degraded', 'two degraded rounds in a row: the user is asked');
-  // going on without the angle: the same run again with --accept-degraded is allowed under the same decision
+  assert.equal(r.status, 'park', 'two degraded clarify rounds in a row park the job (0.6.1), naming the agent');
+  assert.match(r.park_reason, /intent-analyst/);
+  // going on without the angle: the user resumes, then the run with --accept-degraded
+  F.reply(root, 'resume');
+  F.cli(root, ['next']);
   const again = h.run(root, ['fanout-judge', '--config', 'clarify', '--accept-degraded']);
   assert.notEqual(again.code, 'not_waiting_for_workflow', JSON.stringify(again));
   const bad = r.agents.filter((a) => a.outcome === 'invalid');

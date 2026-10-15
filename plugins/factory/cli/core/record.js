@@ -264,7 +264,12 @@ function recClarify(root, state, env) {
     job.save(root, state);
     return { status: 'retry', missing: d.degraded || [], ...extra, message: `Agent(s) failed after their retry (${(d.degraded || []).join(', ')}): this round does not count. factory next runs clarify again once, automatically; don't ask the user yet.` };
   }
-  if (degradedRound) return { status: 'degraded', missing: d.degraded, ...extra, message: `${(d.degraded || []).includes('intent-mapper') ? 'The intent mapper failed twice, so nothing was researched. ' : ''}Agent(s) failed in two rounds in a row: ${(d.degraded || []).join(', ')}. Ask the user: re-run, or go on without that angle (factory run fanout-judge --config clarify --accept-degraded).` };
+  // Degraded rounds count towards neither the ceiling nor the no-progress rule, so without this
+  // a run whose agents always fail loops for ever: two in a row park, naming who failed.
+  if (degradedRound) {
+    const who = (d.degraded || []).join(', ') || 'unknown agents';
+    return { status: 'park', park_from: 'clarify', missing: d.degraded || [], ...extra, park_reason: `Clarify stopped: agent(s) failed in ${C.clarify_degraded_streak} clarify rounds in a row: ${who}.${(d.degraded || []).includes('intent-mapper') ? ' The intent mapper failed, so nothing was mapped or researched.' : ''} Running it again as is learns nothing. Reply "resume" to try again (the next failure parks again); to go on without the failed angle, resume and run factory run fanout-judge --config clarify --accept-degraded.`, message: `Parked: ${who} failed in ${C.clarify_degraded_streak} clarify rounds in a row.` };
+  }
   if (waiting.length) {
     return { status: 'needs_user', questions: waiting.map((u) => { const q = (state.question_log || []).find((x) => x.id === u.question_id) || {}; return { id: u.question_id, category: q.category || 'scope', question: q.question || u.draft, why: u.reason || 'Still open: only you can settle it.', default: u.default || q.default || 'None: answer needed', unknown: u.id, kind: u.kind, waiting: true }; }), ...extra, message: `Still waiting for the answer to ${waiting.map((u) => u.question_id).join(', ')} (no default to fall back on). Show them again as one numbered list. ${answerHow}` };
   }

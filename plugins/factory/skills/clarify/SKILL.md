@@ -45,8 +45,7 @@ Clarify keeps one list of issues (`U-n`), owned by the CLI: each has a subject, 
      When the user answers in their own words instead, record each answer with `factory answer Q-n "<answer>"` (or `factory answer U-n "…"`; `factory answer Q-n --default` accepts the default). Never record an answer the user didn't give. If `factory answer --question "…"` says `no_match`, use the id it lists. Don't edit the contract: run `factory next` — clarify runs again with the answers and its contract editor writes them in.
    - `revise`: the contract still has problems or open items with nothing to ask; don't fix it by hand. Say in one line that clarify runs again, then `factory next`.
    - `retry`: agents failed in this round; it doesn't count and runs again once by itself. Say so in one line, then `factory next`.
-   - `degraded` (agents failed in two rounds in a row): ask the user: re-run, or go on without that angle. To go on, run `factory run fanout-judge --config clarify --accept-degraded`.
-   - `park`: clarify stopped (no progress, or the intent is still unclear). Follow the park skill; `factory clarify status` shows what is open.
+   - `park`: clarify stopped (no progress, the intent is still unclear, or agents failed in two rounds in a row: the reason names them). Follow the park skill; `factory clarify status` shows what is open. When agents failed, the user chooses: `resume` to try again, or go on without that angle (after `resume`, run `factory run fanout-judge --config clarify --accept-degraded`).
    - `ok`: God Eye approved and confirmed the intent (`notes` are its approve-with-notes remarks). Tell the user its one-line restatement (problem → outcome), then return to the loop; `factory next` will present gate H1.
    - `warnings` (low risk): grounding advice that doesn't block; mention it in one line.
 
