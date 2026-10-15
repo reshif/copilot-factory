@@ -180,6 +180,29 @@ test('console: an agent with no stop event is running only while recent and the 
   assert.equal(b.stale_agents.length, 1);
 });
 
+test('console: a factory run agent is at work from agent_start until its agent_run, while the run lock is live', () => {
+  const root = F.makeRepo();
+  const A = F.cli(root, ['job', 'new', '--title', 'Clarify me', '--type', 'bug', '--risk', 'low']).job;
+  const { build } = require('../cli/core/console');
+  const { jobPaths } = require('../cli/lib/paths');
+  const now = Date.parse('2030-01-01T12:00:00.000Z');
+  const at = (ms) => new Date(now - ms).toISOString();
+  const start = (id, type, ts) => JSON.stringify({ ts, event: 'agent_start', run_id: id, job: A, agent_type: type, label: type.replace('factory:', ''), workflow: 'fanout-judge' });
+  const end = (id, type, ts) => JSON.stringify({ ts, event: 'agent_run', run_id: id, job: A, agent_type: type, ms: 1000, outcome: 'ok' });
+  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), [
+    start('r1', 'factory:intent-mapper', at(5 * 60000)),
+    end('r1', 'factory:intent-mapper', at(4 * 60000)),
+    start('r2', 'factory:intent-analyst', at(3 * 60000)),
+    start('r3', 'factory:intent-analyst', at(3 * 60000)),
+  ].join('\n') + '\n');
+  const lock = path.join(jobPaths(root, A).dir, 'run.lock');
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: at(6 * 60000) }));
+  const running = () => build(root, { now: new Date(now).toISOString() }).jobs.find((j) => j.id === A).running_agents.map((x) => x.agent_type);
+  assert.deepEqual(running(), ['factory:intent-analyst', 'factory:intent-analyst'], 'both analysts are at work; the mapper finished');
+  fs.writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, host: require('os').hostname() }));
+  assert.deepEqual(running(), [], 'once factory run is gone, its unfinished agents are not at work');
+});
+
 test('console page: one data slot, self-contained, and a static file says it is a snapshot', () => {
   const tpl = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
   assert.equal(tpl.split('/*__FACTORY_DATA__*/null').length, 2, 'exactly one data slot');

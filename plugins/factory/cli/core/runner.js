@@ -503,13 +503,22 @@ async function runAgent(ctx, prompt, opts) {
     }
     const sessionId = S.resumeForRetry ? crypto.randomUUID() : null;
     const perm = toolPermissions(role, agentTools(role), S.copilot);
+    // agent_start now, agent_run (same run_id) when it ends: the console shows the agent as
+    // at work in between. No hook does this: each agent is its own `copilot -p` process, not a
+    // subagent, so SubagentStart/SubagentStop never fire for it.
+    const runId = crypto.randomUUID();
     const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
+    const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail] });
     const spawnOnce = async (text, retryTurn = false) => {
-      if (ctx.unavailable) throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
+      if (ctx.unavailable) {
+        if (retryTurn) closeUnavailable(ctx.unavailable.detail); // its first turn already started it
+        throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
+      }
+      if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, pid: process.pid });
       const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm }), { cwd, env, timeoutSec: Math.max(1, left()) });
       const u = unavailable(r);
       if (u) {
-        if (!ctx.unavailable) events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, cwd, ms: r.ms, exit: r.code, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [u.detail] });
+        closeUnavailable(u.detail, r); // closes this agent's agent_start
         ctx.unavailable = ctx.unavailable || { ...u, label: o.label || role };
         throw new Error(`Copilot CLI unavailable: ${u.detail}`);
       }
@@ -558,6 +567,7 @@ async function runAgent(ctx, prompt, opts) {
     ctx.runs.push(rec);
     events.append(ctx.root, {
       event: 'agent_run',
+      run_id: runId,
       job: ctx.brief.job,
       decision_id: ctx.decisionId,
       workflow: ctx.brief.workflow,

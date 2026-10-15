@@ -194,6 +194,9 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
   const hookAgents = {};
   for (const e of events) {
     if (e.event === 'SubagentStart') started[e.agent_id] = e;
+    // `factory run` (Copilot): agent_start when an agent process starts, agent_run (same run_id) when it ends.
+    if (e.event === 'agent_start' && e.run_id) started[`run:${e.run_id}`] = { ...e, runner: true };
+    if (e.event === 'agent_run' && e.run_id) delete started[`run:${e.run_id}`];
     if (e.event === 'SubagentStop' && started[e.agent_id]) {
       const s = started[e.agent_id];
       const k = s.decision_id || 'none';
@@ -205,10 +208,19 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
   }
   const runningNow = [];
   const staleNow = [];
+  // A runner agent is at work only while its `factory run` still holds the job's run lock.
+  let runLive = null;
+  const runnerLive = () => {
+    if (runLive === null) {
+      const { lockAlive } = require('./runner');
+      try { runLive = lockAlive(readJson(path.join(jp.dir, 'run.lock'), null)); } catch { runLive = false; }
+    }
+    return runLive;
+  };
   for (const s of Object.values(started)) {
-    const a = { agent_type: s.agent_type, since: s.ts, decision_id: s.decision_id || null };
+    const a = { agent_type: s.agent_type, since: s.ts, decision_id: s.decision_id || null, ...(s.label ? { label: s.label } : {}) };
     const age = nowMs - Date.parse(s.ts);
-    if (state.status === 'active' && age >= 0 && age < STALE_AGENT_MS) runningNow.push(a);
+    if (state.status === 'active' && age >= 0 && age < STALE_AGENT_MS && (!s.runner || runnerLive())) runningNow.push(a);
     else staleNow.push({ ...a, stale: true });
   }
 

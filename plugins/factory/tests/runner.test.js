@@ -148,6 +148,9 @@ test('factory run fanout-judge --config clarify: agents as copilot processes, en
   const ev = events(root);
   const runs = ev.filter((e) => e.event === 'agent_run');
   assert.equal(runs.length, 7, 'one sealed agent_run per agent');
+  const starts = ev.filter((e) => e.event === 'agent_start');
+  assert.equal(starts.length, 7, 'one agent_start per agent, so the console can show it at work');
+  assert.deepEqual(starts.map((e) => e.run_id).sort(), runs.map((e) => e.run_id).sort(), 'each agent_run closes its agent_start (same run_id)');
   for (const e of runs) {
     assert.equal(require('../cli/lib/seal').valid(e), true, 'sealed');
     assert.equal(typeof e.ms, 'number');
@@ -480,6 +483,8 @@ test('Copilot missing or not signed in: the run aborts with copilot_unavailable 
   const ev = events(root);
   assert.ok(ev.some((e) => e.event === 'cli' && e.cmd === 'run' && e.code === 'copilot_unavailable' && e.ok === false), 'the failed run is logged with its code');
   assert.ok(ev.some((e) => e.event === 'agent_run' && e.outcome === 'copilot_unavailable' && e.code === 'copilot_unavailable'), 'and the agent that could not start');
+  const open = ev.filter((e) => e.event === 'agent_start').filter((s) => !ev.some((e) => e.event === 'agent_run' && e.run_id === s.run_id));
+  assert.deepEqual(open, [], 'no agent is left looking at work');
   const n = F.cli(root, ['next']);
   assert.equal(n.skill, 'clarify', 'the job is where it was, not parked');
   assert.equal(n.requery, true, 'a run Copilot could not start is no attempt: no new decision, no repeat counted');
