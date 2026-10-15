@@ -67,6 +67,42 @@ function fixMarker(wt, kind) {
   else require('fs').rmSync(f, { force: true });
 }
 
+// Outcomes after which a task's branch is not worth building on: the next `task start` (a
+// resume, an amendment) restarts it from the job branch plus its dependencies.
+const FAILED = ['blocked', 'exhausted', 'not_verified', 'skipped_dependency'];
+
+// Why this start must restart the task's branch (once per failure), or null: the task ended
+// failed in an earlier run, or its last attempt changed files outside its paths.
+function restartReason(t) {
+  if (FAILED.includes(t.outcome)) {
+    const key = `outcome:${t.outcome}@${t.outcome_at || ''}`;
+    return t.restarted_for === key ? null : { reason: t.outcome, key };
+  }
+  const ev = t.evidence ? readJson(t.evidence.file, null) : null;
+  if (ev && (ev.scope_violations || []).length) {
+    const key = `scope:${ev.id}`;
+    return t.restarted_for === key ? null : { reason: 'scope_violation', key };
+  }
+  return null;
+}
+
+// Restart the task branch at the job branch. The old head is kept on a backup ref and any
+// uncommitted leftovers in a stash, so nothing a failed attempt did is lost to the user.
+function resetToJobBranch(root, state, wt, taskId, attempt) {
+  if (git.status(wt)) git.run(wt, ['stash', 'push', '-u', '-m', `factory: leftovers of ${taskId} before its restart`], { allowFail: true });
+  const backup = `refs/factory/restarts/${steps.taskBranch(state, taskId)}/${attempt}-${Date.now()}`;
+  git.run(wt, ['update-ref', backup, 'HEAD']);
+  git.run(wt, ['reset', '-q', '--hard', state.branch]);
+  return backup;
+}
+
+function conflict(root, state, taskId, message) {
+  const fresh = job.load(root, state.id);
+  fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), start_error: { code: 'dependency_conflict', message, at: nowIso() } };
+  job.save(root, fresh);
+  fail(`${message} This is not a build failure: stop and reply with status "blocked", blocked_reason "dependency_conflict" and this message as the summary. It needs a plan change (paths or dependencies).`, 'dependency_conflict');
+}
+
 function start(root, jobId, taskId) {
   const state = job.resolve(root, jobId);
   const { plan, task } = planTask(root, state, taskId);
@@ -79,12 +115,15 @@ function start(root, jobId, taskId) {
     if (!steps.taskDone(ctx, d)) fail(`${taskId} depends on ${d}${(task.depends_on || []).includes(d) ? '' : ' (an earlier wave touching the same paths)'}, which is not done yet`, 'dependency_not_done');
   }
   prepareWorktree(root, state, taskId);
+  const prev = state.tasks[taskId] || {};
+  const restart = restartReason(prev);
+  const backup = restart ? resetToJobBranch(root, state, wt, taskId, prev.attempts || 0) : null;
   const bring = (ref, what) => {
     if (git.isAncestor(root, ref, branch)) return;
     const r = git.run(wt, ['merge', '--no-ff', '--no-edit', '-m', `factory: bring ${what} into ${taskId}`, ref], { allowFail: true });
     if (r.code !== 0) {
       git.run(wt, ['merge', '--abort'], { allowFail: true });
-      fail(`Merging ${what} into ${taskId} conflicts; this needs a plan change.`, 'dependency_conflict');
+      conflict(root, state, taskId, `Merging ${what} into ${taskId} conflicts${restart ? ' even on a branch restarted from the job branch' : ''}; this needs a plan change.`);
     }
   };
   // A rebuild (fix round, amendment) starts from what is integrated now, never from the
@@ -96,15 +135,36 @@ function start(root, jobId, taskId) {
   const fresh = job.load(root, state.id);
   const t = fresh.tasks[taskId] || {};
   const head = git.revParse(wt, 'HEAD');
+  const { start_error: _e, ...rest } = t;
   fresh.tasks[taskId] = {
-    ...t,
+    ...rest,
     started_at: t.started_at || nowIso(),
-    start_commit: t.start_commit && git.isAncestor(root, t.start_commit, head) ? t.start_commit : head,
+    // after a restart the task's own changes are counted from the restarted branch
+    start_commit: !restart && t.start_commit && git.isAncestor(root, t.start_commit, head) ? t.start_commit : head,
     attempts: (t.attempts || 0) + 1,
     last_attempt_at: nowIso(),
+    ...(restart ? { restarted_for: restart.key, restarted: { reason: restart.reason, backup, at: nowIso() } } : {}),
   };
   job.save(root, fresh);
-  return { job: state.id, task: taskId, worktree: wt, branch, attempt: fresh.tasks[taskId].attempts, allowed_paths: task.allowed_paths };
+  return { job: state.id, task: taskId, worktree: wt, branch, attempt: fresh.tasks[taskId].attempts, allowed_paths: task.allowed_paths, ...(restart ? { restarted: { reason: restart.reason, backup } } : {}) };
+}
+
+// The runner calls this when a task's builder ends (tests that play the builder call it too):
+// it records what this attempt's builder returned, which `task verify` and taskDone require.
+// A builder that returned nothing after `task start` refused with dependency_conflict did not
+// crash: its result becomes the typed blocked result it should have replied with.
+function afterBuilder(root, jobId, taskId, result, { startedAt, label } = {}) {
+  const state = job.load(root, jobId);
+  const t = state.tasks[taskId] || {};
+  let r = result || null;
+  const se = t.start_error;
+  if (!r && se && se.code === 'dependency_conflict' && (!startedAt || se.at >= startedAt)) {
+    r = { status: 'blocked', blocked_reason: 'dependency_conflict', summary: se.message, needs_paths: [] };
+  }
+  const outcome = !r ? 'no_result' : r.status === 'done' ? 'done' : 'blocked';
+  state.tasks[taskId] = { ...t, builder: { attempt: t.attempts || 0, outcome, at: nowIso(), label: label || null, ...(r && r.blocked_reason ? { blocked_reason: r.blocked_reason } : {}) } };
+  job.save(root, state);
+  return r;
 }
 
 function show(root, jobId, taskId) {
@@ -158,13 +218,27 @@ function verify(root, jobId, taskId) {
   const dirty = git.status(wt);
   if (dirty) fail(`${taskId} has uncommitted changes. Commit them on the task branch first:\n${dirty}`, 'dirty_worktree');
   const t = state.tasks[taskId] || {};
+  // Done means this attempt's builder succeeded: a crashed, blocked or timed-out builder
+  // leaves an older branch state, which must not be counted as its work.
+  const b = t.builder;
+  if (!b || b.attempt !== (t.attempts || 0) || b.outcome !== 'done') {
+    const why = !b ? 'no builder has replied for it yet' : b.attempt !== (t.attempts || 0) ? `its builder's last reply was for attempt ${b.attempt}, not this attempt (${t.attempts || 0})` : `this attempt's builder ${b.outcome === 'no_result' ? 'returned no result (crashed, timed out or replied without the JSON)' : `returned ${b.outcome}${b.blocked_reason ? ` (${b.blocked_reason})` : ''}`}`;
+    fail(`${taskId} cannot be verified: ${why}. Only work its builder finished counts; the next attempt builds again.`, 'no_builder_result', { builder: b || null, attempt: t.attempts || 0 });
+  }
+  // Every declared and implied dependency must be in the branch that is verified.
+  const branch = steps.taskBranch(state, taskId);
+  const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
+  const missingDeps = planMod.effectiveDeps(plan.tasks || [], taskId).filter((d) => {
+    const db = steps.taskBranch(state, d);
+    return !git.branchExists(root, db) || !git.isAncestor(root, db, branch);
+  });
+  if (missingDeps.length) fail(`${taskId}'s branch does not contain ${missingDeps.join(', ')} as built now; run task start ${taskId} again to bring ${missingDeps.length > 1 ? 'them' : 'it'} in, then build and verify.`, 'dependency_not_merged', { missing: missingDeps });
   const head = git.revParse(wt, 'HEAD');
   const changed = t.start_commit ? ownChangedFiles(wt, t.start_commit, head) : [];
   const scopeViolations = changed.filter((f) => !matchesAny(f, task.allowed_paths) || matchesAny(f, state.policy.protected_paths));
   const L = state.policy.limits;
   const commands = task.verify_commands.map((c) => runCommand(planMod.cmdOf(c), wt, { timeoutSec: L.command_timeout_seconds, reruns: L.flaky_reruns }));
   const pass = scopeViolations.length === 0 && commands.every((c) => c.pass) && changed.length > 0;
-  const branch = steps.taskBranch(state, taskId);
   const id = `${taskId}-${(t.attempts || 1)}-${Date.now()}`;
   const file = path.join(jobPaths(root, state.id).evidenceDir, `${id}.json`);
   const ev = {
@@ -178,10 +252,11 @@ function verify(root, jobId, taskId) {
     no_changes: changed.length === 0,
     commands,
     pass,
+    builder_at: b.at,
   };
   writeJson(file, ev);
   const fresh = job.load(root, state.id);
-  fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), evidence: { id, file, pass, tree: ev.tree, at: ev.at } };
+  fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), evidence: { id, file, pass, tree: ev.tree, at: ev.at, builder_at: b.at } };
   if (pass) delete fresh.tasks[taskId].needs_work;
   job.save(root, fresh);
   return {
@@ -203,4 +278,4 @@ function setState(root, jobId, taskId, value, reason) {
   return { job: state.id, task: taskId, state: value };
 }
 
-module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles };
+module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, FAILED };

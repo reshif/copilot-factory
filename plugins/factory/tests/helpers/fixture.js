@@ -265,8 +265,15 @@ function record(root, env) {
   return cli(root, ['record', '--file', f]);
 }
 
+// What the runner records when a task's builder replies (tasks.afterBuilder): tests that
+// play the builder by hand call this after their commits, as the real runner would.
+function built(root, taskId, { job, result = { status: 'done', summary: 'built by the test' } } = {}) {
+  const jobId = job || require('../../cli/core/job').resolve(root).id;
+  return require('../../cli/core/tasks').afterBuilder(root, jobId, taskId, result, { startedAt: new Date().toISOString(), label: `build ${taskId}` });
+}
+
 function jobDir(root, id) {
   return path.join(root, '.factory', 'jobs', id);
 }
 
-module.exports = { PLUGIN, BIN, sh, write, makeRepo, cli, reply, contractText, envelope, record, jobDir, adrText, noAdrText, threatModelText, recommendationText, contractsDocText, DIAGRAM };
+module.exports = { PLUGIN, BIN, sh, write, makeRepo, cli, reply, built, contractText, envelope, record, jobDir, adrText, noAdrText, threatModelText, recommendationText, contractsDocText, DIAGRAM };

@@ -33,11 +33,13 @@ function branchTree(root, branch) {
 }
 
 // A task is done when its latest evidence passed on the exact tree its branch now has,
-// and no fix round has reopened it.
+// no fix round has reopened it, and that evidence came after its builder's latest reply,
+// which was "done" (a later builder that crashed, blocked or timed out voids an older pass).
 function taskDone(ctx, taskId) {
   const t = (ctx.state.tasks || {})[taskId];
   if (!t || t.needs_work) return false;
   if (!t.evidence || !t.evidence.pass) return false;
+  if (t.builder && (t.builder.outcome !== 'done' || t.builder.attempt !== (t.attempts || 0) || t.evidence.builder_at !== t.builder.at)) return false;
   const tree = branchTree(ctx.root, taskBranch(ctx.state, taskId));
   return Boolean(tree && tree === t.evidence.tree);
 }

@@ -127,6 +127,7 @@ function toChallenge(fx, root) {
       const s = F.cli(root, ['task', 'start', 'T1'], { allowFail: false });
       copyTree(path.join(fx.dir, 'change'), s.worktree);
       F.sh(s.worktree, 'git add -A && git commit -qm "the change under review"');
+      F.built(root, 'T1'); // what factory run records when the builder replies done
       const v = F.cli(root, ['task', 'verify', 'T1']);
       if (!v.pass) throw new Error(`${fx.name}: the planted change fails its verify command: ${JSON.stringify(v.failures || v)}`);
       F.record(root, F.envelope(b, 'ok', { tasks: [{ id: 'T1', outcome: 'done', attempts: 1, summary: 'planted change' }] }));

@@ -527,6 +527,7 @@ async function runAgent(ctx, prompt, opts) {
       return r;
     };
     const full = `${prompt}${replyBlock(o.schema)}`;
+    const startedAt = new Date().toISOString();
     const runs = [await spawnOnce(full)];
     let result = null;
     let errors = [];
@@ -549,7 +550,18 @@ async function runAgent(ctx, prompt, opts) {
       }
     }
     const last = runs[runs.length - 1];
-    const outcome = result ? 'ok' : last.timedOut ? 'timeout' : last.code !== 0 ? 'failed' : 'invalid';
+    const rawOutcome = result ? 'ok' : last.timedOut ? 'timeout' : last.code !== 0 ? 'failed' : 'invalid';
+    // A task's builder: record what this attempt returned (task verify and taskDone need it);
+    // an empty reply after a dependency_conflict becomes the typed blocked result.
+    const bt = ctx.brief.workflow === 'realize' && /^build (\S+)/.exec(o.label || '');
+    if (bt && ctx.brief.tasks && ctx.brief.tasks[bt[1]]) {
+      try {
+        result = require('./tasks').afterBuilder(ctx.root, ctx.brief.job, bt[1], result, { startedAt: startedAt, label: o.label });
+      } catch (e) {
+        ctx.note(`could not record ${o.label}'s result: ${e.message}`);
+      }
+    }
+    const outcome = rawOutcome === 'ok' || !result ? rawOutcome : 'blocked';
     const rec = {
       label: o.label || role,
       role,
@@ -564,7 +576,7 @@ async function runAgent(ctx, prompt, opts) {
       outcome,
       ...(capSec ? { time_cap_sec: capSec } : {}),
       ...(result && typeof result.verdict === 'string' ? { verdict: result.verdict } : {}), // god-eye's approve/revise, for telemetry
-      ...(result ? {} : { errors: (last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${String(last.stderr || '').trim().slice(-300)}`] : errors).slice(0, 5) }),
+      ...(rawOutcome === 'ok' ? {} : { errors: (last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${String(last.stderr || '').trim().slice(-300)}`] : errors).slice(0, 5) }),
     };
     ctx.runs.push(rec);
     events.append(ctx.root, {

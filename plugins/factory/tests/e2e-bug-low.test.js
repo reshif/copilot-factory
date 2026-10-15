@@ -78,6 +78,7 @@ test('bug@low: request to closed job, with a fix round and a local merge', () =>
   F.write(start.worktree, 'README.md', '# changed\n');
   F.write(start.worktree, 'src/add.js', 'module.exports = (a, b) => a + b;\n');
   F.sh(start.worktree, 'git add -A && git commit -qm "fix add"');
+  F.built(root, 'T1'); // the builder replied done (the runner records it)
   let tv = F.cli(root, ['task', 'verify', 'T1']);
   assert.equal(tv.pass, false);
   assert.deepEqual(tv.scope_violations, ['README.md']);
@@ -120,6 +121,7 @@ test('bug@low: request to closed job, with a fix round and a local merge', () =>
   F.cli(root, ['task', 'start', 'T1']);
   F.write(start.worktree, 'src/add.js', "module.exports = (a, b) => { if (typeof a !== 'number' || typeof b !== 'number') throw new TypeError('numbers only'); return a + b; };\n");
   F.sh(start.worktree, 'git commit -qam "validate inputs"');
+  F.built(root, 'T1'); // the builder replied done (the runner records it)
   assert.equal(F.cli(root, ['task', 'verify', 'T1']).pass, true);
   F.record(root, F.envelope(brief, 'ok', { tasks: [{ id: 'T1', outcome: 'done', attempts: 1, summary: 'validated' }] }));
   n = next(root);

@@ -94,7 +94,11 @@ for (let w = 0; w < brief.waves.length; w++) {
       const s = st[id]
       if (b && b.status === 'blocked') {
         s.outcome = 'blocked'
-        s.summary = `Blocked: needs ${(b.needs_paths || []).join(', ') || 'paths outside its scope'}. ${b.summary || ''}`
+        // dependency_conflict is typed: the task's dependencies don't merge, a plan change
+        // fixes it, and retrying the same merge would only fail again.
+        s.summary = b.blocked_reason === 'dependency_conflict'
+          ? `Blocked (dependency_conflict): ${b.summary || 'its dependencies do not merge'}`
+          : `Blocked: needs ${(b.needs_paths || []).join(', ') || 'paths outside its scope'}. ${b.summary || ''}`
         continue
       }
       // A builder that returned nothing (crashed, timed out, no valid reply) built nothing this

@@ -57,6 +57,7 @@ test('R21 review regression: from the real CLI (blocked again: medium) and from 
     const s = F.cli(root, ['task', 'start', 'T1', '--job', J]);
     for (const [f, c] of Object.entries(files)) F.write(s.worktree, f, c);
     F.sh(s.worktree, 'git add -A && git commit -qm build');
+    F.built(root, 'T1', { job: J }); // the builder replied done (the runner records it)
     F.cli(root, ['task', 'verify', 'T1', '--job', J]);
     return F.cli(root, ['reconcile', 'run', '--job', J]).status;
   };

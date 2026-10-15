@@ -42,6 +42,7 @@ function build(root, J, task, files) {
   const s = F.cli(root, ['task', 'start', task], { allowFail: false });
   for (const [rel, text] of Object.entries(files)) F.write(s.worktree, rel, text);
   F.sh(s.worktree, `git add -A && git commit -qm "${task}"`);
+  F.built(root, task); // the builder replied done (the runner records it)
   const v = F.cli(root, ['task', 'verify', task]);
   assert.equal(v.pass, true, JSON.stringify(v));
 }

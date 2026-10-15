@@ -47,6 +47,7 @@ function build(root, J, id, files, msg = `${id} build`) {
   const s = F.cli(root, ['task', 'start', id, '--job', J], { allowFail: false });
   for (const [f, c] of Object.entries(files)) F.write(s.worktree, f, typeof c === 'function' ? c(fs.existsSync(path.join(s.worktree, f)) ? fs.readFileSync(path.join(s.worktree, f), 'utf8') : '') : c);
   F.sh(s.worktree, `git add -A && git commit -qm "${msg}"`);
+  F.built(root, id, { job: J }); // the builder replied done (the runner records it)
   const v = F.cli(root, ['task', 'verify', id, '--job', J]);
   assert.equal(v.pass, true, JSON.stringify(v));
   return s;
@@ -71,6 +72,7 @@ test('1 dirty_worktree: a python verify command never dirties the task or job wo
   F.sh(s.worktree, 'git add -A && git commit -qm vlan');
   // a cache written by the build itself (not by the factory's verify) is ignored too
   F.sh(s.worktree, 'python3 -c "import sys; sys.path.insert(0, \'src\'); import vlan"');
+  F.built(root, 'T1', { job: J }); // the builder replied done (the runner records it)
   assert.equal(F.cli(root, ['task', 'verify', 'T1', '--job', J]).pass, true);
   const again = F.cli(root, ['task', 'verify', 'T1', '--job', J]);
   assert.equal(again.pass, true, `verify #2: ${JSON.stringify(again)}`);
@@ -171,7 +173,15 @@ test('2 lost fix: reconcile refuses a conflict resolution that drops an already-
   const st = state(root, J);
   st.tasks.T4 = { ...(st.tasks.T4 || {}), started_at: new Date().toISOString(), start_commit: st.base_commit };
   core('job').save(root, st);
-  assert.equal(F.cli(root, ['task', 'verify', 'T4', '--job', J]).pass, true);
+  F.built(root, 'T4', { job: J }); // the builder replied done (the runner records it)
+  // task verify no longer passes a branch without its implied dependency T2 (outcome
+  // integrity, P1.2); the guard below is still tested on such a branch, as an older factory
+  // (or a hand edit) could have left it: its passing evidence is written directly.
+  assert.equal(F.cli(root, ['task', 'verify', 'T4', '--job', J]).code, 'dependency_not_merged');
+  const st4 = state(root, J);
+  const tb = core('steps').taskBranch(st4, 'T4');
+  st4.tasks.T4.evidence = { id: 'T4-forced', file: null, pass: true, tree: require('../cli/lib/git').fingerprint(root, tb), at: new Date().toISOString(), builder_at: st4.tasks.T4.builder.at };
+  core('job').save(root, st4);
   const brief = F.cli(root, ['wfargs', 'reconcile']);
   assert.match(fs.readFileSync(brief.integrator.prompt.split('\n')[1].trim(), 'utf8'), /reconcile continue/);
   assert.match(fs.readFileSync(path.join(F.PLUGIN, 'agents', 'integrator.agent.md'), 'utf8'), /never picks a side[\s\S]*Never `git checkout --ours\/--theirs`/);

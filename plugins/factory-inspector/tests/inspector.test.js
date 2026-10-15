@@ -44,6 +44,7 @@ function cleanJob(root) {
   const s = F.cli(root, ['task', 'start', 'T1']);
   F.write(s.worktree, 'src/add.js', `module.exports = (a, b) => a + b; // ${J}\n`);
   F.sh(s.worktree, 'git commit -qam fix');
+  F.built(root, 'T1'); // the builder replied done (the runner records it)
   F.cli(root, ['task', 'verify', 'T1']);
   F.record(root, F.envelope(b, 'ok', { tasks: [{ id: 'T1', outcome: 'done', attempts: 1 }] }));
   next(root);

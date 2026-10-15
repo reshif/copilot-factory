@@ -27,6 +27,7 @@ function toProve(root, { policyChecks } = {}) {
   const s = F.cli(root, ['task', 'start', 'T1']);
   F.write(s.worktree, 'src/add.js', 'module.exports = (a, b) => a + b;\n');
   F.sh(s.worktree, 'git commit -qam fix');
+  F.built(root, 'T1'); // the builder replied done (the runner records it)
   F.cli(root, ['task', 'verify', 'T1']);
   F.record(root, F.envelope(b, 'ok', { tasks: [{ id: 'T1', outcome: 'done', attempts: 1 }] }));
   next(root);
@@ -54,6 +55,7 @@ test('row 5: a failing proof opens a verify-fix round; the cap parks; resume all
     const s = F.cli(root, ['task', 'start', 'T1']);
     F.write(s.worktree, 'src/add.js', `module.exports = (a, b) => a + b; // try ${i}\n`);
     F.sh(s.worktree, 'git commit -qam retry');
+    F.built(root, 'T1'); // the builder replied done (the runner records it)
     F.cli(root, ['task', 'verify', 'T1']);
     F.cli(root, ['reconcile', 'run']);
     const b = F.cli(root, ['wfargs', 'reconcile']);
@@ -137,6 +139,7 @@ test('review rounds cap parks with confirmed findings still open', () => {
       const s = F.cli(root, ['task', 'start', 'T1']);
       F.write(s.worktree, 'src/add.js', `module.exports = (a, b) => a + b; // r${round}\n`);
       F.sh(s.worktree, 'git commit -qam r');
+      F.built(root, 'T1'); // the builder replied done (the runner records it)
       F.cli(root, ['task', 'verify', 'T1']);
       F.cli(root, ['reconcile', 'run']);
       const b = F.cli(root, ['wfargs', 'reconcile']);
@@ -164,6 +167,7 @@ test('convergence: from round 2 a new major on unchanged code becomes minor', ()
   const s = F.cli(root, ['task', 'start', 'T1']);
   F.write(s.worktree, 'src/add.js', 'module.exports = (a, b) => a + b; // fixed A\n');
   F.sh(s.worktree, 'git commit -qam fixA');
+  F.built(root, 'T1'); // the builder replied done (the runner records it)
   F.cli(root, ['task', 'verify', 'T1']);
   F.cli(root, ['reconcile', 'run']);
   b = F.cli(root, ['wfargs', 'reconcile']);
