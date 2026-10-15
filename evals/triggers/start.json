@@ -1,0 +1,23 @@
+{
+  "skill": "start",
+  "should_trigger": [
+    "Use the factory to fix the bug where the cart total ignores discount codes.",
+    "Have the software factory build a CSV export for the orders page.",
+    "Continue the current factory job.",
+    "factory: add rate limiting to the login endpoint",
+    "Run this change through the factory: rename the config flag `beta` to `preview` everywhere.",
+    "Can the factory take this one? Users want dark mode on the settings page.",
+    "Pick up where the factory left off on J-0004.",
+    "Start a factory job to migrate the date handling from moment to date-fns."
+  ],
+  "should_not_trigger": [
+    "Fix this failing test in tests/cart.test.js.",
+    "Add a docstring to the parse_config function.",
+    "Rename the variable `tmp` to `buffer` in src/io.js.",
+    "What does this repository do?",
+    "Write a unit test for the add function.",
+    "Refactor this loop into a map call.",
+    "Why is my build failing on CI?",
+    "Explain how the router in this project works."
+  ]
+}

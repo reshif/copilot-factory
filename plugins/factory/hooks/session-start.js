@@ -39,7 +39,6 @@ function agentNote(agent) {
   return [
     `[factory] You are ${who}${agent.job ? ` for job ${agent.job}` : ''}, started by \`factory run\`. Do the task in your brief and nothing else.`,
     `[factory] Run only the factory commands your brief gives you (the CLI is ${cmd}). Never run factory next, run, record, wfargs, ship, close, init, job new, amend, park, followup, epic or distill, and never a human-only command (approve, deny, resume, cancel, abandon, waive, merged, confirm, lessons accept/reject/promote, ci install): the guard refuses them. Driving the job is the main session's work.`,
-    '[factory] Your final message is the one JSON object your instructions describe, nothing else.',
   ].join('\n');
 }
 

@@ -152,7 +152,9 @@ function doctor(cwd) {
     const cur = job.current(root);
     add('current job', true, cur || '(none)');
   }
-  copilotChecks(add);
+  copilotChecks(add, root);
+  const ap = root ? require('./autopilot').recent(root) : null;
+  if (ap) add('copilot autopilot', false, `Autopilot continuations were seen in this project (last ${ap.last_at}): Autopilot keeps going past the factory's stops. Use interactive mode for factory work`, 'warning');
   const rc = recipes.checkAll();
   for (const [id, errs] of Object.entries(rc)) add(`recipe ${id}`, errs.length === 0, errs.length ? errs.join('; ') : 'valid');
   const ready = checks.every((c) => c.ok || c.level !== 'error');
@@ -170,7 +172,7 @@ function readJsonc(file) {
   }
 }
 
-function copilotChecks(add) {
+function copilotChecks(add, root) {
   const bin = process.env.COPILOT_BIN || 'copilot';
   const [file, args, shell] = require('./runner').command(bin, ['--version']); // same resolution as factory run (copilot.cmd on Windows)
   const v = spawnSync(file, args, { encoding: 'utf8', timeout: 20000, ...(shell ? { shell: true, windowsVerbatimArguments: true } : {}) });
@@ -184,7 +186,18 @@ function copilotChecks(add) {
   const st = readJsonc(path.join(home, 'settings.json'));
   if (st) {
     const perm = st.permissions || {};
-    if (perm.disableBypassPermissionsMode === 'disable' || perm.disableBypassPermissionsMode === 'allow-auto-only') add('copilot allow-all flags', false, `permissions.disableBypassPermissionsMode is "${perm.disableBypassPermissionsMode}": factory run passes --allow-all-tools to its agents, which this setting suppresses, so headless agents may stall on permissions`, 'warning');
+    // factory run pre-approves each role's own tools with --allow-tool, which this setting
+    // leaves alone; it only suppresses policy.copilot.permissions "allow-all".
+    if (perm.disableBypassPermissionsMode === 'disable' || perm.disableBypassPermissionsMode === 'allow-auto-only') {
+      let mode = null;
+      try {
+        mode = ((require('./policy').load(root) || {}).copilot || {}).permissions || null;
+      } catch {
+        mode = null;
+      }
+      const allowAll = mode === 'allow-all';
+      add('copilot allow-all flags', !allowAll, allowAll ? `permissions.disableBypassPermissionsMode is "${perm.disableBypassPermissionsMode}" and policy.copilot.permissions is "allow-all": Copilot suppresses --allow-all-tools, so headless agents may stall on permissions. Use the default per-role permissions` : `permissions.disableBypassPermissionsMode is "${perm.disableBypassPermissionsMode}": fine, factory run pre-approves each agent's own tools with --allow-tool`, 'warning');
+    }
     if (st.askUser === false) add('copilot askUser', false, `${path.join(home, 'settings.json')} sets askUser: false: sessions work without asking you anything, so factory questions and gates can be skipped. Remove it for factory work`, 'warning');
   }
 }

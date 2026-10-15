@@ -1,6 +1,6 @@
 ---
 name: amend
-description: "Factory amendment — change an approved contract or plan when requirements change, with an impact summary and the user's approval; only affected tasks are rebuilt. Use when the user says requirements changed during a job, or when `factory next` returns skill amend."
+description: "Changes an approved factory contract or plan through an amendment the user approves; only affected tasks are rebuilt. Use when the user says requirements changed during a factory job, or when `factory next` returns skill amend. Not for changes before the contract is approved: clarify handles those."
 user-invocable: false
 ---
 # Amend

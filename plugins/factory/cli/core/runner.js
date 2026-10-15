@@ -6,7 +6,8 @@
 // agent() call spawns one non-interactive Copilot CLI session as the role's custom agent:
 //
 //   copilot -p <pointer to the prompt file> --agent factory:<role> [--model <id>]
-//           --output-format json -s --no-ask-user --allow-all-tools
+//           --output-format json -s --no-ask-user
+//           --allow-tool=<the role's kinds> --deny-tool=<the rest>   (toolPermissions below)
 //           --add-dir <project root> --add-dir <plugin root> [--session-id <uuid>]
 //           [policy.copilot.flags…]
 //
@@ -19,9 +20,15 @@
 // Flags, from the official docs (gh-docs/content/copilot/…):
 //   -p, -s, --agent, --model, --no-ask-user, --output-format json (JSONL), --add-dir:
 //     reference/copilot-cli-reference/cli-programmatic-reference.md "Command line options"
-//   --allow-all-tools ("Required when using the CLI programmatically"), --session-id
-//     (resumes an existing session id; creates one for a new valid UUID), -C, --plugin-dir:
-//     reference/copilot-cli-reference/cli-command-reference.md "Command-line options"
+//   --session-id (resumes an existing session id; creates one for a new valid UUID), -C,
+//     --plugin-dir: reference/copilot-cli-reference/cli-command-reference.md "Command-line options"
+//   --allow-tool / --deny-tool with Kind(argument) patterns (shell, write, url, memory; deny
+//     always beats allow, repeated flags add up): cli-command-reference.md "Tool permission
+//     patterns", cli-programmatic-reference.md "Tools for the --allow-tool option". -p can't
+//     ask, so a tool call nothing pre-approves is refused ("Permission denied because no
+//     interactive user response was available"). Verified on CLI 1.0.97 with a mock model:
+//     a builder edits, creates and runs tests; a reviewer's shell can't commit, touch or
+//     sed -i and has no write tool; web_fetch needs url; git push is refused for every role.
 //   --agent <plugin>:<agent> works headless for installed plugins: copilot-cli/changelog.md
 //     (1.0.81). A custom agent's frontmatter `model` beats --model (programmatic reference,
 //     "Model precedence"), so agents/*.md must not pin a model for escalation to work.
@@ -67,6 +74,7 @@ function settings(root, state) {
     modelIds: (pol.agents || {}).model_ids || {},
     timeoutSec: num(cp.agent_timeout_seconds, 1800),
     resumeForRetry: cp.resume_for_retry !== false,
+    copilot: cp,
     flags: (Array.isArray(cp.flags) ? cp.flags : []).map((f) => String(f).replace(/\{plugin_root\}/g, PLUGIN_ROOT).replace(/\{root\}/g, root)),
   };
 }
@@ -218,7 +226,81 @@ function addDirs(root) {
   return dirs;
 }
 
-function copilotArgs({ prompt, agentType, model, root, sessionId, flags }) {
+// ---------------------------------------------------------------- tool permissions
+
+// Each agent gets pre-approval only for the kinds of tool its `tools:` list gives it, derived
+// from agents/<role>.agent.md at run time (so a change to a role's tools changes its flags):
+//   execute → shell          edit → write          web / web_fetch → url
+// and an explicit deny for every kind it does not have. Shell is the hole in "read-only":
+// a reviewer runs tests, and a test runner can write. So read-only roles also get a deny
+// list of the shell commands that change the repo or its history; that is defence in depth
+// (with the guard hook and `factory record` re-checking everything), not a sandbox.
+const NEVER_SHELL = ['git push', 'gh']; // no agent pushes or talks to GitHub: ship is the CLI's
+const READ_ONLY_SHELL = [
+  'git commit', 'git add', 'git rm', 'git mv', 'git reset', 'git checkout', 'git switch', 'git restore',
+  'git merge', 'git rebase', 'git cherry-pick', 'git revert', 'git stash', 'git clean', 'git apply', 'git am',
+  'git tag', 'git worktree', 'git update-ref', 'git config',
+  'rm', 'rmdir', 'mv', 'cp', 'touch', 'mkdir', 'tee', 'truncate', 'dd', 'chmod', 'chown', 'ln',
+  'sed -i', 'perl -i', 'npm install', 'npm i', 'npm uninstall', 'npm publish', 'yarn add', 'pnpm add', 'pip install',
+];
+const shellRule = (stem) => [`shell(${stem})`, `shell(${stem}:*)`]; // the bare command, and with arguments
+
+function agentTools(role) {
+  for (const f of [pluginPath('agents', `${role}.agent.md`), pluginPath('agents', `${role}.md`)]) {
+    let text;
+    try {
+      text = fs.readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+    const line = fm && /^tools:\s*(.+)$/m.exec(fm[1]);
+    if (!line) return [];
+    try {
+      const v = JSON.parse(line[1].trim());
+      return Array.isArray(v) ? v.map(String) : [];
+    } catch {
+      return line[1].replace(/[[\]"']/g, '').split(',').map((t) => t.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+// { allow: [...], deny: [...] } for one role. policy.copilot.allow_tools / deny_tools
+// ({ "<role>" | "*": [pattern…] }) add patterns; policy.copilot.permissions "allow-all"
+// restores the old --allow-all-tools (deny patterns from the policy still apply).
+function toolPermissions(role, tools, cp = {}) {
+  const has = (...names) => names.some((n) => tools.includes(n));
+  const extra = (key) => {
+    const m = cp[key] && typeof cp[key] === 'object' ? cp[key] : {};
+    return [...(Array.isArray(m['*']) ? m['*'] : []), ...(Array.isArray(m[role]) ? m[role] : [])].map(String);
+  };
+  const shell = has('execute', 'shell', 'bash');
+  const write = has('edit', 'write', 'create');
+  const web = has('web', 'web_fetch');
+  if (cp.permissions === 'allow-all') return { allowAll: true, allow: extra('allow_tools'), deny: extra('deny_tools'), shell, write, web };
+  const allow = [...(shell ? ['shell'] : []), ...(write ? ['write'] : []), ...(web ? ['url'] : []), ...extra('allow_tools')];
+  const deny = [
+    'memory',
+    ...(shell ? NEVER_SHELL.flatMap(shellRule) : ['shell']),
+    ...(write ? [] : ['write']),
+    ...(web ? [] : ['url']),
+    ...(shell && !write ? READ_ONLY_SHELL.flatMap(shellRule) : []),
+    ...extra('deny_tools'),
+  ];
+  return { allowAll: false, allow: [...new Set(allow)], deny: [...new Set(deny)], shell, write, web };
+}
+
+const permissionArgs = (perm) =>
+  !perm
+    ? ['--allow-all-tools'] // no role given (only a caller outside the runner): the old behaviour
+    : [
+        ...(perm.allowAll ? ['--allow-all-tools'] : []),
+        ...perm.allow.map((p) => `--allow-tool=${p}`),
+        ...perm.deny.map((p) => `--deny-tool=${p}`),
+      ];
+
+function copilotArgs({ prompt, agentType, model, root, sessionId, flags, permissions }) {
   return [
     '-p', prompt,
     '--agent', agentType,
@@ -226,7 +308,7 @@ function copilotArgs({ prompt, agentType, model, root, sessionId, flags }) {
     '--output-format', 'json',
     '-s',
     '--no-ask-user',
-    '--allow-all-tools',
+    ...permissionArgs(permissions),
     ...addDirs(root).flatMap((d) => ['--add-dir', d]),
     ...(sessionId ? ['--session-id', sessionId] : []),
     ...flags,
@@ -420,10 +502,11 @@ async function runAgent(ctx, prompt, opts) {
       return null;
     }
     const sessionId = S.resumeForRetry ? crypto.randomUUID() : null;
+    const perm = toolPermissions(role, agentTools(role), S.copilot);
     const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
     const spawnOnce = async (text, retryTurn = false) => {
       if (ctx.unavailable) throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
-      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags }), { cwd, env, timeoutSec: Math.max(1, left()) });
+      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm }), { cwd, env, timeoutSec: Math.max(1, left()) });
       const u = unavailable(r);
       if (u) {
         if (!ctx.unavailable) events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, cwd, ms: r.ms, exit: r.code, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [u.detail] });
@@ -469,6 +552,7 @@ async function runAgent(ctx, prompt, opts) {
       spawns: runs.length,
       outcome,
       ...(capSec ? { time_cap_sec: capSec } : {}),
+      ...(result && typeof result.verdict === 'string' ? { verdict: result.verdict } : {}), // god-eye's approve/revise, for telemetry
       ...(result ? {} : { errors: (last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${String(last.stderr || '').trim().slice(-300)}`] : errors).slice(0, 5) }),
     };
     ctx.runs.push(rec);
@@ -498,8 +582,12 @@ function plannedAgents(ctx) {
     const cwd = cwdFor(ctx, { label }, { prepare: false });
     const full = `${prompt}${replyBlock(schema)}`;
     const file = promptFile(ctx, label); // the path the real run would write; nothing is written here
-    const [exe, argv] = command(S.bin, copilotArgs({ prompt: pointer(file), agentType: spec.agent_type, model, cwd, root: ctx.root, sessionId: S.resumeForRetry ? '<uuid>' : null, flags: S.flags }));
-    items.push({ label, agent_type: spec.agent_type, model: spec.model || null, model_id: model, cwd, prompt_file: file, prompt: full, command: [S.bin, ...copilotArgs({ prompt: pointer(file), agentType: spec.agent_type, model, cwd, root: ctx.root, sessionId: S.resumeForRetry ? '<uuid>' : null, flags: S.flags })], spawn: [exe, ...argv] });
+    const role = roleOf(spec.agent_type);
+    const tools = agentTools(role);
+    const perm = toolPermissions(role, tools, S.copilot);
+    const argv0 = copilotArgs({ prompt: pointer(file), agentType: spec.agent_type, model, cwd, root: ctx.root, sessionId: S.resumeForRetry ? '<uuid>' : null, flags: S.flags, permissions: perm });
+    const [exe, argv] = command(S.bin, argv0);
+    items.push({ label, agent_type: spec.agent_type, model: spec.model || null, model_id: model, cwd, prompt_file: file, prompt: full, tools, permissions: { allow: perm.allow, deny: perm.deny, allow_all: perm.allowAll }, command: [S.bin, ...argv0], spawn: [exe, ...argv] });
   };
   if (b.workflow === 'realize') {
     for (const id of Object.keys(b.tasks || {})) {
@@ -906,4 +994,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { run, distillWrite, runAgent, execute, extractJson, replyText, copilotArgs, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };
+module.exports = { run, distillWrite, runAgent, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };

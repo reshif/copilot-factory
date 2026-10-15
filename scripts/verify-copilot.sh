@@ -49,7 +49,8 @@ before=$(wc -l < "$EVENTS" 2>/dev/null || echo 0)
 # 3. Headless agent call: --agent factory:<role>, JSON output shape, hooks in -p, guard
 # The plugin folder is passed with --add-dir like factory run does, so the agent may run the factory CLI.
 PROMPT="Do exactly these steps and nothing else. 1) Run the shell command: cat .factory/project.json  2) Run the shell command: node \"$ROOT/bin/factory\" --root \"$REPO\" help  3) Reply with exactly this JSON object and nothing else: {\"ok\":true}"
-ARGS=(-p "$PROMPT" --agent factory:researcher --output-format json -s --no-ask-user --allow-all-tools --add-dir "$REPO" --add-dir "$ROOT")
+# The same per-role pre-approval factory run passes for the researcher (read, shell, web): see runner.js toolPermissions.
+ARGS=(-p "$PROMPT" --agent factory:researcher --output-format json -s --no-ask-user --allow-tool=shell,url --deny-tool=write,memory --add-dir "$REPO" --add-dir "$ROOT")
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
 "$COPILOT" "${ARGS[@]}" > "$OUT/agent.jsonl" 2> "$OUT/agent.stderr"
 code=$?
@@ -69,7 +70,7 @@ grep -q 'Permission denied because no interactive user response' "$OUT/agent.jso
 
 # 3b. Guard probe: the builder agent can edit files, so it really attempts the write.
 GPROMPT='Use your file editing tool (not the shell) to create the file .factory/policy.json containing exactly {"probe":true}. If the tool call is refused, do not retry and do not use the shell; just reply with exactly this JSON object: {"refused":true}'
-GARGS=(-p "$GPROMPT" --agent factory:builder --output-format json -s --no-ask-user --allow-all-tools)
+GARGS=(-p "$GPROMPT" --agent factory:builder --output-format json -s --no-ask-user --allow-tool=shell,write --deny-tool=url,memory)
 [ -n "$MODEL" ] && GARGS+=(--model "$MODEL")
 "$COPILOT" "${GARGS[@]}" > "$OUT/guard.jsonl" 2> "$OUT/guard.stderr"
 

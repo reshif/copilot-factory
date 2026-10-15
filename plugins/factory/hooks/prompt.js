@@ -17,7 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safe, context, findRoot, runnerAgent, isContinuation } = require('./lib');
+const { safe, context, findRoot, runnerAgent, isContinuation, isAutopilot } = require('./lib');
 
 function writeLastReply(root, rec) {
   try {
@@ -45,7 +45,18 @@ function writeTurn(root, rec) {
 }
 
 safe((input) => {
-  if (runnerAgent() || isContinuation(input.prompt)) return;
+  if (runnerAgent()) return;
+  // Autopilot's own continuation prompt: Autopilot is on. Record it for factory next / doctor.
+  if (isAutopilot(input.prompt)) {
+    const r = findRoot(input.cwd);
+    if (r) {
+      const rec = require('../cli/core/autopilot').record(r, { session: input.sessionId || null });
+      if (rec.count === 1) require('../cli/core/events').append(r, { event: 'autopilot_seen', session: rec.session });
+      context(`[factory] ${require('../cli/core/autopilot').warning(rec)}`);
+    }
+    return;
+  }
+  if (isContinuation(input.prompt)) return;
   const root0 = findRoot(input.cwd);
   const human = require('../cli/core/human');
   const parsed = human.parseReply(input.prompt);

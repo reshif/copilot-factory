@@ -41,7 +41,7 @@ All 11 factory skills and the inspector's `inspect` skill keep their names, dire
 | `distill` starts `factory:lesson-writer` with the Agent tool | `factory distill write` starts it as its own `copilot -p --agent factory:lesson-writer` process through `runner.js` (the flags, add-dirs, model mapping and `FACTORY_*` environment of `factory run`), so it works in every harness: VS Code's Local harness can't start a plugin agent through the `task` tool (it has `runSubagent`, with the agent's bare name) | agents-skills §2.1; VS Code agents/run/subagents.md |
 | `console`: `factory console --serve` with the Bash tool's `run_in_background` | "Run it as a background shell command" (the CLI's shell tools include `read_bash` and `stop_bash` for long-running commands) | agents-skills §1.3 |
 | Claude Code's Stop hook refuses a false "done" | A stop gate based on job state (see §5); the skills say to stop only at gate / wait / parked / done or after asking questions | hooks §8 #7 |
-| — | `start` forbids Autopilot (it auto-answers questions and permission prompts) | surfaces-patterns §4 #9 |
+| — | Autopilot is detected (its continuation prompt, seen by the reply hook) and `factory next` / `factory doctor` warn; `start` shows the warning and stops | surfaces-patterns §4 #9 |
 
 ## 3. Agents
 

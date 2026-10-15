@@ -1,6 +1,6 @@
 ---
 name: why
-description: "Show why a factory job took the path it did — every routing decision, the rule behind it, and the first failing check. Use when the user types /factory:why or asks why the factory did something."
+description: "Explains why a factory job took its path: each routing decision, the rule behind it and the first failing check. Use when the user types /factory:why or asks why the factory did something. Not for why a test, build or CI run failed: debug those directly."
 argument-hint: "[job id, e.g. J-0003 — defaults to the current job]"
 ---
 # Why did the factory do that?

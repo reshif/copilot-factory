@@ -1,9 +1,11 @@
 ---
 name: ship
-description: "Factory ship — check pre-ship floors, write the completion report, commit the ship manifest, push and open the PR (or prepare a local merge), then wait for the human merge. Used by the start skill when `factory next` returns skill ship."
+description: "Opens the pull request or local merge for a factory job whose pre-ship floors are met, and waits for the human merge. Use when `factory next` returns skill ship. Not for pushing or merging work outside a factory job."
 user-invocable: false
 ---
 # Ship
+
+Floors and the CI re-verify floor are defined in the start skill's [glossary](../start/references/glossary.md).
 
 1. Run `factory ship`. It refuses unless every pre-ship floor is met (it lists the missing ones — then run `factory next`, which routes to the missing step).
    - With a GitHub remote and an authenticated `gh`, it pushes the job branch and opens a PR whose body is the completion report (templates/docs/ship-report.md: what changed, AC → evidence, design record, risk, rollout and rollback). It also refreshes the job's `docs-index.md` (contract → design → plan → evidence traceability).

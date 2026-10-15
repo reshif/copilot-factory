@@ -1,0 +1,9 @@
+{
+  "description": "A profile view that renders fetched data with no loading or error state (planted for the ux lane).",
+  "kind": "challenge",
+  "lanes": ["ux", "code"],
+  "contract": { "goal": "The profile page shows the user's name and email from /api/me.", "ac": "- AC-1: Profile renders the name and email returned by /api/me (evidence: test)", "verify": "`node tests/smoke.js` (AC-1)" },
+  "defects": [
+    { "id": "no-loading", "lane": "ux", "file": "src/ui/Profile.jsx", "keywords": ["loading", "spinner", "skeleton", "pending", "error state", "while fetching", "before the data", "undefined", "null"], "severity_min": "minor" }
+  ]
+}

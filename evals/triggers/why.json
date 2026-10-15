@@ -1,0 +1,23 @@
+{
+  "skill": "why",
+  "should_trigger": [
+    "Why did the factory park J-0004?",
+    "Why did the factory send my job back to the design step?",
+    "Explain the factory's routing decisions for the current job.",
+    "Why did the factory open another fix round?",
+    "What rule made the factory skip the threat model?",
+    "Show me why the factory job took this path.",
+    "Why is the factory waiting at H3?",
+    "Which check failed first in the factory's last decision?"
+  ],
+  "should_not_trigger": [
+    "Why did my test fail?",
+    "Why did CI fail on the last push?",
+    "Why is this function slow?",
+    "Why does npm install fail with EACCES?",
+    "Why did git reject my push?",
+    "Why does this regex not match?",
+    "Explain why this code throws a TypeError.",
+    "Why is the build output so large?"
+  ]
+}

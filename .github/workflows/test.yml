@@ -1,5 +1,8 @@
 name: test
 
+# Tier 0 (static quality lints: tests/quality-lint.test.js, packaging.test.js) and Tier 1
+# (contract tests, harness logic) on every PR, no model cost. Tier 2/3 run in evals.yml.
+
 on:
   push:
     branches: [main]

@@ -1,0 +1,10 @@
+{
+  "description": "A test that mocks away the function it claims to test, so it can never fail (planted for the test lane).",
+  "kind": "challenge",
+  "lanes": ["tests", "code"],
+  "contract": { "goal": "Orders over 100 get a 10% discount via applyDiscount.", "ac": "- AC-1: applyDiscount(200) returns 180 and applyDiscount(50) returns 50 (evidence: test)", "verify": "`node tests/price.test.js` (AC-1)" },
+  "defects": [
+    { "id": "mock-away", "lane": "tests", "file": "tests/price.test.js", "keywords": ["mock", "stub", "replac", "tautolog", "never fail", "does not test", "doesn't test", "not exercis", "overrid"], "severity_min": "major" },
+    { "id": "boundary", "lane": "code", "file": "src/price.js", "line": 2, "keywords": [">=", "boundary", "100", "greater than or equal", "off-by-one"], "severity_min": "minor", "optional": true }
+  ]
+}

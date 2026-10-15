@@ -414,7 +414,7 @@ test('agent sessions: a short role note at session start, no reply parsing, no c
   assert.match(note, new RegExp(`factory agent "tester" for job ${J}`));
   assert.match(note, /never run factory next, run, record, wfargs, ship, close/i);
   assert.match(note, /approve/);
-  assert.match(note, /one JSON object/);
+  assert.doesNotMatch(note, /one JSON object/, 'the strict reply block of the runner owns the JSON-only rule');
   assert.doesNotMatch(note, /Current job|factory:start/, 'never told to drive the job');
   // the prompt hook does nothing in an agent: no reply applied, the main session's counter kept
   fs.writeFileSync(path.join(root, '.factory', 'stop-blocks.json'), JSON.stringify({ blocked: ['J-0001-D0001'], at: new Date().toISOString() }));
@@ -650,6 +650,28 @@ test('agentStop: block reasons and Autopilot continuations fed back as prompts a
   prompt(root, 'resume');
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.factory', 'turn.json'), 'utf8')).factory, true);
   assert.ok(fs.existsSync(path.join(root, '.factory', 'stop-blocks.json')), 'prompts never reset the blocked-decisions record');
+});
+
+test('Autopilot: its continuation prompt is recorded; factory next and doctor warn while it is recent', () => {
+  const root = F.makeRepo();
+  F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
+  assert.equal(F.cli(root, ['next']).autopilot, undefined, 'nothing seen, no warning');
+  assert.ok(!F.cli(root, ['doctor']).checks.some((c) => c.name === 'copilot autopilot'));
+  const r = prompt(root, 'You have not yet marked the task as complete using the task_complete tool. Continue.');
+  assert.match(r.stdout, /Autopilot was detected/, 'the agent is told at once');
+  prompt(root, 'You have not yet marked the task as complete using the task_complete tool. Continue.');
+  const rec = JSON.parse(fs.readFileSync(path.join(root, '.factory', 'autopilot.json'), 'utf8'));
+  assert.equal(rec.count, 2);
+  const ev = fs.readFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).filter((e) => e.event === 'autopilot_seen');
+  assert.equal(ev.length, 1, 'one event per session');
+  const n = F.cli(root, ['next']);
+  assert.match(n.autopilot.warning, /switch back to interactive mode/);
+  assert.equal(F.cli(root, ['doctor']).checks.find((c) => c.name === 'copilot autopilot').level, 'warning');
+  // an old sighting no longer warns
+  rec.last_at = new Date(Date.now() - 7 * 3600 * 1000).toISOString();
+  fs.writeFileSync(path.join(root, '.factory', 'autopilot.json'), JSON.stringify(rec));
+  assert.equal(F.cli(root, ['next']).autopilot, undefined);
+  assert.ok(!lib.isAutopilot('please continue') && lib.isAutopilot('You have not yet marked the task as complete using the task_complete tool'));
 });
 
 // --- guard: every false positive from the real-CLI reproduction is allowed ---------------------

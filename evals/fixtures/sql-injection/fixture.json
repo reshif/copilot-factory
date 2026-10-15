@@ -1,0 +1,9 @@
+{
+  "description": "A user lookup that builds SQL by string concatenation (planted SQL injection) for the security lane.",
+  "kind": "challenge",
+  "lanes": ["security", "code"],
+  "contract": { "goal": "Users can be looked up by name through findUserByName.", "ac": "- AC-1: findUserByName returns the matching user (evidence: test)", "verify": "`node tests/smoke.js` (AC-1)" },
+  "defects": [
+    { "id": "sqli", "lane": "security", "file": "src/users.js", "line": 7, "keywords": ["injection", "sql", "concatenat", "parameter", "escape", "sanitiz"], "severity_min": "major" }
+  ]
+}

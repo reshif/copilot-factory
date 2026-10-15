@@ -1,6 +1,6 @@
 ---
 name: intake
-description: "Factory intake — read the repo, restate the intent in one line, classify the work type, propose a risk level, decide job vs epic, confirm all of it with the user in one question, and create the job. Used by the start skill for a new request."
+description: "Turns a new factory request into a job with a confirmed one-line intent, work type and risk. Use when the start skill has a new request and no active job for it. Not for continuing an existing job."
 user-invocable: false
 ---
 # Intake

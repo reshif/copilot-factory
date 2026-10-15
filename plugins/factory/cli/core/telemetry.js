@@ -115,6 +115,90 @@ function jobMetrics(root, state, all) {
   };
 }
 
+// ---------------------------------------------------------------- quality (Tier 4)
+
+// Live quality signals from what the factory already logs, for the review skill:
+//   per role (agent_run lines): schema-correction-turn rate (runs that needed the runner's
+//     corrective turn) and null-result rate (runs that returned no valid object);
+//   per review lane (challenge ledger findings): the finding-verifier's refute rate;
+//   park reasons (decision records, by rule); God Eye's revise rate per focus (agent_run
+//     verdicts, logged by the runner since 0.3.2).
+const rate = (n, d) => (d ? Math.round((n / d) * 100) / 100 : null);
+
+function readEventLog(root) {
+  try {
+    return require('fs')
+      .readFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function focusOf(label) {
+  const m = /god-eye · (intent|design|plan)/.exec(String(label || ''));
+  return m ? m[1] : 'other';
+}
+
+function quality(root, { cutoff, jobIds, perJob }) {
+  const inWindow = (ts) => !ts || Date.parse(ts) >= cutoff;
+  const runs = readEventLog(root).filter((e) => e.event === 'agent_run' && inWindow(e.ts) && (!jobIds || jobIds.has(e.job)) && e.outcome !== 'copilot_unavailable');
+  const roles = {};
+  const godEye = {};
+  for (const e of runs) {
+    const role = e.role || String(e.agent_type || '').replace(/^factory:/, '') || 'unknown';
+    const r = (roles[role] = roles[role] || { runs: 0, correction_turns: 0, null_results: 0, outcomes: {} });
+    r.runs += 1;
+    if (e.retry) r.correction_turns += 1;
+    if (e.outcome !== 'ok') r.null_results += 1;
+    r.outcomes[e.outcome || 'unknown'] = (r.outcomes[e.outcome || 'unknown'] || 0) + 1;
+    if (role === 'god-eye' && e.outcome === 'ok' && e.verdict) {
+      const g = (godEye[focusOf(e.label)] = godEye[focusOf(e.label)] || { verdicts: 0, approve: 0, revise: 0 });
+      g.verdicts += 1;
+      if (e.verdict === 'approve') g.approve += 1;
+      else g.revise += 1;
+    }
+  }
+  for (const r of Object.values(roles)) {
+    r.correction_turn_rate = rate(r.correction_turns, r.runs);
+    r.null_result_rate = rate(r.null_results, r.runs);
+  }
+  for (const g of Object.values(godEye)) g.revise_rate = rate(g.revise, g.verdicts);
+  const lanes = {};
+  for (const m of perJob) {
+    for (const [lane, v] of Object.entries(m.lanes || {})) {
+      const l = (lanes[lane] = lanes[lane] || { raised: 0, verified: 0, refuted: 0, unverified: 0 });
+      l.raised += v.raised;
+      l.verified += v.confirmed + v.refuted + v.unverified;
+      l.refuted += v.refuted;
+      l.unverified += v.unverified; // the finding-verifier's `unverifiable` verdict lands here
+    }
+  }
+  for (const l of Object.values(lanes)) {
+    l.refute_rate = rate(l.refuted, l.verified);
+    l.unverified_rate = rate(l.unverified, l.verified);
+  }
+  const parks = {};
+  for (const d of decisions.all(root)) {
+    if (d.action !== 'parked' || !inWindow(d.ts) || (jobIds && !jobIds.has(d.job))) continue;
+    const rule = d.rule || 'parked';
+    const p = (parks[rule] = parks[rule] || { parks: 0, jobs: [], example: null });
+    p.parks += 1;
+    if (!p.jobs.includes(d.job)) p.jobs.push(d.job);
+    if (!p.example && d.reason) p.example = String(d.reason).slice(0, 200);
+  }
+  return { roles, lanes, parks, god_eye: godEye };
+}
+
 function report(root, { sinceDays = 30 } = {}) {
   const cutoff = Date.now() - sinceDays * DAY;
   const all = job
@@ -156,7 +240,8 @@ function report(root, { sinceDays = 30 } = {}) {
     ri.avg_time_to_h1_hours = ri.h1_jobs ? Math.round((ri.h1_hours / ri.h1_jobs) * 10) / 10 : null;
     for (const l of Object.values(r.lanes)) l.precision = l.confirmed + l.refuted ? Math.round((l.confirmed / (l.confirmed + l.refuted)) * 100) / 100 : null;
   }
-  const out = { generated_at: nowIso(), since_days: sinceDays, jobs: metrics.length, by_recipe: byRecipe, per_job: metrics };
+  const q = quality(root, { cutoff, jobIds: new Set(jobs.map((j) => j.id)), perJob: metrics });
+  const out = { generated_at: nowIso(), since_days: sinceDays, jobs: metrics.length, by_recipe: byRecipe, per_job: metrics, quality: q };
   const month = new Date().toISOString().slice(0, 7);
   writeJson(path.join(project(root).telemetryDir, `${month}.json`), out);
   return out;
@@ -178,7 +263,19 @@ function toMarkdown(r) {
   for (const [id, x] of Object.entries(r.by_recipe)) {
     for (const [lane, l] of Object.entries(x.lanes)) L.push(`| ${id} | ${lane} | ${l.raised} | ${l.confirmed} | ${l.refuted} | ${l.unverified} | ${l.minor} | ${l.precision ?? '—'} |`);
   }
+  const q = r.quality;
+  if (q) {
+    L.push('', '## Quality signals', '', 'Format reliability per role, reviewer false positives, why jobs parked and how often God Eye sent work back. Read a sample of the transcripts behind any number that moves.', '');
+    L.push('| Role | Runs | Correction turns | Rate | Null results | Rate |', '|---|---|---|---|---|---|');
+    for (const [role, x] of Object.entries(q.roles).sort((a, b) => b[1].runs - a[1].runs)) L.push(`| ${role} | ${x.runs} | ${x.correction_turns} | ${x.correction_turn_rate ?? '—'} | ${x.null_results} | ${x.null_result_rate ?? '—'} |`);
+    L.push('', '| Lane | Findings raised | Verified | Refuted | Refute rate | Unverifiable | Unverifiable rate |', '|---|---|---|---|---|---|---|');
+    for (const [lane, x] of Object.entries(q.lanes)) L.push(`| ${lane} | ${x.raised} | ${x.verified} | ${x.refuted} | ${x.refute_rate ?? '—'} | ${x.unverified} | ${x.unverified_rate ?? '—'} |`);
+    L.push('', '| Park rule | Parks | Jobs | Example reason |', '|---|---|---|---|');
+    for (const [rule, x] of Object.entries(q.parks)) L.push(`| ${rule} | ${x.parks} | ${x.jobs.join(', ')} | ${(x.example || '').replace(/\|/g, '/')} |`);
+    L.push('', '| God Eye focus | Verdicts | Approve | Revise | Revise rate |', '|---|---|---|---|---|');
+    for (const [f, x] of Object.entries(q.god_eye)) L.push(`| ${f} | ${x.verdicts} | ${x.approve} | ${x.revise} | ${x.revise_rate ?? '—'} |`);
+  }
   return L.join('\n');
 }
 
-module.exports = { report, toMarkdown, jobMetrics };
+module.exports = { report, toMarkdown, jobMetrics, quality };

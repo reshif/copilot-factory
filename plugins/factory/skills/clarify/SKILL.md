@@ -1,9 +1,11 @@
 ---
 name: clarify
-description: "Factory clarify — draft the outcome contract intent first, run the clarify fan-out (scout phase that researches the repo and the web first, then the intent gate, three analysts, a judge and God Eye), show what research found and what the factory assumes, ask the user only what research can't answer, in a fixed order and budget, and loop until God Eye approves. Used by the start skill when `factory next` returns skill clarify."
+description: "Writes and settles a factory job's outcome contract, asking the user only what research can't answer. Use when `factory next` returns skill clarify, or a clarify round's result needs handling. Not for requirement questions outside a factory job."
 user-invocable: false
 ---
 # Clarify: write the outcome contract
+
+Terms such as God Eye, envelope and evidence-backed assumption are defined in the start skill's [glossary](../start/references/glossary.md).
 
 The contract lives at `.factory/jobs/<job>/contract.md` (`factory job show` prints the job; the path is in the job folder). It has fixed sections the CLI parses: **Intent, Goal, Non-goals, Acceptance criteria, Constraints, Allowed paths, Verify commands, Assumptions (evidence-backed), Assumptions**. The CLI writes **Assumptions (evidence-backed)** from the research (`- A-1: <statement> (evidence: E-1, E-2)`); never edit that section yourself — the user changes it with a reply.
 
@@ -29,8 +31,8 @@ Every clarify run starts with research, inside the same `factory run`: the inten
 - **Intent never defaults**: still unclear after 2 rounds of intent questions, the job parks for you instead of guessing. `resume` gives one more intent round.
 
 ## Round
-1. Run the clarify fan-out with `factory run fanout-judge --config clarify` (the start skill, section 3: run it once, wait for it, never start a second one, and handle a refusal `code` as that section says). It runs the analysts, the judge and God Eye as separate Copilot agents, records the result and prints it. Never write the envelope yourself.
-2. Act on the `status` line (top-level `status` = the recorded result) and the fields after it (questions, critique, problems, restatement, message) — never on `workflow.status`, which is only the workflow's own summary. The workflow can finish `ok` while the record still needs you (for example God Eye approved but the contract has problems):
+1. Run the round with `factory run fanout-judge --config clarify`, as the start skill's *Running a workflow* says (once, in the foreground; it handles refusal codes). It runs the scouts, analysts, the judge and God Eye as separate Copilot agents, records the result and prints it.
+2. This skill owns what a clarify result means. Act on the top-level `status` line and the fields after it, never on `workflow.status`: the workflow can finish `ok` while the record still needs you (for example God Eye approved but the contract has problems):
    - `needs_user` with `questions`: show **one screen**, in this order, then **stop**:
      1. **What I found** — the `findings` lines (3–8): claim, source (file:line or URL), date, verdict and confidence. Only a `confirmed` finding (or `unchecked` repo evidence, quoted from the file) is stated as fact; say "unverified" or "sources disagree" for the others, never present them as true.
      2. **What I'm assuming** — the `assumptions` lines: `A-n: statement (evidence: E-…)`. Tell the user once: reply `change A-n <value>` to override one, or `drop A-n` to remove it.
@@ -42,3 +44,17 @@ Every clarify run starts with research, inside the same `factory run`: the inten
    - `degraded` (shown only as the top-level status): an analyst failed twice — ask: re-run, or go on without that angle. To go on, add the missing angle under Assumptions and run the round again with `factory run fanout-judge --config clarify --accept-degraded`.
    - `ok`: God Eye approved and confirmed the intent. Tell the user its one-line restatement (problem → outcome), then return to the loop; `factory next` will present gate H1 (the gate shows the findings and assumptions with the contract).
    - `warnings` (low risk): grounding advice that doesn't block; mention it in one line.
+
+## Example screen
+A `needs_user` round with one finding, one assumption and two questions:
+
+> **What I found**
+> - E-1 · `add` lives in `src/add.js` and subtracts (`src/add.js:1`, today, confirmed)
+> - E-2 · ECMAScript `+` on two numbers is numeric addition (tc39.es/ecma262, 2026-10-14, unverified: no web access)
+>
+> **What I'm assuming**
+> - A-1: the fix belongs in `src/add.js` (evidence: E-1). Reply `change A-1 <value>` or `drop A-1` to override.
+>
+> **Questions** (the intent is settled; research couldn't reach the web, so your answer counts)
+> 1. Q-2 · Should `add` also accept numeric strings? Why: callers in `src/cart/` pass form values. Options: yes / no. (default: no — your call)
+> 2. Q-3 · Is `npm test` the verify command? Why: it proves AC-1. (default: `npm test` — evidence E-1)
