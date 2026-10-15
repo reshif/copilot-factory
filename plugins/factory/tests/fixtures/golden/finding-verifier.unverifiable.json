@@ -1,0 +1,1 @@
+{"finding_id":"security-1","status":"unverifiable","evidence":"src/greet.js:2 interpolates name unescaped; rg found no caller of greet in the repo.","reason":"Whether user input ever reaches greet depends on code outside this repository."}

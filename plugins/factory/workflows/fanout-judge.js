@@ -494,7 +494,8 @@ if (brief.config === 'challenge') {
     verifications = res.map((r, i) => (r ? { ...r, finding_id: serious[i].id } : null)).filter(Boolean)
   }
   const confirmed = verifications.filter((v) => v.status === 'confirmed').length
-  const summary = `${lanes.length}/${brief.fanout.length} lane(s) reviewed; ${serious.length} serious finding(s), ${confirmed} confirmed.${degraded.length ? ` Missing lanes: ${degraded.join(', ')}.` : ''}`
+  const unverifiable = verifications.filter((v) => v.status === 'unverifiable').length
+  const summary = `${lanes.length}/${brief.fanout.length} lane(s) reviewed; ${serious.length} serious finding(s), ${confirmed} confirmed${unverifiable ? `, ${unverifiable} unverifiable` : ''}.${degraded.length ? ` Missing lanes: ${degraded.join(', ')}.` : ''}`
   return envelope(degraded.length ? 'degraded' : 'ok', summary, { lanes, degraded, verifications }, { fingerprint: brief.fingerprint || null, lanes_requested: brief.lanes_requested || null })
 }
 

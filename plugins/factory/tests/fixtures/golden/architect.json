@@ -1,0 +1,1 @@
+{"kind":"adr","paths":[".factory/jobs/J-0001/adr-001-fix-add.md"],"summary":"Fix the operator in src/add.js in place; no new module.","rejected":[{"option":"Wrap add in a new math module","reason":"More code for the same behaviour; no criterion needs it."}]}

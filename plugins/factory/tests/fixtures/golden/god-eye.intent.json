@@ -1,0 +1,1 @@
+{"verdict":"approve","intent_confirmed":true,"restatement":{"problem":"add(2, 3) returns -1","who":"callers of src/add.js","outcome":"add returns the arithmetic sum","success":"tests/add.test.js passes"},"items":[],"researchable_questions":[],"ungrounded_claims":[]}

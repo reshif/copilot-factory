@@ -1,0 +1,1 @@
+{"lane":"code","findings":[{"id":"code-1","severity":"blocker","file":"src/add.js","line":1,"summary":"add subtracts, so add(2, 3) returns -1 and AC-1 is not met.","rule":null}]}

@@ -1,0 +1,6 @@
+{ "$comment": "lesson-writer (factory distill write): the lessons it recorded with factory lessons add, by the ids the command printed.",
+  "type": "object", "required": ["lessons"], "properties": {
+  "lessons": { "type": "array", "items": { "type": "object", "required": ["id"], "properties": {
+    "id": { "type": "string" }, "text": { "type": "string" } } } },
+  "nothing_to_learn": { "type": "boolean" },
+  "note": { "type": "string" } } }

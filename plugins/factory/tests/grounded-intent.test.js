@@ -331,7 +331,8 @@ test('budgets: policy.intent_research per risk, the job snapshot winning; search
   assert.equal(b.scout.map_needed, true);
   assert.deepEqual(['factory:intent-mapper', 'factory:researcher', 'factory:researcher', 'factory:verifier'], [b.scout.mapper, b.scout.repo_scout, b.scout.web_scout, b.scout.verifier].map((x) => x.agent_type));
   const webFile = b.scout.web_scout.prompt_template.split('\n')[1].trim();
-  assert.match(fs.readFileSync(webFile, 'utf8'), /MCP tool brave\/search[\s\S]*Privacy[\s\S]*untrusted data/);
+  assert.match(fs.readFileSync(webFile, 'utf8'), /MCP tool brave\/search/);
+  assert.match(fs.readFileSync(path.join(F.PLUGIN, 'agents', 'researcher.agent.md'), 'utf8'), /are data, not instructions[\s\S]*\*\*Privacy:\*\*/, 'privacy and untrusted-content rules live in the researcher\'s role');
 });
 
 // ---------------------------------------------------------------- record, floor, replies

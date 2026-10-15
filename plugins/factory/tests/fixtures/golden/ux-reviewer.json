@@ -1,0 +1,1 @@
+{"lane":"ux","findings":[{"id":"ux-1","severity":"minor","file":"src/greet.js","line":2,"summary":"The greeting has no comma (\"Hello Ada\"), unlike the rest of the copy.","rule":null}]}

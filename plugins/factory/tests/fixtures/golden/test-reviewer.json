@@ -1,0 +1,1 @@
+{"lane":"tests","findings":[{"id":"tests-1","severity":"major","file":"tests/add.test.js","line":2,"summary":"Only add(2, 3) is checked; zero and negative numbers, which AC-1 covers, are untested.","rule":null}]}

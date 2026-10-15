@@ -1,0 +1,4 @@
+{
+  "name": "tiny",
+  "engines": { "node": ">=18" }
+}

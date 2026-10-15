@@ -1,0 +1,1 @@
+{"valid":true,"errors":[],"path":".factory/jobs/J-0001/plan.json","summary":"T1 fixes src/add.js, proven by node tests/add.test.js (AC-1)."}

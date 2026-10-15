@@ -1,0 +1,1 @@
+{"topic":"codebase","claims":[{"claim":"add is implemented in src/add.js and subtracts its arguments.","source":"src/add.js:1"},{"claim":"The only test of add checks add(2, 3) === 5.","source":"tests/add.test.js:2"}],"unknowns":[{"question":"Do callers outside this repository depend on the current result?","blocking":false}]}
