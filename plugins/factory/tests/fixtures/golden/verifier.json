@@ -1,1 +1,0 @@
-{"verdicts":[{"evidence_id":"E-1","verdict":"confirmed","confidence":"high","reason":"src/add.js:1 has the quoted text word for word; no version applies to a repo line.","quote_found":true,"version_applies":true,"second_source":null}]}

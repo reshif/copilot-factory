@@ -1,9 +1,0 @@
-{ "$comment": "contract-editor (clarify): the full revised contract text, what was applied where, and what could not be applied without the user. The CLI validates and writes it when it records the round.",
-  "type": "object", "required": ["contract", "applied", "skipped"], "properties": {
-  "contract": { "type": "string", "minLength": 20 },
-  "applied": { "type": "array", "items": { "type": "object", "required": ["ref", "section", "change"], "properties": {
-    "ref": { "type": "string" }, "section": { "type": "string" }, "change": { "type": "string" } } } },
-  "skipped": { "type": "array", "items": { "type": "object", "required": ["ref", "reason"], "properties": {
-    "ref": { "type": "string" }, "reason": { "type": "string" }, "question": { "type": "string" }, "default": { "type": "string" } } } },
-  "removed": { "type": "array", "items": { "type": "object", "required": ["ref", "because"], "properties": {
-    "ref": { "type": "string" }, "because": { "type": "string" }, "text": { "type": "string" } } } } } }
