@@ -549,6 +549,12 @@ function realize(root, state, ctx, action) {
   const jc = jobContext(root, state);
   const sweep = Boolean((state.policy.agents || {}).sweep_check);
   const minutes = Math.max(1, Math.round(require('./runner').settings(root, state).timeoutSec / 60));
+  // The build environment, as the builder should know it: factory run sets it up in the
+  // worktree and starts the builder inside it; task verify runs every command inside it.
+  const E = require('./environment').loadSafe(root).env;
+  const envNote = E && ((E.setup || []).length || Object.keys(E.env || {}).length || E.prefix)
+    ? `\n- Build environment "${E.name || 'configured'}": factory run sets it up in your worktree before you start (${(E.setup || []).join(' && ') || 'no setup'}) and starts you inside it${Object.keys(E.env || {}).length ? ` (${Object.keys(E.env).join(', ')} set)` : ''}; task verify runs every verify command inside it${E.prefix ? `, as \`${E.prefix} <command>\`` : ''}. Run tests the same way, from your worktree, so they import your worktree's code. Don't reinstall or change the environment yourself; if it is broken, reply blocked and say so.`
+    : '';
   const tasks = {};
   for (const t of pending) {
     const wt = taskWorktree(root, state.id, t.id);
@@ -578,7 +584,7 @@ function realize(root, state, ctx, action) {
       ...(sweep ? { sweep: agentSpec(state, 'tester') } : {}),
       builder_prompt: prompt(
         'builder',
-        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\`\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${fixNote ? `\n${fixNote}` : ''}`,
+        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\`\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${envNote}${fixNote ? `\n${fixNote}` : ''}`,
         'Attempt {{attempt}}. What the previous attempt left (task verify\'s failing commands and output, or its builder\'s reply), if any:\n{{failures}}',
       ),
       ...(sweep

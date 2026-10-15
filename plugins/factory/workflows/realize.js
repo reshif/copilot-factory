@@ -97,12 +97,25 @@ function skipDependents() {
   }
 }
 
-for (let w = 0; w < brief.waves.length; w++) {
+// A broken build environment (a setup step or a service health check failed) is not a build
+// failure: the run stops before any builder spends an attempt on it, and the job parks once
+// with the reason.
+let envBroken = null
+
+for (let w = 0; w < brief.waves.length && !envBroken; w++) {
   skipDependents()
   let active = brief.waves[w].filter((id) => st[id] && st[id].outcome === 'pending')
   if (!active.length) continue
   phase(`realize: wave ${w + 1}/${brief.waves.length} (${active.join(', ')})`)
-  while (active.length) {
+  if (factory.prepare) {
+    for (const group of chunks(active, cap)) {
+      const res = await pipeline(group, (id) => factory.prepare(id))
+      const bad = res.find((r) => r && !r.ok)
+      if (bad && !envBroken) envBroken = { task: bad.task, ...(bad.broken || { reason: 'environment broken' }) }
+    }
+    if (envBroken) break
+  }
+  while (active.length && !envBroken) {
     const built = await runAll(active, (id) => {
       const s = st[id]
       const prompt = T[id].builder_prompt
@@ -153,6 +166,12 @@ for (let w = 0; w < brief.waves.length; w++) {
       s.attempts += 1
       const v = verified[id]
       checks.push({ task: id, attempt: s.attempts, pass: Boolean(v && v.pass), ...(v && v.error ? { refused: v.error.code } : {}) })
+      if (v && v.error && v.error.code === 'environment_broken') {
+        // not the builder's failure: the attempt is given back and the run stops
+        s.attempts -= 1
+        if (!envBroken) envBroken = { task: id, reason: v.error.message.split('\n')[0] }
+        continue
+      }
       if (v && v.pass) {
         s.outcome = 'done'
         continue
@@ -179,6 +198,24 @@ for (let w = 0; w < brief.waves.length; w++) {
 skipDependents()
 
 const tasks = Object.keys(T).map((id) => ({ id, outcome: st[id].outcome, attempts: st[id].attempts, summary: st[id].summary }))
+if (envBroken) {
+  return {
+    workflow: 'realize',
+    config: null,
+    mode: brief.scope || null,
+    job: brief.job,
+    status: 'park',
+    next_gate: null,
+    input_hash: brief.input_hash,
+    agents: roster,
+    budgets: { used: { agent_runs: runs }, limit: (brief.budgets && brief.budgets.limit) || {} },
+    artifacts: [],
+    questions: [],
+    park_reason: envBroken.reason,
+    summary: `Stopped: ${envBroken.reason}`,
+    data: { tasks, verifications: checks, environment_broken: envBroken },
+  }
+}
 const notDone = tasks.filter((t) => t.outcome !== 'done')
 return {
   workflow: 'realize',

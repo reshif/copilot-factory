@@ -494,6 +494,19 @@ function recRealize(root, state, env) {
   const reported = (env.data && env.data.tasks) || [];
   const ctx = steps.context(root, state, job.load);
   const table = [];
+  // A broken build environment parks the job once with its reason; tasks it stopped keep
+  // their state (no attempt was spent on it).
+  const eb = env.data && env.data.environment_broken;
+  if (eb) {
+    for (const r of reported.filter((x) => x.outcome !== 'pending')) {
+      const done = steps.taskDone(ctx, r.id);
+      state.tasks[r.id] = { ...(state.tasks[r.id] || {}), outcome: done ? 'done' : r.outcome, outcome_reason: r.summary || '', outcome_at: nowIso() };
+    }
+    job.save(root, state);
+    const reason = String(eb.reason || 'environment broken').slice(0, 1500);
+    require('./events').append(root, { event: 'environment_broken', job: state.id, task: eb.task || null, cmd: eb.cmd || null, code: eb.code === undefined ? null : eb.code, reason: reason.slice(0, 500) });
+    return { status: 'park', park_from: 'environment', park_reason: `${reason} — no builder attempt was spent. Fix the environment (factory env check shows it; factory env set changes it), then reply "resume".`, tasks: reported.map((r) => ({ id: r.id, outcome: r.outcome, attempts: r.attempts, summary: r.summary })), environment_broken: eb, message: 'Parked: the build environment is broken.' };
+  }
   for (const r of reported) {
     const done = steps.taskDone(ctx, r.id);
     const outcome = done ? 'done' : r.outcome === 'done' ? 'not_verified' : r.outcome;

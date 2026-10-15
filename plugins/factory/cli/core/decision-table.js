@@ -280,6 +280,16 @@ function decide(root, jobId) {
   if (notice) r.notice = notice;
   const ap = require('./autopilot').recent(root);
   if (ap) r.autopilot = { detected_at: ap.last_at, warning: require('./autopilot').warning(ap) };
+  // No build environment confirmed yet: the proposal rides along from H1 to the build, for
+  // the gate view to show and the human to confirm.
+  if (r.status === 'active' && (r.action === 'gate' || ['clarify', 'ground', 'decide', 'decompose', 'realize'].includes(r.step))) {
+    try {
+      const en = require('./environment').notice(root);
+      if (en) r.environment = en;
+    } catch {
+      /* the notice is advice; routing never depends on it */
+    }
+  }
   return r;
 }
 

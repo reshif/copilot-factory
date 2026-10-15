@@ -45,7 +45,11 @@ function run(root, jobId) {
   const fingerprint = ctx.b.fingerprint;
   const L = state.policy.limits;
   const { parsed, commands } = collectCommands(root, state);
-  const results = commands.map((c) => ({ ...runCommand(c.cmd, wt, { timeoutSec: L.command_timeout_seconds, reruns: L.flaky_reruns }), acs: c.acs }));
+  // inside the build environment, set up in the job worktree like in each task's
+  const envMod = require('./environment');
+  const E = envMod.ensure(root, state, { taskId: null, wt });
+  if (!E.ok) fail(`${E.broken.reason}\nThe environment is broken, not the build: fix it (factory env check, factory env set), then run factory next.`, 'environment_broken', E.broken);
+  const results = commands.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c.cmd), wt, { timeoutSec: L.command_timeout_seconds, reruns: L.flaky_reruns }), cmd: c.cmd, acs: c.acs }));
 
   const evidence = ledger.evidence(root, state.id, fingerprint);
   const anyEvidence = ledger.evidence(root, state.id);

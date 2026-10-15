@@ -244,14 +244,18 @@ function loops(job) {
 // ---------------------------------------------------------------- R7 driver fidelity
 // shim (a symlink on PATH) and console (a read-only snapshot / server) change no job state;
 // `intent show` only prints clarify's research.
-const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'clarify:status', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console']);
+const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'clarify:status', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console', 'env:show', 'env:check', 'env:propose']);
+// Steps `factory run` runs itself as child commands (via "run"): task verify after a builder,
+// the environment's setup in a worktree, the per-wave integration. Part of the workflow the
+// decision asked for, never the driver's improvisation.
+const RUNNER_STEPS = new Set(['task:verify', 'env:prepare', 'reconcile:wave']);
 // Human actions run from the user's own terminal, not driver commands: `factory assumption
 // change|drop` (the guard blocks agents from it). Judged by their human.* decision (R20), not R7.
 const HUMAN_ACTIONS = new Set(['assumption', 'finding']);
 // The human-only verbs. One that went through (ok, channel tty: the CLI accepted the terminal
 // as the user's, with the typed confirmation) is the user acting, a legitimate channel: not a
 // driver deviation. A refused attempt (human_only) is still judged: that was an agent trying.
-const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding', 'lessons:accept', 'lessons:reject', 'lessons:promote', 'clarify:split']);
+const HUMAN_VERBS = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding', 'env:set', 'lessons:accept', 'lessons:reject', 'lessons:promote', 'clarify:split']);
 
 function humanFromTerminal(e) {
   return e.event === 'cli' && e.ok !== false && (HUMAN_VERBS.has(cmdKey(e)) || HUMAN_VERBS.has(e.cmd));
@@ -259,7 +263,7 @@ function humanFromTerminal(e) {
 const MUTATING_IN_WAIT = new Set(['record', 'ship', 'task:start', 'task:verify', 'task:state', 'reconcile', 'verify', 'evidence', 'plan:from-contract', 'close', 'epic', 'amend', 'followup', 'distill:done', 'wfargs']);
 
 function cmdKey(e) {
-  if (e.cmd === 'task' || e.cmd === 'plan' || e.cmd === 'distill' || e.cmd === 'lessons' || e.cmd === 'clarify') return `${e.cmd}:${e.sub}`;
+  if (['task', 'plan', 'distill', 'lessons', 'clarify', 'env', 'reconcile'].includes(e.cmd)) return `${e.cmd}:${e.sub}`;
   return e.cmd;
 }
 
@@ -311,6 +315,7 @@ function driverFidelity(job) {
     for (const e of evs) {
       const k = cmdKey(e);
       if (READ_ONLY.has(k) || READ_ONLY.has(e.cmd) || HUMAN_ACTIONS.has(e.cmd) || humanFromTerminal(e)) continue;
+      if (e.via === 'run' && RUNNER_STEPS.has(k)) continue;
       // `factory run` logs its own wfargs / agent_run / record lines, which are judged here;
       // a `cmd: run` line is only written when the run failed before or around them, and a
       // failed run changed nothing by itself (R13 counts repeated failures).

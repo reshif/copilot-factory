@@ -151,6 +151,17 @@ function doctor(cwd) {
     add('ci', ci, ci ? 'factory-gate workflow present' : 'no CI re-verify workflow: run factory ci install (or re-verify locally with factory ci verify)', 'warning');
     const cur = job.current(root);
     add('current job', true, cur || '(none)');
+    // the build environment every worktree is set up with (factory env show / check)
+    const envMod = require('./environment');
+    const { env: e, error } = envMod.loadSafe(root);
+    if (error) add('build environment', false, error);
+    else if (e) {
+      const pr = envMod.problems((({ seal: _s, confirmed: _c, ...rest }) => rest)(e));
+      add('build environment', pr.length === 0, pr.length ? pr.join('; ') : `${e.name || 'set'} (${envMod.short(e)}): ${(e.setup || []).join(' && ') || 'no setup'}; factory env check runs it in a scratch worktree`);
+    } else {
+      const p = envMod.proposal(root);
+      add('build environment', p.name === 'none', p.name === 'none' ? 'none needed (no dependency manifest)' : `none confirmed; proposed ${p.name}: ${(p.setup || []).join(' && ')}. Reply "confirm environment ${envMod.short(p)}" or run factory env set; until then worktrees are bare`, 'warning');
+    }
   }
   copilotChecks(add, root);
   const ap = root ? require('./autopilot').recent(root) : null;

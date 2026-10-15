@@ -214,6 +214,7 @@ The hook also writes the outcome to `.factory/last-reply.json`. The next `factor
 | `confirm AC-3` | Confirm a criterion whose evidence type is `human`. |
 | `waive ci_reverify <reason>` · `waive ship_size <reason>` | The only waivable floors. |
 | `accept lesson L4` · `reject lesson L4 <why>` | Decide on a proposed lesson. |
+| `confirm environment <hash>` · `confirm environment none` | Use the proposed build environment (its setup runs in every worktree), or none. See [The build environment](#the-build-environment-what-each-worktree-runs-in). |
 | `dismiss finding code-1 <why>` · `accept finding code-1 <why>` | Settle a serious review finding no verifier could settle (it is carried from round to round and blocks ship). `dismiss`: not a problem. `accept`: a known risk that ships. The reason is required; it is recorded in the ledger and the completion report lists the finding as dismissed or accepted by you. From a terminal: `factory finding dismiss\|accept <id> --reason "…"` (typed code). |
 | `change A-3 <value>` (also `change A-3: …`, `change A-3 to …`) | Override an evidence-backed assumption from clarify's research: the contract's line becomes your value, marked "overridden by user". Before H1, clarify re-checks the contract and H1 is presented again; after H1 the approved contract changed, so `factory next` opens an amendment for your approval. |
 | `drop A-3` | Remove an evidence-backed assumption (same effect on H1 / amendment). |
@@ -286,6 +287,67 @@ Medium and high risk add the floor `intent_grounded`: every outside-world claim 
 **Floors** are the steps no recipe may skip at a risk level. Examples: contract approval, isolated builds, proof and code review everywhere; grounding, a design record, a validated plan and three review lanes from medium; a threat model, H2/H3, every lane and ship sign-off at high. They are enforced when a recipe loads, and again by `factory ship`, `factory close`, the stop gate and CI. See [`FLOORS.md`](plugins/factory/docs/FLOORS.md).
 
 **Evidence.** Builders work in per-task worktrees; only `factory task verify` produces task evidence, and only `factory verify run` proves criteria on the integrated build. `task verify` decides: in `factory run realize` the CLI runs it itself after each builder that replied, and its exit code is the task's pass or fail (no LLM tester reads it back; the optional sweep checker, `policy.agents.sweep_check`, only adds notes about the places the builder swept, on a cheap model, after a pass). The next attempt gets the raw result: the failing command, its exit code and the tail of its output. Retries continue instead of starting cold: the next attempt resumes the previous builder's Copilot session, the builder's brief says how long it has (commit as you go), a builder that runs out of time gets one short turn to commit and reply, and whatever it still left uncommitted is saved as a `wip:` commit on the task branch. Each task keeps its attempt history (`factory task show`: builder replies, session ids, verify results), so a later `factory run realize` continues at the next attempt number with the last failure. It counts only work a builder finished: `factory run` records each builder's reply, and verify refuses (`no_builder_result`) when this attempt's builder crashed, timed out, blocked or has not replied, and (`dependency_not_merged`) when the task branch lacks a declared or implied dependency. A task that ended blocked (or skipped, or not verified), or whose attempt changed files outside its paths, restarts from the job branch plus its dependencies; an exhausted task keeps its branch, so its next attempt continues from its commits (the old head is kept on a `refs/factory/restarts/…` ref); a dependency that does not merge is a typed `blocked: dependency_conflict` result, never retried. Builds happen only through `factory run realize`: there is no command to declare a task built by hand, because the main session is an agent too and such a command would let it vouch for work no builder finished; edits made by hand in a task worktree are not counted until a builder's attempt includes them. **Upgrading with a job mid-build:** a task whose attempts were started by an older factory (0.5.3 or earlier: it has attempts but no builder record) is *legacy*: `task verify` accepts its current attempt once without a builder record and logs a `legacy_verify` event; its next `task start` is tracked like any other. Every proof and review is bound to that build's fingerprint, so a later change makes it stale. A blocker or major review finding that no verifier settled (a timeout, or `unverifiable`) is never dropped: it is carried into every later round, whether or not a reviewer raises it again, and re-verified with twice the agent time cap; `ship`, `merged` and `close` refuse while one is open (floor `no_unverified_serious`), the completion report lists it, and after `limits.max_reverify_rounds` (3) the job parks. Only you can settle one without a verifier: `dismiss finding <id> <why>` or `accept finding <id> <why>`.
+
+### The build environment: what each worktree runs in
+
+Every task builds in its own git worktree, and a fresh checkout has no venv, no `node_modules` and no services. Worse, an editable install in your root checkout's `.venv` imports the **root's** code wherever its test runner is started, so a builder's correct fix in a worktree can fail (and a broken one pass). So the factory sets up a build environment in each worktree, and builders, `task verify`, the per-wave integration check and `factory verify run` all run inside it, against that worktree's code.
+
+It lives in `.factory/environment.json`, written only by `factory env set` (human-only, like `approve`) and sealed:
+
+| Field | What it does |
+|---|---|
+| `setup` | Commands run in each worktree (task worktrees and the job worktree) before anything builds there. Cached: they run again only when `setup`, `env`, `prefix` or the content of a `cache_key` file changes. |
+| `cache_key` | Globs of the files that key the cache (lockfiles, `pyproject.toml`, a Dockerfile). |
+| `env` | Variables exported for the builder's process and before every verify command. |
+| `prefix` | Put before each verify command (`poetry run`), when `env` alone doesn't select the environment. |
+| `services` | `up` / `health` / `down` commands run from the project root once per job (`down` at close), for a shared database or cache. |
+| `ignore` | What setup creates (`.venv/`, `node_modules/`), kept out of `git status` so verify doesn't see a dirty worktree. |
+| `timeout_seconds` | Per setup or services command (default 1200). |
+
+Commands and values can use `{worktree}`, `{root}`, `{job}`, `{task}`, `{slug}` (`j-0007-t2`, for a compose project name) and `{db}` (`factory_j0007t2`, for a database name). `$VARS` are left to the shell.
+
+**Proposed, then confirmed by you.** The factory detects a likely environment from the repository's files (`pyproject.toml` / `requirements*.txt`, a Nautobot app's `tasks.py` and `development/` compose files, `package.json` and its lockfile) and `factory next` carries the proposal from H1 onwards; the gate shows it with a short hash. Reply `confirm environment <hash>` to use it, or `confirm environment none` for bare worktrees. To change it, Copilot writes an edited copy and runs `factory env propose --file <copy>` (you confirm the new hash), or you run `factory env set --file <copy>` in your terminal (typed code). `factory env show` prints the confirmed and proposed environments; `factory env check` runs the setup (and the services) in a scratch worktree of HEAD and removes it. Both are read-only and agents may run them. `factory doctor` reports the environment too. Until you confirm one, worktrees are bare, as before.
+
+**A broken environment parks once.** When a setup step or the services health check fails, realize stops before any builder starts, spends no attempt, and the job parks with `environment broken: <command> exit <N>: <last lines of output>`. Fix it (`factory env check`, then `factory env set`) and reply `resume`. `task verify` refuses with `environment_broken` in the same case, so a broken environment is never counted against the task.
+
+**Recipe: a Python repo with a venv and pytest.** Verify commands as `python -m pytest tests/test_x.py -q` (or `pytest …`).
+
+```json
+{ "version": 1, "name": "python-venv",
+  "setup": ["python3 -m venv .venv", ".venv/bin/pip install -q -e '.[dev]'"],
+  "cache_key": ["pyproject.toml", "setup.py", "setup.cfg", "requirements*.txt", "poetry.lock", "uv.lock"],
+  "env": { "VIRTUAL_ENV": "{worktree}/.venv", "PATH": "{worktree}/.venv/bin:$PATH" },
+  "ignore": [".venv/"] }
+```
+
+With Poetry, use `"setup": ["poetry config virtualenvs.in-project true --local", "poetry install --no-interaction"]` and the same `env`.
+
+**Recipe: a Nautobot app, one compose project per worktree (what detection proposes).** The cookiecutter layout runs tests in docker compose through `invoke`, with Postgres and Redis. Naming the compose project per worktree gives each task its own containers and database, with that worktree's code mounted. Verify commands as `invoke unittest --failfast --label nautobot_golden_config.tests.test_x`. Raise `policy.limits.command_timeout_seconds` (migrations are slow) and set `flaky_reruns` to 0 if a failing run takes long. `invoke destroy` in a worktree removes its project.
+
+```json
+{ "version": 1, "name": "nautobot-app-invoke",
+  "setup": ["invoke build"],
+  "cache_key": ["poetry.lock", "pyproject.toml", "development/Dockerfile", "development/*.yml", "development/*.env"],
+  "env": { "INVOKE_NAUTOBOT_GOLDEN_CONFIG_PROJECT_NAME": "factory-{slug}", "INVOKE_NAUTOBOT_GOLDEN_CONFIG_LOCAL": "false" },
+  "timeout_seconds": 1800 }
+```
+
+(The variable names follow the app's invoke namespace: `INVOKE_<NAMESPACE>_PROJECT_NAME`.)
+
+**Recipe: a Nautobot app, one shared services stack and a test database per task.** Lighter: Postgres and Redis run once per job, each worktree gets a host venv, and `nautobot-server test` creates its test database from `NAUTOBOT_DB_NAME`, which is per task. `development/factory-services.yml` is a small compose file with `db` (postgres, port 5432 published) and `redis` (port 6379 published). Verify commands as `nautobot-server --config=development/nautobot_config.py test nautobot_golden_config.tests.test_x`.
+
+```json
+{ "version": 1, "name": "nautobot-shared-services",
+  "setup": ["python3 -m venv .venv", ".venv/bin/pip install -q -e ."],
+  "cache_key": ["poetry.lock", "pyproject.toml"],
+  "env": { "VIRTUAL_ENV": "{worktree}/.venv", "PATH": "{worktree}/.venv/bin:$PATH",
+           "NAUTOBOT_DB_HOST": "localhost", "NAUTOBOT_DB_NAME": "{db}", "NAUTOBOT_DB_USER": "nautobot", "NAUTOBOT_DB_PASSWORD": "nautobot",
+           "NAUTOBOT_REDIS_HOST": "localhost", "NAUTOBOT_REDIS_PASSWORD": "" },
+  "services": { "up": "docker compose -p factory-{slug} -f development/factory-services.yml up -d",
+                "health": "docker compose -p factory-{slug} -f development/factory-services.yml exec -T db pg_isready -U nautobot",
+                "down": "docker compose -p factory-{slug} -f development/factory-services.yml down -v" },
+  "ignore": [".venv/"] }
+```
 
 ### Models and cost
 

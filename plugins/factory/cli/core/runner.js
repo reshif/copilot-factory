@@ -660,9 +660,24 @@ async function verifyTask(ctx, taskId) {
   return v;
 }
 
+// factory.prepare(taskId) for realize, before a wave's builders: the build environment in the
+// task's worktree (setup cached by its lockfiles, job services up and healthy). Returns
+// { ok: true } or { ok: false, broken: { reason, cmd, code, tail } }; the env it reports is
+// what the task's builder is started with.
+async function prepareTask(ctx, taskId) {
+  const r = await cliChild(ctx, ['env', 'prepare', taskId]);
+  const j = r.json || {};
+  const out = j.error ? { task: taskId, ok: false, broken: { reason: `could not prepare the worktree and build environment for ${taskId}: ${j.message || j.code}`, code: j.code } } : { task: taskId, ok: Boolean(j.ok), ...(j.ok ? { cached: Boolean(j.cached), name: j.name || null } : { broken: j.broken }) };
+  if (j.ok && j.env && Object.keys(j.env).length) ctx.taskEnv[taskId] = j.env;
+  ctx.checks.push({ step: 'environment', task: taskId, ok: out.ok, cached: out.cached || false, ms: r.ms });
+  if (!out.ok || (j.ran || []).length) ctx.say(`environment ${taskId}: ${out.ok ? `ready (${(j.ran || []).length} setup step(s))` : out.broken.reason}`);
+  return out;
+}
+
 function workflowApi(ctx) {
   return {
     verify: (taskId) => verifyTask(ctx, String(taskId)),
+    prepare: (taskId) => prepareTask(ctx, String(taskId)),
   };
 }
 
@@ -725,7 +740,11 @@ async function runAgent(ctx, prompt, opts) {
     // at work in between. No hook does this: each agent is its own `copilot -p` process, not a
     // subagent, so SubagentStart/SubagentStop never fire for it.
     const runId = crypto.randomUUID();
-    const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
+    // A task agent runs inside the task's build environment (its venv on PATH, …), set up by
+    // factory.prepare before the wave.
+    const tm = /^(?:build|sweep) (\S+)/.exec(o.label || '');
+    const buildEnv = ctx.brief.workflow === 'realize' && tm && ctx.taskEnv ? ctx.taskEnv[tm[1]] || {} : {};
+    const env = { ...process.env, ...buildEnv, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
     const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail] });
     const spawnOnce = async (text, retryTurn = false, capSecOverride = null) => {
       if (ctx.unavailable) {
@@ -1060,6 +1079,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
       settings: S,
       runs: [],
       checks: [],
+      taskEnv: {},
       phases: [],
       notes: [],
       files: 0,

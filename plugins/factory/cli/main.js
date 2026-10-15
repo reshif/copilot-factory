@@ -8,7 +8,7 @@ const path = require('path');
 const { FactoryError, fail, readText, writeJson } = require('./lib/util');
 const { requireRoot, findRoot, PLUGIN_ROOT } = require('./lib/paths');
 
-const BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default']);
+const BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default', 'none', 'proposed']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -65,6 +65,8 @@ Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config cl
                only the workflow factory next asked for, one run per job at a time. Prints the recorded result
                (status first; --json for the full JSON, the workflow's own status under "workflow");
                COPILOT_BIN, policy.copilot.flags, policy.limits.max_parallel_agents, policy.agents.model_ids
+Env        env show · env check [--proposed]   (the build environment each worktree runs in; read-only, agents may run them)
+           env propose --file f   (the main session's proposal) · env set [--file f | --none] [hash]   (human-only: confirm it)
 Plan       plan validate · plan from-contract
 Tasks      task start <T> · task show <T> · task verify <T> · task state <T> blocked|exhausted [--reason]
 Build      reconcile run|continue|abort · verify run · evidence add <AC> --type diff|doc [--path p] [--note n]
@@ -103,6 +105,7 @@ const AGENT_ALLOWED = {
   contract: ['show', 'check'],
   intent: ['show'],
   clarify: ['status'],
+  env: ['show', 'check'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
   reconcile: ['run', 'continue', 'abort'],
@@ -410,6 +413,31 @@ function run(argv) {
       if (!['change', 'drop'].includes(sub) || !pos[2]) fail('assumption change <A-n> --value "…" | assumption drop <A-n>', 'bad_input');
       return C('human').changeAssumption(R(), { jobId: J, id: pos[2], value: opt.value || pos.slice(3).join(' '), drop: sub === 'drop', channel: tty });
     }
+    case 'env': {
+      const E = C('environment');
+      if (sub === 'show') return E.show(R());
+      if (sub === 'check') {
+        const r = E.check(R(), { proposed: Boolean(opt.proposed) });
+        if (!r.ok) process.exitCode = 1;
+        return r;
+      }
+      if (sub === 'propose') return E.propose(R(), { file: opt.file });
+      if (sub === 'set') return C('human').setEnvironment(R(), { file: opt.file, none: Boolean(opt.none), expectHash: pos[2] || null, channel: tty });
+      if (sub === 'prepare') {
+        // factory run's own step before a wave's builders: the environment in one worktree
+        const root = R();
+        const state = C('job').resolve(root, J);
+        const id = pos[2];
+        if (!id) fail('env prepare <T1|job>', 'bad_input');
+        const conf = E.load(root);
+        if (!conf || conf.name === 'none' || (!(conf.setup || []).length && !conf.services && !Object.keys(conf.env || {}).length && !conf.prefix)) return { job: state.id, task: id, ok: true, none: true };
+        const wt = id === 'job' ? C('tasks').ensureJobWorktree(root, state) : C('tasks').prepareWorktree(root, state, id);
+        const r = E.ensure(root, state, { taskId: id === 'job' ? null : id, wt });
+        if (!r.ok) process.exitCode = 1;
+        return { job: state.id, task: id, ok: r.ok, ...(r.ok ? { cached: r.cached, ran: r.ran, name: r.env ? r.env.name || null : null, env: E.processEnv(r.env, r.vars) } : { broken: r.broken, message: r.broken.reason }) };
+      }
+      return fail('env show | check [--proposed] | propose --file f | set [--file f | --none] [hash]', 'bad_input');
+    }
     case 'finding':
       if (!['accept', 'dismiss'].includes(sub) || !pos[2]) fail('finding accept|dismiss <id> --reason "…"', 'bad_input');
       return C('human').settleFinding(R(), { jobId: J, id: pos[2], decision: sub, reason: opt.reason || pos.slice(3).join(' '), channel: tty });
@@ -450,7 +478,7 @@ function logCommand(argv, res, err) {
     if (pos[0] === 'next') Object.assign(extra, { action: r.action || null, step: r.step || null });
     // A human-only command that went through came from a terminal the CLI accepted as yours
     // (TTY, typed confirmation): the inspector reads it as a human action, not the driver's.
-    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1])) || (pos[0] === 'clarify' && pos[1] === 'split')) extra.channel = 'tty';
+    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1])) || (pos[0] === 'clarify' && pos[1] === 'split') || (pos[0] === 'env' && pos[1] === 'set')) extra.channel = 'tty';
     events.append(root, {
       event: 'cli',
       cmd: pos[0],

@@ -32,6 +32,12 @@ function realFactory(brief) {
         return { task: id, pass: false, error: { code: e.code || 'internal', message: e.message } };
       }
     },
+    prepare: async (id) => {
+      const job = require('../../cli/core/job');
+      const state = job.load(brief.root, brief.job);
+      const r = require('../../cli/core/environment').ensure(brief.root, state, { taskId: id, wt: tasks.prepareWorktree(brief.root, state, id) });
+      return { task: id, ok: r.ok, ...(r.ok ? {} : { broken: r.broken }) };
+    },
   };
 }
 

@@ -357,7 +357,7 @@ test('factory run realize: builders start in their task worktree, task verify de
   const wt = fs.realpathSync(path.join(root, '.factory', 'worktrees', `${J}-T1`));
   const calls = h.log();
   assert.deepEqual(calls.map((c) => c.agent), ['factory:builder', 'factory:builder'], 'no LLM tester: the runner runs task verify');
-  assert.deepEqual(r.checks.map((x) => [x.step, x.task, x.pass]), [['verify', 'T1', false], ['verify', 'T1', true]]);
+  assert.deepEqual(r.checks.filter((x) => x.step === 'verify').map((x) => [x.step, x.task, x.pass]), [['verify', 'T1', false], ['verify', 'T1', true]]);
   const second = fs.readFileSync(calls[1].argv[calls[1].argv.indexOf('-p') + 1].split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
   assert.match(second, /`node tests\/add.test.js` exited 1/, 'attempt 2 gets the failing command');
   assert.match(second, /add\(2,3\) = -1/, 'and its raw output');
@@ -664,7 +664,7 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
   F.cli(root, ['plan', 'from-contract'], { allowFail: false });
   step({ workflow: 'realize', dry: ['builder'] }, (r) => {
     assert.deepEqual(roles(r), ['builder'], 'task verify decides: no tester agent');
-    assert.deepEqual(r.checks.map((x) => [x.step, x.task, x.pass]), [['verify', 'T1', true]]);
+    assert.deepEqual(r.checks.filter((x) => x.step === 'verify').map((x) => [x.step, x.task, x.pass]), [['verify', 'T1', true]]);
   });
   step({ workflow: 'reconcile', dry: ['integrator'] }, (r) => assert.deepEqual(roles(r), ['integrator']));
   assert.match(F.cli(root, ['next']).command, /verify run/);
