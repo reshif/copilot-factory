@@ -1,0 +1,116 @@
+'use strict';
+// 0.6.1: narrow fixes to clarify from J-0001 (Nautobot VLAN sync from Cisco devices, 0.6.0)
+// and the clarify simulation. No new mechanisms: each fix is local.
+//   1. the job's own title words are no evidence that two issues are the same (both copies of
+//      the dedup rule: the workflow's and the CLI's)
+//   2. no issue is dropped without an actor and a reason; the record refuses a round in which
+//      one vanishes (ledger_invariant); H1 shows "dropped by judge: <reason>"
+//   4. degraded rounds park after two in a row, naming the failing agent(s)
+//   5. a failed intent mapper and an unavailable web are shown in the round result and at H1;
+//      defaults from agent memory with the web down are labelled
+//   6. God Eye's blockers are never counted as approval: "God Eye objects" at H1
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const F = require('./helpers/fixture');
+const H = require('./helpers/workflow-harness');
+const J2 = require('./helpers/j0002');
+const clarify = require('../cli/core/clarify');
+const intent = require('../cli/core/intent');
+const job = require('../cli/core/job');
+
+const WF = path.join(F.PLUGIN, 'workflows', 'fanout-judge.js');
+const TITLE = 'Nautobot VLAN sync from Cisco devices';
+const SCOPE = 'Which Cisco devices does the Nautobot VLAN sync job read from?';
+const CREDS = 'How does the Nautobot VLAN sync job get credentials for the Cisco devices?';
+
+function newJob(root, title = TITLE) {
+  const J = F.cli(root, ['job', 'new', '--title', title, '--type', 'feature', '--risk', 'medium']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), J2.CONTRACT);
+  return J;
+}
+function round(root, data, status = 'needs_user') {
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  return F.record(root, F.envelope(b, status, { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, ...data }));
+}
+const issue = (id, text, kind, extra = {}) => ({ id, text, kind, impact: 'high', draft: text, research: kind === 'repo' ? 'repo' : kind === 'world' ? 'web' : 'none', evidence: [], assumption: null, question_id: null, answer: null, note: null, researched: false, source: 'mapper', round: 1, ...extra });
+const scoutData = (unknowns, extra = {}) => ({ ran: true, round: 1, web: { enabled: true, available: true }, map: { ran: true, ok: true }, unknowns, evidence: [], assumptions: [], versions: [], scouts: [], verifiers: 0, degraded: [], ...extra });
+const ledgerOf = (root, J) => intent.load(root, J);
+const byId = (d, id) => d.unknowns.find((u) => u.id === id);
+const APPROVE = { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, checklist: { intent_clear: true, scope_bounded: true, acs_testable: true, no_open_blockers: true, constraints_consistent: true }, items: [], researchable_questions: [] };
+
+const item = (id, category, gate = false) => ({ id, label: id, category, gate, prompt: `p-${id}`, schema: {}, agent_type: 'factory:intent-analyst' });
+function brief(scout = {}, extra = {}) {
+  const budget = { repo_scouts: 3, web_scouts: 2, time_sec: 120, strict_second_source: false, unknowns_per_scout: 3, max_unknowns: 12, verifier_batch: 4, max_verifiers: 2, mapper_sec: 180 };
+  return {
+    workflow: 'fanout-judge', job: 'J-0001', input_hash: 'h', budgets: { limit: {} }, config: 'clarify', round: 2, limits: { max_questions: 5 }, asked: [],
+    fanout: [item('intent', 'intent', true), item('scope', 'scope')],
+    judge: { prompt: 'JUDGE', schema: {}, agent_type: 'factory:judge' },
+    critique: { prompt: 'GOD', schema: {}, agent_type: 'factory:god-eye' },
+    editor: { prompt: 'EDIT', schema: {}, agent_type: 'factory:contract-editor', todo: [] },
+    ledger: { round: 2, new_since: {}, changed_sections: null, settled_sections: [], nothing_new: false },
+    scout: {
+      round: 2, risk: 'medium', web: { enabled: true, reason: null, search_mcp: null }, map_needed: false,
+      prior: { unknowns: [], evidence: [], assumptions: [], versions: [] }, pending: [], next_ids: { U: 0, E: 0, A: 0 },
+      mapper: { agent_type: 'factory:intent-mapper', label: 'intent map', prompt: 'MAP', schema: {} },
+      repo_scout: { agent_type: 'factory:researcher', label: 'scout · repo', mode: 'repo', prompt_template: 'REPO {{unknowns}}', schema: {} },
+      web_scout: { agent_type: 'factory:researcher', label: 'scout · web', mode: 'web', prompt_template: 'WEB {{unknowns}}', schema: {} },
+      verifier: { agent_type: 'factory:verifier', label: 'verify evidence', prompt_template: 'VERIFY {{findings}}', schema: {} },
+      ...scout,
+      budget,
+    },
+    ...extra,
+  };
+}
+function crew(over = {}) {
+  return (prompt, opts) => {
+    const t = opts.agentType;
+    for (const [k, f] of Object.entries(over)) if (prompt.startsWith(k) || t === k) return f(prompt, opts);
+    if (t === 'factory:intent-analyst') return { focus: 'x', questions: [] };
+    if (t === 'factory:judge') return { questions: [], dismissed: [] };
+    if (t === 'factory:god-eye') return APPROVE;
+    if (t === 'factory:contract-editor') return { contract: '# x\n\n## Intent\n- Problem: p\n', applied: [], skipped: [] };
+    throw new Error(`unexpected ${t}: ${prompt.slice(0, 60)}`);
+  };
+}
+
+// ---------------------------------------------------------------- 1. the job's own words
+test('1: the job title\'s words are no evidence of identity: credentials do not fold into device scope (CLI and workflow); paraphrases still fold', async () => {
+  const bg = clarify.vocabulary(TITLE);
+  const scope = { subject: 'sync.device-scope', subject_explicit: true, text: SCOPE };
+  const creds = { subject: 'device.credentials', subject_explicit: true, text: CREDS };
+  assert.equal(clarify.sameIssue(creds, scope), true, 'without the job\'s vocabulary (0.6.0) credentials fold into device scope');
+  assert.equal(clarify.sameIssue(creds, scope, bg), false, 'with it they are two issues');
+  assert.equal(clarify.sameIssue({ text: 'How should VLANs be scoped for the six tenants with their own locations?' }, { text: 'How should VLANs be scoped across the six tenants and their own locations?' }, bg), true, 'a real paraphrase still folds');
+  assert.equal(clarify.sameIssue({ text: 'Is there a maintenance window for the sync?' }, { text: 'Is there a maintenance window the sync must respect?' }, clarify.vocabulary('Nautobot interface VLAN sync')), true);
+
+  // CLI: device scope settled; the judge raises credentials next round → its own issue, asked
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  round(root, { scout: scoutData([issue('U-5', SCOPE, 'scope', { owner: 'user', status: 'settled', settled_by: 'user', subject: 'sync.device-scope', answer: 'all access switches' })]) }, 'ok');
+  const r = round(root, { scout: scoutData([]), judge: { questions: [{ question: CREDS, category: 'scope', why: 'w', default: 'Your call', same_as: 'new', subject: 'device.credentials', kind: 'user', preference: true }], dismissed: [] } });
+  assert.equal(r.status, 'needs_user');
+  const d = ledgerOf(root, J);
+  const c = d.unknowns.find((u) => /credentials/.test(u.text));
+  assert.ok(c, 'the credentials issue exists');
+  assert.notEqual(c.id, 'U-5');
+  assert.ok(r.questions.some((q) => q.unknown === c.id), 'and is asked');
+  assert.ok(!(byId(d, 'U-5').notes || []).some((x) => /credentials/.test(x.text)), 'not a note on the settled scope issue');
+
+  // the brief carries the vocabulary to the workflow
+  F.cli(root, ['next']);
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  assert.deepEqual(b.scout.vocabulary, bg);
+
+  // workflow: the same raise against a settled scope issue is a new issue, not a note
+  const prior = { unknowns: [{ ...issue('U-1', SCOPE, 'scope'), owner: 'user', status: 'settled', settled_by: 'user', subject: 'sync.device-scope', subject_explicit: true, answer: 'all access switches' }], evidence: [], assumptions: [], versions: [] };
+  const judge = () => ({ questions: [{ question: CREDS, category: 'scope', why: 'w', default: 'Your call', same_as: 'new', subject: 'device.credentials', kind: 'user' }], dismissed: [] });
+  const without = await H.run(WF, brief({ prior, next_ids: { U: 1, E: 0, A: 0 } }), crew({ JUDGE: judge }));
+  assert.equal(without.result.status, 'ok', '0.6.0 shape (no vocabulary): folded into U-1 as a note');
+  const withV = await H.run(WF, brief({ prior, next_ids: { U: 1, E: 0, A: 0 }, vocabulary: bg }), crew({ JUDGE: judge }));
+  assert.equal(withV.result.status, 'needs_user');
+  assert.ok(withV.result.data.scout.unknowns.some((u) => u.id !== 'U-1' && /credentials/.test(u.text)), 'a new issue in the workflow too');
+});

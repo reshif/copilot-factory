@@ -73,7 +73,18 @@ function faces(x) {
   for (const a of x.aliases || []) out.push(new Set(tokens(a.text || '')));
   return out.map((f) => new Set([...f].map(wordRoot))).filter((f) => f.size);
 }
-function faceMatch(ta, tb, strict) {
+// The job's own vocabulary (the words of its title, e.g. "Nautobot VLAN sync from Cisco
+// devices") is shared by nearly every issue of that job, so it is no evidence that two issues
+// are the same. It still counts towards the overlap, but a match must also share at least two
+// words outside it. Without this rule "How does the sync get credentials for the Cisco
+// devices?" folded into a settled "Which Cisco devices does the Nautobot VLAN sync read?"
+// (J-0001: the credentials issue vanished as a note on the scoping issue). The workflow keeps
+// the same rule (workflows/fanout-judge.js faceMatch), fed by the brief's vocabulary.
+function vocabulary(title) {
+  return [...new Set(tokens(title || '').map(wordRoot))];
+}
+const asSet = (bg) => (bg instanceof Set ? bg : new Set(Array.isArray(bg) ? bg : []));
+function faceMatch(ta, tb, strict, bg) {
   let shared = 0;
   for (const t of ta) if (tb.has(t)) shared += 1;
   if (shared < 3) return false;
@@ -85,21 +96,29 @@ function faceMatch(ta, tb, strict) {
   if (onlyA && onlyA === onlyB && shared < 5) return false;
   const jac = shared / (ta.size + tb.size - shared);
   const ovl = shared / Math.min(ta.size, tb.size);
-  return strict ? jac >= 0.6 : jac >= 0.5 || ovl >= 0.75;
+  if (!(strict ? jac >= 0.6 : jac >= 0.5 || ovl >= 0.75)) return false;
+  const B = asSet(bg);
+  if (!B.size) return true;
+  const a = [...ta].filter((t) => !B.has(t));
+  const b = new Set([...tb].filter((t) => !B.has(t)));
+  let own = 0;
+  for (const t of a) if (b.has(t)) own += 1;
+  if (own < 2) return false;
+  return own / (a.length + b.size - own) >= 0.34 || own / Math.min(a.length, b.size) >= 0.6;
 }
 // Same issue? Deterministic: same_as is handled by the caller; here the subject key, then
-// significant tokens of any face (the issue or one of its aliases).
-function sameIssue(a, b) {
+// significant tokens of any face (the issue or one of its aliases). bg: the job's vocabulary.
+function sameIssue(a, b, bg) {
   // equal subject keys given by an agent; a derived key (the text's first words) is no identity
   // on its own ("nautobot.interface.vlan.api" starts two different questions): the words decide
   if (a.subject && a.subject === b.subject && (a.subject_explicit || b.subject_explicit)) return true;
   const strict = Boolean(a.subject_explicit && b.subject_explicit && a.subject !== b.subject);
   const fa = faces(a);
   const fb = faces(b);
-  return fa.some((x) => fb.some((y) => faceMatch(x, y, strict)));
+  return fa.some((x) => fb.some((y) => faceMatch(x, y, strict, bg)));
 }
 // The live issue a raised item is about: same_as, then an alias, then the dedup rule.
-function findSame(list, raw) {
+function findSame(list, raw, bg) {
   const ref = String((raw && (raw.same_as || raw.unknown)) || '').trim().toUpperCase();
   if (/^U-\d+$/.test(ref)) {
     const hit = list.find((u) => u.id === ref || (u.aliases || []).some((a) => a.id === ref));
@@ -108,7 +127,7 @@ function findSame(list, raw) {
   if (ref === 'NEW' && !raw.subject && !(raw.text || raw.question)) return null;
   const s = subjectOf(raw);
   const probe = { subject: s.subject, subject_explicit: s.explicit, text: raw.text || raw.question || '' };
-  return list.find((u) => sameIssue(probe, u)) || null;
+  return list.find((u) => sameIssue(probe, u, bg)) || null;
 }
 
 // ---------------------------------------------------------------- classification
@@ -245,10 +264,11 @@ function migrate(v1, state, answers = []) {
   const old = (v1.unknowns || []).slice().sort((a, b) => num(a.id) - num(b.id));
   const issues = [];
   const into = {};
+  const bg = vocabulary(state.title);
   for (const u0 of old) {
     const s = subjectOf(u0);
     const probe = { ...u0, subject: s.subject, subject_explicit: false };
-    const hit = issues.find((x) => sameIssue(probe, x));
+    const hit = issues.find((x) => sameIssue(probe, x, bg));
     if (hit) {
       hit.aliases.push({ id: u0.id, text: clip(u0.text, 300) });
       into[u0.id] = hit.id;
@@ -302,7 +322,7 @@ function migrate(v1, state, answers = []) {
       how = a.id ? `by ${a.id}` : 'by question text';
     }
     if (!hit) {
-      hit = findSame(issues, { text: a.question || '' });
+      hit = findSame(issues, { text: a.question || '' }, bg);
       how = hit ? 'by overlap' : null;
     }
     if (!hit) {
@@ -398,7 +418,7 @@ function resolveRef(data, state, ref, text) {
     const q = (state.question_log || []).find((x) => String(x.question).toLowerCase().trim() === String(text).toLowerCase().trim());
     if (q) return resolveRef(data, state, q.id);
     const live = list.filter((u) => !['dropped'].includes(u.status));
-    return findSame(live, { text });
+    return findSame(live, { text }, vocabulary(state.title));
   }
   return null;
 }
@@ -761,7 +781,7 @@ function deferredText(data) {
 
 module.exports = {
   KINDS, OWNERS, STATUSES, SETTLED_BY, FINAL, QUESTION_KINDS,
-  tokens, subjectKey, subjectOf, sameIssue, findSame, isImplementationFact, classify, limits, compatResolution, cleanIssue, settle, event,
+  tokens, subjectKey, subjectOf, vocabulary, sameIssue, findSame, isImplementationFact, classify, limits, compatResolution, cleanIssue, settle, event,
   migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, split, inClarify, isNone, defaultValue,
   rows, totals, trend, view, statusText, status, nextSummary, clarificationLines, deferredLines, deferredText, openIds,
 };

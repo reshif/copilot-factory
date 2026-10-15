@@ -328,6 +328,8 @@ function scoutBrief(root, state, cfg, jc, round, answersText, data) {
     web,
     budget: B,
     map_needed: !mapped,
+    // the job's own words: no evidence that two issues are the same (the dedup rule)
+    vocabulary: require('./clarify').vocabulary(state.title),
     prior: prior ? slim(prior) : { unknowns: [], evidence: [], assumptions: [], versions: [] },
     pending: prior ? prior.unknowns.filter((u) => u.owner === 'research' && ['open', 'researching'].includes(u.status)).map((u) => u.id) : [],
     next_ids: ids,

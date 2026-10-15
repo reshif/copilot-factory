@@ -141,6 +141,9 @@ function faces(x) {
   for (const a of x.aliases || []) out.push(new Set(tokens(a.text || '')))
   return out.map((f) => new Set([...f].map(wordRoot))).filter((f) => f.size)
 }
+// The job's vocabulary (its title's words) is no evidence of identity: a match must also share
+// two words outside it (the same rule as cli/core/clarify.js faceMatch)
+const VOCAB = new Set((SC && SC.vocabulary) || [])
 function faceMatch(ta, tb, strict) {
   let shared = 0
   for (const t of ta) if (tb.has(t)) shared += 1
@@ -153,7 +156,14 @@ function faceMatch(ta, tb, strict) {
   if (onlyA && onlyA === onlyB && shared < 5) return false
   const jac = shared / (ta.size + tb.size - shared)
   const ovl = shared / Math.min(ta.size, tb.size)
-  return strict ? jac >= 0.6 : jac >= 0.5 || ovl >= 0.75
+  if (!(strict ? jac >= 0.6 : jac >= 0.5 || ovl >= 0.75)) return false
+  if (!VOCAB.size) return true
+  const a = [...ta].filter((t) => !VOCAB.has(t))
+  const b = new Set([...tb].filter((t) => !VOCAB.has(t)))
+  let own = 0
+  for (const t of a) if (b.has(t)) own += 1
+  if (own < 2) return false
+  return own / (a.length + b.size - own) >= 0.34 || own / Math.min(a.length, b.size) >= 0.6
 }
 function sameIssue(a, b) {
   // equal subject keys given by an agent; a derived key (the text's first words) is no identity

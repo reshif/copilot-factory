@@ -71,8 +71,8 @@ function shape(list, { budget: max = Infinity, asked = [], startId = 0 } = {}) {
 const GROUNDED_FIELDS = ['unknown', 'kind', 'evidence', 'preference', 'researchable', 'note', 'subject'];
 const KINDS = ['repo', 'world', 'decision', 'user'];
 
-function ground(list, data, round = null) {
-  if (data && data.version === 2) return groundV2(list, data, round);
+function ground(list, data, round = null, bg = null) {
+  if (data && data.version === 2) return groundV2(list, data, round, bg);
   const unknowns = (data && data.unknowns) || [];
   const evidence = new Set(((data && data.evidence) || []).map((e) => e.id));
   const byId = Object.fromEntries(unknowns.map((u) => [u.id, u]));
@@ -113,7 +113,8 @@ function ground(list, data, round = null) {
 // found by U-n / same_as, then by subject; a question about a settled, dropped or deferred
 // issue is not asked (research-settled ones are listed as researchable); a new one becomes
 // an issue with an owner (an implementation detail is deferred to design, not asked).
-function groundV2(list, data, round) {
+// bg: the job's vocabulary (clarify.vocabulary(title)), for the dedup rule.
+function groundV2(list, data, round, bg = null) {
   const clarify = require('./clarify');
   const evidence = new Set((data.evidence || []).map((e) => e.id));
   let n = data.unknowns.reduce((m, u) => Math.max(m, Number(String(u.id).replace('U-', '')) || 0), 0);
@@ -124,7 +125,7 @@ function groundV2(list, data, round) {
   const skipped = [];
   for (const q of list || []) {
     if (!q || !q.question) continue;
-    let u = clarify.findSame([...data.unknowns, ...created], { ...q, text: q.question });
+    let u = clarify.findSame([...data.unknowns, ...created], { ...q, text: q.question }, bg);
     if (!u) {
       const kind = clarify.KINDS.includes(q.kind) ? q.kind : CATEGORIES.includes(q.category) ? q.category : 'user';
       n += 1;

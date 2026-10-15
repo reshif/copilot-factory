@@ -108,7 +108,7 @@ function recClarify(root, state, env) {
     if (d.scout) idata = intentMod.merge(idata, d.scout, round);
     idata.evidence = intentMod.checkEvidence(root, idata, { strict: set.budget.strict_second_source });
     idata = intentMod.advance(idata, round);
-    foldRaised(clarifyMod, idata, priorIds, round);
+    foldRaised(clarifyMod, idata, priorIds, round, clarifyMod.vocabulary(state.title));
   }
   // The question protocol: every question names its issue (deduplicated by subject), a
   // settled issue is never asked again, then intent first and alone, priority order, budget,
@@ -121,7 +121,7 @@ function recClarify(root, state, env) {
   const judgeQs = [...((d.judge && d.judge.questions) || []), ...geAsks];
   const dismissed = (d.judge && d.judge.dismissed) || [];
   const asks = idata ? ledgerAsks(clarifyMod, idata, judgeQs, dismissed) : [];
-  const g = idata ? questions.ground([...judgeQs, ...asks], idata, round) : { questions: judgeQs, researchable: [], flagged: [], created: [], skipped: [] };
+  const g = idata ? questions.ground([...judgeQs, ...asks], idata, round, clarifyMod.vocabulary(state.title)) : { questions: judgeQs, researchable: [], flagged: [], created: [], skipped: [] };
   if (idata && g.created.length) idata.unknowns.push(...g.created);
   const n = questions.shape(g.questions, { budget: max, asked: questions.askedList(state, answers), startId: log.length });
   state.counters.clarify_rounds = round;
@@ -288,11 +288,11 @@ function godEyeAsks(c) {
 
 // A raise the workflow created this round that is the same issue as an older one (subject
 // dedup, CLI side): folded into the older issue as an alias, its evidence re-pointed.
-function foldRaised(clarifyMod, data, priorIds, round) {
+function foldRaised(clarifyMod, data, priorIds, round, bg) {
   const fresh = data.unknowns.filter((u) => !priorIds.has(u.id));
   for (const u of fresh) {
     const older = data.unknowns.filter((x) => x !== u && priorIds.has(x.id));
-    const hit = older.find((x) => clarifyMod.sameIssue(u, x));
+    const hit = older.find((x) => clarifyMod.sameIssue(u, x, bg));
     if (!hit) continue;
     hit.aliases = [...(hit.aliases || []), { id: u.id, text: String(u.text).slice(0, 300) }];
     if (clarifyMod.FINAL.has(hit.status)) {
