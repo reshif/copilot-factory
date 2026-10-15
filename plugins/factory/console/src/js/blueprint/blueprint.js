@@ -401,20 +401,13 @@
     var notesOpen = false, lessonOpen = {};
     var modeTag = H("span", { "class": "mode live" }, "Live");
     var playBtn = H("button", { type: "button", "class": "btn", "aria-label": "Play replay" }, "▶");
-    // replay speed: one click per speed (10 min/s by default, remembered per browser), not a dropdown
-    var SPEEDS = [["600", "10 min/s"], ["3600", "1 h/s"], ["14400", "4 h/s"]], spd0 = "600";
-    try { var spdSaved = localStorage.getItem("bp-replay-speed"); if (SPEEDS.some(function (o) { return o[0] === spdSaved; })) spd0 = spdSaved; } catch (e) { /* no storage: default */ }
-    var speed = H("div", { "class": "spdgrp", role: "group", "aria-label": "Replay speed" });
+    // replay speed: how much history plays per second (1 min/s by default, remembered per browser)
+    var SPEEDS = [["1", "1 s/s"], ["60", "1 min/s"], ["120", "2 min/s"], ["300", "5 min/s"], ["600", "10 min/s"], ["3600", "1 h/s"], ["14400", "4 h/s"]], spd0 = "60";
+    try { var spdSaved = localStorage.getItem("bp-replay-speed2"); if (SPEEDS.some(function (o) { return o[0] === spdSaved; })) spd0 = spdSaved; } catch (e) { /* no storage: default */ }
+    var speed = H("select", { "aria-label": "Replay speed", title: "Replay speed: history played per second" });
+    SPEEDS.forEach(function (o) { var op = H("option", { value: o[0] }, o[1]); if (o[0] === spd0) op.selected = true; speed.appendChild(op); });
     speed.value = spd0;
-    SPEEDS.forEach(function (o) {
-      var b = H("button", { type: "button", "class": "btn spd", "aria-pressed": String(o[0] === spd0), title: "Replay at " + o[1] }, o[1]);
-      b.addEventListener("click", function () {
-        speed.value = o[0];
-        [].forEach.call(speed.children, function (x) { x.setAttribute("aria-pressed", String(x === b)); });
-        try { localStorage.setItem("bp-replay-speed", o[0]); } catch (e) { /* not remembered */ }
-      });
-      speed.appendChild(b);
-    });
+    speed.addEventListener("change", function () { try { localStorage.setItem("bp-replay-speed2", speed.value); } catch (e) { /* not remembered */ } });
     var liveBtn = H("button", { type: "button", "class": "btn" }, "Now");
     var scrub = H("input", { type: "range", min: 0, max: 1000, step: 1, value: 1000, "aria-label": "Replay position" });
     var ticks = Z("svg", { preserveAspectRatio: "none", viewBox: "0 0 1000 24" });
