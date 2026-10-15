@@ -526,7 +526,9 @@ async function editContract(todo, label) {
   const r = await one(`${brief.editor.prompt}\n\nCHANGES TO APPLY:\n${JSON.stringify(todo, null, 2)}${revised ? `\n\nCURRENT CONTRACT (revised earlier this round; edit this text, not the file):\n----- BEGIN CONTRACT -----\n${revised}\n----- END CONTRACT -----` : ''}`, brief.editor, `contract editor · ${label}`)
   if (!r || typeof r.contract !== 'string' || !r.contract.trim()) { edits.push({ label, ok: false }); return null }
   revised = r.contract
-  edits.push({ label, ok: true, applied: r.applied || [], skipped: r.skipped || [] })
+  // requested: what the editor was given (the CLI accepts a removal only for a settled issue or a
+  // God Eye item, note or denial it was given); removed: what it took out, and why
+  edits.push({ label, ok: true, applied: r.applied || [], skipped: r.skipped || [], removed: r.removed || [], requested: todo.map((t) => ({ from: t.from, ref: t.ref || null })) })
   for (const s of r.skipped || []) if (scout && s && s.question) raise({ text: s.question, kind: 'scope', owner: 'user', impact: 'high', default: s.default || null, reason: s.reason || null }, 'contract-editor')
   return r
 }

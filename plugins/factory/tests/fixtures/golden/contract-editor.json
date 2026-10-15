@@ -7,5 +7,6 @@
       "change": "Numeric strings are not converted (the user's answer to Q-1)."
     }
   ],
-  "skipped": []
+  "skipped": [],
+  "removed": []
 }

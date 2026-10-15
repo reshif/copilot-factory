@@ -4,4 +4,6 @@
   "applied": { "type": "array", "items": { "type": "object", "required": ["ref", "section", "change"], "properties": {
     "ref": { "type": "string" }, "section": { "type": "string" }, "change": { "type": "string" } } } },
   "skipped": { "type": "array", "items": { "type": "object", "required": ["ref", "reason"], "properties": {
-    "ref": { "type": "string" }, "reason": { "type": "string" }, "question": { "type": "string" }, "default": { "type": "string" } } } } } }
+    "ref": { "type": "string" }, "reason": { "type": "string" }, "question": { "type": "string" }, "default": { "type": "string" } } } },
+  "removed": { "type": "array", "items": { "type": "object", "required": ["ref", "because"], "properties": {
+    "ref": { "type": "string" }, "because": { "type": "string" }, "text": { "type": "string" } } } } } }

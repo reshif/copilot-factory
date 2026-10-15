@@ -79,3 +79,61 @@ test('numbered replies: ordinary messages are left alone; nothing already settle
   assert.match(JSON.parse(say(root, '2 yes, 2 no').stdout).additionalContext, /NOT recorded/);
 });
 
+// ---------------------------------------------------------------- the contract editor
+const editorEnv = (text, extra = {}) => ({ contract: { text, edits: [{ label: 'apply what was settled', ok: true, applied: [], skipped: [], removed: [], ...extra }] } });
+
+test('contract editor: a revision that drops an acceptance criterion, a constraint or a non-goal without a recorded reason is refused', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const before = contractOf(root, J);
+  const noAc2 = J2.CONTRACT.replace(/- AC-2:[^\n]*\n/, '');
+  let r = round(root, { scout: scoutData([user('U-1', 'Should the sync prune VLANs not in Nautobot?')]), ...editorEnv(noAc2) });
+  assert.match(r.clarify.contract_revision.rejected, /AC-2/);
+  assert.equal(contractOf(root, J).includes('AC-2:'), true, 'not written');
+  assert.equal(contractOf(root, J).replace(/## Clarifications[\s\S]*?(?=\n## )/, ''), before.replace(/## Clarifications[\s\S]*?(?=\n## )/, ''));
+  // a constraint gone, no reason
+  F.cli(root, ['next']);
+  r = round(root, { scout: scoutData(ledgerOf(root, J).unknowns), ...editorEnv(J2.CONTRACT.replace('- Runs from the existing automation container (Python 3.11)\n', '')) });
+  assert.match(r.clarify.contract_revision.rejected, /Constraints/);
+  // a non-goal gone, "justified" by an issue that is not settled
+  F.cli(root, ['next']);
+  r = round(root, { scout: scoutData(ledgerOf(root, J).unknowns), ...editorEnv(J2.CONTRACT.replace('- Access-port VLANs\n', ''), { removed: [{ ref: 'Non-goals', because: 'U-1', text: 'Access-port VLANs' }] }) });
+  assert.match(r.clarify.contract_revision.rejected, /Non-goals/);
+  // the user settled it: the removal names that issue and is written
+  F.cli(root, ['answer', 'Q-1', 'yes, and drop AC-2: no dry run']);
+  F.cli(root, ['next']);
+  r = round(root, { scout: scoutData(ledgerOf(root, J).unknowns), ...editorEnv(noAc2, { applied: [{ ref: 'U-1', section: 'Acceptance criteria', change: 'AC-2 removed' }], removed: [{ ref: 'AC-2', because: 'U-1' }] }) });
+  assert.equal(r.clarify.contract_revision.written, true, JSON.stringify(r.clarify.contract_revision));
+  assert.ok(!/- AC-2:/.test(contractOf(root, J)));
+  assert.deepEqual(r.clarify.contract_revision.removed, [{ ref: 'AC-2', because: 'U-1' }]);
+});
+
+test('contract editor: a removal God Eye asked for is justified by its item; a truncated revision is refused', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const noAc2 = J2.CONTRACT.replace(/- AC-2:[^\n]*\n/, '');
+  let r = round(root, { scout: scoutData([]), critique: APPROVE, contract: { text: noAc2, edits: [{ label: "God Eye's items", ok: true, requested: [{ from: 'god-eye', ref: 'AC-2' }], applied: [{ ref: 'AC-2', section: 'Acceptance criteria', change: 'removed: duplicate of AC-1' }], skipped: [], removed: [{ ref: 'AC-2', because: 'god-eye' }] }] } }, 'ok');
+  assert.equal(r.clarify.contract_revision.written, true, JSON.stringify(r.clarify.contract_revision));
+  // a reply cut off mid-contract
+  const r2 = F.makeRepo();
+  const J3 = newJob(r2);
+  F.cli(r2, ['next']);
+  r = round(r2, { scout: scoutData([]), critique: APPROVE, ...editorEnv(J2.CONTRACT.slice(0, J2.CONTRACT.indexOf('- AC-2'))) }, 'ok');
+  assert.ok(r.clarify.contract_revision.rejected);
+  assert.equal(contractOf(r2, J3).includes('- AC-2:'), true);
+});
+
+test('contract editor: when the CLI refuses the revision God Eye approved, the round is not ok (H1 never shows a text God Eye did not see)', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const r = round(root, { scout: scoutData([]), critique: APPROVE, ...editorEnv(J2.CONTRACT.replace(/- AC-2:[^\n]*\n/, '')) }, 'ok');
+  assert.notEqual(r.status, 'ok');
+  assert.equal(r.status, 'revise');
+  assert.match(r.message, /refused the contract editor's revision/);
+  assert.notEqual(F.cli(root, ['next']).action, 'gate');
+  assert.ok(J);
+});
+

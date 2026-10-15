@@ -227,7 +227,10 @@ function recClarify(root, state, env) {
   const legacyResearchable = !idata ? (crit && crit.researchable_questions) || [] : [];
   const intentConfirmed = Boolean(crit && crit.intent_confirmed !== false); // older critiques carry no flag
   const approved = Boolean(crit && ((crit.verdict === 'approve' && intentConfirmed) || d.approved_with_notes));
-  const ok = Boolean(approved && !legacyResearchable.length && !probs.length && !n.questions.length && !blocking.length && !degradedRound);
+  // God Eye judged the editor's revision; a revision the CLI refused is not the contract, so
+  // that approval does not carry to H1.
+  const refused = Boolean(revision && revision.rejected);
+  const ok = Boolean(approved && !refused && !legacyResearchable.length && !probs.length && !n.questions.length && !blocking.length && !degradedRound);
   const stepDetail = (extra) => ({ ...extra, round, questions: n.questions.length, question_ids: n.questions.map((q) => q.id), categories: n.questions.map((q) => q.category), intent_open: n.intent_open, held: n.held.length, dropped: n.dropped.length, degraded: d.degraded || [], contract_problems: probs, ...(researchDetail ? { research: researchDetail } : {}), ...(ledgerDetail ? { ledger: ledgerDetail } : {}), ...(d.approved_with_notes ? { approved_with_notes: true } : {}), ...(revision ? { contract_revision: { written: revision.written, applied: revision.applied.length, ...(revision.rejected ? { rejected: revision.rejected } : {}) } } : {}) });
   const askedNow = n.questions.length || waiting.length;
   ledger.append(root, state.id, { kind: 'step', step: 'clarify', ok, bound: { contract: b.contract }, detail: stepDetail(askedNow && !ok ? { outcome: 'needs_user' } : {}) });
@@ -261,6 +264,7 @@ function recClarify(root, state, env) {
     return { status: 'park', park_from: 'clarify', ...extra, park_reason: `Clarify is not converging: ${C.clarify_no_progress} round(s) in a row settled nothing and asked nothing new.${open.length ? ` Open: ${open.slice(0, 6).map((r) => `${r.id} ${r.subject} (${r.owner})`).join('; ')}.` : ''}${probs.length ? ` Contract problems: ${probs.slice(0, 3).join('; ')}.` : ''} See factory clarify status.` };
   }
   if (legacyResearchable.length) return { status: 'revise', critique: crit, ...extra, message: `God Eye found ${legacyResearchable.length} question(s) research can answer: they go back to the scouts. Run factory next: clarify runs again and researches them first (don't ask the user).` };
+  if (refused) return { status: 'revise', ...extra, message: `The CLI refused the contract editor's revision (${revision.rejected}), so the contract is unchanged and God Eye's verdict on the revision does not count. Clarify runs again: run factory next; don't edit the contract.` };
   if (probs.length) return { status: 'revise', problems: probs, ...extra, message: 'The contract still has problems: clarify runs again and its contract editor fixes them (the user is not asked). Run factory next; don\'t edit the contract.' };
   return { status: 'revise', critique: crit, ...extra, message: 'Clarify is not done yet (open issues or God Eye\'s items without a question): run factory next; clarify runs again.' };
 }
@@ -309,14 +313,49 @@ function ledgerAsks(clarifyMod, data, judgeQs, dismissed) {
     .map((u) => ({ question: /\?$/.test(u.draft) ? u.draft : ['repo', 'world'].includes(u.kind) ? `Is this right: ${u.draft}?` : u.draft, category: cat(u.kind), why: u.reason ? `${['repo', 'world'].includes(u.kind) ? 'Research could not settle it' : 'Open'}: ${u.reason}.` : 'Only you can settle it.', default: u.default || 'None: answer needed', unknown: u.id, kind: u.kind, evidence: u.evidence, preference: !u.evidence.length, ...(u.options ? { options: u.options } : {}) }));
 }
 
+// What a revision loses: acceptance criteria by id; constraints and non-goals by count (a
+// rewording keeps the count). Each loss needs a `removed` entry from the editor whose
+// `because` holds up: a settled or dropped issue (U-n), or a God Eye item, user note or gate
+// denial that the editor was given for that criterion or section. Returns what is unjustified.
+function lostItems(before, after, edits, data) {
+  const removed = edits.flatMap((e) => e.removed || []);
+  const requested = edits.flatMap((e) => e.requested || []);
+  const key = (x) => String(x || '').trim().toLowerCase();
+  const asked = (from, ref, section) => requested.some((r) => key(r.from) === from && (from !== 'god-eye' || [key(ref), key(section)].includes(key(r.ref))));
+  // one removed entry, for this criterion or section, with a reason that holds up
+  const holds = (x, ref, section) => {
+    if (![key(ref), key(section)].includes(key(x.ref))) return false;
+    const b = String(x.because || '').trim();
+    if (/^U-\d+$/i.test(b)) {
+      const u = data.unknowns.find((y) => y.id === b.toUpperCase() || (y.aliases || []).some((a) => a.id === b.toUpperCase()));
+      return Boolean(u && ['settled', 'dropped'].includes(u.status));
+    }
+    if (/god.?eye/i.test(b)) return asked('god-eye', ref, section);
+    if (/note/i.test(b)) return asked('user note');
+    if (/denial|gate/i.test(b)) return asked('gate denial');
+    return false;
+  };
+  const out = [];
+  const ids = new Set(after.acs.map((a) => a.id));
+  for (const a of before.acs) if (!ids.has(a.id) && !removed.some((x) => holds(x, a.id, 'acceptance criteria'))) out.push(a.id);
+  for (const [name, k] of [['Constraints', 'constraints'], ['Non-goals', 'nonGoals']]) {
+    const gone = before[k].length - after[k].length;
+    if (gone <= 0) continue;
+    const ok = removed.filter((x) => holds(x, name, name)).length;
+    if (ok < gone) out.push(`${gone - ok} of ${name}`);
+  }
+  return out;
+}
 // The contract editor's revision: CLI-owned sections kept, written only if it still parses,
-// keeps the Intent section and adds no contract problem. Settled issues it applied are marked.
+// keeps the Intent section, loses no criterion, constraint or non-goal without a reason and
+// adds no contract problem. Settled issues it applied are marked.
 function applyRevision(root, state, c, data, unappliedBefore, round) {
   if (!c) return null;
   const approved = state.approvals && (state.approvals.H1 || state.approvals.EH1);
   const edits = Array.isArray(c.edits) ? c.edits : [];
   const appliedRefs = new Set(edits.flatMap((e) => (e.applied || []).map((a) => String(a.ref || '').toUpperCase())));
-  const out = { written: false, applied: [...appliedRefs], skipped: edits.flatMap((e) => (e.skipped || []).map((x) => ({ ref: x.ref, reason: String(x.reason || '').slice(0, 200) }))), editors: edits.map((e) => ({ label: e.label, ok: Boolean(e.ok) })) };
+  const removed = edits.flatMap((e) => (e.removed || []).map((x) => ({ ref: String(x.ref || ''), because: String(x.because || '') })));
+  const out = { written: false, applied: [...appliedRefs], ...(removed.length ? { removed } : {}), skipped: edits.flatMap((e) => (e.skipped || []).map((x) => ({ ref: x.ref, reason: String(x.reason || '').slice(0, 200) }))), editors: edits.map((e) => ({ label: e.label, ok: Boolean(e.ok) })) };
   if (typeof c.text === 'string' && c.text.trim()) {
     const cur = contractMod.read(root, state.id);
     const next = contractMod.keepCliSections(c.text, cur);
@@ -325,8 +364,10 @@ function applyRevision(root, state, c, data, unappliedBefore, round) {
     const pa = contractMod.problems(pn).length;
     const known = new Set([...Object.keys(contractMod.sections(cur)), 'intent', 'goal', 'non-goals', 'acceptance criteria', 'constraints', 'allowed paths', 'verify commands', 'assumptions', ...contractMod.CLI_OWNED]);
     const foreign = Object.keys(contractMod.sections(next)).filter((k) => !known.has(k));
+    const lost = lostItems(contractMod.parse(cur), pn, edits, data || { unknowns: [] });
     if (approved) out.rejected = 'the contract is approved: changes go through an amendment';
     else if (!pn.intent.present) out.rejected = 'the revision has no Intent section';
+    else if (lost.length) out.rejected = `the revision drops ${lost.join('; ')} without a recorded reason (a settled issue, or the God Eye item, note or gate denial that asked for it)`;
     else if (foreign.length) out.rejected = `the revision adds sections a contract does not have (${foreign.slice(0, 3).join(', ')})`;
     else if (/^## Reply format|^# Factory [a-z-]+ — this run/m.test(next)) out.rejected = 'the revision carries the agent\'s own instructions';
     else if (pa > pb) out.rejected = `the revision adds contract problems (${pa} > ${pb})`;
