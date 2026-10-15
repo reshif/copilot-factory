@@ -675,6 +675,16 @@ test('R20 from synthetic records: web off is low severity; limits and quiet jobs
   const cli = (h, d, extra) => ({ event: 'cli', ts: at(h), job: 'J-0002', decision_id: d, ok: true, ...extra });
   const g = { ...job, decisions: [{ id: 'J-0002-D0001', ts: at(1), action: 'gate', step: 'H1' }, { id: 'J-0002-D0002', ts: at(3), action: 'skill', skill: 'clarify', step: 'clarify' }], events: [cli(1.1, 'J-0002-D0001', { cmd: 'intent', sub: 'show' }), cli(1.2, 'J-0002-D0001', { cmd: 'assumption', sub: 'change', arg: 'A-1' })] };
   assert.deepEqual(rules.driverFidelity(g).filter((x) => !['R7.not_done', 'R7.terminal_approvals'].includes(x.rule)), []);
+  // R7: factory env show / env check (read-only) and env set / finding dismiss (the human's) at a gate,
+  // and the steps factory run runs itself (via "run") during a realize decision, are no deviation
+  const g2 = { ...job, decisions: [{ id: 'J-0002-D0001', ts: at(1), action: 'gate', step: 'H1' }, { id: 'J-0002-D0002', ts: at(3), action: 'workflow', workflow: 'realize', step: 'realize' }, { id: 'J-0002-D0003', ts: at(5), action: 'gate', step: 'H3' }], events: [
+    cli(1.1, 'J-0002-D0001', { cmd: 'env', sub: 'show' }), cli(1.2, 'J-0002-D0001', { cmd: 'env', sub: 'check' }), cli(1.3, 'J-0002-D0001', { cmd: 'env', sub: 'set', channel: 'tty' }), cli(1.4, 'J-0002-D0001', { cmd: 'finding', sub: 'dismiss', arg: 'code-1', channel: 'tty' }),
+    cli(3.1, 'J-0002-D0002', { cmd: 'wfargs', workflow: 'realize' }), cli(3.2, 'J-0002-D0002', { cmd: 'env', sub: 'prepare', arg: 'T1', via: 'run' }), cli(3.3, 'J-0002-D0002', { cmd: 'task', sub: 'verify', arg: 'T1', via: 'run' }), cli(3.4, 'J-0002-D0002', { cmd: 'reconcile', sub: 'wave', via: 'run' }), cli(3.5, 'J-0002-D0002', { cmd: 'record', workflow: 'realize' }),
+  ] };
+  assert.deepEqual(rules.driverFidelity(g2).filter((x) => !['R7.not_done', 'R7.terminal_approvals'].includes(x.rule)), []);
+  // …but the driver preparing an environment by hand at a gate is
+  const g3 = { ...g2, events: [...g2.events, cli(5.1, 'J-0002-D0003', { cmd: 'env', sub: 'prepare', arg: 'T1' })] };
+  assert.ok(rules.driverFidelity(g3).some((x) => x.rule === 'R7.acted_while_waiting' && /env prepare/.test(x.summary)));
   // R3: H1 → clarify after "change A-n" is explained
   const recipe = { id: 'standard@medium', steps: [{ step: 'clarify', run: 'skill:clarify' }, { step: 'H1', run: 'gate' }, { step: 'ground', run: 'workflow:ground' }] };
   const rw = { ...job, lock: { recipe }, decisions: [{ id: 'D1', ts: at(1), action: 'skill', step: 'clarify' }, { id: 'D2', ts: at(2), action: 'gate', step: 'H1' }, { ts: at(2.5), action: 'human.change_assumption', assumption: 'A-1' }, { id: 'D3', ts: at(3), action: 'skill', step: 'clarify', rule: 'recipe.next' }] };
@@ -723,6 +733,11 @@ test('outcome integrity: a serious finding left unverified and never settled, an
   assert.ok(!rules.evidenceChain(carried).some((x) => x.rule === 'R5.unverified_finding_lost'));
   const settled = { ...lostJob, ledger: [lostJob.ledger[0], { ...lostJob.ledger[1], detail: { round: 1, findings: [{ ...code1, status: 'refuted' }] } }, lostJob.ledger[2]] };
   assert.ok(!rules.evidenceChain(settled).some((x) => x.rule === 'R5.unverified_finding_lost'));
+  // settled by the human (factory finding dismiss|accept): not lost either
+  for (const status of ['dismissed', 'accepted']) {
+    const byYou = { ...lostJob, ledger: [lostJob.ledger[0], { ...lostJob.ledger[1], detail: { round: 1, findings: [{ ...code1, status, settled: { by: 'human', reason: 'known' } }] } }, lostJob.ledger[2]] };
+    assert.ok(!rules.evidenceChain(byYou).some((x) => x.rule === 'R5.unverified_finding_lost'), status);
+  }
   // T2's builder crashed, its tester passed the stale branch
   const roster = { kind: 'agents', workflow: 'realize', at: '2026-01-01T00:00:05Z', agents: [
     { label: 'build T1 #1', outcome: 'done' }, { label: 'build T2 #1', outcome: 'no_result' }, { label: 'test T1', outcome: 'pass' }, { label: 'test T2', outcome: 'pass' },
