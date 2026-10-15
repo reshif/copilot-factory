@@ -15,8 +15,8 @@ const stateOf = (root, J) => core('job').load(root, J);
 function grounded(root, { risk = 'low' } = {}) {
   const J = F.cli(root, ['job', 'new', '--title', 'Two tasks', '--type', 'bug', '--risk', risk]).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
+  let b;
   F.cli(root, ['next']);
   F.reply(root, 'approve');
   b = F.cli(root, ['wfargs', 'ground']);

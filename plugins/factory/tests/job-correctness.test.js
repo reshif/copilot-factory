@@ -20,8 +20,8 @@ const state = (root, J) => core('job').load(root, J);
 function grounded(root, contract = {}) {
   const J = F.cli(root, ['job', 'new', '--title', 'Sync VLAN', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText(contract));
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
+  let b;
   F.cli(root, ['next']);
   F.reply(root, 'approve');
   b = F.cli(root, ['wfargs', 'ground']);
@@ -380,22 +380,21 @@ test('3 doc/human ACs: owners of failures ignore evidence-only criteria and neve
 
 // ------------------------------------------------------------------- 4 clarify / ground question rounds
 
-test('4 question rounds: clarify and ground rounds that ask the user stay ok:false with outcome needs_user', () => {
+test('4 question rounds: a clarify stage that waits on the user is no clarify step; a ground round that asks stays ok:false with outcome needs_user', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'Sync VLAN', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   F.cli(root, ['next']);
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  const r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [{ question: 'Scope?', why: 'w', blocking: false, category: 'scope', default: 'd' }], dismissed: [] }, critique: { verdict: 'approve', intent_confirmed: true, items: [] } }));
+  let b = F.cli(root, ['wfargs', 'clarify']);
+  const r = F.record(root, F.envelope(b, 'ok', { stage: 'readback', rev: b.rev, outputs: { 'read-back': { intent: { problem: 'p', who: 'w', outcome: 'o', success: 's' }, scope: { in: [], out: [] }, took: [], pins: [], plan: [], questions: [] } } }));
   assert.equal(r.status, 'needs_user');
-  const c = core('ledger').lastStep(root, J, 'clarify');
-  assert.equal(c.ok, false);
-  assert.equal(c.detail.outcome, 'needs_user');
-  b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  assert.equal(core('ledger').lastStep(root, J, 'clarify'), null, 'waiting on the user records no clarify step');
+  const c = core('ledger').all(root, J).filter((e) => e.kind === 'clarify').pop();
+  assert.equal(c.outcome, 'readback_wait');
+  F.clarify(root);
   const ok = core('ledger').lastStep(root, J, 'clarify');
   assert.equal(ok.ok, true);
-  assert.equal(ok.detail.outcome, undefined);
+  assert.equal(ok.detail.version, 3);
   F.cli(root, ['next']);
   F.reply(root, 'approve');
   b = F.cli(root, ['wfargs', 'ground']);
@@ -403,16 +402,6 @@ test('4 question rounds: clarify and ground rounds that ask the user stay ok:fal
   assert.equal(g.status, 'needs_user');
   const gr = core('ledger').lastStep(root, J, 'ground');
   assert.deepEqual([gr.ok, gr.detail.outcome], [false, 'needs_user']);
-});
-
-// ------------------------------------------------------------------- 5 analyst focus
-
-test('5 analyst output: focus is optional', () => {
-  const { validate } = require('../cli/lib/schema');
-  const schema = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'schemas', 'agent-outputs', 'analyst.json'), 'utf8'));
-  assert.deepEqual(validate(schema, { questions: [] }), []);
-  assert.deepEqual(validate(schema, { focus: 'scope', questions: [] }), []);
-  assert.notDeepEqual(validate(schema, { focus: 'scope' }), []);
 });
 
 // ------------------------------------------------------------------- 6 agents reading their own job

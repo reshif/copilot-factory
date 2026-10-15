@@ -13,8 +13,8 @@ function toProve(root, { policyChecks } = {}) {
   if (policyChecks) fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ checks: policyChecks }));
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
+  let b;
   next(root);
   F.reply(root, 'approve');
   next(root);
@@ -184,9 +184,10 @@ test('stale results are refused: a contract edited while clarify ran', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+  next(root);
+  const b = F.cli(root, ['wfargs', 'clarify']);
   fs.appendFileSync(path.join(F.jobDir(root, J), 'contract.md'), '\n- extra assumption\n');
-  const r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  const r = F.record(root, F.envelope(b, 'ok', { stage: b.stage, rev: b.rev, outputs: { 'read-back': { intent: { problem: 'p', who: 'w', outcome: 'o', success: 's' }, scope: { in: [], out: [] }, took: [], pins: [], plan: [], questions: [] } } }));
   assert.equal(r.status, 'stale');
 });
 
@@ -195,8 +196,9 @@ test('budget cap parks; resume raises the cap by half', () => {
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ limits: { max_agent_runs_per_job: 5 } }));
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  const env = F.envelope(b, 'needs_user', { analysts: [], degraded: [], judge: { questions: [{ question: 'q?', why: 'w' }], dismissed: [] }, critique: null });
+  next(root);
+  const b = F.cli(root, ['wfargs', 'clarify']);
+  const env = F.envelope(b, 'ok', { stage: b.stage, rev: b.rev, outputs: { 'read-back': { intent: { problem: 'p', who: 'w', outcome: 'o', success: 's' }, scope: { in: [], out: [] }, took: [], pins: [], plan: [], questions: [] } } });
   env.budgets.used.agent_runs = 9;
   F.record(root, env);
   const n = next(root);
@@ -351,27 +353,26 @@ test('a deny reason reaches the agents who redo the work', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
+  let b;
   assert.equal(next(root).step, 'H1');
   F.reply(root, 'deny cover negative numbers too');
   const cfile = path.join(F.jobDir(root, J), 'contract.md');
   fs.writeFileSync(cfile, fs.readFileSync(cfile, 'utf8').replace('(evidence: test)', '(evidence: test)\n- AC-2: add(-1, 1) returns 0 (evidence: test)'));
-  assert.equal(next(root).skill, 'clarify');
-  b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  const file = b.fanout[0].prompt.split('\n')[1].trim();
-  assert.match(fs.readFileSync(file, 'utf8'), /At H1 the human said: cover negative numbers too/);
-  assert.equal(b.fanout[0].role, 'intent-analyst');
+  const n = next(root);
+  assert.equal(n.skill, 'clarify');
+  assert.equal(n.clarify.stage, 'redirect', 'clarify v3: the denial is read back as tracked items first');
+  b = F.cli(root, ['wfargs', 'clarify']);
+  const file = b.groups[0][0].prompt.split('\n')[1].trim();
+  assert.match(fs.readFileSync(file, 'utf8'), /"text": "cover negative numbers too"/);
+  assert.equal(b.groups[0][0].role, 'interviewer');
 });
 
 test('deny needs a reason; after deny the producing step runs again before the gate is shown again', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  const clarify = () => {
-    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-    return F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
-  };
+  const clarify = () => F.clarify(root);
   next(root);
   clarify();
   const g = next(root);
@@ -381,19 +382,22 @@ test('deny needs a reason; after deny the producing step runs again before the g
   assert.equal(F.cli(root, ['job', 'show']).denials.length, 0);
   assert.equal(require('../cli/core/human').parseReply('deny: too big').reason, 'too big');
   F.reply(root, 'deny: cover negative numbers too');
-  // the contract is unchanged, but the gate isn't shown again: clarify runs with the reason
+  // the contract is unchanged, but the gate isn't shown again: clarify reads the denial back
   let n = next(root);
   assert.equal(n.action, 'skill');
   assert.equal(n.skill, 'clarify');
-  assert.equal(n.rule, 'gate.denied_revise');
-  assert.match(n.reason, /You denied H1: "cover negative numbers too"/);
-  assert.equal(n.denied.gate, 'H1');
+  assert.equal(n.clarify.stage, 'redirect');
   assert.equal(F.cli(root, ['job', 'show']).pending_gate, null, 'the gate is no longer pending while it is revised');
+  const b = F.cli(root, ['wfargs', 'clarify']);
+  let r = F.record(root, F.envelope(b, 'ok', { stage: 'redirect', rev: b.rev, outputs: { redirect: { clauses: [{ quote: 'cover negative numbers too', item: 'new', action: 'fix', text: 'Cover negative numbers', tag: null }] } } }));
+  assert.equal(r.status, 'needs_user');
+  assert.match(r.screen, /"cover negative numbers too" → change the contract/);
+  assert.match(F.cli(root, ['clarify', 'reply', 'ok']).message, /Redirect confirmed: 1 item/);
   // once clarify has run again, the gate is presented again (even if the document came out the same)
   clarify();
   n = next(root);
   assert.equal(n.action, 'gate');
-  assert.equal(n.gate.hash, g.gate.hash);
+  assert.equal(n.clarify_h1.redirects[0].done, 1, 'the clause is reported done');
   assert.match(F.reply(root, 'approve').message, /Approved H1/);
 });
 
@@ -415,8 +419,7 @@ test('factory next is a query: asked again with nothing tried, it returns the sa
   F.cli(root, ['contract', 'check']);
   assert.equal(next(root).decision_id, first.decision_id);
   // a step that was tried is: the next decision is a new one
-  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
   const after = next(root);
   assert.notEqual(after.decision_id, first.decision_id);
   assert.equal(after.step, 'H1');
@@ -437,59 +440,31 @@ test('gate A refuses if the contract changed after the amendment was submitted',
   assert.match(F.reply(root, 'approve').message, /Approved A/);
 });
 
-test('go on without a failed analyst: --accept-degraded runs the critique anyway', async () => {
-  const H = require('./helpers/workflow-harness');
+test('clarify read-back: questions only the user can answer; an edit re-runs it keeping ids; an answered question becomes their fact', () => {
   const root = F.makeRepo();
-  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low', '--request', 'make add faster']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  const brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify', '--accept-degraded']);
-  assert.equal(brief.accept_degraded, true);
-  const { result } = await H.run(path.join(F.PLUGIN, 'workflows', 'fanout-judge.js'), brief, (prompt, opts) => {
-    const file = fs.readFileSync(prompt.split('\n')[1].trim(), 'utf8');
-    if (/Your focus: \*\*testability/.test(file)) return null;
-    if (opts.agentType === 'factory:intent-analyst') return { focus: 'x', questions: [] };
-    if (opts.agentType === 'factory:judge') return { questions: [], dismissed: [] };
-    return { verdict: 'approve', items: [] };
-  });
-  assert.deepEqual(result.data.degraded, ['intent-analyst:testability']);
-  assert.equal(result.status, 'ok');
-  assert.equal(F.record(root, result).status, 'ok');
-});
-
-test('clarify protocol through the CLI: intent questions first with ids, answers by id, park when intent stays unclear, resume', () => {
-  const root = F.makeRepo();
-  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
-  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  const iq = (q) => ({ question: q, category: 'intent', why: 'w', default: 'd' });
-  const round = (qs) => {
-    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-    return F.record(root, F.envelope(b, 'needs_user', { analysts: [], degraded: [], judge: { questions: qs, dismissed: [] }, critique: null }));
+  const readback = (out) => {
+    const b = F.cli(root, ['wfargs', 'clarify']);
+    assert.equal(b.stage, 'readback');
+    return F.record(root, F.envelope(b, 'ok', { stage: 'readback', rev: b.rev, outputs: { 'read-back': { intent: { problem: 'p', who: 'w', outcome: 'o', success: 's' }, scope: { in: [], out: [] }, pins: [], plan: [], design_may_choose: [], ...out } } }));
   };
-  // round 1: a judge that ignores the protocol is corrected by record
-  let r = round([{ question: 'Which DB?', category: 'constraint', why: 'w', default: 'pg' }, iq('Who is it for?')]);
+  next(root);
+  let r = readback({ took: [{ item: 'new', text: 'add should be faster', quote: 'make add faster' }, { item: 'new', text: 'invented', quote: 'nobody said this' }], questions: [{ item: 'new', question: 'How fast must it be?', why: 'faster needs a number' }] });
   assert.equal(r.status, 'needs_user');
-  assert.equal(r.intent_first, true);
-  assert.equal(r.held, 1);
-  assert.deepEqual(r.questions.map((q) => [q.id, q.category]), [['Q-1', 'intent']]);
-  assert.equal(F.cli(root, ['answer', '--id', 'Q-1', '--answer', 'ops on call']).id, 'Q-1');
-  assert.equal(F.cli(root, ['answer', '--id', 'Q-9', '--answer', 'x']).code, 'bad_input');
-  // round 2: the answered question is never re-asked; a new intent question is
-  r = round([iq('Who is it for?'), iq('What does done look like?')]);
-  assert.deepEqual(r.questions.map((q) => q.id), ['Q-2']);
-  // round 3: intent still unclear after 2 intent rounds → park, nothing assumed
-  r = round([iq('Why now?')]);
-  assert.equal(r.status, 'park');
-  assert.equal(next(root).action, 'parked');
-  assert.match(F.cli(root, ['job', 'show']).park.reason, /intent is still unclear.*Why now\?/);
-  // resume: one more intent round, with a budget
-  F.reply(root, 'resume');
-  assert.equal(next(root).skill, 'clarify');
-  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  assert.equal(b.limits.max_questions, 3);
-  assert.deepEqual(b.asked.slice().sort(), ['What does done look like?', 'Who is it for?']);
-  r = F.record(root, F.envelope(b, 'needs_user', { analysts: [], degraded: [], judge: { questions: [iq('Why now?')], dismissed: [] }, critique: null }));
-  assert.deepEqual(r.questions.map((q) => q.id), ['Q-3']);
-  assert.deepEqual(F.cli(root, ['job', 'show']).question_log.map((q) => q.id), ['Q-1', 'Q-2', 'Q-3']);
+  assert.match(r.screen, /Only you can tell me\*\*\n1\. How fast must it be\?/);
+  assert.match(r.screen, /Not taken \(no source\): invented \(its quote is not in your words\)/, 'a quote that is not in the user\'s words is dropped');
+  const L0 = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8'));
+  const q = L0.items.find((x) => x.kind === 'question');
+  // an edit in the user's own words: the read-back runs again with them
+  r = F.cli(root, ['clarify', 'reply', 'under 2 ms per call']);
+  assert.equal(r.stage, 'readback');
+  assert.equal(next(root).clarify.run, 'factory run clarify');
+  r = readback({ took: [{ item: q.id, text: 'Under 2 ms per call', quote: 'under 2 ms per call' }], questions: [] });
+  const L = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8'));
+  const it = L.items.find((x) => x.id === q.id);
+  assert.deepEqual([it.kind, it.status, it.strength, it.value], ['fact', 'decided', 'user', 'Under 2 ms per call'], 'the question is answered under its own id');
+  assert.ok(L.items.some((x) => x.value === 'add should be faster' && x.strength === 'user' && x.status !== 'dropped'), 'what the user said earlier is carried, never dropped');
 });
 
 test('clarify: God Eye must confirm the intent; contract check names the Intent section', () => {
@@ -501,14 +476,15 @@ test('clarify: God Eye must confirm the intent; contract check names the Intent 
   c = F.cli(root, ['contract', 'check']);
   assert.match(c.problems.join('\n'), /No "## Intent" section/);
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  let r = F.record(root, F.envelope(b, 'needs_user', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', intent_confirmed: false, restatement: { problem: 'p', outcome: 'o' }, items: [] } }));
-  assert.equal(r.status, 'needs_user');
-  assert.match(r.message, /could not confirm the intent/);
-  b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  r = F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [] } }));
+  // God Eye's "intent unclear" is a blocker for the read-back: it runs again with the objection
+  let r = F.clarify(root, { checklist: { intent_clear: false }, objections: [{ check: 'intent_clear', severity: 'blocker', stage: 'readback', ref: 'Goal', issue: 'the Goal and the Intent disagree', fix: 'ask who it is for' }] });
+  assert.equal(r.status, 'continue');
+  const n = next(root);
+  assert.equal(n.clarify.stage, 'readback');
+  const b = F.cli(root, ['wfargs', 'clarify']);
+  assert.match(fs.readFileSync(b.groups[0][0].prompt.split('\n')[1].trim(), 'utf8'), /the Goal and the Intent disagree/);
+  r = F.clarify(root);
   assert.equal(r.status, 'ok');
-  assert.deepEqual(r.restatement, { problem: 'p', outcome: 'o' });
   // a follow-up contract carries an Intent section the check understands
   F.write(root, '.factory/scratch/findings.json', JSON.stringify([{ summary: 'add overflows', file: 'src/add.js' }]));
   const fu = F.cli(root, ['followup', '--findings-file', path.join(root, '.factory', 'scratch', 'findings.json')]).followup;

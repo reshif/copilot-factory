@@ -230,8 +230,7 @@ test('userPromptSubmitted: applies an exact reply, reports a refused one, writes
   assert.equal(F.cli(root, ['next']).last_reply, undefined, 'only until the next routing decision');
   assert.equal(run('please continue').stdout, '');
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
   assert.equal(F.cli(root, ['next']).step, 'H1');
   const miss = ctx(run('aprove'));
   assert.match(miss, /NOTHING was applied/);
@@ -342,13 +341,16 @@ test('agentStop: never blocks while the human is the one to act', () => {
   prompt(root, '/factory:start');
   // no routing decision yet (fresh job): nothing was assigned
   assert.equal(stop(root).stdout, '', 'fresh job');
-  // clarify asked the user a question: waiting
+  // clarify's read-back waits for the user: waiting
   F.cli(root, ['next']);
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  assert.equal(F.record(root, F.envelope(b, 'needs_user', { analysts: [], degraded: [], judge: { questions: [{ question: 'Floats too?', why: 'scope' }], dismissed: [] }, critique: null })).status, 'needs_user');
-  assert.equal(stop(root).stdout, '', 'open clarify question');
-  F.cli(root, ['answer', '--id', 'Q-1', '--answer', 'no']);
-  assert.equal(stop(root).stdout, '', 'the record asked for the user and no factory next since');
+  const b = F.cli(root, ['wfargs', 'clarify']);
+  assert.equal(F.record(root, F.envelope(b, 'ok', { stage: 'readback', rev: b.rev, outputs: { 'read-back': { intent: { problem: 'p', who: 'w', outcome: 'o', success: 's' }, scope: { in: [], out: [] }, took: [], pins: [], plan: [], questions: [{ item: 'new', question: 'Floats too?', why: 'scope' }] } } })).status, 'needs_user');
+  assert.equal(stop(root).stdout, '', 'the read-back waits for the user');
+  assert.match(require('../cli/core/clarify').waitingForUser(root, require('../cli/core/job').load(root, J)), /read-back waits/);
+  F.cli(root, ['next']);
+  assert.equal(stop(root).stdout, '', 'still the read-back after factory next');
+  F.cli(root, ['clarify', 'reply', 'ok']);
+  assert.equal(stop(root).stdout, '', 'the reply was recorded and no factory next since');
   F.cli(root, ['next']);
   // a closing question or hand-off to the user is waiting too (payload- or transcript-borne)
   for (const m of ['I updated the contract. Should floats be supported too?', '1. Which database?\n2. Which env?\n\nLet me know and I will continue.', 'Please answer the questions above.', 'Should I go ahead? 🙂', 'Shall I continue? [y/n]', 'Want me to proceed? Let me know.', 'Q1…?\nQ2…?\n\nReply with your answers.', 'Dry run looks good: 1 integrator agent would run. Reply and I will start it.', 'Would you like me to start the clarify round now?', 'Waiting for your go-ahead.']) {
@@ -356,8 +358,8 @@ test('agentStop: never blocks while the human is the one to act', () => {
     assert.equal(stop(root, { transcriptPath: transcript(root, asked('go'), said(m)) }).stdout, '', `transcript: ${m}`);
   }
   // the H1 gate: waiting on the human
-  b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.cli(root, ['clarify', 'reply', '1: no, integers only']);
+  F.clarify(root);
   assert.equal(F.cli(root, ['next']).action, 'gate');
   assert.equal(stop(root).stdout, '', 'pending gate');
   assert.equal(stop(root, { last_assistant_message: 'All done! The fix is complete.' }).stdout, '', 'at a gate, even a "done" claim is not blocked');
@@ -458,8 +460,7 @@ test('agent sessions: the guard denies driving the job and human commands, allow
 test('factory next: a notice when chat replies are not reaching the factory (dead prompt hook), once per wait', () => {
   const toH1 = (root, J) => {
     fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-    F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+    F.clarify(root);
     return F.cli(root, ['next']);
   };
   const job = (root) => F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;

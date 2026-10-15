@@ -26,23 +26,35 @@ test('bug@low: request to closed job, with a fix round and a local merge', () =>
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   assert.equal(F.cli(root, ['contract', 'check', '--plan-fields']).ok, true);
 
-  // first clarify round asks a question
-  let brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify'], { allowFail: false });
-  assert.equal(brief.fanout.length, 4);
-  assert.deepEqual(brief.fanout.map((f) => f.category), ['intent', 'scope', 'constraint', 'acceptance'], 'intent gate first');
-  assert.equal(brief.limits.max_questions, 5, 'round 1 budget');
-  assert.match(brief.fanout[0].prompt, /read this run's context/);
-  assert.equal(brief.fanout[0].agent_type, 'factory:intent-analyst');
-  assert.ok(fs.existsSync(brief.fanout[0].prompt.split('\n')[1].trim()), 'instruction file exists');
-  let r = F.record(root, F.envelope(brief, 'needs_user', { analysts: [], degraded: [], judge: { questions: [{ question: 'Floats too?', why: 'scope' }], dismissed: [] }, critique: null }));
-  assert.equal(r.status, 'needs_user');
-  // second round: no questions, God Eye approves
+  // clarify v3, stage by stage: the read-back is one interviewer call
   n = next(root);
-  assert.equal(n.skill, 'clarify');
-  brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  assert.match(fs.readFileSync(brief.judge.prompt.split('\n')[1].trim(), 'utf8'), /Floats too\?/, 'already-asked questions are passed on');
-  r = F.record(root, F.envelope(brief, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  assert.equal(n.clarify.stage, 'readback');
+  assert.equal(n.clarify.run, 'factory run clarify');
+  let brief = F.cli(root, ['wfargs', 'clarify'], { allowFail: false });
+  assert.equal(brief.stage, 'readback');
+  assert.deepEqual(brief.groups.map((g) => g.map((a) => a.agent_type)), [['factory:interviewer']]);
+  assert.match(brief.groups[0][0].prompt, /read this run's context/);
+  assert.ok(fs.existsSync(brief.groups[0][0].prompt.split('\n')[1].trim()), 'instruction file exists');
+  const rb = { intent: { problem: 'add(2, 3) returns -1', who: 'callers of src/add.js', outcome: 'add returns the sum', success: 'tests/add.test.js passes' }, scope: { in: ['add'], out: [] }, took: [], pins: [], plan: [{ item: 'new', what: 'Whether floats are added too', tag: 'decision', pins: [], impact: 'high' }], questions: [], design_may_choose: [] };
+  let r = F.record(root, F.envelope(brief, 'ok', { stage: 'readback', rev: brief.rev, outputs: { 'read-back': rb } }));
+  assert.equal(r.status, 'needs_user');
+  assert.match(r.screen, /Whether floats are added too/);
+  assert.match(F.cli(root, ['clarify', 'reply', 'ok']).message, /Read-back confirmed/);
+  // research: one pass (repo + docs researchers, then the brief writer), then one sheet
+  brief = F.cli(root, ['wfargs', 'clarify']);
+  assert.equal(brief.stage, 'research');
+  assert.deepEqual(brief.groups.map((g) => g.map((a) => a.agent_type)), [['factory:researcher', 'factory:researcher'], ['factory:brief-writer']]);
+  const P = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8')).plan[0].id;
+  r = F.record(root, F.envelope(brief, 'ok', { stage: 'research', rev: brief.rev, outputs: { 'research · repo': { mode: 'repo', evidence: [{ plan: P, claim: 'add subtracts', source: 'src/add.js:1', source_tier: 'repo', quote: 'module.exports = (a, b) => a - b; // bug: should add', confidence: 'high' }], unresolved: [] }, 'research · docs': { mode: 'docs', evidence: [], unresolved: [{ plan: P, reason: 'a preference' }] }, 'research brief': { summary: 's', records: [{ plan: P, decision: 'Floats too?', options: [{ key: 'a', text: 'Integers only', consequences: 'c' }, { key: 'b', text: 'Floats too', consequences: 'c' }], evidence: ['src/add.js:1'], recommendation: 'a', why: 'the bug is about integers' }], facts: [], gaps: [] } } }));
+  assert.equal(r.status, 'needs_user');
+  assert.match(r.screen, /Floats too \*\*\(recommended\)\*\*|Integers only \*\*\(recommended\)\*\*/);
+  r = F.cli(root, ['clarify', 'reply', '1 b']);
+  assert.match(r.message, /Recorded: 1 decision/);
+  // the contract writer, then the readiness check
+  r = F.clarify(root);
   assert.equal(r.status, 'ok');
+  const L = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8'));
+  assert.deepEqual(L.items.filter((x) => x.kind === 'decision').map((x) => [x.value, x.strength]), [['Floats too', 'user']]);
 
   // H1
   n = next(root);

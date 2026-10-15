@@ -13,10 +13,9 @@ const next = (root) => F.cli(root, ['next']);
 function clarifyAndApprove(root, J) {
   fs.writeFileSync(
     path.join(F.jobDir(root, J), 'contract.md'),
-    F.contractText({ ac: '- AC-1: add(2, 3) returns 5 (evidence: test)\n- AC-2: sub(5, 3) returns 2 (evidence: test)', verify: '`node tests/add.test.js` (AC-1)' }),
+    F.contractText({ ac: '- AC-1: add(2, 3) returns 5 (evidence: test)\n- AC-2: sub(5, 3) returns 2 (evidence: test)', verify: '`node tests/add.test.js` (AC-1)\n- `node tests/sub.test.js` (AC-2)' }), // clarify v3: every test criterion has a verify command
   );
-  const brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  assert.equal(F.record(root, F.envelope(brief, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } })).status, 'ok');
+  assert.equal(F.clarify(root).status, 'ok');
   assert.equal(next(root).step, 'H1');
   F.reply(root, 'approve');
   const n = next(root);

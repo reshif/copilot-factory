@@ -50,8 +50,8 @@ const say = (root, text) => {
 function toRealize(root) {
   const J = F.cli(root, ['job', 'new', '--title', 'Fix slug', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), P.CONTRACT(F));
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
+  let b;
   const h1 = F.cli(root, ['next']);
   F.reply(root, 'approve');
   b = F.cli(root, ['wfargs', 'ground']);

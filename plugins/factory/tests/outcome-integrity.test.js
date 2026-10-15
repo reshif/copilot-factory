@@ -60,8 +60,8 @@ const stateOf = (root, J) => core('job').load(root, J);
 function grounded(root) {
   const J = F.cli(root, ['job', 'new', '--title', 'Two tasks', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
+  let b;
   F.cli(root, ['next']);
   F.reply(root, 'approve');
   b = F.cli(root, ['wfargs', 'ground']);
@@ -196,8 +196,8 @@ test('P1.2: realize reports a dependency_conflict builder as blocked at once, ne
 function toProve(root) {
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
-  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
-  F.record(root, F.envelope(b, 'ok', { analysts: [], degraded: [], judge: { questions: [], dismissed: [] }, critique: { verdict: 'approve', items: [] } }));
+  F.clarify(root);
+  let b;
   F.cli(root, ['next']);
   F.reply(root, 'approve');
   F.cli(root, ['next']);
@@ -370,7 +370,7 @@ test('P1.5: killing factory run kills its agents\' process groups, logs workflow
   const script = path.join(dir, 'script.js');
   fs.writeFileSync(script, `module.exports = () => { const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 600000)'], { stdio: 'ignore' }); require('fs').appendFileSync(${JSON.stringify(pidFile)}, c.pid + '\\n'); return { sleep_ms: 600000, json: {} }; };`);
   const env = { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: path.join(__dirname, 'helpers', 'fake-copilot.js'), FAKE_COPILOT_SCRIPT: script };
-  const p = spawn('node', [F.BIN, 'run', 'fanout-judge', '--config', 'clarify'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn('node', [F.BIN, 'run', 'clarify'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const exited = new Promise((res) => p.on('exit', (code, signal) => res({ code, signal })));
   const lock = path.join(F.jobDir(root, J), 'run.lock');
   const eventsFile = path.join(root, '.factory', 'log', 'events.jsonl');
@@ -413,7 +413,7 @@ test('P1.5: a run killed with SIGKILL (no handler runs) leaves a lock naming its
   const script = path.join(dir, 'script.js');
   fs.writeFileSync(script, 'module.exports = () => ({ sleep_ms: 600000, json: {} });');
   const env = { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: path.join(__dirname, 'helpers', 'fake-copilot.js'), FAKE_COPILOT_SCRIPT: script };
-  const p = spawn('node', [F.BIN, 'run', 'fanout-judge', '--config', 'clarify'], { cwd: root, env, stdio: 'ignore' });
+  const p = spawn('node', [F.BIN, 'run', 'clarify'], { cwd: root, env, stdio: 'ignore' });
   const lock = path.join(F.jobDir(root, J), 'run.lock');
   const agentsOf = () => { try { return JSON.parse(fs.readFileSync(lock, 'utf8')).agents || []; } catch { return []; } };
   for (let i = 0; i < 200 && !agentsOf().length; i++) await new Promise((r) => setTimeout(r, 50));
@@ -426,7 +426,7 @@ test('P1.5: a run killed with SIGKILL (no handler runs) leaves a lock naming its
     assert.ok(orphans.every(alive), 'SIGKILL left the agent running');
     // the next run finds the holder dead, stops its agents and takes the lock (a dry run never takes it: use a real one that ends quickly)
     fs.writeFileSync(script, 'module.exports = () => ({ exit: 1, stderr: "stop" });');
-    spawnSync('node', [F.BIN, 'run', 'fanout-judge', '--config', 'clarify'], { cwd: root, env, encoding: 'utf8', timeout: 60000 });
+    spawnSync('node', [F.BIN, 'run', 'clarify'], { cwd: root, env, encoding: 'utf8', timeout: 60000 });
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(orphans.every((pid) => !alive(pid)), 'the orphaned agent was stopped');
   } finally {
