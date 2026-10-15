@@ -1153,17 +1153,22 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-apnote.bp-old .bp-aplamp{background:var(--ink-3);box-shadow:none}
 .dx-blueprint .bp-apnote.bp-pend:not(.bp-on) .bp-aplamp{background:var(--hl-line);box-shadow:0 0 0 3px var(--hl-soft)}
 .dx-blueprint .bp-tb .bp-rcell{flex:1 1 auto;min-width:300px}
-.dx-blueprint .bp-rcell .bp-ctl{display:flex;gap:6px;align-items:center;min-width:0}
+.dx-blueprint .bp-rcell .bp-ctl{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0}
 .dx-blueprint .bp-rcell .bp-ctl .bp-btn{padding:3px 8px;min-width:32px}
 .dx-blueprint .bp-rcell select{background:var(--paper);border:1px solid var(--ink);border-radius:3px;font:13px var(--f-mono);padding:2px}
+.dx-blueprint .bp-rcell .bp-spdgrp{display:inline-flex;gap:0}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd{border-radius:0;margin-left:-1px;font:13px var(--f-mono);white-space:nowrap;text-transform:none;letter-spacing:0;padding-left:6px;padding-right:6px}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd:first-child{border-radius:3px 0 0 3px;margin-left:0}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd:last-child{border-radius:0 3px 3px 0}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd[aria-pressed="true"]{background:var(--ink);color:var(--paper);font-weight:700}
 .dx-blueprint .bp-mode{font:700 13px var(--f-display);font-stretch:condensed;letter-spacing:.1em;padding:2px 6px;border:1.3px solid var(--ink);text-transform:uppercase}
 .dx-blueprint .bp-mode.bp-live{background:var(--ink);color:var(--paper)}
 .dx-blueprint .bp-mode.bp-replay{background:var(--hl);color:var(--on-hl)}
-.dx-blueprint .bp-scrub{position:relative;height:24px;flex:1 1 auto;min-width:90px}
+.dx-blueprint .bp-scrub{position:relative;height:24px;flex:1 1 120px;min-width:120px}
 .dx-blueprint .bp-scrub svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .dx-blueprint .bp-scrub input{position:absolute;inset:0;width:100%;margin:0;opacity:0;cursor:pointer}
 .dx-blueprint .bp-scrub input:focus-visible + svg{outline:2px solid var(--agent);outline-offset:1px}
-.dx-blueprint.bp-snapshot .bp-rcell .bp-ctl .bp-btn,.dx-blueprint.bp-snapshot .bp-rcell select,.dx-blueprint.bp-snapshot .bp-scrub input{display:none}
+.dx-blueprint.bp-snapshot .bp-rcell .bp-ctl .bp-btn,.dx-blueprint.bp-snapshot .bp-rcell select,.dx-blueprint.bp-snapshot .bp-rcell .bp-spdgrp,.dx-blueprint.bp-snapshot .bp-scrub input{display:none}
 .dx-blueprint .bp-stamp{display:none;position:absolute;right:28px;top:22px;transform:rotate(-6deg);border:2.5px solid var(--fail);color:var(--fail);padding:4px 10px;font:700 18px/1.1 var(--f-display);font-stretch:condensed;letter-spacing:.12em;text-transform:uppercase;z-index:5;background:color-mix(in srgb,var(--paper) 80%,transparent);pointer-events:none}
 .dx-blueprint.bp-snapshot .bp-stamp{display:block}
 
@@ -6601,7 +6606,20 @@ function toDisplay(data) {
     var notesOpen = false, lessonOpen = {};
     var modeTag = H("span", { "class": "mode live" }, "Live");
     var playBtn = H("button", { type: "button", "class": "btn", "aria-label": "Play replay" }, "▶");
-    var speed = H("select", { "aria-label": "Replay speed" }, H("option", { value: "600" }, "10 min/s"), H("option", { value: "3600", selected: true }, "1 h/s"), H("option", { value: "14400" }, "4 h/s"));
+    // replay speed: one click per speed (10 min/s by default, remembered per browser), not a dropdown
+    var SPEEDS = [["600", "10 min/s"], ["3600", "1 h/s"], ["14400", "4 h/s"]], spd0 = "600";
+    try { var spdSaved = localStorage.getItem("bp-replay-speed"); if (SPEEDS.some(function (o) { return o[0] === spdSaved; })) spd0 = spdSaved; } catch (e) { /* no storage: default */ }
+    var speed = H("div", { "class": "spdgrp", role: "group", "aria-label": "Replay speed" });
+    speed.value = spd0;
+    SPEEDS.forEach(function (o) {
+      var b = H("button", { type: "button", "class": "btn spd", "aria-pressed": String(o[0] === spd0), title: "Replay at " + o[1] }, o[1]);
+      b.addEventListener("click", function () {
+        speed.value = o[0];
+        [].forEach.call(speed.children, function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+        try { localStorage.setItem("bp-replay-speed", o[0]); } catch (e) { /* not remembered */ }
+      });
+      speed.appendChild(b);
+    });
     var liveBtn = H("button", { type: "button", "class": "btn" }, "Now");
     var scrub = H("input", { type: "range", min: 0, max: 1000, step: 1, value: 1000, "aria-label": "Replay position" });
     var ticks = Z("svg", { preserveAspectRatio: "none", viewBox: "0 0 1000 24" });

@@ -243,17 +243,22 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-apnote.bp-old .bp-aplamp{background:var(--ink-3);box-shadow:none}
 .dx-blueprint .bp-apnote.bp-pend:not(.bp-on) .bp-aplamp{background:var(--hl-line);box-shadow:0 0 0 3px var(--hl-soft)}
 .dx-blueprint .bp-tb .bp-rcell{flex:1 1 auto;min-width:300px}
-.dx-blueprint .bp-rcell .bp-ctl{display:flex;gap:6px;align-items:center;min-width:0}
+.dx-blueprint .bp-rcell .bp-ctl{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0}
 .dx-blueprint .bp-rcell .bp-ctl .bp-btn{padding:3px 8px;min-width:32px}
 .dx-blueprint .bp-rcell select{background:var(--paper);border:1px solid var(--ink);border-radius:3px;font:13px var(--f-mono);padding:2px}
+.dx-blueprint .bp-rcell .bp-spdgrp{display:inline-flex;gap:0}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd{border-radius:0;margin-left:-1px;font:13px var(--f-mono);white-space:nowrap;text-transform:none;letter-spacing:0;padding-left:6px;padding-right:6px}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd:first-child{border-radius:3px 0 0 3px;margin-left:0}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd:last-child{border-radius:0 3px 3px 0}
+.dx-blueprint .bp-rcell .bp-spdgrp .bp-spd[aria-pressed="true"]{background:var(--ink);color:var(--paper);font-weight:700}
 .dx-blueprint .bp-mode{font:700 13px var(--f-display);font-stretch:condensed;letter-spacing:.1em;padding:2px 6px;border:1.3px solid var(--ink);text-transform:uppercase}
 .dx-blueprint .bp-mode.bp-live{background:var(--ink);color:var(--paper)}
 .dx-blueprint .bp-mode.bp-replay{background:var(--hl);color:var(--on-hl)}
-.dx-blueprint .bp-scrub{position:relative;height:24px;flex:1 1 auto;min-width:90px}
+.dx-blueprint .bp-scrub{position:relative;height:24px;flex:1 1 120px;min-width:120px}
 .dx-blueprint .bp-scrub svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .dx-blueprint .bp-scrub input{position:absolute;inset:0;width:100%;margin:0;opacity:0;cursor:pointer}
 .dx-blueprint .bp-scrub input:focus-visible + svg{outline:2px solid var(--agent);outline-offset:1px}
-.dx-blueprint.bp-snapshot .bp-rcell .bp-ctl .bp-btn,.dx-blueprint.bp-snapshot .bp-rcell select,.dx-blueprint.bp-snapshot .bp-scrub input{display:none}
+.dx-blueprint.bp-snapshot .bp-rcell .bp-ctl .bp-btn,.dx-blueprint.bp-snapshot .bp-rcell select,.dx-blueprint.bp-snapshot .bp-rcell .bp-spdgrp,.dx-blueprint.bp-snapshot .bp-scrub input{display:none}
 .dx-blueprint .bp-stamp{display:none;position:absolute;right:28px;top:22px;transform:rotate(-6deg);border:2.5px solid var(--fail);color:var(--fail);padding:4px 10px;font:700 18px/1.1 var(--f-display);font-stretch:condensed;letter-spacing:.12em;text-transform:uppercase;z-index:5;background:color-mix(in srgb,var(--paper) 80%,transparent);pointer-events:none}
 .dx-blueprint.bp-snapshot .bp-stamp{display:block}
 
