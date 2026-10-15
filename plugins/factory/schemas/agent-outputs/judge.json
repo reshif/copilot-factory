@@ -6,7 +6,10 @@
     "unknown": { "type": "string" },
     "kind": { "enum": ["repo", "world", "decision", "user"] },
     "evidence": { "type": "array", "items": { "type": "string", "pattern": "^E-\\d+$" } },
-    "preference": { "type": "boolean" } } } },
+    "preference": { "type": "boolean" },
+    "same_as": { "type": "string", "pattern": "^(U-\\d+|new)$" },
+    "subject": { "type": "string" },
+    "owner": { "enum": ["research", "user", "design"] } } } },
   "held": { "type": "array", "items": { "type": "object", "required": ["question", "category"], "properties": {
     "question": { "type": "string" }, "category": { "type": "string" } } } },
   "dismissed": { "type": "array", "items": { "type": "object", "required": ["question", "reason"], "properties": {

@@ -214,13 +214,15 @@ function resume(root, { jobId, step, channel }) {
   if (from === 'review') oneMore('review_rounds', L.max_review_rounds);
   if (from === 'verify') oneMore('verify_fix_rounds', L.max_verify_fix_rounds);
   if (from === 'clarify') {
-    oneMore('clarify_rounds', L.max_intent_rounds + 2);
+    // Clarify v2: the round counter stays monotonic. Resume resets the no-progress counter
+    // and, after the hard ceiling, allows as many more rounds as the no-progress rule does.
+    const CL = require('./clarify').limits(state);
+    state.counters.clarify_no_progress = 0;
+    state.counters.clarify_degraded_streak = 0;
+    if (CL.counted >= CL.ceiling) state.counters.clarify_bonus_rounds = (state.counters.clarify_bonus_rounds || 0) + (CL.counted - CL.ceiling) + CL.no_progress;
     // Parked on unclear intent: one more intent round, with a question budget.
     const IL = readJson(pluginPath('config', 'workflows', 'clarify.json')).limits.intent_rounds;
-    if ((state.counters.intent_rounds || 0) >= IL) {
-      state.counters.intent_rounds = IL - 1;
-      oneMore('clarify_rounds', L.max_intent_rounds - 1);
-    }
+    if ((state.counters.intent_rounds || 0) >= IL) state.counters.intent_rounds = IL - 1;
   }
   if (from === 'decompose') oneMore('decompose_rounds', L.max_plan_validate_rounds);
   if (from === 'budget') state.policy.limits.max_agent_runs_per_job = Math.ceil(state.policy.limits.max_agent_runs_per_job * 1.5);

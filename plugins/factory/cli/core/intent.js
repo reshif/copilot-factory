@@ -58,7 +58,7 @@ function settings(root, state) {
 
 // ---------------------------------------------------------------- the record
 function empty(state) {
-  return { version: 1, job: state.id, updated_at: null, rounds: [], web: null, versions: [], unknowns: [], evidence: [], assumptions: [] };
+  return { version: 2, job: state.id, updated_at: null, rounds: [], web: null, versions: [], unknowns: [], evidence: [], assumptions: [], notes: [] };
 }
 
 // The record, or null when the scout phase never ran. A record that fails its seal is
@@ -127,8 +127,39 @@ function cleanEvidence(e) {
     second_source: e.second_source && e.second_source.source ? { source: clip(e.second_source.source, 500), quote: clip(e.second_source.quote, 500) } : null,
     counter_source: e.counter_source && e.counter_source.source ? { source: clip(e.counter_source.source, 500), quote: clip(e.counter_source.quote, 500) } : null,
     checks: Array.isArray(e.checks) ? e.checks.slice(0, 5) : [],
+    ...(/^U-\d+$/.test(String(e.contradicts || '')) ? { contradicts: String(e.contradicts) } : {}),
     round: e.round || null,
   };
+}
+
+// v2: the workflow's issues folded into the ledger. Settled is final: a settled, deferred or
+// dropped issue keeps the CLI's copy (only new notes and evidence links come through); the
+// rest take the workflow's view, keeping what the human did (answers, notes) and history.
+function mergeIssues(out, sc, round) {
+  const clarify = require('./clarify');
+  const key = (h) => `${h.round}|${h.event}|${h.actor}|${h.text || ''}`;
+  for (const raw of sc.unknowns || []) {
+    if (!raw || !/^U-\d+$/.test(raw.id || '')) continue;
+    const u = clarify.cleanIssue({ round, ...raw });
+    const i = out.unknowns.findIndex((x) => x.id === u.id);
+    if (i === -1) {
+      out.unknowns.push(u);
+      continue;
+    }
+    const old = out.unknowns[i];
+    const seen = new Set((old.history || []).map(key));
+    const history = [...(old.history || []), ...(u.history || []).filter((h) => !seen.has(key(h)))];
+    const nseen = new Set((old.notes || []).map((n) => `${n.round}|${n.text}`));
+    const notes = [...(old.notes || []), ...(u.notes || []).filter((n) => !nseen.has(`${n.round}|${n.text}`))];
+    const aliases = [...(old.aliases || [])];
+    for (const a of u.aliases || []) if (!aliases.some((x) => x.id === a.id)) aliases.push(a);
+    if (clarify.FINAL.has(old.status)) {
+      out.unknowns[i] = { ...old, history, notes, aliases };
+      continue;
+    }
+    const human = old.answered && old.answer ? { answer: old.answer, answered: old.answered } : {};
+    out.unknowns[i] = { ...old, ...u, ...human, history, notes, aliases, question_id: old.question_id || u.question_id, applied_round: old.applied_round || u.applied_round || null };
+  }
 }
 
 // Fold one clarify run's scout data (envelope data.scout) into the record. Ids come from
@@ -138,7 +169,8 @@ function merge(data, sc, round) {
   const out = { ...data, unknowns: data.unknowns.slice(), evidence: data.evidence.slice(), assumptions: data.assumptions.slice(), versions: (data.versions || []).slice(), rounds: (data.rounds || []).slice() };
   if (!sc || typeof sc !== 'object') return out;
   const at = (list, id) => list.findIndex((x) => x.id === id);
-  for (const raw of sc.unknowns || []) {
+  if (data.version === 2) mergeIssues(out, sc, round);
+  for (const raw of data.version === 2 ? [] : sc.unknowns || []) {
     if (!raw || !/^U-\d+$/.test(raw.id || '')) continue;
     const u = cleanUnknown({ round, ...raw });
     const i = at(out.unknowns, u.id);
@@ -294,6 +326,92 @@ function sort(data) {
   return out;
 }
 
+// v2 (docs/DESIGN-CLARIFY-v2.md, state machine): re-derive the status of every issue that
+// is not final from the evidence, the same rules as the workflow. Settled is final; it
+// reopens only on new confirmed evidence that says it contradicts that issue.
+function advance(data, round = null) {
+  const clarify = require('./clarify');
+  const out = { ...data, unknowns: data.unknowns.map((u) => ({ ...u })), assumptions: data.assumptions.map((a) => ({ ...a })) };
+  const evBy = {};
+  for (const e of out.evidence) (evBy[e.unknown] = evBy[e.unknown] || []).push(e);
+  let nextA = nextIds(out).A;
+  const liveA = (u) => out.assumptions.find((x) => x.unknown === u.id && !x.withdrawn);
+  for (const u of out.unknowns) {
+    const evs = evBy[u.id] || [];
+    u.evidence = evs.map((e) => e.id);
+    const a = liveA(u);
+    if (a && a.dropped && u.status !== 'dropped') {
+      u.status = 'dropped';
+      clarify.event(u, round, 'dropped', 'user', `dropped ${a.id}`);
+    } else if (a && a.overridden && !(u.status === 'settled' && u.settled_by === 'user')) {
+      u.answer = a.override.value;
+      u.answered = { via: a.override.via || 'chat', at: a.override.at, question_id: null };
+      clarify.settle(u, 'user', round, 'user', `changed ${a.id}`);
+    }
+    if (u.status === 'settled') {
+      const c = evs.find((e) => e.contradicts === u.id && e.verdict === 'confirmed' && !(u.history || []).some((h) => h.event === 'reopened' && h.text === e.id));
+      if (c) {
+        u.status = 'proposed';
+        u.owner = 'user';
+        u.settled_by = null;
+        u.question_id = null;
+        u.default = clip(c.claim, 300);
+        u.reason = `new evidence ${c.id} contradicts how it was settled`;
+        clarify.event(u, round, 'reopened', 'evidence', c.id);
+      }
+    }
+    if (clarify.FINAL.has(u.status)) {
+      if (a && !(u.status === 'settled' && u.settled_by === 'evidence') && !a.overridden && !a.dropped) a.withdrawn = true;
+      u.resolution = clarify.compatResolution(u);
+      continue;
+    }
+    if (u.owner === 'design') {
+      u.status = 'deferred_to_design';
+      u.settled_by = 'design_deferral';
+      clarify.event(u, round, 'deferred_to_design', 'cli', 'implementation detail: settled in ground/decide');
+    } else if (u.owner === 'research') {
+      const good = evs.filter((e) => usable(e, u));
+      if (good.length) {
+        const statement = good.map((e) => e.claim).join('; ');
+        const ids = good.map((e) => e.id);
+        if (a) Object.assign(a, { statement, evidence: ids, withdrawn: false });
+        else {
+          nextA += 1;
+          out.assumptions.push({ id: `A-${nextA}`, unknown: u.id, statement, evidence: ids, overridden: false, override: null, dropped: false, withdrawn: false });
+        }
+        u.assumption = a ? a.id : `A-${nextA}`;
+        clarify.settle(u, 'evidence', round, 'research', ids.join(', '));
+      } else if (u.impact === 'low' && !evs.length) {
+        u.note = u.note || 'low impact: assumed, not researched';
+        clarify.settle(u, 'assumption_accepted', round, 'cli', u.note);
+      } else if ((u.status === 'open' && !u.researched && !evs.length) || u.status === 'researching') {
+        // not researched yet, or a retry is due: stays with research
+      } else {
+        const bad = evs.filter((e) => !usable(e, u));
+        const why = u.note || (bad.length ? (bad.some((e) => e.verdict === 'contradicted') ? `sources disagree: ${bad.map((e) => `${e.id} ${e.verdict}`).join(', ')}` : `research did not confirm it: ${bad.map((e) => `${e.id} ${e.verdict}${e.verdict_reason ? ` (${e.verdict_reason})` : ''}`).join(', ')}`) : 'research could not settle it');
+        u.owner = 'user';
+        u.status = 'proposed';
+        u.reason = clip(u.reason || why, 300);
+        u.note = u.note || clip(why, 300);
+        if (clarify.isNone(u.default)) u.default = clip(u.draft, 300);
+        clarify.event(u, round, 'proposed', 'research', u.reason);
+      }
+    } else if (u.impact === 'low' && !u.question_id) {
+      u.note = u.note || 'low impact: assumed, not asked';
+      clarify.settle(u, 'assumption_accepted', round, 'cli', u.note);
+    } else if (u.status === 'open') {
+      u.status = 'proposed';
+    }
+    if (a && !(u.status === 'settled' && u.settled_by === 'evidence')) {
+      a.withdrawn = true;
+      u.assumption = null;
+    }
+    u.researched = u.researched || evs.length > 0;
+    u.resolution = clarify.compatResolution(u);
+  }
+  return out;
+}
+
 // Answers recorded with `factory answer --id Q-n` settle the unknown that question was for.
 function applyAnswers(data, state, answers) {
   const log = state.question_log || [];
@@ -337,7 +455,12 @@ function writeContract(root, state, data) {
   const f = jobPaths(root, state.id).contract;
   const text = readText(f, null);
   if (text === null) return false;
-  const next = contract.setGrounded(text, contractLines(data));
+  let next = contract.setGrounded(text, contractLines(data));
+  if (data.version === 2) {
+    // v2: the clarify ledger's sections (user answers and accepted defaults; deferred to design)
+    const clarify = require('./clarify');
+    next = contract.setDeferred(contract.setClarified(next, clarify.clarificationLines(data)), clarify.deferredLines(data));
+  }
   if (next === text) return false;
   writeText(f, next);
   return true;
@@ -389,6 +512,12 @@ function groundedProblems(root, state, { data, parsed } = {}) {
   }
   for (const u of (d && d.unknowns) || []) {
     if (u.kind !== 'world' || u.impact === 'low') continue;
+    if (d.version === 2) {
+      // v2: deferred-to-design issues never block; a user's answer settles a world fact.
+      if (['deferred_to_design', 'dropped'].includes(u.status)) continue;
+      if (u.status === 'settled' && u.settled_by !== 'evidence') continue;
+      if (u.status === 'proposed' && u.question_id) continue;
+    }
     if (['answered', 'dismissed', 'dropped'].includes(u.resolution)) continue;
     if (u.resolution === 'question' && u.question_id) continue;
     if (u.resolution === 'assumption') {
@@ -456,11 +585,13 @@ function briefText(data, { forGround = false } = {}) {
       L.push(`  - ${u.id} [${u.kind}] ${clip(u.text, 140)} → ${how}`);
     }
   }
-  const open = data.unknowns.filter((u) => ['question', 'pending', 'deferred'].includes(u.resolution));
+  const open = data.unknowns.filter((u) => ['question', 'pending', 'deferred'].includes(u.resolution) && u.status !== 'deferred_to_design');
   if (open.length) {
     L.push('- Still open or assumed without research:');
     for (const u of open) L.push(`  - ${u.id} [${u.kind}, ${u.impact}] ${clip(u.text, 140)} → ${u.resolution}${u.question_id ? ` (asked as ${u.question_id})` : ''}${u.note ? ` — ${clip(u.note, 120)}` : ''}`);
   }
+  const deferred = require('./clarify').deferredText(data);
+  if (deferred) L.push(deferred);
   if ((data.versions || []).length) L.push(`- Versions in use: ${data.versions.map((v) => `${v.name} ${v.version} (${v.source})`).join(', ')}`);
   const f = data.evidence.filter((e) => e.verdict === 'confirmed' || (e.scout === 'repo' && e.verdict === 'unchecked'));
   if (forGround && f.length) {
@@ -598,6 +729,6 @@ function show(root, jobId) {
 }
 
 module.exports = {
-  KINDS, IMPACTS, TIERS, files, settings, empty, load, save, nextIds, merge, checkEvidence, repoQuoteOk, repoSource, usable, sort, applyAnswers, mustAsk,
+  KINDS, IMPACTS, TIERS, files, settings, empty, load, save, nextIds, merge, checkEvidence, repoQuoteOk, repoSource, usable, sort, advance, applyAnswers, mustAsk,
   liveAssumptions, contractLines, writeContract, groundedProblems, floorOk, topFindings, assumptionsView, counts, briefText, findingsMarkdown, render, override, show,
 };

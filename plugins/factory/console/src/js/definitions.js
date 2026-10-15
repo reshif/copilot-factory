@@ -8,6 +8,7 @@ const AGENTS = {
   'verifier': ['Clarify', 'Re-opens each high-impact or web finding, checks the quote, date and version; confirmed, contradicted or unverified.'],
   'intent-analyst': ['Clarify', 'Reads the draft contract from one angle and asks only what the repo can\'t answer.'],
   'judge': ['Clarify', 'Merges the analysts\' questions, dismisses with reasons, never re-asks.'],
+  'contract-editor': ['Clarify', 'Applies what clarify settled (your answers, accepted defaults, God Eye\'s pointed items) to the contract and returns the text; the CLI checks and writes it.'],
   'god-eye': ['Critique', 'Cold reviewer of the contract, design or plan. Approves only what someone could act on without asking.'],
   'researcher': ['Ground', 'Grounds one topic, or scouts clarify\'s unknowns (repo: file:line; web: fetched docs, quoted); every claim is cited or marked UNVERIFIED.'],
   'option-generator': ['Decide', 'Proposes one design optimised for one prior, without hedging.'],

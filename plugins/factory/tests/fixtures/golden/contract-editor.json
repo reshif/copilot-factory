@@ -1,0 +1,11 @@
+{
+  "contract": "# Fix add\n\n## Intent\n- Problem: add(2, 3) returns -1\n- Who: callers of src/add.js\n- Outcome: add returns the arithmetic sum\n- Success signal: tests/add.test.js passes\n\n## Goal\nadd(a, b) returns a + b for numbers.\n\n## Non-goals\n- Numeric strings are not converted\n\n## Acceptance criteria\n- AC-1: add(2, 3) returns 5 (evidence: test)\n\n## Constraints\n- No new dependencies\n\n## Allowed paths\n- src/add.js\n- tests/add.test.js\n\n## Verify commands\n- `node tests/add.test.js` (AC-1)\n\n## Assumptions\n- None\n",
+  "applied": [
+    {
+      "ref": "U-2",
+      "section": "Non-goals",
+      "change": "Numeric strings are not converted (the user's answer to Q-1)."
+    }
+  ],
+  "skipped": []
+}

@@ -1875,12 +1875,13 @@ html[data-theme="light"] .dx-blueprint{
 // Each agent: [stage, what it does]. Its Copilot tools come from its own agents/*.agent.md
 // `tools:` line: build.js writes them into AGENT_TOOLS, so the Crew never drifts from the files.
 // An agent that has "edit" can write; the others are read-only.
-const AGENT_TOOLS = {"architect":["read","search","grep","glob","edit","execute"],"builder":["read","search","grep","glob","edit","execute"],"code-reviewer":["read","search","grep","glob","execute"],"epic-reviewer":["read","search","grep","glob","execute"],"finding-verifier":["read","search","grep","glob","execute"],"god-eye":["read","search","grep","glob","execute"],"integrator":["read","search","grep","glob","edit","execute"],"intent-analyst":["read","search","grep","glob"],"intent-mapper":["read","grep","glob"],"judge":["read","search","grep","glob"],"lesson-writer":["read","search","grep","glob","execute"],"option-generator":["read","search","grep","glob"],"planner":["read","search","grep","glob","edit","execute"],"researcher":["read","search","grep","glob","execute","web","web_fetch"],"security-reviewer":["read","search","grep","glob","execute"],"slicer":["read","search","grep","glob","edit","execute"],"test-reviewer":["read","search","grep","glob","execute"],"tester":["read","search","grep","glob","execute"],"threat-modeler":["read","search","grep","glob","edit","execute"],"ux-reviewer":["read","search","grep","glob","execute"],"verifier":["read","grep","glob","web","web_fetch"]};
+const AGENT_TOOLS = {"architect":["read","search","grep","glob","edit","execute"],"builder":["read","search","grep","glob","edit","execute"],"code-reviewer":["read","search","grep","glob","execute"],"contract-editor":["read","grep","glob"],"epic-reviewer":["read","search","grep","glob","execute"],"finding-verifier":["read","search","grep","glob","execute"],"god-eye":["read","search","grep","glob","execute"],"integrator":["read","search","grep","glob","edit","execute"],"intent-analyst":["read","search","grep","glob"],"intent-mapper":["read","grep","glob"],"judge":["read","search","grep","glob"],"lesson-writer":["read","search","grep","glob","execute"],"option-generator":["read","search","grep","glob"],"planner":["read","search","grep","glob","edit","execute"],"researcher":["read","search","grep","glob","execute","web","web_fetch"],"security-reviewer":["read","search","grep","glob","execute"],"slicer":["read","search","grep","glob","edit","execute"],"test-reviewer":["read","search","grep","glob","execute"],"tester":["read","search","grep","glob","execute"],"threat-modeler":["read","search","grep","glob","edit","execute"],"ux-reviewer":["read","search","grep","glob","execute"],"verifier":["read","grep","glob","web","web_fetch"]};
 const AGENTS = {
   'intent-mapper': ['Clarify', 'Lists the unknowns before anyone asks you anything: repo, world, decision or yours, with their impact.'],
   'verifier': ['Clarify', 'Re-opens each high-impact or web finding, checks the quote, date and version; confirmed, contradicted or unverified.'],
   'intent-analyst': ['Clarify', 'Reads the draft contract from one angle and asks only what the repo can\'t answer.'],
   'judge': ['Clarify', 'Merges the analysts\' questions, dismisses with reasons, never re-asks.'],
+  'contract-editor': ['Clarify', 'Applies what clarify settled (your answers, accepted defaults, God Eye\'s pointed items) to the contract and returns the text; the CLI checks and writes it.'],
   'god-eye': ['Critique', 'Cold reviewer of the contract, design or plan. Approves only what someone could act on without asking.'],
   'researcher': ['Ground', 'Grounds one topic, or scouts clarify\'s unknowns (repo: file:line; web: fetched docs, quoted); every claim is cited or marked UNVERIFIED.'],
   'option-generator': ['Decide', 'Proposes one design optimised for one prior, without hedging.'],
@@ -5453,7 +5454,7 @@ APP.words = (function () {
     "intake-classifier": ["Intake", "sorts the request"], "intent-analyst": ["Intent analyst", "finds gaps in the intent"],
     "intent-mapper": ["Intent mapper", "lists the unknowns before anyone asks you"], verifier: ["Evidence verifier", "re-checks each high-impact finding"],
     "option-generator": ["Option generator", "proposes one independent design option"],
-    judge: ["Judge", "merges the analysts' reports"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
+    judge: ["Judge", "merges the analysts' reports"], "contract-editor": ["Contract editor", "applies what was settled to the contract"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
     researcher: ["Researcher", "finds facts in the code, with sources"], architect: ["Architect", "weighs the options, writes the design record"],
     "threat-modeler": ["Threat modeller", "lists what could be attacked, on high-risk work"], planner: ["Planner", "breaks the work into tasks"],
     slicer: ["Slicer", "splits an epic into slices"], builder: ["Builder", "builds one task"], tester: ["Tester", "checks one task independently"],
@@ -5658,17 +5659,19 @@ APP.epicPick = (function () {
 // to the workflow code: a phase text that no template step matches is still shown, as it ran.
 var RUN_STEPS = (function () {
   var TEMPLATES = {
-    // fanout-judge.js, clarify: scoutPhase() → intent gate → fan-out → judge → God Eye (intent)
+    // fanout-judge.js, clarify: scoutPhase() → contract editor (what was settled) → intent gate → fan-out → judge → God Eye (intent) → contract editor (God Eye's items) and God Eye again
     'fanout-judge:clarify': {
       next: 'your answers or H1',
       steps: [
         { key: 'map', label: 'map the unknowns', match: /^clarify: scout · map the unknowns/, roles: ['intent-mapper'] },
         { key: 'research', label: 'research the unknowns', match: /^clarify: scout · research/, roles: ['researcher'] },
         { key: 'verify', label: 'verify findings', match: /^clarify: scout · verify/, roles: ['verifier'] },
+        { key: 'edit', label: 'apply what was settled', match: /^clarify: contract editor \(apply/, roles: ['contract-editor'], optional: true, only_when_run: true },
         { key: 'gate', label: 'intent gate', match: /^clarify: intent gate/, roles: ['intent-analyst'] },
         { key: 'fanout', label: 'fan-out', match: /^clarify: fan-out/, roles: ['intent-analyst'] },
         { key: 'judge', label: 'judge', match: /^clarify: judge/, roles: ['judge'] },
         { key: 'god-eye', label: 'God Eye (intent)', match: /^clarify: God Eye/, roles: ['god-eye'] },
+        { key: 'revise', label: 'contract editor revises', match: /^clarify: contract editor \(God Eye/, roles: ['contract-editor', 'god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
@@ -5814,7 +5817,7 @@ var RUN_STEPS = (function () {
         for (var q = 0; q < steps.length; q++) if (steps[q].tk > k) { at = q; break; }
         var later = at < steps.length;
         var state = later || ended ? 'skipped' : 'pending';
-        if (state === 'skipped' && ts.optional) return;   // an optional step that did not run is not news
+        if (ts.optional && (state === 'skipped' || ts.only_when_run)) return;   // an optional step that did not run is not news
         steps.splice(at, 0, { i: null, key: ts.key, tk: k, label: ts.label, text: null, started_at: null, ended_at: null, state: state, roles_planned: ts.roles.slice() });
       });
       // a series (realize's waves): the numbers it jumped are skipped, the ones still ahead pending
@@ -6176,7 +6179,7 @@ function toDisplay(data) {
   // the post-merge reviewers, only when a recipe here runs that review: both are filled per render (bankMembers).
   var BANKS = {
     intake: { name: "No agents", members: [] },
-    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["god-eye", "God Eye"]] },
+    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["contract-editor", "contract editor"], ["god-eye", "God Eye"]] },
     design: { name: "Design agents", members: [["researcher", "researcher"], ["option-generator", "option generator"], ["threat-modeler", "threat-modeler"], ["architect", "architect"], ["god-eye", "God Eye"]] },
     plan: { name: "Plan agents", members: [["planner", "planner"], ["god-eye", "God Eye"]] },
     build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["tester", "tester"], ["tester", "tester"], ["integrator", "integrator"]] },
@@ -6858,7 +6861,7 @@ function toDisplay(data) {
     }
 
     // an agent bank: every member a named lamp; lit (and naming its job) while that agent is at work
-    var ROLE_NAME = { "intent-mapper": "intent mapper", verifier: "evidence verifier", "option-generator": "option generator", "intent-analyst": "analyst", judge: "judge", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
+    var ROLE_NAME = { "intent-mapper": "intent mapper", verifier: "evidence verifier", "option-generator": "option generator", "intent-analyst": "analyst", judge: "judge", "contract-editor": "contract editor", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
       planner: "planner", slicer: "slicer", builder: "builder", tester: "tester", integrator: "integrator", "finding-verifier": "finding verifier", "lesson-writer": "lesson writer" };
     var ROLE_LANE = { "code-reviewer": "code", "test-reviewer": "tests", "security-reviewer": "security", "ux-reviewer": "ux", "epic-reviewer": "conformance" };
     var LANE_ROLE = { code: "code-reviewer", tests: "test-reviewer", security: "security-reviewer", ux: "ux-reviewer", conformance: "epic-reviewer" };
@@ -6917,7 +6920,7 @@ function toDisplay(data) {
       return (S.runAt[key] = { key: key, live: live[0] || null, more: live.slice(1), last: last });
     }
     var STEP_ROLE = { "intent-mapper": ["mapper", "mappers"], researcher: ["researcher", "researchers"], verifier: ["verifier", "verifiers"], "intent-analyst": ["analyst", "analysts"], judge: ["judge", "judges"],
-      "god-eye": ["God Eye", "God Eye"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
+      "god-eye": ["God Eye", "God Eye"], "contract-editor": ["contract editor", "contract editor"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
       slicer: ["slicer", "slicer"], builder: ["builder", "builders"], tester: ["tester", "testers"], integrator: ["integrator", "integrator"], "finding-verifier": ["verifier", "verifiers"], "lesson-writer": ["lesson writer", "lesson writer"] };
     function stepRole(role, n, key) {
       if (role === "researcher" && key === "intent") return n === 1 ? "scout" : "scouts";
@@ -7848,7 +7851,7 @@ function toDisplay(data) {
         if (a.phase === "denied") r.den++; r.last = a;
       });
       var active = {}; S.agents.forEach(function (a) { active["factory:" + a.agent] = 1; });
-      var order = ["factory:intent-mapper", "factory:verifier", "factory:intent-analyst", "factory:judge", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
+      var order = ["factory:intent-mapper", "factory:verifier", "factory:intent-analyst", "factory:judge", "factory:contract-editor", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
       var keys = order.concat(Object.keys(roles).filter(function (k) { return order.indexOf(k) < 0; }).sort());
       var bw = 260;
       var rowsN = keys.map(function (k, i) {

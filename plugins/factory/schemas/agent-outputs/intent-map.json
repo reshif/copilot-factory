@@ -9,4 +9,7 @@
     "options": { "type": "array", "maxItems": 5, "items": { "type": "string" } },
     "research": { "enum": ["repo", "web", "none"] },
     "search": { "type": "string" },
-    "why": { "type": "string" } } } } } }
+    "why": { "type": "string" },
+    "same_as": { "type": "string", "pattern": "^(U-\\d+|new)$" },
+    "subject": { "type": "string" },
+    "owner": { "enum": ["research", "user", "design"] } } } } } }

@@ -69,7 +69,7 @@ APP.words = (function () {
     "intake-classifier": ["Intake", "sorts the request"], "intent-analyst": ["Intent analyst", "finds gaps in the intent"],
     "intent-mapper": ["Intent mapper", "lists the unknowns before anyone asks you"], verifier: ["Evidence verifier", "re-checks each high-impact finding"],
     "option-generator": ["Option generator", "proposes one independent design option"],
-    judge: ["Judge", "merges the analysts' reports"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
+    judge: ["Judge", "merges the analysts' reports"], "contract-editor": ["Contract editor", "applies what was settled to the contract"], "god-eye": ["God Eye", "independent reviewer: reads the whole document fresh"],
     researcher: ["Researcher", "finds facts in the code, with sources"], architect: ["Architect", "weighs the options, writes the design record"],
     "threat-modeler": ["Threat modeller", "lists what could be attacked, on high-risk work"], planner: ["Planner", "breaks the work into tasks"],
     slicer: ["Slicer", "splits an epic into slices"], builder: ["Builder", "builds one task"], tester: ["Tester", "checks one task independently"],

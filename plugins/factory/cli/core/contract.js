@@ -184,26 +184,80 @@ function parse(text) {
   };
 }
 
-// Replace (or add, before "## Assumptions") the evidence-backed Assumptions section.
-// lines: ["- A-1: … (evidence: E-2)", …]. With no lines and no section, the text is unchanged.
-function setGrounded(text, lines) {
+// Replace (or add, before "## Assumptions") a section the CLI owns. With no lines and no
+// section, the text is unchanged.
+function setSection(text, heading, comment, lines) {
   const src = String(text || '');
-  const body = [GROUNDED_HEADING, GROUNDED_COMMENT, ...lines].join('\n');
+  const body = [heading, comment, ...lines].join('\n');
   const all = src.split('\n');
-  const start = all.findIndex((l) => /^##\s+assumptions \(evidence-backed\)\s*$/i.test(l));
+  const want = heading.replace(/^##\s+/, '').trim().toLowerCase();
+  const start = all.findIndex((l) => /^##\s+/.test(l) && l.replace(/^##\s+/, '').trim().toLowerCase() === want);
   if (start !== -1) {
     let end = all.findIndex((l, i) => i > start && /^##\s+/.test(l));
     if (end === -1) end = all.length;
     const tail = all.slice(end);
     const next = [...all.slice(0, start), ...body.split('\n'), ...(tail.length ? [''] : []), ...tail];
     while (tail.length === 0 && next.length && next[next.length - 1] === '') next.pop();
-    const out = next.join('\n') + (tail.length ? '' : '\n');
-    return out;
+    return next.join('\n') + (tail.length ? '' : '\n');
   }
   if (!lines.length) return src;
   const at = all.findIndex((l) => /^##\s+assumptions\s*$/i.test(l));
   if (at !== -1) return [...all.slice(0, at), ...body.split('\n'), '', ...all.slice(at)].join('\n');
   return `${src.replace(/\n*$/, '\n')}\n${body}\n`;
+}
+
+// Replace (or add, before "## Assumptions") the evidence-backed Assumptions section.
+// lines: ["- A-1: … (evidence: E-2)", …]. With no lines and no section, the text is unchanged.
+function setGrounded(text, lines) {
+  return setSection(text, GROUNDED_HEADING, GROUNDED_COMMENT, lines);
+}
+
+// Clarify v2: what the user settled (answers, accepted defaults) and what was handed to
+// design, written by the CLI from the clarify ledger.
+const CLARIFIED_HEADING = '## Clarifications (settled)';
+const CLARIFIED_COMMENT = '<!-- Written by the factory from the clarify ledger (factory clarify status); do not edit by hand. Answer with factory answer U-n "<answer>". -->';
+const DEFERRED_HEADING = '## Deferred to design';
+const DEFERRED_COMMENT = '<!-- Implementation details clarify handed to ground/decide; they do not block H1. Written by the factory. -->';
+const CLI_OWNED = ['assumptions (evidence-backed)', 'clarifications (settled)', 'deferred to design'];
+
+function setClarified(text, lines) {
+  return setSection(text, CLARIFIED_HEADING, CLARIFIED_COMMENT, lines);
+}
+function setDeferred(text, lines) {
+  return setSection(text, DEFERRED_HEADING, DEFERRED_COMMENT, lines);
+}
+
+// One hash per section (CLI-owned ones left out): what changed between two clarify rounds.
+function sectionHashes(text) {
+  const s = sections(text);
+  const out = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (CLI_OWNED.includes(k)) continue;
+    out[k] = sha256(stripComments(v).join('\n').trim()).slice(0, 16);
+  }
+  return out;
+}
+
+// A contract text with the CLI-owned sections taken from another text (the editor's
+// revision keeps the CLI's own sections, whatever it returned for them).
+function keepCliSections(revised, current) {
+  let out = String(revised || '');
+  const cur = sections(current);
+  for (const [heading, comment, key] of [[GROUNDED_HEADING, GROUNDED_COMMENT, CLI_OWNED[0]], [CLARIFIED_HEADING, CLARIFIED_COMMENT, CLI_OWNED[1]], [DEFERRED_HEADING, DEFERRED_COMMENT, CLI_OWNED[2]]]) {
+    const lines = cur[key] ? stripComments(cur[key]).filter((l) => l.trim()) : [];
+    out = setSection(out, heading, comment, lines);
+    if (!cur[key]) {
+      // the current text has no such section: drop one the revision invented
+      const all = out.split('\n');
+      const start = all.findIndex((l) => /^##\s+/.test(l) && l.replace(/^##\s+/, '').trim().toLowerCase() === key);
+      if (start !== -1) {
+        let end = all.findIndex((l, i) => i > start && /^##\s+/.test(l));
+        if (end === -1) end = all.length;
+        out = [...all.slice(0, start), ...all.slice(end)].join('\n');
+      }
+    }
+  }
+  return out;
 }
 
 function intentProblems(intent, requireIntent) {
@@ -250,4 +304,4 @@ function hash(root, state) {
   return sha256(`${text}\n--factory--\nwork_type=${state.work_type}\nrisk=${state.risk}\nepic=${Boolean(state.epic)}`);
 }
 
-module.exports = { EVIDENCE_TYPES, INTENT_FIELDS, GROUNDED_HEADING, GROUNDED_COMMENT, intentLines, template, parse, parseGroundedLine, problems, read, hash, isPlaceholder, setGrounded };
+module.exports = { EVIDENCE_TYPES, INTENT_FIELDS, GROUNDED_HEADING, GROUNDED_COMMENT, CLARIFIED_HEADING, DEFERRED_HEADING, CLI_OWNED, intentLines, template, parse, parseGroundedLine, problems, read, hash, isPlaceholder, setGrounded, setSection, setClarified, setDeferred, sectionHashes, keepCliSections, sections };

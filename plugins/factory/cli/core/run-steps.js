@@ -16,17 +16,19 @@
 // to the workflow code: a phase text that no template step matches is still shown, as it ran.
 var RUN_STEPS = (function () {
   var TEMPLATES = {
-    // fanout-judge.js, clarify: scoutPhase() → intent gate → fan-out → judge → God Eye (intent)
+    // fanout-judge.js, clarify: scoutPhase() → contract editor (what was settled) → intent gate → fan-out → judge → God Eye (intent) → contract editor (God Eye's items) and God Eye again
     'fanout-judge:clarify': {
       next: 'your answers or H1',
       steps: [
         { key: 'map', label: 'map the unknowns', match: /^clarify: scout · map the unknowns/, roles: ['intent-mapper'] },
         { key: 'research', label: 'research the unknowns', match: /^clarify: scout · research/, roles: ['researcher'] },
         { key: 'verify', label: 'verify findings', match: /^clarify: scout · verify/, roles: ['verifier'] },
+        { key: 'edit', label: 'apply what was settled', match: /^clarify: contract editor \(apply/, roles: ['contract-editor'], optional: true, only_when_run: true },
         { key: 'gate', label: 'intent gate', match: /^clarify: intent gate/, roles: ['intent-analyst'] },
         { key: 'fanout', label: 'fan-out', match: /^clarify: fan-out/, roles: ['intent-analyst'] },
         { key: 'judge', label: 'judge', match: /^clarify: judge/, roles: ['judge'] },
         { key: 'god-eye', label: 'God Eye (intent)', match: /^clarify: God Eye/, roles: ['god-eye'] },
+        { key: 'revise', label: 'contract editor revises', match: /^clarify: contract editor \(God Eye/, roles: ['contract-editor', 'god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
@@ -172,7 +174,7 @@ var RUN_STEPS = (function () {
         for (var q = 0; q < steps.length; q++) if (steps[q].tk > k) { at = q; break; }
         var later = at < steps.length;
         var state = later || ended ? 'skipped' : 'pending';
-        if (state === 'skipped' && ts.optional) return;   // an optional step that did not run is not news
+        if (ts.optional && (state === 'skipped' || ts.only_when_run)) return;   // an optional step that did not run is not news
         steps.splice(at, 0, { i: null, key: ts.key, tk: k, label: ts.label, text: null, started_at: null, ended_at: null, state: state, roles_planned: ts.roles.slice() });
       });
       // a series (realize's waves): the numbers it jumped are skipped, the ones still ahead pending

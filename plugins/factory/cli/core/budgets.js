@@ -50,7 +50,7 @@ function snapshot(root, state) {
     limit: {
       agent_runs: L.max_agent_runs_per_job,
       tree_agent_runs: L.max_agent_runs_per_tree,
-      clarify_rounds: L.max_intent_rounds + 2,
+      clarify_rounds: require('./clarify').limits(state).ceiling,
       review_rounds: L.max_review_rounds,
       verify_fix_rounds: L.max_verify_fix_rounds,
     },

@@ -7,7 +7,9 @@
     "unknown": { "type": "string" },
     "kind": { "enum": ["repo", "world", "decision", "user"] },
     "evidence": { "type": "array", "items": { "type": "string" } },
-    "preference": { "type": "boolean" } } } },
+    "preference": { "type": "boolean" },
+    "same_as": { "type": "string", "pattern": "^(U-\\d+|new)$" },
+    "subject": { "type": "string" } } } },
   "restatement": { "type": "object", "properties": {
     "problem": { "type": "string" }, "who": { "type": "string" }, "outcome": { "type": "string" }, "success": { "type": "string" } } },
   "assumptions": { "type": "array", "items": { "type": "string" } } } }

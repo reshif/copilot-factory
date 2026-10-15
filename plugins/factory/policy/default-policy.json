@@ -69,7 +69,8 @@
   ],
   "checks": [],
   "limits": {
-    "max_intent_rounds": 4,
+    "max_intent_rounds": 10,
+    "clarify_no_progress_rounds": 2,
     "max_design_critique_rounds": 2,
     "max_plan_validate_rounds": 3,
     "retry_limit": 3,

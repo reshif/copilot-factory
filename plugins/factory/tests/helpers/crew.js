@@ -43,6 +43,11 @@ module.exports = (c) => {
     }
     case 'intent-analyst':
       return { focus: 'x', questions: [] };
+    case 'contract-editor': {
+      // returns the contract as it is (or the revised text it was given), applying nothing
+      const m = text.match(/CURRENT CONTRACT \(revised earlier this round; edit this text, not the file\):\n([\s\S]*)$/);
+      return { contract: m ? m[1] : fs.readFileSync(path.join(jd, 'contract.md'), 'utf8'), applied: [], skipped: [] };
+    }
     case 'judge':
       return { questions: [], dismissed: [] };
     case 'god-eye':

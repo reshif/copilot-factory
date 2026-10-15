@@ -270,10 +270,14 @@ test('still invalid after the corrective turn → null, like a failed agent: the
   newJob(root);
   F.cli(root, ['next']);
   const h = harness({ ...CLARIFY, 'factory:intent-analyst': [ANALYST, { text: 'prose only' }] });
+  const first = h.run(root, ['fanout-judge', '--config', 'clarify']);
+  assert.equal(first.__code, 0, JSON.stringify(first));
+  // clarify v2: a degraded round is retried once automatically and does not count
+  assert.equal(first.status, 'retry', JSON.stringify(first));
+  assert.equal(first.workflow.status, 'degraded', 'the workflow envelope is nested under workflow');
+  F.cli(root, ['next']);
   const r = h.run(root, ['fanout-judge', '--config', 'clarify']);
-  assert.equal(r.__code, 0, JSON.stringify(r));
-  assert.equal(r.status, 'degraded', JSON.stringify(r));
-  assert.equal(r.workflow.status, 'degraded', 'the workflow envelope is nested under workflow');
+  assert.equal(r.status, 'degraded', 'two degraded rounds in a row: the user is asked');
   // going on without the angle: the same run again with --accept-degraded is allowed under the same decision
   const again = h.run(root, ['fanout-judge', '--config', 'clarify', '--accept-degraded']);
   assert.notEqual(again.code, 'not_waiting_for_workflow', JSON.stringify(again));
@@ -295,7 +299,8 @@ test('a crashing or hanging agent is a failed agent: exit code and timeout logge
   };`);
   const r = h2.run(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(r.__code, 0, JSON.stringify(r));
-  assert.equal(r.status, 'degraded', JSON.stringify(r));
+  assert.equal(r.status, 'retry', 'clarify v2: the first degraded round is retried automatically');
+  assert.equal(r.workflow.status, 'degraded', JSON.stringify(r));
   const outcomes = r.agents.map((a) => a.outcome);
   assert.ok(outcomes.includes('failed'), outcomes.join());
   assert.ok(outcomes.includes('timeout'), outcomes.join());
@@ -402,7 +407,7 @@ test('factory shim links factory and factory-inspect into a directory; doctor ch
 
 // ---------------------------------------------------------------- run output, preflight, lock, Copilot missing
 
-test('the printed result is the RECORDED result: envelope ok but the contract has problems → needs_user with the problems', () => {
+test('the printed result is the RECORDED result: envelope ok but the contract has problems → revise with the problems (the editor fixes them)', () => {
   const root = F.makeRepo();
   const J = newJob(root);
   // God Eye approves, so the workflow says ok, but the CLI's own contract check finds a problem
@@ -413,36 +418,54 @@ test('the printed result is the RECORDED result: envelope ok but the contract ha
   const r = h.run(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(r.__code, 0, JSON.stringify(r));
   assert.equal(r.workflow.status, 'ok', 'the workflow finished fine');
-  assert.equal(r.status, 'needs_user', 'but what the skill must act on is the recorded result');
+  assert.equal(r.status, 'revise', 'but what the skill must act on is the recorded result');
   assert.ok(r.problems.length);
-  assert.match(r.message, /Fix these contract problems/);
-  // the default (no --json) output is a short summary with the same status first
+  assert.match(r.message, /contract editor fixes them/);
+  assert.equal(r.clarify.round.progress, false, 'nothing settled, nothing asked');
+  // the default (no --json) output is a short summary with the same status first; round 2's
+  // contract editor fixes the problem (the CLI writes its revision) and the round is ok
   F.cli(root, ['next']);
-  const t = h.text(root, ['fanout-judge', '--config', 'clarify']);
+  const fixed = F.contractText({ ac: '- AC-1: add(2, 3) returns 5 (evidence: test)' });
+  const h2 = harness({ ...CLARIFY, 'factory:contract-editor': { contract: fixed, applied: [{ ref: 'AC-1', section: 'Acceptance criteria', change: 'evidence type test' }], skipped: [] } });
+  const t = h2.text(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(t.status, 0, t.stdout + t.stderr);
   const lines = t.stdout.trim().split('\n');
-  assert.equal(lines[0], 'status: needs_user');
-  assert.match(t.stdout, /^problems:\n  - /m);
+  assert.equal(lines[0], 'status: ok');
+  assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /add\(2, 3\) returns 5 \(evidence: test\)/);
   assert.match(t.stdout, /workflow: fanout-judge --config clarify → ok/);
-  assert.match(t.stdout, /agents: 6 \(6 ok\)/, 'round 2 reuses round 1\'s map: no intent mapper again');
+  assert.match(t.stdout, /agents: 7 \(7 ok\)/, 'round 2 reuses round 1\'s map (no intent mapper again) and runs the contract editor');
   assert.match(t.stdout, /full result: .*\.result\.json/);
   assert.ok(lines.length < 25, `compact: ${lines.length} lines`);
 });
 
-test('God Eye asks for revisions: needs_user with the critique, in the JSON and the summary', () => {
-  const root = F.makeRepo();
+test('God Eye asks for revisions: an item with no pointer is a note (approve with notes); a pointed blocker is revised, then asked with its default', () => {
+  // clarify v2: "revise" with nothing actionable never leaves the user with nothing to answer
+  let root = F.makeRepo();
   newJob(root);
   F.cli(root, ['next']);
-  const critique = { verdict: 'revise', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [{ issue: 'AC-1 does not say what add(-1, 1) returns', severity: 'major' }], researchable_questions: [] };
-  const h = harness({ ...CLARIFY, 'factory:god-eye': critique });
-  const t = h.text(root, ['fanout-judge', '--config', 'clarify']);
+  const note = { verdict: 'revise', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [{ issue: 'AC-1 does not say what add(-1, 1) returns', severity: 'major' }], researchable_questions: [] };
+  let h = harness({ ...CLARIFY, 'factory:god-eye': note });
+  let t = h.text(root, ['fanout-judge', '--config', 'clarify']);
+  assert.equal(t.status, 0, t.stdout + t.stderr);
+  assert.match(t.stdout, /^status: ok/);
+  assert.match(t.stdout, /approve with notes/);
+  let full = JSON.parse(fs.readFileSync(t.stdout.match(/full result: (\S+)/)[1], 'utf8'));
+  assert.equal(full.notes[0].text, 'AC-1 does not say what add(-1, 1) returns');
+  // a blocker that points at AC-1: the contract editor revises, God Eye looks again; still a
+  // blocker → one question whose default is God Eye's suggestion
+  root = F.makeRepo();
+  newJob(root);
+  F.cli(root, ['next']);
+  const blocker = { verdict: 'revise', intent_confirmed: true, restatement: { problem: 'p', outcome: 'o' }, items: [{ issue: 'AC-1 does not say what add(-1, 1) returns', severity: 'blocker', suggestion: 'add(-1, 1) returns 0', ref: 'AC-1', same_as: 'new', subject: 'add.negative' }], researchable_questions: [] };
+  const contract = fs.readFileSync(path.join(F.jobDir(root, 'J-0001'), 'contract.md'), 'utf8');
+  h = harness({ ...CLARIFY, 'factory:god-eye': blocker, 'factory:contract-editor': { contract: contract.replace('(evidence: test)', 'and add(-1, 1) returns 0 (evidence: test)'), applied: [{ ref: 'AC-1', section: 'Acceptance criteria', change: 'add(-1, 1) returns 0' }], skipped: [] } });
+  t = h.text(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(t.status, 0, t.stdout + t.stderr);
   assert.match(t.stdout, /^status: needs_user/);
-  assert.match(t.stdout, /critique: verdict revise/);
-  assert.match(t.stdout, /AC-1 does not say what add\(-1, 1\) returns/);
-  const full = JSON.parse(fs.readFileSync(t.stdout.match(/full result: (\S+)/)[1], 'utf8'));
-  assert.equal(full.critique.verdict, 'revise');
-  assert.equal(full.workflow.status, 'needs_user');
+  assert.match(t.stdout, /Q-1 \[acceptance\] AC-1 does not say what add\(-1, 1\) returns.*default: add\(-1, 1\) returns 0/);
+  full = JSON.parse(fs.readFileSync(t.stdout.match(/full result: (\S+)/)[1], 'utf8'));
+  assert.deepEqual(full.agents.map((a) => a.label).filter((l) => /god-eye|editor/.test(l)), ['god-eye · intent', 'contract editor · God Eye\'s items', 'god-eye · intent (after the revision)']);
+  assert.match(fs.readFileSync(path.join(F.jobDir(root, 'J-0001'), 'contract.md'), 'utf8'), /add\(-1, 1\) returns 0 \(evidence: test\)/, 'the CLI wrote the editor\'s revision');
 });
 
 test('questions are at the top level and in the summary', () => {
@@ -615,7 +638,7 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
     if (check) check(r);
     return r;
   };
-  step({ workflow: 'fanout-judge', dry: ['god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-mapper', 'judge', 'researcher', 'researcher', 'verifier'] }, (r) => {
+  step({ workflow: 'fanout-judge', dry: ['contract-editor', 'god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-mapper', 'judge', 'researcher', 'researcher', 'verifier'] }, (r) => {
     // the scout phase ran first: map → repo scout → verifier, then the usual clarify crew
     assert.deepEqual(roles(r), ['god-eye', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-analyst', 'intent-mapper', 'judge', 'researcher', 'verifier']);
     assert.deepEqual(r.agents.map((a) => a.label).slice(0, 3), ['intent map', 'scout · repo #1', 'verify evidence #1'], 'research comes before the analysts');

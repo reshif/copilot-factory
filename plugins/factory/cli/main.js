@@ -8,7 +8,7 @@ const path = require('path');
 const { FactoryError, fail, readText, writeJson } = require('./lib/util');
 const { requireRoot, findRoot, PLUGIN_ROOT } = require('./lib/paths');
 
-const BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force']);
+const BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -50,7 +50,10 @@ const HELP = `factory — Software Factory CLI (plugin at ${PLUGIN_ROOT})
 Setup      init [--base <branch>] · doctor · ci install · shim [--dir ~/.local/bin] [--force]   (links factory, factory-inspect onto PATH)
 Jobs       job new --title "…" --type <work type> --risk low|medium|high [--epic] · job show · job list · use <job>
 Routing    next · why [--format md] · finalize [--mode before_ship|full] [--check]
-Contract   contract show · contract check [--plan-fields] · answer --id Q-n | --question "…" --answer "…"
+Contract   contract show · contract check [--plan-fields]
+           answer <U-n|Q-n> "<answer>" · answer <U-n|Q-n> --default · answer --id Q-n --answer "…" · answer --question "…" --answer "…"
+Clarify    clarify status [--json]   (the issue ledger: id, subject, status, owner, next action; per-round trend)
+           clarify note <U-n|contract> "<note>"   (context for the next clarify round)
 Intent     intent show   (clarify's research: unknowns, cited evidence, evidence-backed assumptions, grounding problems)
 Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config clarify|decide|challenge] [--mode m] [--scope s] [--lanes a,b]
            [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
@@ -97,6 +100,7 @@ const AGENT_ALLOWED = {
   job: ['show', 'list'],
   contract: ['show', 'check'],
   intent: ['show'],
+  clarify: ['status'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
   reconcile: ['run', 'continue', 'abort'],
@@ -211,8 +215,16 @@ function run(argv) {
     case 'intent':
       if (sub !== 'show') fail('intent show', 'bad_input');
       return C('intent').show(R(), J);
-    case 'answer':
-      return C('record').answer(R(), { jobId: J, id: opt.id, question: opt.question, answer: opt.answer });
+    case 'answer': {
+      // factory answer <U-n|Q-n> "<answer>" | <U-n|Q-n> --default | --id Q-n --answer "…" | --question "…" --answer "…"
+      const ref = sub && /^[UQ]-\d+$/i.test(sub) ? sub : opt.id;
+      const text = opt.answer || (sub && /^[UQ]-\d+$/i.test(sub) ? pos.slice(2).join(' ') : '') || '';
+      return C('record').answer(R(), { jobId: J, ref, question: opt.question, answer: text, acceptDefault: Boolean(opt.default) });
+    }
+    case 'clarify':
+      if (sub === 'status') return C('clarify').status(R(), { jobId: J, json: Boolean(opt.json) });
+      if (sub === 'note') return C('clarify').note(R(), { jobId: J, ref: pos[2], text: opt.text || pos.slice(3).join(' ') });
+      return fail('clarify status [--json] | clarify note <U-n|contract> "<note>"', 'bad_input');
     case 'wfargs': {
       const brief = C('wfargs').build(R(), {
         jobId: J,
@@ -423,6 +435,8 @@ function logCommand(argv, res, err) {
     const ctx = events.context(root, jobId);
     const args = {};
     for (const [k, v] of Object.entries(opt)) args[k] = PROSE.has(k) && typeof v === 'string' ? `${v.slice(0, 60)}${v.length > 60 ? '…' : ''}` : v;
+    // answers and notes are prose: their positional text is clipped like --answer
+    const proseArg = (pos[0] === 'answer' || (pos[0] === 'clarify' && pos[1] === 'note')) && pos.length > 2;
     const r = res && typeof res === 'object' ? res : {};
     const extra = {};
     if (pos[0] === 'wfargs') Object.assign(extra, { workflow: r.workflow || pos[1] || null, config: r.config || opt.config || null, mode: r.mode || null, brief_hash: r.input_hash || null });
@@ -435,7 +449,7 @@ function logCommand(argv, res, err) {
       event: 'cli',
       cmd: pos[0],
       sub: pos[1] || null,
-      arg: pos[2] || null,
+      arg: proseArg ? `${pos.slice(2).join(' ').slice(0, 60)}` : pos[2] || null,
       args,
       job: ctx.job,
       how: ctx.how,

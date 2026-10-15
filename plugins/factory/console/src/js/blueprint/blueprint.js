@@ -51,7 +51,7 @@
   // the post-merge reviewers, only when a recipe here runs that review: both are filled per render (bankMembers).
   var BANKS = {
     intake: { name: "No agents", members: [] },
-    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["god-eye", "God Eye"]] },
+    intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["contract-editor", "contract editor"], ["god-eye", "God Eye"]] },
     design: { name: "Design agents", members: [["researcher", "researcher"], ["option-generator", "option generator"], ["threat-modeler", "threat-modeler"], ["architect", "architect"], ["god-eye", "God Eye"]] },
     plan: { name: "Plan agents", members: [["planner", "planner"], ["god-eye", "God Eye"]] },
     build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["tester", "tester"], ["tester", "tester"], ["integrator", "integrator"]] },
@@ -733,7 +733,7 @@
     }
 
     // an agent bank: every member a named lamp; lit (and naming its job) while that agent is at work
-    var ROLE_NAME = { "intent-mapper": "intent mapper", verifier: "evidence verifier", "option-generator": "option generator", "intent-analyst": "analyst", judge: "judge", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
+    var ROLE_NAME = { "intent-mapper": "intent mapper", verifier: "evidence verifier", "option-generator": "option generator", "intent-analyst": "analyst", judge: "judge", "contract-editor": "contract editor", "god-eye": "God Eye", researcher: "researcher", "threat-modeler": "threat model", architect: "architect",
       planner: "planner", slicer: "slicer", builder: "builder", tester: "tester", integrator: "integrator", "finding-verifier": "finding verifier", "lesson-writer": "lesson writer" };
     var ROLE_LANE = { "code-reviewer": "code", "test-reviewer": "tests", "security-reviewer": "security", "ux-reviewer": "ux", "epic-reviewer": "conformance" };
     var LANE_ROLE = { code: "code-reviewer", tests: "test-reviewer", security: "security-reviewer", ux: "ux-reviewer", conformance: "epic-reviewer" };
@@ -792,7 +792,7 @@
       return (S.runAt[key] = { key: key, live: live[0] || null, more: live.slice(1), last: last });
     }
     var STEP_ROLE = { "intent-mapper": ["mapper", "mappers"], researcher: ["researcher", "researchers"], verifier: ["verifier", "verifiers"], "intent-analyst": ["analyst", "analysts"], judge: ["judge", "judges"],
-      "god-eye": ["God Eye", "God Eye"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
+      "god-eye": ["God Eye", "God Eye"], "contract-editor": ["contract editor", "contract editor"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
       slicer: ["slicer", "slicer"], builder: ["builder", "builders"], tester: ["tester", "testers"], integrator: ["integrator", "integrator"], "finding-verifier": ["verifier", "verifiers"], "lesson-writer": ["lesson writer", "lesson writer"] };
     function stepRole(role, n, key) {
       if (role === "researcher" && key === "intent") return n === 1 ? "scout" : "scouts";
@@ -1723,7 +1723,7 @@
         if (a.phase === "denied") r.den++; r.last = a;
       });
       var active = {}; S.agents.forEach(function (a) { active["factory:" + a.agent] = 1; });
-      var order = ["factory:intent-mapper", "factory:verifier", "factory:intent-analyst", "factory:judge", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
+      var order = ["factory:intent-mapper", "factory:verifier", "factory:intent-analyst", "factory:judge", "factory:contract-editor", "factory:god-eye", "factory:option-generator", "factory:researcher", "factory:architect", "factory:threat-modeler", "factory:planner", "factory:slicer", "factory:builder", "factory:tester", "factory:integrator", "factory:code-reviewer", "factory:test-reviewer", "factory:security-reviewer", "factory:ux-reviewer", "factory:finding-verifier", "factory:lesson-writer"];
       var keys = order.concat(Object.keys(roles).filter(function (k) { return order.indexOf(k) < 0; }).sort());
       var bw = 260;
       var rowsN = keys.map(function (k, i) {

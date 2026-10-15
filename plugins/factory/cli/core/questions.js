@@ -31,11 +31,14 @@ function shape(list, { budget: max = Infinity, asked = [], startId = 0 } = {}) {
   const seen = new Set(asked.map(key));
   const dropped = [];
   const ok = [];
+  const seenU = new Set();
   for (const q of list || []) {
     if (!q || !q.question) continue;
     const k = key(q.question);
     if (seen.has(k)) { dropped.push({ question: q.question, reason: 'already asked' }); continue; }
+    if (q.unknown && seenU.has(q.unknown)) { dropped.push({ question: q.question, reason: `same issue as another question (${q.unknown})` }); continue; }
     seen.add(k);
+    if (q.unknown) seenU.add(q.unknown);
     ok.push({
       question: String(q.question).trim(),
       category: category(q),
@@ -65,10 +68,11 @@ function shape(list, { budget: max = Infinity, asked = [], startId = 0 } = {}) {
 //   - evidence ids that don't exist are removed; no evidence and no preference flag: the
 //     question is shown as the user's call and flagged
 // data: the intent record (cli/core/intent.js). -> { questions, researchable, flagged, created }
-const GROUNDED_FIELDS = ['unknown', 'kind', 'evidence', 'preference', 'researchable', 'note'];
+const GROUNDED_FIELDS = ['unknown', 'kind', 'evidence', 'preference', 'researchable', 'note', 'subject'];
 const KINDS = ['repo', 'world', 'decision', 'user'];
 
-function ground(list, data) {
+function ground(list, data, round = null) {
+  if (data && data.version === 2) return groundV2(list, data, round);
   const unknowns = (data && data.unknowns) || [];
   const evidence = new Set(((data && data.evidence) || []).map((e) => e.id));
   const byId = Object.fromEntries(unknowns.map((u) => [u.id, u]));
@@ -105,4 +109,61 @@ function ground(list, data) {
   return { questions: out, researchable, flagged, created };
 }
 
-module.exports = { CATEGORIES, FOCUS_CATEGORY, budget, shape, ground, askedList, key, GROUNDED_FIELDS };
+// v2 (docs/DESIGN-CLARIFY-v2.md): every question goes through the ledger. Its issue is
+// found by U-n / same_as, then by subject; a question about a settled, dropped or deferred
+// issue is not asked (research-settled ones are listed as researchable); a new one becomes
+// an issue with an owner (an implementation detail is deferred to design, not asked).
+function groundV2(list, data, round) {
+  const clarify = require('./clarify');
+  const evidence = new Set((data.evidence || []).map((e) => e.id));
+  let n = data.unknowns.reduce((m, u) => Math.max(m, Number(String(u.id).replace('U-', '')) || 0), 0);
+  const out = [];
+  const researchable = [];
+  const flagged = [];
+  const created = [];
+  const skipped = [];
+  for (const q of list || []) {
+    if (!q || !q.question) continue;
+    let u = clarify.findSame([...data.unknowns, ...created], { ...q, text: q.question });
+    if (!u) {
+      const kind = clarify.KINDS.includes(q.kind) ? q.kind : CATEGORIES.includes(q.category) ? q.category : 'user';
+      n += 1;
+      u = clarify.cleanIssue({ id: `U-${n}`, text: q.question, kind, impact: 'high', draft: q.question, default: q.default && !clarify.isNone(q.default) ? q.default : null, owner: q.owner, subject: q.subject, source: 'judge', round, ...(Array.isArray(q.options) ? { options: q.options } : {}) }, { round });
+      if (u.owner === 'research') {
+        // raised after research ran: asked now, saying research did not settle it
+        u.owner = 'user';
+        u.status = 'proposed';
+        u.reason = 'raised in clarify after research ran; not researched';
+        u.note = u.reason;
+        u.default = u.default || u.draft;
+      }
+      clarify.event(u, round, u.status === 'deferred_to_design' ? 'deferred_to_design' : 'opened', 'judge', q.question);
+      created.push(u);
+      flagged.push({ question: q.question, unknown: u.id, reason: `${q.unknown || q.same_as ? `names ${String(q.unknown || q.same_as).toUpperCase()}, which is not a live issue` : 'names no issue'}: recorded as new ${u.kind} issue ${u.id}` });
+    }
+    if (u.status === 'settled' && u.settled_by === 'evidence') {
+      researchable.push({ question: q.question, unknown: u.id, evidence: u.evidence || [], assumption: u.assumption || null, reason: `research answered it${u.assumption ? ` (${u.assumption})` : ''}` });
+      continue;
+    }
+    if (clarify.FINAL.has(u.status)) {
+      skipped.push({ question: q.question, unknown: u.id, reason: `${u.id} is ${u.status === 'settled' ? `settled (${u.settled_by})` : u.status}: not asked again` });
+      continue;
+    }
+    if (u.question_id) {
+      skipped.push({ question: q.question, unknown: u.id, reason: `${u.id} was asked as ${u.question_id}: waiting for the answer` });
+      continue;
+    }
+    const research = ['repo', 'world'].includes(u.kind);
+    const ev = [...new Set((Array.isArray(q.evidence) ? q.evidence : []).map((e) => String(e).toUpperCase()).filter((e) => evidence.has(e)))];
+    let preference = q.preference === true;
+    if (!ev.length && !preference) {
+      preference = true;
+      flagged.push({ question: q.question, unknown: u.id, reason: 'default cites no evidence and was not marked a preference: shown as your call' });
+    }
+    const def = q.default && !clarify.isNone(q.default) ? q.default : u.default || q.default;
+    out.push({ ...q, unknown: u.id, kind: u.kind, subject: u.subject, evidence: ev, preference, ...(def ? { default: def } : {}), ...(research ? { researchable: true, note: u.reason || u.note || 'research did not settle it' } : {}) });
+  }
+  return { questions: out, researchable, flagged, created, skipped };
+}
+
+module.exports = { CATEGORIES, FOCUS_CATEGORY, budget, shape, ground, groundV2, askedList, key, GROUNDED_FIELDS };

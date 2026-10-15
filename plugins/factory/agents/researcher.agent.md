@@ -24,7 +24,8 @@ During clarify you may run as a **scout**: your instructions say `Mode: repo` or
   - If your instructions name a search tool (a configured MCP server), use it for searches and still fetch and quote the page itself.
   - **Privacy:** build queries and URLs only from public names: libraries, vendors, products, standards, error codes, public API names. Never put code, file contents, secrets, customer data, internal hostnames or internal project names into a query or a URL.
   - If web_fetch is missing or every fetch fails (no network), set `web_available: false`, return no web evidence, and put each unknown under `unresolved` with that reason. Never fall back to memory: an unsourced claim is worse than an open question.
-- One finding per claim, tied to its unknown. An unknown you could not resolve goes under `unresolved` with the reason (nothing found, conflicting sources, out of time).
+- One finding per claim, tied to its unknown. An unknown you could not resolve goes under `unresolved` with the reason (nothing found, conflicting sources, out of time, or the HTTP status a source returned).
+- A source that fails (an HTTP error, a timeout, a page that does not load) goes under `failed_sources` with its reason; never fetch a source listed as `do_not_fetch_again`: it failed in an earlier round. An unknown whose only sources are unreachable is unresolved: the user is asked instead, with your reason.
 - Stay within your unknowns and your time budget; return what you have rather than nothing.
 
 ## Your final message
@@ -37,9 +38,10 @@ As a scout, fields in this order:
 1. `mode`: `repo` or `web`, as your instructions say.
 2. `web_available`: web mode only: false when web_fetch is missing or every fetch failed.
 3. `versions`: what the repository uses, each `name`, `version` and `source` (`path:line`).
-4. `evidence`: one finding per claim, each `unknown` (its U-n), `claim` (one fact, standing alone), `source` (repo: `path:line` or `path:start-end`; web: the URL you fetched), `source_tier` (repo mode: `repo`; web: `official`, `primary`, `standard`, `secondary` or `forum`), `quote` (the exact text at the source, copied, not paraphrased), `confidence` (how sure you are the claim follows from the quote: high, medium or low), and for web findings `retrieved_at` (today's date) and `applies_to_version` (the version the page documents).
+4. `evidence`: one finding per claim, each `unknown` (its U-n), `claim` (one fact, standing alone), `source` (repo: `path:line` or `path:start-end`; web: the URL you fetched), `source_tier` (repo mode: `repo`; web: `official`, `primary`, `standard`, `secondary` or `forum`), `quote` (the exact text at the source, copied, not paraphrased), `confidence` (how sure you are the claim follows from the quote: high, medium or low), for web findings `retrieved_at` (today's date) and `applies_to_version` (the version the page documents), and `contradicts` (a U-n) only when the finding shows that an issue the ledger lists as settled is wrong.
 5. `unresolved`: each unknown you could not resolve, `unknown` and `reason`.
 6. `fetched`: web mode only: every URL you fetched.
+7. `failed_sources`: each source that failed: `unknown`, `source` and `reason` (e.g. "HTTP 404"); `[]` or left out when none.
 
 Example:
 ```json

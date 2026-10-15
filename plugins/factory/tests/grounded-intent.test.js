@@ -96,10 +96,12 @@ test('scout phase: map → scouts (budgeted, grouped, time-capped) → verifier 
   const analyst = r.calls.find((c) => c.opts.label === 'intent');
   assert.match(analyst.prompt, /INTENT EVIDENCE:[\s\S]*"must_ask"[\s\S]*U-8/);
   assert.match(r.calls.find((c) => c.opts.label === 'judge').prompt, /INTENT EVIDENCE/);
-  // the must-ask researchable unknowns become questions even though the judge returned none
+  // the ledger's open proposals become questions even though the judge returned none: the
+  // researchable ones research could not reach (budget spent) and, in v2, the user and
+  // decision issues the judge neither asked nor dismissed
   assert.equal(r.result.status, 'needs_user');
-  assert.deepEqual(r.result.questions.map((q) => q.unknown).sort(), ['U-4', 'U-5']);
-  assert.ok(r.result.questions.every((q) => /budget spent/.test(q.why)));
+  assert.deepEqual(r.result.questions.map((q) => q.unknown).sort(), ['U-10', 'U-4', 'U-5', 'U-8']);
+  assert.ok(r.result.questions.filter((q) => ['U-4', 'U-5'].includes(q.unknown)).every((q) => /budget spent/.test(q.why)));
   assert.deepEqual(validate(ENV, r.result), []);
 });
 
@@ -126,8 +128,11 @@ test('scout phase degrades gracefully: no web access / a failed scout → unveri
   assert.equal(sc.web.available, false);
   assert.equal(sc.evidence.length, 0, 'no web evidence is kept when the scout had no web access');
   assert.match(sc.unknowns[0].note, /no web access/);
-  assert.match(sc.unknowns[1].note, /scout failed or ran out of time/);
-  assert.equal(r.calls.filter((c) => /^scout · repo/.test(c.opts.label)).length, 1, 'scouts are not retried: the budget is the budget');
+  assert.match(sc.unknowns[1].note, /scout failed or ran out of time twice/);
+  // v2: a scout that failed or ran out of time gets one retry with twice the time budget
+  const repoCalls = r.calls.filter((c) => /^scout · repo/.test(c.opts.label));
+  assert.deepEqual(repoCalls.map((c) => [c.opts.label, c.opts.timeoutSec]), [['scout · repo #1', 120], ['scout · repo #1 (retry)', 240]]);
+  assert.equal(sc.unknowns[1].attempts, 2);
   assert.deepEqual(r.result.data.degraded, [], 'a failed scout is not a missing angle');
   assert.deepEqual(r.result.questions.map((q) => q.unknown).sort(), ['U-1', 'U-2']);
   // the mapper failing twice: nothing was researched, the run is degraded
@@ -184,15 +189,21 @@ test('God Eye: researchable questions go back to the scouts once; approval needs
   let r = await H.run(WF, brief(), crew({
     MAP: () => ({ unknowns: [] }),
     REPO: (p) => ({ mode: 'repo', evidence: idsIn(p).map((u) => repoEv(u)), unresolved: [] }),
-    GOD: () => ((god += 1) === 1 ? gate([{ question: 'Which test runner?', kind: 'repo', why: 'AC-1 names none' }]) : gate([])),
+    GOD: () => ((god += 1) === 1 ? gate([{ question: 'Which test runner?', kind: 'repo', why: 'AC-1 names none', blocker: true }]) : gate([])),
   }));
   assert.equal(god, 2);
-  assert.ok(r.calls.some((c) => c.opts.label === 'god-eye · intent (after research)'));
+  assert.ok(r.calls.some((c) => c.opts.label === 'god-eye · intent (with the new evidence)'));
   assert.equal(r.result.status, 'ok');
   assert.equal(r.result.data.scout.unknowns[0].source, 'god-eye');
   // still researchable after the second look: not approved
-  r = await H.run(WF, brief({ budget: { repo_scouts: 0 } }), crew({ MAP: () => ({ unknowns: [] }), GOD: () => gate([{ question: 'Which test runner?', kind: 'repo' }]) }));
-  assert.equal(r.result.status, 'needs_user');
+  r = await H.run(WF, brief({ budget: { repo_scouts: 0 } }), crew({ MAP: () => ({ unknowns: [] }), GOD: () => gate([{ question: 'Which test runner?', kind: 'repo', why: 'AC-1 names none', blocker: true }]) }));
+  assert.equal(r.result.status, 'needs_user', 'no budget left: the blocker is one question for the user, with its reason');
+  assert.match(r.result.questions[0].why, /budget spent/);
+  // v2: a researchable question God Eye does not mark as a blocker (with a reason) is only a note
+  r = await H.run(WF, brief(), crew({ MAP: () => ({ unknowns: [] }), GOD: () => gate([{ question: 'Which test runner?', kind: 'repo' }]) }));
+  assert.equal(r.result.status, 'ok');
+  assert.equal(r.result.data.scout.unknowns.length, 0);
+  assert.match(r.result.data.notes[0].text, /not a blocker/);
 });
 
 test('later rounds reuse the evidence: no mapper, no scouts, unless something is pending', async () => {

@@ -1,6 +1,6 @@
 {
   "id": "clarify",
-  "description": "Turn a request into an approvable contract: research first (an intent mapper lists the unknowns, repo and web scouts research the researchable ones within the risk budget, a verifier re-checks high-impact and web findings), then an intent gate (problem, who, outcome, success signal), three independent analysts, a judge that merges, prioritises and never re-asks or asks what research answered, then a cold God Eye critique once nothing is open.",
+  "description": "Turn a request into an approvable contract through one issue ledger the CLI owns: research first (an intent mapper lists the issues, repo and web scouts research the research-owned ones within the risk budget with one longer retry, a verifier re-checks), then an intent gate, three analysts and a judge that review only what changed, a cold God Eye checklist once nothing is open, and a contract editor that applies what was settled. Raised issues are deduplicated by subject; settled is final.",
   "scout": {
     "mapper": {
       "role": "intent-mapper",
@@ -68,6 +68,10 @@
     "focus": "intent",
     "when": "no_questions",
     "schema": "intent-critique"
+  },
+  "editor": {
+    "role": "contract-editor",
+    "schema": "contract-edit"
   },
   "priority": [
     "intent",

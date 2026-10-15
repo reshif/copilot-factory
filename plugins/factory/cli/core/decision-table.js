@@ -228,8 +228,10 @@ function deniedReroute(ctx, gate) {
   if (!denied) return null;
   if (ledger.steps(root, state.id, from).some((e) => e.at > denied.at)) return null;
   const why = denied.reason ? `: "${denied.reason}"` : '';
-  const how = producer.run.startsWith('skill:')
-    ? `Revise the ${from === 'clarify' ? 'contract' : 'document'} to address it, then run the ${from} step again.`
+  const how = from === 'clarify'
+    ? 'Clarify runs again with your reason in its brief: its contract editor revises the contract (don\'t edit it by hand).'
+    : producer.run.startsWith('skill:')
+    ? `Revise the document to address it, then run the ${from} step again.`
     : `factory run ${producer.run.slice(9)}${producer.config ? ` --config ${producer.config}` : ''} redoes it; the reason is in its brief.`;
   return { ...stepAction(ctx, producer), denied: { gate, reason: denied.reason || '', at: denied.at }, reason: `You denied ${gate}${why}. ${how}` };
 }
@@ -395,9 +397,16 @@ function route(root, jobId) {
   }
 
   // Caps on loops that live inside a step.
-  if (action.step === 'clarify' && state.counters.clarify_rounds >= L.max_intent_rounds + 2) {
-    park(root, state, `Clarify is not converging (${state.counters.clarify_rounds} rounds).`, 'clarify');
+  // Clarify v2: the hard ceiling counts rounds that were not degraded (the no-progress rule
+  // parks earlier, from factory record).
+  const CL = action.step === 'clarify' ? require('./clarify').limits(state) : null;
+  if (CL && CL.counted >= CL.ceiling) {
+    park(root, state, `Clarify reached its ceiling of ${CL.ceiling} rounds without an approvable contract (factory clarify status shows what is open).`, 'clarify');
     return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'cap.clarify_rounds' }));
+  }
+  if (CL && action.action === 'skill' && action.skill === 'clarify') {
+    const summary = require('./clarify').nextSummary(root, state);
+    if (summary) action.clarify = summary;
   }
   if (action.step === 'decompose' && state.counters.decompose_rounds >= L.max_plan_validate_rounds) {
     park(root, state, `The plan still fails validation after ${state.counters.decompose_rounds} rounds.`, 'decompose');
