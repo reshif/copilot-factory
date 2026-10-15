@@ -807,7 +807,9 @@ function droppedLines(data) {
     .sort((a, b) => num(a.id) - num(b.id))
     .map((u) => {
       const h = dropEvent(u) || {};
-      return { id: u.id, subject: u.subject, text: clip(u.text, 160), actor: h.actor || null, reason: clip(h.text || u.note || '', 200), line: `${u.id}: ${clip(u.text, 160).replace(/\s+/g, ' ')} (dropped by ${h.actor || 'unknown'}: ${clip(h.text || u.note || 'no reason recorded', 200).replace(/\s+/g, ' ')})` };
+      // 0.6.0 dropped on a dismissal with no reason: its note is "dismissed by the judge: " alone
+      const why = String(h.text || '').trim() || (/:\s*$/.test(String(u.note || '')) ? '' : String(u.note || '').trim());
+      return { id: u.id, subject: u.subject, text: clip(u.text, 160), actor: h.actor || null, reason: clip(why, 200), line: `${u.id}: ${clip(u.text, 160).replace(/\s+/g, ' ')} (dropped by ${h.actor || 'unknown'}: ${clip(why || 'no reason recorded', 200).replace(/\s+/g, ' ')})` };
     });
 }
 

@@ -345,3 +345,11 @@ test('review 4: the degraded park reason says what resume does (one automatic re
   const ok = skill.split('\n').find((l) => /^\s*- `ok`:/.test(l));
   assert.doesNotMatch(ok, /^\s*- `ok`: God Eye approved/, 'an ok round may be one God Eye objects to');
 });
+
+test('review 2: an issue 0.6.0 dropped without a reason is upgraded as is (no ledger_invariant) and shown as "no reason recorded"', () => {
+  const u = clarify.cleanIssue({ id: 'U-2', text: 'Should the sync delete VLANs missing on the device?', kind: 'decision', status: 'dropped', dismissed: true, note: 'dismissed by the judge: ' });
+  u.history = [{ round: 1, event: 'dropped', actor: 'judge' }];
+  const data = { unknowns: [u] };
+  assert.deepEqual(clarify.invariant({ unknowns: [{ id: 'U-2', text: u.text, status: 'dropped', aliases: [] }] }, data), [], 'a drop from before the round is not re-judged');
+  assert.deepEqual(clarify.droppedLines(data).map((x) => x.line), ['U-2: Should the sync delete VLANs missing on the device? (dropped by judge: no reason recorded)']);
+});
