@@ -17,7 +17,7 @@ Run `factory doctor`. If it says not initialized, run `factory init` and tell th
 A request with no active job for it → follow the **intake** skill to create the job. Otherwise continue the current job.
 
 ## The loop
-1. Run `factory next` (once per finished step or user reply; re-running it is harmless but don't poll). Before acting, show what it reports in these fields, once each, in one line: `last_reply` (what happened to the user's last reply), `notice` (chat replies aren't reaching the factory; show it as it is), and `autopilot` (Copilot Autopilot was detected: show its warning and **stop**; the factory runs in interactive mode, where gates wait for the user).
+1. Run `factory next` (once per finished step or user reply; re-running it is harmless but don't poll). Before acting, show what it reports in these fields, once each, in one line: `last_reply` (what happened to the user's last reply), `notice` (chat replies aren't reaching the factory; show it as it is), `autopilot` (Copilot Autopilot was detected: show its warning and **stop**; the factory runs in interactive mode, where gates wait for the user), and `environment` (no build environment is confirmed for this repository: show its `message` once; at a gate the gate skill shows the proposal in full; never confirm it yourself).
 2. Do what `action` says:
 
 | action | what you do | then |
