@@ -39,6 +39,7 @@ function nowCard(job) {
     const g = m.gate || job.pending_gate && job.pending_gate.id;
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--sig-amber)"></i>Now · your turn</div>`);
     parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
+    if ((g === 'H1' || g === 'EH1') && job.h1) parts.push(h1Html(job.h1));
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
     else parts.push(`<p>Answer the questions in chat${job.clarify && job.clarify.questions.length ? ` (${job.clarify.questions.map((q) => esc(q.id)).join(', ')}): a numbered reply such as <code>1 yes, 2 …</code>, or <code>defaults</code>` : ''}; the round runs again with your answers.</p>`);
   } else if (m.bucket === 'parked') {
@@ -50,6 +51,12 @@ function nowCard(job) {
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--live)"></i>Now · running</div><p><b>${esc(m.stepLabel)}</b> is running${ra.length ? ` with ${ra.length} agent${ra.length === 1 ? '' : 's'} on the floor (${esc(ra.map((a) => roleShort(a.agent_type)).join(', '))})` : ''}. Nothing is needed from you.${(job.stale_agents || []).length ? ` ${job.stale_agents.length} agent(s) started earlier never reported back; their session probably ended.` : ''}</p>`);
   }
   return `<div class="nowcard b-${m.bucket}">${parts.join('')}</div>`;
+}
+// At H1 / EH1, what clarify adds to the contract (as factory next carries it): God Eye's
+// objections (it did not approve), issues dropped and why, research that could not run.
+function h1Html(h) {
+  const list = (head, items, note) => (items && items.length ? `<div class="eh">${esc(head)}</div>${note ? `<p class="meta">${esc(note)}</p>` : ''}<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
+  return `${list('God Eye objects', h.god_eye_objects, 'God Eye did not approve this contract; clarify could not settle these. Approve only to go on over them.')}${list('Dropped', h.dropped)}${h.research_incomplete ? `<p class="meta">${esc(h.research_incomplete)}</p>` : ''}`;
 }
 function agentsProse(agents) {
   const cs = chipsFor(agents);

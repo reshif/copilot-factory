@@ -1514,7 +1514,7 @@ function finish(root, state, data, next, S, result = {}) {
   if (next === 'ready') {
     const b = require('./invalidation').current(root, state);
     const last = data.checks[data.checks.length - 1] || {};
-    require('./ledger').append(root, state.id, { kind: 'step', step: 'clarify', ok: true, bound: { contract: b.contract }, detail: { version: 3, items: data.items.length, decisions: data.items.filter((x) => x.kind === 'decision').length, sheets: data.sheets.length, research_passes: data.research.passes.length, failures: data.failures.length, checks: data.checks.length, notes: (last.objections || []).filter((o) => o.severity === 'note').length, ...(data.proceeded ? { proceeded: data.proceeded } : {}) } });
+    require('./ledger').append(root, state.id, { kind: 'step', step: 'clarify', ok: true, bound: { contract: b.contract }, detail: { version: 3, items: data.items.length, decisions: data.items.filter((x) => x.kind === 'decision').length, sheets: data.sheets.length, research_passes: data.research.passes.length, failures: data.failures.length, checks: data.checks.length, notes: (last.objections || []).filter((o) => o.severity === 'note').length, ...(data.proceeded ? { proceeded: data.proceeded } : {}), ...((last.objections || []).some((o) => o.severity === 'blocker') ? { approved: false, god_eye_objects: (last.objections || []).filter((o) => o.severity === 'blocker').length } : {}) } });
     return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', stage: next, ...result, message: 'The contract passed its readiness check. Run factory next: gate H1 shows it.' };
   }
   if (WAITS.has(next)) {
@@ -1738,6 +1738,20 @@ function h1View(root, state, data = load(root, state.id)) {
     redirects,
     edited_by_hand: Boolean(data.contract.edited_by_hand),
   };
+  // the 0.6.1 guarantees, under the names the gate skill shows: what was dropped (who, why),
+  // what research could not do, and God Eye's objections, which are never approval
+  const dropped = data.items.filter((it) => it.status === 'dropped').map((it) => {
+    const h = [...(it.history || [])].reverse().find((x) => /dropped/.test(x.event)) || {};
+    return `${it.id}: ${clip(it.text, 160)} (dropped by ${h.actor || 'nobody'}: ${h.text ? clip(h.text, 160) : 'no reason recorded'})`;
+  });
+  if (dropped.length) v.dropped = dropped;
+  if (v.gaps.length) v.research_incomplete = `Research is incomplete: ${v.gaps.map((g) => `${g.what}: ${g.reason}`).join('; ')}.`;
+  const open = objections.filter((o) => o.open);
+  if (open.length) {
+    v.god_eye_objects = open.map((o) => `${o.severity} (${o.ref || o.check}): ${clip(o.issue, 240)}${o.fix ? ` — suggests: ${clip(o.fix, 160)}` : ''}`);
+    v.approved = false;
+  }
+  v.status_command = `factory clarify status --job ${state.id}`;
   v.screen = h1Screen(state, v);
   return v;
 }
@@ -1758,7 +1772,8 @@ function h1Screen(state, v) {
   if (v.skipped.length) L.push('', `**Sources skipped:** ${v.skipped.length} (${[...new Set(v.skipped.map((x) => x.why))].join('; ')}); none of them is relied on.`);
   const open = v.objections.filter((o) => o.open);
   const notes = v.objections.filter((o) => !o.open);
-  if (open.length) L.push('', `**God Eye objections still open** (you chose to proceed)`, ...open.map((o) => `- ${o.check} (${o.ref}): ${o.issue}`));
+  if (open.length) L.push('', '**God Eye objects** (it did not approve this contract; you chose to proceed: `approve` takes it on over them, `deny <what must change>` sends it back)', ...open.map((o) => `- ${o.check} (${o.ref}): ${o.issue}`));
+  if (v.dropped) L.push('', '**Dropped**', ...v.dropped.map((x) => `- ${x}`));
   else L.push('', `**God Eye:** all ${CHECKLIST.length} checks pass${notes.length ? `; remarks: ${notes.map((o) => o.issue).join('; ')}` : ''}.`);
   for (const R of v.redirects) {
     L.push('', `**Your redirect ${R.id}:** ${R.done} of ${R.of} done`);
@@ -1800,6 +1815,14 @@ function statusText(state, data) {
   const pad = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s).padEnd(n));
   L.push(`${pad('ID', 6)} ${pad('KIND', 11)} ${pad('STATUS', 13)} ${pad('BY', 12)} WHAT`);
   for (const it of data.items) L.push(`${pad(it.id, 6)} ${pad(it.kind, 11)} ${pad(STATUS_WORD[it.status] || it.status, 13)} ${pad(it.strength ? byWhom(it) : '—', 12)} ${clip(it.text, 70)}${it.value && it.kind !== 'intent' ? ` → ${clip(it.value, 60)}` : ''}`);
+  const drops = data.items.filter((it) => it.status === 'dropped');
+  if (drops.length) {
+    L.push('', 'Dropped:');
+    for (const it of drops) {
+      const h = [...(it.history || [])].reverse().find((x) => /dropped/.test(x.event)) || {};
+      L.push(`  ${it.id}: ${clip(it.text, 100)} (dropped by ${h.actor || 'nobody'}: ${h.text ? clip(h.text, 120) : 'no reason recorded'})`);
+    }
+  }
   if (data.failures.length) {
     L.push('', 'Not researched / failed:');
     for (const f of data.failures) L.push(`  - ${f.what}: ${f.reason}`);
@@ -1950,5 +1973,5 @@ module.exports = {
   startRedirect, applyRedirect, confirmRedirect, redirectScreen, sentences,
   applyWriter, writeSections, sectionLines, deterministic, applyCheck,
   stagePlan, record, reply, redirect, chatReply, sync, ready, nextInfo, waitingForUser,
-  h1View, view, status, statusText, onResume, proceed, briefText, deferredText, floorOk, inClarify, consoleBlock, split, ACCEPT,
+  h1View, h1Summary: (root, state) => h1View(root, state), view, status, statusText, onResume, proceed, briefText, deferredText, floorOk, inClarify, consoleBlock, split, ACCEPT,
 };

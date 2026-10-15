@@ -435,9 +435,14 @@ function route(root, jobId) {
       job.save(root, state);
     }
     action.gate = state.pending_gate;
+    // H1 / EH1: what the contract alone does not show (checked against the user's words,
+    // decisions and who made them, gaps, drops and why, God Eye's objections)
     if (['H1', 'EH1'].includes(action.step)) {
-      const h1 = require('./clarify').h1View(root, state);
-      if (h1) action.clarify_h1 = h1;
+      const h1 = require('./clarify').h1Summary(root, state);
+      if (h1) {
+        action.clarify = h1;
+        action.clarify_h1 = h1;
+      }
     }
   } else if (action.action === 'merge') {
     if (state.pr && state.pr.mode === 'github') {

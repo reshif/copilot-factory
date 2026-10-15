@@ -43,9 +43,10 @@ function message(w, never) {
     `Chat replies aren't reaching the factory: ${why}, so a reply like "approve" typed in chat is NOT applied.`,
     'To fix it: (1) check the harness — the chat title prefix (or the Session Target control) shows it; use Copilot. In the Local harness hooks need chat.useHooks on and a trusted folder (Workspace Trust).',
     '(2) Run "Chat: Configure Hooks" from the Command Palette: the factory plugin\'s hooks.json should be listed.',
-    '(3) Open the Output panel, channel "GitHub Copilot Chat Hooks", for hook runs and errors.',
-    '(4) In the Copilot CLI, /plugin list should show factory enabled.',
-    `Meanwhile, act from your own terminal: ${w.command}${w.alt ? ` (or ${w.alt})` : ''} — it shows a short code on that terminal for you to type back.`,
+    '(3) Look for hook runs and errors in VS Code\'s logs (the Output panel\'s Copilot Chat channels, or the chat debug logs; names vary by version).',
+    '(4) Run factory doctor in a terminal: "hooks node" shows the Node the hooks would run under; one older than 14 makes every hook fail.',
+    '(5) In the Copilot CLI, /plugin list should show factory enabled.',
+    `Meanwhile, run this in your own terminal: ${w.command}${w.alt ? ` (or ${w.alt})` : ''} — it will ask you to type a code shown there (type it there; never paste it into the chat).`,
   ].join(' ');
 }
 

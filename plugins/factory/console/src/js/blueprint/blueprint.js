@@ -1476,7 +1476,8 @@
         blockers.map(function (b) { return H("div", { "class": "now-block", text: "✗ " + b }); }),
         done && failingT.length ? H("div", { "class": "meta", text: "closed with " + plural(failingT.length, "task") + " still marked failing (" + failingT.map(function (k) { return k.id; }).join(", ") + ")" }) : null,
         j.parked_from && s === "parked" ? H("div", { "class": "meta" }, "parked from ", H("b", { text: j.parked_from })) : null,
-        g && g !== "H4" ? H("div", { "class": "now-gate" }, H("h4", null, gv(g), H("span", { "class": "chip tag", text: g }), H("em", { text: "waiting " + fD(t - enteredAt(j, t)) })), replyBox(chatReply(j, g), termCmd(j, g, t), true),
+        g && g !== "H4" ? H("div", { "class": "now-gate" }, H("h4", null, gv(g), H("span", { "class": "chip tag", text: g }), H("em", { text: "waiting " + fD(t - enteredAt(j, t)) })),
+          (g === "H1" || g === "EH1") && j.h1 ? h1Notes(j.h1) : null, replyBox(chatReply(j, g), termCmd(j, g, t), true),
           j.amendment && j.amendment.reason ? H("p", { "class": "meta" }, "Amendment from ", H("b", { text: j.amendment.from || "?" }), ": " + j.amendment.reason) : null) : null,
         gt && gt.warnings.length ? H("div", { "class": "meta", text: "check warnings: " + gt.warnings.join("; ") }) : null));
       // the latest exchange about this job: your prompt, the reply, God Eye's last revise (B-48)
@@ -1537,6 +1538,12 @@
       // 7. history
       out.push(H("section", { "class": "sec-blk hist" }, H("h3", null, "History by station", H("em", { text: plural(j.history.filter(function (h) { return P(h.at) <= t; }).length, "move") })), historyNodes(j, t)));
       fill(secBody, H("div", { "class": "sec-wrap" }, out));
+    }
+    // At H1 / EH1, what clarify adds to the contract: God Eye's objections (it did not approve), drops and why, research gaps
+    function h1Notes(h) {
+      var list = function (head, items, note) { return items && items.length ? H("div", { "class": "meta" }, H("b", { text: head }), note ? " · " + note : null, H("ul", null, items.map(function (x) { return H("li", { text: x }); }))) : null; };
+      return H("div", null, list("God Eye objects", h.god_eye_objects, "God Eye did not approve this contract; clarify could not settle these"), list("Dropped", h.dropped),
+        h.research_incomplete ? H("div", { "class": "meta", text: h.research_incomplete }) : null);
     }
     // The Clarify block: the ledger as factory clarify status prints it (the latest state, not replayed)
     var CL_STATUS = { open: "open", researching: "researching", proposed: "with you", settled: "settled", deferred_to_design: "to design", dropped: "dropped" };
