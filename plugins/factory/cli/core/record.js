@@ -86,6 +86,8 @@ function recClarify(root, state, env) {
   const cfg = readJson(pluginPath('config', 'workflows', 'clarify.json'));
   const jp = jobPaths(root, state.id);
   const round = state.counters.clarify_rounds + 1;
+  // the first v2 round: the rounds before it (a pre-v2 job's) are not counted against the ceiling
+  if (state.counters.clarify_v2_from === undefined) state.counters.clarify_v2_from = clarifyMod.limits(state).before_v2;
   const CL = clarifyMod.limits(state);
   const max = questions.budget(cfg, CL.counted + 1, { ...state.policy.limits, max_intent_rounds: CL.ceiling });
   const log = state.question_log || [];

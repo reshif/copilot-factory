@@ -222,3 +222,19 @@ test('factory clarify split U-n <alias>: a wrong fold is undone (human-only), an
   assert.equal(JSON.parse(agent.stdout).code, 'agent_not_allowed');
 });
 
+// ---------------------------------------------------------------- pre-v2 jobs and migration
+test('a pre-v2 job: rounds run before the upgrade do not count against the v2 ceiling', () => {
+  const root = F.makeRepo();
+  const J = J2.build(root);
+  const job = require('../cli/core/job');
+  const st = job.load(root, J);
+  const L = clarify.limits(st);
+  assert.equal(L.counted, 0, `rounds before v2 are not counted (${st.counters.clarify_rounds} ran)`);
+  F.reply(root, `resume ${J}`);
+  F.cli(root, ['next']);
+  round(root, { scout: scoutData(clarify.ensure(root, job.load(root, J), intent.load(root, J)).unknowns) });
+  const s2 = job.load(root, J);
+  assert.equal(clarify.limits(s2).counted, 1);
+  assert.ok(clarify.limits(s2).ceiling >= 10);
+});
+

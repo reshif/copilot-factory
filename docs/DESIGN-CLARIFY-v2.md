@@ -188,8 +188,9 @@ migrates in memory only, so it works right after an upgrade with no new round:
 4. Implementation-fact unknowns are reclassified `deferred_to_design` by the keyword rule;
    the report lists them.
 5. Pre-v2 policy snapshots (no `clarify_no_progress_rounds`) get the ceiling
-   `max(max_intent_rounds + 2, the live default)`, so a job already past the old cap can
-   continue.
+   `max(max_intent_rounds + 2, the live default)`, and the rounds the job ran before its first
+   v2 round (`counters.clarify_v2_from`) are not counted against it: J-0002 had run 9 rounds,
+   which would have left it one.
 
 ## Visibility
 

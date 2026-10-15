@@ -136,7 +136,9 @@ function liveLimits() {
   }
 }
 // Pre-v2 policy snapshots (no clarify_no_progress_rounds) keep their old cap (max + 2) or
-// the new default ceiling, whichever is higher.
+// the new default ceiling, whichever is higher. The rounds such a job ran before clarify v2
+// (counters.clarify_v2_from, set by its first v2 round; until then all of them) do not count
+// against that ceiling: they are the rounds v2 exists to replace, and J-0002 had run 9.
 function limits(state) {
   const L = (state.policy && state.policy.limits) || {};
   const live = liveLimits();
@@ -144,10 +146,12 @@ function limits(state) {
   const base = Number(L.max_intent_rounds) || Number(live.max_intent_rounds) || 10;
   const ceiling = v2 ? base : Math.max(base + 2, Number(live.max_intent_rounds) || 10);
   const c = state.counters || {};
+  const before = c.clarify_v2_from !== undefined ? Number(c.clarify_v2_from) || 0 : v2 ? 0 : c.clarify_rounds || 0;
   return {
     ceiling: ceiling + (c.clarify_bonus_rounds || 0),
     no_progress: Number(L.clarify_no_progress_rounds ?? live.clarify_no_progress_rounds ?? 2) || 2,
-    counted: Math.max(0, (c.clarify_rounds || 0) - (c.clarify_degraded_rounds || 0)),
+    counted: Math.max(0, (c.clarify_rounds || 0) - (c.clarify_degraded_rounds || 0) - before),
+    before_v2: before,
     legacy_snapshot: !v2,
   };
 }
@@ -658,7 +662,7 @@ function view(root, state, data) {
     deferred_to_design: data.unknowns.filter((u) => u.status === 'deferred_to_design').map((u) => ({ id: u.id, subject: u.subject, title: clip(u.text, 140) })),
     rounds: tr.rounds,
     trend: tr.trend,
-    limits: { ceiling: L.ceiling, no_progress_rounds: L.no_progress, rounds_counted: L.counted, no_progress_streak: (state.counters && state.counters.clarify_no_progress) || 0 },
+    limits: { ceiling: L.ceiling, no_progress_rounds: L.no_progress, rounds_counted: L.counted, ...(L.before_v2 ? { rounds_before_v2: L.before_v2 } : {}), no_progress_streak: (state.counters && state.counters.clarify_no_progress) || 0 },
     notes: (data.notes || []).slice(-10),
     ...(data.migration ? { migration: data.migration } : {}),
   };
@@ -667,7 +671,7 @@ function view(root, state, data) {
 function statusText(v) {
   const L = [];
   L.push(`Clarify ledger — ${v.job}: ${v.totals.issues} issue(s), ${v.totals.closed} closed (${v.totals.settled} settled, ${v.totals.deferred_to_design} deferred to design, ${v.totals.dropped} dropped); open by owner: user ${v.open_by_owner.user}, research ${v.open_by_owner.research}, design ${v.open_by_owner.design}`);
-  L.push(`Rounds counted ${v.limits.rounds_counted} of ${v.limits.ceiling} (ceiling); parks after ${v.limits.no_progress_rounds} rounds with no progress (now ${v.limits.no_progress_streak}). Trend: ${v.trend}.`);
+  L.push(`Rounds counted ${v.limits.rounds_counted} of ${v.limits.ceiling} (ceiling${v.limits.rounds_before_v2 ? `; ${v.limits.rounds_before_v2} round(s) before clarify v2 not counted` : ''}); parks after ${v.limits.no_progress_rounds} rounds with no progress (now ${v.limits.no_progress_streak}). Trend: ${v.trend}.`);
   L.push('');
   const w = { id: 6, subject: 28, status: 18, owner: 8 };
   const pad = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s).padEnd(n));
