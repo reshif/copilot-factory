@@ -487,7 +487,7 @@ test('console blueprint: clarify waiting on your answers is your turn (Q), and y
   assert.deepEqual(a.history.map((h) => [h.to, h.by, h.reason]), [['intent', 'router', 'rule r'], ['awaiting_answers', 'router', 'clarify asked 3 question(s)']]);
   assert.equal(a.waiting_on.who, 'you');
   assert.equal(a.waiting_on.gate, 'Q');
-  assert.equal(a.waiting_on.reply, 'answer Q-1, Q-2, Q-3 in chat · change A-n <value> · drop A-n');
+  assert.equal(a.waiting_on.reply, 'answer Q-1, Q-2, Q-3 in chat (1 yes, 2 …, or defaults) · change A-n <value> · drop A-n');
   assert.ok(a.waiting_on.plain, 'the answers are your own words, not a command to copy');
   assert.equal(b.state, 'intent', 'the next clarify route takes it back to clarify');
   assert.deepEqual(b.history.slice(1).map((h) => [h.from, h.to, h.by, h.reason]), [
@@ -495,7 +495,7 @@ test('console blueprint: clarify waiting on your answers is your turn (Q), and y
     ['intent', 'awaiting_answers', 'router', 'clarify asked 1 question(s)'], ['awaiting_answers', 'intent', 'you', 'you answered']]);
   assert.equal(b.waiting_on.who, 'agent');
   assert.equal(c.history[1].reason, 'clarify asked 2 question(s)', 'the count from the result text when the ids are missing');
-  assert.equal(c.waiting_on.reply.split(' · ')[0], 'answer the questions in chat');
+  assert.equal(c.waiting_on.reply.split(' · ')[0], 'answer the questions in chat (1 yes, 2 …, or defaults)');
 });
 
 test('console blueprint: "Your turn" counts the same jobs as the Board, clarify questions included', () => {

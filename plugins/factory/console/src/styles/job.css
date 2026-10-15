@@ -73,3 +73,25 @@
 .taskrow .tbar { width: 100%; min-width: 60px; }
 
 /* line map */
+
+/* Clarify v2: the issue ledger in the Story (and the Blueprint's section view) */
+.para.clarify .meta, .sec-blk.clarify .meta { color: var(--muted); font-size: 12px; }
+.para.clarify .eh { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 10px 0 4px; }
+.para.clarify ul { margin: 0 0 4px; padding-left: 16px; font-size: 13px; }
+.para.clarify .reply { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 3px 0; }
+.cltbl td { vertical-align: top; }
+.cltbl td:nth-child(1), .cltbl td:nth-child(3), .cltbl td:nth-child(4) { white-space: nowrap; }
+.cltbl code { font-size: 11.5px; }
+.cltbl .stt.you { color: var(--signal); font-weight: 700; }
+.cltbl tr.cl-settled td, .cltbl tr.cl-dropped td { opacity: .78; }
+.cltbl tr.cl-deferred_to_design .stt { color: var(--skill); }
+.cltrend { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; min-height: 44px; }
+.cltrend .clr { display: inline-flex; align-items: flex-end; gap: 2px; position: relative; padding-bottom: 14px; }
+.cltrend .clr b { position: absolute; bottom: 0; left: 0; font: 600 10px/1 var(--mono); color: var(--muted); }
+.cltrend .clr.np b { color: var(--stop); }
+.cltrend .clr.deg { opacity: .5; }
+.clb { display: inline-block; width: 8px; min-height: 2px; border-radius: 1px; vertical-align: bottom; }
+.clb.op { background: var(--signal); }
+.clb.st { background: var(--track); }
+.cltrend .cllg { font-size: 11.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; padding-bottom: 14px; }
+.cltrend .cllg .clb { height: 8px; }

@@ -16,9 +16,14 @@ function pipsHtml(m) {
   const more = (j.running_agents || []).length > 3 ? `<span class="nest">+${j.running_agents.length - 3}</span>` : '';
   return run.concat(stale).join('') + more;
 }
+// "Clarify · 3 questions": the ledger's open questions when clarify waits on you
+function turnLabel(m) {
+  const n = !m.gate && m.job.clarify && Array.isArray(m.job.clarify.questions) ? m.job.clarify.questions.length : 0;
+  return `${m.gate ? stepName(m.gate) : m.stepLabel}${n ? ` · ${n} question${n === 1 ? '' : 's'}` : ''}`;
+}
 function nowCell(m) {
   const j = m.job;
-  if (m.bucket === 'turn') return `<b>${esc(m.gate ? stepName(m.gate) : m.stepLabel)}</b><span class="w" data-since="${m.waitSince || ''}">waits ${esc(shortAgo(nowMs() - (m.waitSince || m.updated)))}</span>`;
+  if (m.bucket === 'turn') return `<b>${esc(turnLabel(m))}</b><span class="w" data-since="${m.waitSince || ''}">waits ${esc(shortAgo(nowMs() - (m.waitSince || m.updated)))}</span>`;
   if (m.bucket === 'parked') return `<b>Parked · ${esc(stepName(m.S.pos))}</b><span class="w">${esc(((j.park && j.park.reason) || '').slice(0, 60))}</span>`;
   if (m.bucket === 'done') return `<b>${esc(j.pr && j.pr.merged ? 'Merged · closed' : 'Closed')}</b><span class="w">${esc(m.closed ? fmtDate(j.closed_at) : '')}</span>`;
   if (j.status === 'cancelled' || j.status === 'abandoned') return `<b>${esc(j.status === 'cancelled' ? 'Cancelled' : 'Abandoned')}</b><span class="w">at ${esc(stepName(m.S.pos))}</span>`;

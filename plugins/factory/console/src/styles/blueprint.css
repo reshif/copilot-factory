@@ -690,3 +690,26 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-cvblk .dx-cv-you b{color:var(--agent)}
 .dx-blueprint .bp-cvblk.bp-mb{margin-bottom:16px}
 .dx-blueprint .bp-pane.bp-gatep > h4 .bp-chip.bp-tag{border-color:var(--on-hl);color:var(--on-hl);background:transparent;text-transform:none;letter-spacing:0}
+/* Clarify v2: the issue ledger in the section view */
+.dx-blueprint .bp-sec-blk.bp-clarify h4{font:600 12px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;margin:12px 0 6px;color:var(--ink)}
+.dx-blueprint .bp-sec-blk.bp-clarify h4 em{font:500 12px var(--f-body);font-style:normal;text-transform:none;letter-spacing:0;color:var(--ink-2);margin-left:8px}
+.dx-blueprint .bp-cltrend{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:8px 0 4px;min-height:46px}
+.dx-blueprint .bp-clr{display:inline-flex;align-items:flex-end;gap:2px;position:relative;padding-bottom:15px}
+.dx-blueprint .bp-clr b{position:absolute;bottom:0;left:0;font:600 11px/1 var(--f-mono);color:var(--ink-2)}
+.dx-blueprint .bp-clr.bp-np b{color:var(--fail)}
+.dx-blueprint .bp-clr.bp-deg{opacity:.5}
+.dx-blueprint .bp-clb{display:inline-block;width:9px;min-height:2px;border-radius:1px;vertical-align:bottom}
+.dx-blueprint .bp-clb.bp-op{background:var(--hl-line)}
+.dx-blueprint .bp-clb.bp-st{background:var(--ok)}
+.dx-blueprint .bp-cllg{font-size:12px;color:var(--ink-2);display:inline-flex;align-items:center;gap:4px;padding-bottom:15px}
+.dx-blueprint .bp-cllg .bp-clb{height:9px}
+.dx-blueprint .bp-cltblw{overflow-x:auto;margin-top:6px}
+.dx-blueprint table.bp-cltbl{border-collapse:collapse;width:100%;font-size:13px}
+.dx-blueprint table.bp-cltbl th{text-align:left;font:600 11px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);border-bottom:1px solid var(--rule);padding:4px 8px 4px 0}
+.dx-blueprint table.bp-cltbl td{vertical-align:top;border-bottom:1px solid var(--rule);padding:6px 10px 6px 0;overflow-wrap:anywhere}
+.dx-blueprint table.bp-cltbl td:nth-child(1),.dx-blueprint table.bp-cltbl td:nth-child(3),.dx-blueprint table.bp-cltbl td:nth-child(4){white-space:nowrap;overflow-wrap:normal}
+.dx-blueprint table.bp-cltbl code{font:500 12px var(--f-mono)}
+.dx-blueprint table.bp-cltbl tr.bp-cl-settled td,.dx-blueprint table.bp-cltbl tr.bp-cl-dropped td{opacity:.75}
+.dx-blueprint .bp-clqi{margin:4px 0 8px;max-width:100ch}
+.dx-blueprint .bp-clqi code{display:inline-block;font:500 12px var(--f-mono);border:1px solid var(--rule);padding:1px 6px;margin:3px 6px 0 0;border-radius:2px}
+.dx-blueprint .bp-cld ul{margin:0;padding-left:18px;font-size:13px}

@@ -1475,6 +1475,8 @@
       if (api.conversation) out.push(H("section", { "class": "sec-blk cvblk", "aria-label": "Latest exchange about this job, as of " + fT(t) }, api.conversation(j.id, t)));
       // 2. path
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Path", H("em", { text: "each stop is a stay at a station · amber stripe = waiting on you · ↺ = " + wd("revise") })), pathHTML(j, t)));
+      // 2a. clarify v2: the issue ledger (status, owner, next action), the per-round trend, what went to design
+      if (j.clarify && j.clarify.issues && j.clarify.issues.length) out.push(clarifyBlock(j));
       // 2b. workflow runs: each run's steps, as they stood at the replay time, the latest first
       out.push(runsBlock(j, t));
       // 3. tasks by wave
@@ -1527,6 +1529,33 @@
       // 7. history
       out.push(H("section", { "class": "sec-blk hist" }, H("h3", null, "History by station", H("em", { text: plural(j.history.filter(function (h) { return P(h.at) <= t; }).length, "move") })), historyNodes(j, t)));
       fill(secBody, H("div", { "class": "sec-wrap" }, out));
+    }
+    // The Clarify block: the ledger as factory clarify status prints it (the latest state, not replayed)
+    var CL_STATUS = { open: "open", researching: "researching", proposed: "with you", settled: "settled", deferred_to_design: "to design", dropped: "dropped" };
+    var CL_BY = { evidence: "by evidence", user: "by you", assumption_accepted: "default accepted", design_deferral: "deferred" };
+    function clarifyBlock(j) {
+      var c = j.clarify, tt = c.totals || {}, o = c.open_by_owner || {};
+      var mx = Math.max.apply(null, [1].concat(c.rounds.map(function (r) { return Math.max(r.opened, r.settled); })));
+      var bar = function (n, cls) { return H("i", { "class": "clb " + cls, style: { height: (Math.round((n / mx) * 28) + (n ? 2 : 0)) + "px" }, title: String(n) }); };
+      var trend = c.rounds.length ? H("div", { "class": "cltrend", role: "img", "aria-label": "Per round: issues opened and settled" },
+        c.rounds.map(function (r) {
+          return H("span", { "class": "clr" + (r.degraded ? " deg" : r.progress ? "" : " np"), title: "round " + r.round + ": " + r.opened + " opened, " + r.settled + " settled, " + r.deferred + " deferred, " + r.asked + " asked" + (r.degraded ? " · degraded, not counted" : r.progress ? "" : " · no progress") },
+            bar(r.opened, "op"), bar(r.settled, "st"), H("b", { text: "R" + r.round }));
+        }), H("span", { "class": "cllg" }, H("i", { "class": "clb op" }), "opened ", H("i", { "class": "clb st" }), "settled · " + c.trend)) : H("p", { "class": "meta", text: c.trend });
+      var rows = c.issues.map(function (r) {
+        return H("tr", { "class": "cl-" + r.status },
+          H("td", { "class": "t-mono" }, r.id, r.aliases && r.aliases.length ? H("div", { "class": "meta", title: "folded duplicates", text: "= " + r.aliases.join(", ") }) : null),
+          H("td", null, H("code", { text: r.subject || "—" }), H("div", { "class": "meta", text: r.title })),
+          H("td", null, H("span", { "class": "chip " + (r.status === "settled" ? "ok" : r.status === "proposed" ? "hl" : r.status === "deferred_to_design" ? "tag" : "mute"), text: CL_STATUS[r.status] || r.status }), r.settled_by ? H("div", { "class": "meta", text: CL_BY[r.settled_by] || r.settled_by }) : null),
+          H("td", { "class": "t-mono", text: r.owner }),
+          H("td", { text: r.next }));
+      });
+      var qs = (c.questions || []).length ? H("div", { "class": "clq" }, H("h4", null, "Waiting on you", H("em", { text: plural(c.questions.length, "question") })),
+        c.questions.map(function (q) { return H("div", { "class": "clqi" }, H("b", { text: q.id }), " " + q.question + (q.default ? " (default: " + q.default + ")" : ""), H("div", null, H("code", { text: "factory answer " + q.id + " \"…\"" }), q.default ? H("code", { text: "factory answer " + q.id + " --default" }) : null)); })) : null;
+      var def = (c.deferred || []).length ? H("div", { "class": "cld" }, H("h4", null, "Handed to design", H("em", { text: "ground and decide settle these; they do not block H1" })),
+        H("ul", null, c.deferred.map(function (d) { return H("li", null, H("b", { text: d.id }), " ", H("code", { text: d.subject }), " " + d.title); }))) : null;
+      return H("section", { "class": "sec-blk clarify" }, H("h3", null, "Clarify", H("em", { text: tt.issues + " issues · " + tt.closed + " closed · open: you " + (o.user || 0) + ", research " + (o.research || 0) + ", design " + (o.design || 0) + (c.migrated ? " · migrated from v1" : "") })),
+        trend, qs, H("div", { "class": "cltblw" }, H("table", { "class": "cltbl" }, H("tr", null, H("th", { text: "Issue" }), H("th", { text: "Subject" }), H("th", { text: "Status" }), H("th", { text: "Owner" }), H("th", { text: "Next" })), rows)), def);
     }
     var RUN_NAME = { "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
     function runName(v) { return RUN_NAME[v.workflow + ":" + v.config] || RUN_NAME[v.workflow] || (v.workflow + (v.config ? " " + v.config : "")); }

@@ -114,6 +114,34 @@ function resultText(step, ok, d) {
   }
 }
 
+// Clarify v2: the issue ledger as the page shows it (the Clarify block in the job and section
+// views, the Board's question count). A pre-v2 record is shown migrated, as factory clarify
+// status shows it; nothing is written.
+function clarifyBlock(state, idata, jp) {
+  if (!idata || !Array.isArray(idata.unknowns)) return null;
+  try {
+    const clarify = require('./clarify');
+    const data = idata.version === 2 ? idata : clarify.migrate(idata, state, readJson(jp.answers, []) || []).data;
+    const v = clarify.view(null, state, data);
+    return {
+      version: idata.version === 2 ? 2 : 1,
+      migrated: Boolean(data.migration),
+      totals: v.totals,
+      open_by_owner: v.open_by_owner,
+      questions: v.questions.map((q) => ({ id: q.id, issue: q.issue, question: short(String(q.question || ''), 200), default: q.default ? short(String(q.default), 140) : null })),
+      issues: v.issues.slice(0, 60).map((r) => ({ id: r.id, subject: r.subject, title: short(r.title, 160), kind: r.kind, status: r.status, owner: r.owner, settled_by: r.settled_by || null, next: short(r.next, 160), aliases: r.aliases, answer: r.answer ? short(r.answer, 140) : null })),
+      deferred: v.deferred_to_design,
+      rounds: v.rounds,
+      trend: v.trend,
+      limits: v.limits,
+      notes: (v.notes || []).slice(-5).map((n) => ({ round: n.round || null, ref: n.ref || null, text: short(String(n.text || ''), 200) })),
+      migration: data.migration ? { folded: (data.migration.folded || []).length, matched_answers: (data.migration.matched_answers || []).map((m) => m.issue), deferred: (data.migration.deferred || []).map((d) => d.id) } : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Grounded intent: what clarify's scout phase researched in one round. `entry` is that
 // round's kind:'intent' ledger line (ids, verdicts and resolutions as they stood then);
 // `data` is jobs/<J>/intent-evidence.json, for claims, quotes, dates and statements.
@@ -403,6 +431,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     runs_live: { running: liveRun ? liveRun.id : null, last_by_stage: lastByStage },
     tasks,
     lessons,
+    clarify: clarifyBlock(state, idata, jp),
     intent: idata ? {
       web: idata.web || null,
       unknowns: (idata.unknowns || []).length,

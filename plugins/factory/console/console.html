@@ -807,6 +807,28 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; 
 .taskrow .tbar { width: 100%; min-width: 60px; }
 
 /* line map */
+
+/* Clarify v2: the issue ledger in the Story (and the Blueprint's section view) */
+.para.clarify .meta, .sec-blk.clarify .meta { color: var(--muted); font-size: 12px; }
+.para.clarify .eh { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 10px 0 4px; }
+.para.clarify ul { margin: 0 0 4px; padding-left: 16px; font-size: 13px; }
+.para.clarify .reply { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 3px 0; }
+.cltbl td { vertical-align: top; }
+.cltbl td:nth-child(1), .cltbl td:nth-child(3), .cltbl td:nth-child(4) { white-space: nowrap; }
+.cltbl code { font-size: 11.5px; }
+.cltbl .stt.you { color: var(--signal); font-weight: 700; }
+.cltbl tr.cl-settled td, .cltbl tr.cl-dropped td { opacity: .78; }
+.cltbl tr.cl-deferred_to_design .stt { color: var(--skill); }
+.cltrend { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; min-height: 44px; }
+.cltrend .clr { display: inline-flex; align-items: flex-end; gap: 2px; position: relative; padding-bottom: 14px; }
+.cltrend .clr b { position: absolute; bottom: 0; left: 0; font: 600 10px/1 var(--mono); color: var(--muted); }
+.cltrend .clr.np b { color: var(--stop); }
+.cltrend .clr.deg { opacity: .5; }
+.clb { display: inline-block; width: 8px; min-height: 2px; border-radius: 1px; vertical-align: bottom; }
+.clb.op { background: var(--signal); }
+.clb.st { background: var(--track); }
+.cltrend .cllg { font-size: 11.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; padding-bottom: 14px; }
+.cltrend .cllg .clb { height: 8px; }
 .lmwrap { display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; height: 100%; }
 .app[data-view="lines"] .mainp { overflow: hidden; display: grid; padding-bottom: 0; }
 .lmlegend { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; font: 400 12px var(--body); color: var(--muted); padding: 8px 0; }
@@ -1578,6 +1600,29 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-cvblk .dx-cv-you b{color:var(--agent)}
 .dx-blueprint .bp-cvblk.bp-mb{margin-bottom:16px}
 .dx-blueprint .bp-pane.bp-gatep > h4 .bp-chip.bp-tag{border-color:var(--on-hl);color:var(--on-hl);background:transparent;text-transform:none;letter-spacing:0}
+/* Clarify v2: the issue ledger in the section view */
+.dx-blueprint .bp-sec-blk.bp-clarify h4{font:600 12px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;margin:12px 0 6px;color:var(--ink)}
+.dx-blueprint .bp-sec-blk.bp-clarify h4 em{font:500 12px var(--f-body);font-style:normal;text-transform:none;letter-spacing:0;color:var(--ink-2);margin-left:8px}
+.dx-blueprint .bp-cltrend{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:8px 0 4px;min-height:46px}
+.dx-blueprint .bp-clr{display:inline-flex;align-items:flex-end;gap:2px;position:relative;padding-bottom:15px}
+.dx-blueprint .bp-clr b{position:absolute;bottom:0;left:0;font:600 11px/1 var(--f-mono);color:var(--ink-2)}
+.dx-blueprint .bp-clr.bp-np b{color:var(--fail)}
+.dx-blueprint .bp-clr.bp-deg{opacity:.5}
+.dx-blueprint .bp-clb{display:inline-block;width:9px;min-height:2px;border-radius:1px;vertical-align:bottom}
+.dx-blueprint .bp-clb.bp-op{background:var(--hl-line)}
+.dx-blueprint .bp-clb.bp-st{background:var(--ok)}
+.dx-blueprint .bp-cllg{font-size:12px;color:var(--ink-2);display:inline-flex;align-items:center;gap:4px;padding-bottom:15px}
+.dx-blueprint .bp-cllg .bp-clb{height:9px}
+.dx-blueprint .bp-cltblw{overflow-x:auto;margin-top:6px}
+.dx-blueprint table.bp-cltbl{border-collapse:collapse;width:100%;font-size:13px}
+.dx-blueprint table.bp-cltbl th{text-align:left;font:600 11px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);border-bottom:1px solid var(--rule);padding:4px 8px 4px 0}
+.dx-blueprint table.bp-cltbl td{vertical-align:top;border-bottom:1px solid var(--rule);padding:6px 10px 6px 0;overflow-wrap:anywhere}
+.dx-blueprint table.bp-cltbl td:nth-child(1),.dx-blueprint table.bp-cltbl td:nth-child(3),.dx-blueprint table.bp-cltbl td:nth-child(4){white-space:nowrap;overflow-wrap:normal}
+.dx-blueprint table.bp-cltbl code{font:500 12px var(--f-mono)}
+.dx-blueprint table.bp-cltbl tr.bp-cl-settled td,.dx-blueprint table.bp-cltbl tr.bp-cl-dropped td{opacity:.75}
+.dx-blueprint .bp-clqi{margin:4px 0 8px;max-width:100ch}
+.dx-blueprint .bp-clqi code{display:inline-block;font:500 12px var(--f-mono);border:1px solid var(--rule);padding:1px 6px;margin:3px 6px 0 0;border-radius:2px}
+.dx-blueprint .bp-cld ul{margin:0;padding-left:18px;font-size:13px}
 /* ---------- blueprint view: the drawing set fills the page under the header; it has its own title block, so
    the KPI housings, rails and the footer step aside. Everything inside is styled by blueprint.css (.dx-blueprint). */
 .app[data-view="blueprint"] .kpis, .app[data-view="blueprint"] .facets, .app[data-view="blueprint"] .wire, .app[data-view="blueprint"] .foot2, .app[data-view="blueprint"] .mtabs { display: none; }
@@ -3982,9 +4027,14 @@ function pipsHtml(m) {
   const more = (j.running_agents || []).length > 3 ? `<span class="nest">+${j.running_agents.length - 3}</span>` : '';
   return run.concat(stale).join('') + more;
 }
+// "Clarify · 3 questions": the ledger's open questions when clarify waits on you
+function turnLabel(m) {
+  const n = !m.gate && m.job.clarify && Array.isArray(m.job.clarify.questions) ? m.job.clarify.questions.length : 0;
+  return `${m.gate ? stepName(m.gate) : m.stepLabel}${n ? ` · ${n} question${n === 1 ? '' : 's'}` : ''}`;
+}
 function nowCell(m) {
   const j = m.job;
-  if (m.bucket === 'turn') return `<b>${esc(m.gate ? stepName(m.gate) : m.stepLabel)}</b><span class="w" data-since="${m.waitSince || ''}">waits ${esc(shortAgo(nowMs() - (m.waitSince || m.updated)))}</span>`;
+  if (m.bucket === 'turn') return `<b>${esc(turnLabel(m))}</b><span class="w" data-since="${m.waitSince || ''}">waits ${esc(shortAgo(nowMs() - (m.waitSince || m.updated)))}</span>`;
   if (m.bucket === 'parked') return `<b>Parked · ${esc(stepName(m.S.pos))}</b><span class="w">${esc(((j.park && j.park.reason) || '').slice(0, 60))}</span>`;
   if (m.bucket === 'done') return `<b>${esc(j.pr && j.pr.merged ? 'Merged · closed' : 'Closed')}</b><span class="w">${esc(m.closed ? fmtDate(j.closed_at) : '')}</span>`;
   if (j.status === 'cancelled' || j.status === 'abandoned') return `<b>${esc(j.status === 'cancelled' ? 'Cancelled' : 'Abandoned')}</b><span class="w">at ${esc(stepName(m.S.pos))}</span>`;
@@ -4626,7 +4676,7 @@ function renderJList() {
   $('#jlist').innerHTML = `<div class="jlh"><span class="label">${ids.length} job${ids.length === 1 ? '' : 's'}</span><span class="hint2" aria-hidden="true"><kbd>j</kbd><kbd>k</kbd></span></div>${ids.map((id) => {
     const m = MODELS.get(id);
     if (!m) return '';
-    return `<button type="button" class="jrow b-${m.bucket}" data-id="${esc(id)}" aria-current="${id === cur}" aria-label="${esc(rowLabel(m))}"><i class="beacon"></i><span class="bid">${esc(id)}${unreadOf(m) && id !== cur ? '<i class="unread"></i>' : ''}</span>${lampsHtml(m)}<span class="jt2">${esc(m.job.title)}</span><span class="jw2">${esc(m.bucket === 'turn' ? `Your turn · ${m.gate ? stepName(m.gate) : m.stepLabel}` : m.sum[1])}</span></button>`;
+    return `<button type="button" class="jrow b-${m.bucket}" data-id="${esc(id)}" aria-current="${id === cur}" aria-label="${esc(rowLabel(m))}"><i class="beacon"></i><span class="bid">${esc(id)}${unreadOf(m) && id !== cur ? '<i class="unread"></i>' : ''}</span>${lampsHtml(m)}<span class="jt2">${esc(m.job.title)}</span><span class="jw2">${esc(m.bucket === 'turn' ? `Your turn · ${turnLabel(m)}` : m.sum[1])}</span></button>`;
   }).join('')}`;
   $('#jlist').querySelectorAll('.jrow').forEach((b) => b.addEventListener('click', () => openJob(b.dataset.id, { user: true })));
   const on = $('#jlist').querySelector('[aria-current="true"]');
@@ -4662,7 +4712,7 @@ function nowCard(job) {
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--sig-amber)"></i>Now · your turn</div>`);
     parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
-    else parts.push('<p>Answer the questions in chat; the round runs again with your answers.</p>');
+    else parts.push(`<p>Answer the questions in chat${job.clarify && job.clarify.questions.length ? ` (${job.clarify.questions.map((q) => esc(q.id)).join(', ')}): a numbered reply such as <code>1 yes, 2 …</code>, or <code>defaults</code>` : ''}; the round runs again with your answers.</p>`);
   } else if (m.bucket === 'parked') {
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--skill)"></i>Now · parked</div><p>${esc((job.park && job.park.reason) || 'Parked.')} Fix what the reason names, then reply:</p>${reply(`resume ${job.id}`)}`);
   } else if (m.bucket === 'stopped') {
@@ -4704,6 +4754,24 @@ function researchHtml(x) {
   if (x.researchable_dropped) H.push(`<p>${pl(x.researchable_dropped, 'question')} research had already answered ${x.researchable_dropped === 1 ? 'was' : 'were'} not asked.</p>`);
   return `<div class="evid">${H.join('')}</div>`;
 }
+// Clarify v2: the issue ledger (factory clarify status): every issue with its status, owner
+// and next action, the per-round trend (opened / settled) and what was handed to design.
+const CL_STATUS = { open: 'open', researching: 'researching', proposed: 'with you', settled: 'settled', deferred_to_design: 'to design', dropped: 'dropped' };
+const CL_BY = { evidence: 'by evidence', user: 'by you', assumption_accepted: 'default accepted', design_deferral: 'deferred' };
+function clarifyHtml(job) {
+  const c = job.clarify;
+  if (!c || !c.issues || !c.issues.length) return '';
+  const t = c.totals || {};
+  const o = c.open_by_owner || {};
+  const max = Math.max(1, ...c.rounds.map((r) => Math.max(r.opened, r.settled)));
+  const bar = (n, cls) => `<i class="clb ${cls}" style="height:${Math.round((n / max) * 28) + (n ? 2 : 0)}px" title="${n}"></i>`;
+  const trend = c.rounds.length ? `<div class="cltrend" role="img" aria-label="Per round: opened and settled issues">${c.rounds.map((r) => `<span class="clr${r.degraded ? ' deg' : r.progress ? '' : ' np'}" title="round ${r.round}: ${r.opened} opened, ${r.settled} settled, ${r.deferred} deferred, ${r.asked} asked${r.degraded ? ' · degraded, not counted' : r.progress ? '' : ' · no progress'}">${bar(r.opened, 'op')}${bar(r.settled, 'st')}<b>R${r.round}</b></span>`).join('')}<span class="cllg"><i class="clb op"></i>opened <i class="clb st"></i>settled · ${esc(c.trend)}</span></div>` : `<p class="meta">${esc(c.trend)}</p>`;
+  const rows = c.issues.map((r) => `<tr class="cl-${esc(r.status)}"><td class="n">${esc(r.id)}${r.aliases && r.aliases.length ? `<br><span class="meta" title="folded duplicates">= ${esc(r.aliases.join(', '))}</span>` : ''}</td><td><code>${esc(r.subject || '—')}</code><br><span class="meta">${esc(r.title)}</span></td><td><span class="stt ${r.status === 'settled' ? 'done' : r.status === 'proposed' ? 'you' : ''}">${esc(CL_STATUS[r.status] || r.status)}</span>${r.settled_by ? `<br><span class="meta">${esc(CL_BY[r.settled_by] || r.settled_by)}</span>` : ''}</td><td class="n">${esc(r.owner)}</td><td>${esc(r.next)}</td></tr>`).join('');
+  const deferred = (c.deferred || []).length ? `<div class="eh">Handed to design (ground and decide settle these; they do not block H1)</div><ul>${c.deferred.map((d) => `<li><b>${esc(d.id)}</b> <code>${esc(d.subject)}</code> ${esc(d.title)}</li>`).join('')}</ul>` : '';
+  const qs = (c.questions || []).length ? `<div class="eh">Waiting on you</div>${c.questions.map((q) => `<div class="reply"><code>factory answer ${esc(q.id)} "…"</code>${q.default ? `<code>factory answer ${esc(q.id)} --default</code>` : ''}<span class="meta">${esc(q.question)}${q.default ? ` · default: ${esc(q.default)}` : ''}</span></div>`).join('')}` : '';
+  const mig = c.migration ? `<p class="meta">Migrated from the v1 record: ${c.migration.folded} duplicate(s) folded, ${c.migration.matched_answers.length} free-form answer(s) matched${c.migration.matched_answers.length ? ` (${esc(c.migration.matched_answers.join(', '))})` : ''}, ${c.migration.deferred.length} deferred to design.</p>` : '';
+  return `<article class="para clarify"><div class="ph"><h4>Clarify ledger</h4><span class="tm">${t.issues} issues · ${t.closed} closed · open: you ${o.user || 0}, research ${o.research || 0}, design ${o.design || 0}</span></div>${trend}${qs}<div class="tblwrap"><table class="tbl cltbl"><tr><th>Issue</th><th>Subject</th><th>Status</th><th>Owner</th><th>Next</th></tr>${rows}</table></div>${deferred}${mig}</article>`;
+}
 function renderStory() {
   const job = LV.job;
   const items = LV.items;
@@ -4717,7 +4785,7 @@ function renderStory() {
     const r = LV.rowOf[k];
     (anchored.get(r) || anchored.set(r, []).get(r)).push(f);
   }
-  const out = [nowCard(job)];
+  const out = [nowCard(job), clarifyHtml(job)];
   rows.forEach((row, r) => {
     const first = items[row.first];
     const tm = Date.parse(first.t);
@@ -6068,7 +6136,9 @@ function bpWaiting(job, state) {
   // Q: clarify's questions are answered in chat, in your own words (skills/clarify); the assumption overrides are replies
   if (g === 'Q') {
     const ids = bpQuestionIds(job);
-    return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply: `answer ${ids.length ? ids.join(', ') : 'the questions'} in chat · change A-n <value> · drop A-n`, questions: ids, plain: true, command: null };
+    const open = job.clarify && Array.isArray(job.clarify.questions) ? job.clarify.questions.map((q) => q.id) : [];
+    const qs = open.length ? open : ids;
+    return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply: `answer ${qs.length ? qs.join(', ') : 'the questions'} in chat (1 yes, 2 …, or defaults) · change A-n <value> · drop A-n`, questions: qs, plain: true, command: null };
   }
   const reply = g === 'P' ? `resume ${job.id} · cancel job · abandon job` : g === 'H4' ? `merged ${job.id} <commit>` : `approve ${job.id} ${g} · deny ${job.id} <what must change>`;
   return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply, command: null };
@@ -6106,6 +6176,8 @@ function toDisplay(data) {
       amendment: amend ? { reason: amend.text, from: 'you' } : null,
       evidence_count: (j.tasks || []).filter((t) => t.pass !== null && t.pass !== undefined).length,
       runs: bpRuns(j),
+      // clarify v2: the issue ledger (cli/core/console.js clarifyBlock), for the section view's Clarify block
+      clarify: j.clarify || null,
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {
@@ -7603,6 +7675,8 @@ function toDisplay(data) {
       if (api.conversation) out.push(H("section", { "class": "sec-blk cvblk", "aria-label": "Latest exchange about this job, as of " + fT(t) }, api.conversation(j.id, t)));
       // 2. path
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Path", H("em", { text: "each stop is a stay at a station · amber stripe = waiting on you · ↺ = " + wd("revise") })), pathHTML(j, t)));
+      // 2a. clarify v2: the issue ledger (status, owner, next action), the per-round trend, what went to design
+      if (j.clarify && j.clarify.issues && j.clarify.issues.length) out.push(clarifyBlock(j));
       // 2b. workflow runs: each run's steps, as they stood at the replay time, the latest first
       out.push(runsBlock(j, t));
       // 3. tasks by wave
@@ -7655,6 +7729,33 @@ function toDisplay(data) {
       // 7. history
       out.push(H("section", { "class": "sec-blk hist" }, H("h3", null, "History by station", H("em", { text: plural(j.history.filter(function (h) { return P(h.at) <= t; }).length, "move") })), historyNodes(j, t)));
       fill(secBody, H("div", { "class": "sec-wrap" }, out));
+    }
+    // The Clarify block: the ledger as factory clarify status prints it (the latest state, not replayed)
+    var CL_STATUS = { open: "open", researching: "researching", proposed: "with you", settled: "settled", deferred_to_design: "to design", dropped: "dropped" };
+    var CL_BY = { evidence: "by evidence", user: "by you", assumption_accepted: "default accepted", design_deferral: "deferred" };
+    function clarifyBlock(j) {
+      var c = j.clarify, tt = c.totals || {}, o = c.open_by_owner || {};
+      var mx = Math.max.apply(null, [1].concat(c.rounds.map(function (r) { return Math.max(r.opened, r.settled); })));
+      var bar = function (n, cls) { return H("i", { "class": "clb " + cls, style: { height: (Math.round((n / mx) * 28) + (n ? 2 : 0)) + "px" }, title: String(n) }); };
+      var trend = c.rounds.length ? H("div", { "class": "cltrend", role: "img", "aria-label": "Per round: issues opened and settled" },
+        c.rounds.map(function (r) {
+          return H("span", { "class": "clr" + (r.degraded ? " deg" : r.progress ? "" : " np"), title: "round " + r.round + ": " + r.opened + " opened, " + r.settled + " settled, " + r.deferred + " deferred, " + r.asked + " asked" + (r.degraded ? " · degraded, not counted" : r.progress ? "" : " · no progress") },
+            bar(r.opened, "op"), bar(r.settled, "st"), H("b", { text: "R" + r.round }));
+        }), H("span", { "class": "cllg" }, H("i", { "class": "clb op" }), "opened ", H("i", { "class": "clb st" }), "settled · " + c.trend)) : H("p", { "class": "meta", text: c.trend });
+      var rows = c.issues.map(function (r) {
+        return H("tr", { "class": "cl-" + r.status },
+          H("td", { "class": "t-mono" }, r.id, r.aliases && r.aliases.length ? H("div", { "class": "meta", title: "folded duplicates", text: "= " + r.aliases.join(", ") }) : null),
+          H("td", null, H("code", { text: r.subject || "—" }), H("div", { "class": "meta", text: r.title })),
+          H("td", null, H("span", { "class": "chip " + (r.status === "settled" ? "ok" : r.status === "proposed" ? "hl" : r.status === "deferred_to_design" ? "tag" : "mute"), text: CL_STATUS[r.status] || r.status }), r.settled_by ? H("div", { "class": "meta", text: CL_BY[r.settled_by] || r.settled_by }) : null),
+          H("td", { "class": "t-mono", text: r.owner }),
+          H("td", { text: r.next }));
+      });
+      var qs = (c.questions || []).length ? H("div", { "class": "clq" }, H("h4", null, "Waiting on you", H("em", { text: plural(c.questions.length, "question") })),
+        c.questions.map(function (q) { return H("div", { "class": "clqi" }, H("b", { text: q.id }), " " + q.question + (q.default ? " (default: " + q.default + ")" : ""), H("div", null, H("code", { text: "factory answer " + q.id + " \"…\"" }), q.default ? H("code", { text: "factory answer " + q.id + " --default" }) : null)); })) : null;
+      var def = (c.deferred || []).length ? H("div", { "class": "cld" }, H("h4", null, "Handed to design", H("em", { text: "ground and decide settle these; they do not block H1" })),
+        H("ul", null, c.deferred.map(function (d) { return H("li", null, H("b", { text: d.id }), " ", H("code", { text: d.subject }), " " + d.title); }))) : null;
+      return H("section", { "class": "sec-blk clarify" }, H("h3", null, "Clarify", H("em", { text: tt.issues + " issues · " + tt.closed + " closed · open: you " + (o.user || 0) + ", research " + (o.research || 0) + ", design " + (o.design || 0) + (c.migrated ? " · migrated from v1" : "") })),
+        trend, qs, H("div", { "class": "cltblw" }, H("table", { "class": "cltbl" }, H("tr", null, H("th", { text: "Issue" }), H("th", { text: "Subject" }), H("th", { text: "Status" }), H("th", { text: "Owner" }), H("th", { text: "Next" })), rows)), def);
     }
     var RUN_NAME = { "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
     function runName(v) { return RUN_NAME[v.workflow + ":" + v.config] || RUN_NAME[v.workflow] || (v.workflow + (v.config ? " " + v.config : "")); }

@@ -199,7 +199,9 @@ function bpWaiting(job, state) {
   // Q: clarify's questions are answered in chat, in your own words (skills/clarify); the assumption overrides are replies
   if (g === 'Q') {
     const ids = bpQuestionIds(job);
-    return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply: `answer ${ids.length ? ids.join(', ') : 'the questions'} in chat · change A-n <value> · drop A-n`, questions: ids, plain: true, command: null };
+    const open = job.clarify && Array.isArray(job.clarify.questions) ? job.clarify.questions.map((q) => q.id) : [];
+    const qs = open.length ? open : ids;
+    return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply: `answer ${qs.length ? qs.join(', ') : 'the questions'} in chat (1 yes, 2 …, or defaults) · change A-n <value> · drop A-n`, questions: qs, plain: true, command: null };
   }
   const reply = g === 'P' ? `resume ${job.id} · cancel job · abandon job` : g === 'H4' ? `merged ${job.id} <commit>` : `approve ${job.id} ${g} · deny ${job.id} <what must change>`;
   return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply, command: null };
@@ -237,6 +239,8 @@ function toDisplay(data) {
       amendment: amend ? { reason: amend.text, from: 'you' } : null,
       evidence_count: (j.tasks || []).filter((t) => t.pass !== null && t.pass !== undefined).length,
       runs: bpRuns(j),
+      // clarify v2: the issue ledger (cli/core/console.js clarifyBlock), for the section view's Clarify block
+      clarify: j.clarify || null,
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {
