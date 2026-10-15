@@ -346,3 +346,94 @@ test('P1.3: a confirmed finding with no file (or in no task\'s paths) reaches ev
   const brief = F.cli(root, ['wfargs', 'realize', '--scope', 'fix']);
   assert.match(fs.readFileSync(brief.tasks.T1.builder_prompt.split('\n').find((l) => l.trim().startsWith('/')).trim(), 'utf8'), /no single owner/);
 });
+
+// ------------------------------------------------------------------------------- P1.5
+
+test('P1.5: a stale-heartbeat run.lock is stale even when its pid is alive (pid reuse, a hung holder)', () => {
+  const runner = require('../cli/core/runner');
+  const os = require('os');
+  const live = { pid: process.pid, host: os.hostname(), heartbeat_sec: 15 };
+  assert.equal(runner.lockAlive(live, { mtimeMs: Date.now() }), true);
+  assert.equal(runner.lockAlive(live, { mtimeMs: Date.now() - 10 * 60 * 1000 }), false, 'no heartbeat for 10 minutes');
+  assert.equal(runner.lockAlive({ ...live, host: 'another-machine' }, { mtimeMs: Date.now() - 10 * 60 * 1000 }), false, 'a heartbeat settles other hosts too');
+  assert.equal(runner.lockAlive({ ...live, host: 'another-machine' }, { mtimeMs: Date.now() }), true);
+  // a lock from before heartbeats: as before (pid check)
+  assert.equal(runner.lockAlive({ pid: process.pid, host: os.hostname() }, { mtimeMs: 0 }), true);
+});
+
+test('P1.5: killing factory run kills its agents\' process groups, logs workflow_end interrupted and releases the lock', { skip: process.platform === 'win32' }, async () => {
+  const { spawn, execSync } = require('child_process');
+  const os = require('os');
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  F.cli(root, ['next']);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-kill-'));
+  const pidFile = path.join(dir, 'grandchild.pid');
+  // each agent starts a grandchild (as Copilot starts shells) and then hangs
+  const script = path.join(dir, 'script.js');
+  fs.writeFileSync(script, `module.exports = () => { const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 600000)'], { stdio: 'ignore' }); require('fs').appendFileSync(${JSON.stringify(pidFile)}, c.pid + '\\n'); return { sleep_ms: 600000, json: {} }; };`);
+  const env = { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: path.join(__dirname, 'helpers', 'fake-copilot.js'), FAKE_COPILOT_SCRIPT: script };
+  const p = spawn('node', [F.BIN, 'run', 'fanout-judge', '--config', 'clarify'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const exited = new Promise((res) => p.on('exit', (code, signal) => res({ code, signal })));
+  const lock = path.join(F.jobDir(root, J), 'run.lock');
+  const eventsFile = path.join(root, '.factory', 'log', 'events.jsonl');
+  const events = () => (fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, 'utf8').trim().split('\n').map(JSON.parse) : []);
+  for (let i = 0; i < 200 && !(fs.existsSync(pidFile) && events().some((e) => e.event === 'agent_start')); i++) await new Promise((r) => setTimeout(r, 50));
+  const agents = execSync(`pgrep -P ${p.pid} || true`).toString().split('\n').filter(Boolean).map(Number);
+  assert.ok(agents.length >= 1, 'an agent is running');
+  const lockBody = JSON.parse(fs.readFileSync(lock, 'utf8'));
+  assert.ok(lockBody.heartbeat_sec > 0, 'the lock carries a heartbeat');
+  p.kill('SIGTERM');
+  const ex = await exited;
+  assert.equal(ex.code, 143, JSON.stringify(ex));
+  await new Promise((r) => setTimeout(r, 300));
+  // a zombie (exited, not yet reaped by whatever adopted it) is gone too
+  const alive = (pid) => {
+    try { process.kill(pid, 0); } catch { return false; }
+    try { return !/^\d+ \(.*\) Z/.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return true; }
+  };
+  const grand = fs.readFileSync(pidFile, 'utf8').split('\n').filter(Boolean).map(Number);
+  try {
+    for (const pid of agents) assert.equal(alive(pid), false, `agent ${pid} is gone`);
+    for (const pid of grand) assert.equal(alive(pid), false, `its child ${pid} is gone`);
+  } finally {
+    for (const pid of [...agents, ...grand]) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+  }
+  assert.ok(!fs.existsSync(lock), 'the lock is released');
+  const end = events().filter((e) => e.event === 'workflow_end').pop();
+  assert.equal(end.outcome, 'interrupted');
+  assert.equal(end.signal, 'SIGTERM');
+});
+
+test('P1.5: a run killed with SIGKILL (no handler runs) leaves a lock naming its agents; the next run stops them', { skip: process.platform !== 'linux' }, async () => {
+  const { spawn, spawnSync } = require('child_process');
+  const os = require('os');
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  F.cli(root, ['next']);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-kill9-'));
+  const script = path.join(dir, 'script.js');
+  fs.writeFileSync(script, 'module.exports = () => ({ sleep_ms: 600000, json: {} });');
+  const env = { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: path.join(__dirname, 'helpers', 'fake-copilot.js'), FAKE_COPILOT_SCRIPT: script };
+  const p = spawn('node', [F.BIN, 'run', 'fanout-judge', '--config', 'clarify'], { cwd: root, env, stdio: 'ignore' });
+  const lock = path.join(F.jobDir(root, J), 'run.lock');
+  const agentsOf = () => { try { return JSON.parse(fs.readFileSync(lock, 'utf8')).agents || []; } catch { return []; } };
+  for (let i = 0; i < 200 && !agentsOf().length; i++) await new Promise((r) => setTimeout(r, 50));
+  const orphans = agentsOf();
+  assert.ok(orphans.length >= 1, 'the lock lists the running agent');
+  p.kill('SIGKILL');
+  await new Promise((r) => p.on('exit', r));
+  const alive = (pid) => { try { process.kill(pid, 0); } catch { return false; } try { return !/^\d+ \(.*\) Z/.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return true; } };
+  try {
+    assert.ok(orphans.every(alive), 'SIGKILL left the agent running');
+    // the next run finds the holder dead, stops its agents and takes the lock (a dry run never takes it: use a real one that ends quickly)
+    fs.writeFileSync(script, 'module.exports = () => ({ exit: 1, stderr: "stop" });');
+    spawnSync('node', [F.BIN, 'run', 'fanout-judge', '--config', 'clarify'], { cwd: root, env, encoding: 'utf8', timeout: 60000 });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.ok(orphans.every((pid) => !alive(pid)), 'the orphaned agent was stopped');
+  } finally {
+    for (const pid of orphans) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+  }
+});

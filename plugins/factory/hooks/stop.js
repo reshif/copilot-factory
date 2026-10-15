@@ -184,8 +184,7 @@ function factoryRanSince(log, at) {
 
 function runInProgress(root, id) {
   try {
-    const lock = JSON.parse(fs.readFileSync(path.join(root, '.factory', 'jobs', id, 'run.lock'), 'utf8'));
-    return require('../cli/core/runner').lockAlive(lock);
+    return require('../cli/core/runner').lockFileAlive(path.join(root, '.factory', 'jobs', id, 'run.lock'));
   } catch {
     return false;
   }

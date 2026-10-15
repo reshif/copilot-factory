@@ -361,6 +361,95 @@ function command(bin, argv, opts) {
   return [r.file, [...r.pre, ...argv], false];
 }
 
+// Every agent process this `factory run` started and that is still running. Each agent runs in
+// its own process group (detached on POSIX), so the whole tree it starts (shells, test runners,
+// servers) can be killed with it: on a timeout, and when `factory run` itself is stopped.
+const LIVE = new Set();
+let lockFile = null; // the run.lock this process holds: it lists the live agents' pids
+
+// The lock names the live agents, so a later run that finds the lock stale (this process was
+// killed with SIGKILL, no handler ran) can stop the agents it left behind.
+function noteAgents() {
+  if (!lockFile) return;
+  try {
+    const held = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+    if (held.pid !== process.pid) return;
+    held.agents = [...LIVE].map((c) => c.pid);
+    fs.writeFileSync(lockFile, JSON.stringify(held));
+  } catch {
+    /* no lock (dry run, distill) or released */
+  }
+}
+
+function killTree(child, sig = 'SIGTERM') {
+  if (!child || !child.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      require('child_process').spawnSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true });
+    } catch {
+      /* already gone */
+    }
+    return;
+  }
+  try {
+    process.kill(-child.pid, sig); // the agent's whole process group
+  } catch {
+    try {
+      child.kill(sig);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const groupAlive = (pid) => {
+  try {
+    process.kill(process.platform === 'win32' ? pid : -pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+};
+
+// Stop every live agent tree: SIGTERM, up to `graceMs` for them to go, then SIGKILL.
+function killAgents(graceMs = 1500) {
+  const kids = [...LIVE];
+  if (!kids.length) return 0;
+  for (const c of kids) killTree(c, 'SIGTERM');
+  const until = Date.now() + graceMs;
+  while (Date.now() < until && kids.some((c) => groupAlive(c.pid))) sleepSync(50);
+  for (const c of kids) if (groupAlive(c.pid)) killTree(c, 'SIGKILL');
+  return kids.length;
+}
+
+const SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+
+// While a workflow runs, a signal to `factory run` (Ctrl+C, a closed terminal, a cancelled tool
+// call) stops its agents too, logs the run's end as interrupted and releases the lock, instead
+// of leaving agents editing worktrees with a lock a second run would ignore. Returns the undo.
+function onInterrupt(cleanup) {
+  const handlers = {};
+  for (const sig of Object.keys(SIGNALS)) {
+    if (process.platform === 'win32' && sig === 'SIGHUP') continue;
+    handlers[sig] = () => {
+      try {
+        killAgents();
+        cleanup(sig);
+      } finally {
+        process.exit(128 + SIGNALS[sig]);
+      }
+    };
+    process.on(sig, handlers[sig]);
+  }
+  const atExit = () => killAgents(0);
+  process.on('exit', atExit);
+  return () => {
+    for (const [sig, h] of Object.entries(handlers)) process.removeListener(sig, h);
+    process.removeListener('exit', atExit);
+  };
+}
+
 function spawnCopilot(bin, argv, { cwd, env, timeoutSec }) {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -374,18 +463,24 @@ function spawnCopilot(bin, argv, { cwd, env, timeoutSec }) {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      LIVE.delete(child);
+      noteAgents();
       resolve({ code: code === null || code === undefined ? -1 : code, signal: signal || null, stdout: out, stderr: err + extra, ms: Date.now() - started, timedOut });
     };
     try {
-      child = spawn(file, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], ...(shell ? { shell: true, windowsVerbatimArguments: true } : {}) });
+      child = spawn(file, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true, ...(shell ? { shell: true, windowsVerbatimArguments: true } : {}) });
+      if (child.pid) {
+        LIVE.add(child);
+        noteAgents();
+      }
     } catch (e) {
       resolve({ code: -1, signal: null, stdout: '', stderr: e.message, ms: 0, timedOut: false });
       return;
     }
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5000).unref();
+      killTree(child, 'SIGTERM');
+      setTimeout(() => killTree(child, 'SIGKILL'), 5000).unref();
     }, timeoutSec * 1000);
     child.stdout.on('data', (d) => {
       if (out.length < MAX_OUTPUT) out += d;
@@ -691,10 +786,15 @@ function preflight(root, state, workflow, config) {
 }
 
 // One `factory run` per job at a time: .factory/jobs/<J>/run.lock holds the pid and start
-// time; a lock whose process is gone (or is no longer a factory process) is stale.
-function lockAlive(lock) {
+// time, and its holder touches it every heartbeat_sec. A lock is stale when its heartbeat
+// stopped (LOCK_STALE_BEATS beats missed: the holder hung, or died and its pid was reused), or
+// its process is gone (or is no longer a factory process).
+const HEARTBEAT_SEC = 15;
+const LOCK_STALE_BEATS = 8;
+function lockAlive(lock, stat = null) {
   if (!lock || !Number.isInteger(lock.pid) || lock.pid <= 0) return false;
-  if (lock.host && lock.host !== require('os').hostname()) return true; // another machine: can't tell, assume live
+  if (lock.heartbeat_sec > 0 && stat && Date.now() - stat.mtimeMs > lock.heartbeat_sec * LOCK_STALE_BEATS * 1000) return false;
+  if (lock.host && lock.host !== require('os').hostname()) return true; // another machine with a live heartbeat (or none): assume live
   try {
     process.kill(lock.pid, 0);
   } catch (e) {
@@ -709,15 +809,53 @@ function lockAlive(lock) {
   return true;
 }
 
+// Agents a dead run left running (its lock's `agents`): stopped before a new run starts, so two
+// runs never write one worktree. Only processes that are still factory agents (Linux: their
+// command line names a factory agent) are touched; elsewhere a reused pid can't be told apart.
+function stopOrphans(held) {
+  if (!held.host || held.host !== require('os').hostname()) return;
+  for (const pid of Array.isArray(held.agents) ? held.agents : []) {
+    if (!Number.isInteger(pid) || pid <= 1 || !groupAlive(pid)) continue;
+    let cmd = null;
+    try {
+      cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+    } catch {
+      cmd = null;
+    }
+    if (cmd && /--agent\s+factory:/.test(cmd)) killTree({ pid }, 'SIGKILL');
+  }
+}
+
+// The lock file's holder still at work (its process alive and its heartbeat recent)?
+function lockFileAlive(file) {
+  try {
+    return lockAlive(JSON.parse(fs.readFileSync(file, 'utf8')), fs.statSync(file));
+  } catch {
+    return false;
+  }
+}
+
 function acquireLock(root, state, info) {
   const file = path.join(require('../lib/paths').jobPaths(root, state.id).dir, 'run.lock');
-  const body = JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: new Date().toISOString(), ...info });
+  const body = JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: new Date().toISOString(), heartbeat_sec: HEARTBEAT_SEC, ...info });
   for (let i = 0; i < 2; i++) {
     try {
       fs.writeFileSync(file, body, { flag: 'wx' });
+      const beat = setInterval(() => {
+        try {
+          const now = new Date();
+          fs.utimesSync(file, now, now);
+        } catch {
+          /* released */
+        }
+      }, HEARTBEAT_SEC * 1000);
+      beat.unref();
+      lockFile = file;
       return {
         file,
         release: () => {
+          clearInterval(beat);
+          if (lockFile === file) lockFile = null;
           try {
             if (JSON.parse(fs.readFileSync(file, 'utf8')).pid === process.pid) fs.rmSync(file, { force: true });
           } catch {
@@ -729,15 +867,18 @@ function acquireLock(root, state, info) {
       if (e.code !== 'EEXIST') throw e;
     }
     let held = null;
+    let stat = null;
     try {
       held = JSON.parse(fs.readFileSync(file, 'utf8'));
+      stat = fs.statSync(file);
     } catch {
       held = null;
     }
-    if (held && lockAlive(held)) {
+    if (held && lockAlive(held, stat)) {
       fail(`Another factory run (${held.workflow || 'workflow'}${held.config ? ` --config ${held.config}` : ''}, pid ${held.pid}, started ${held.started_at}) is still running for ${state.id}. Wait for it to finish and read its output; don't start it again.`, 'run_in_progress', { lock: file, ...held });
     }
-    fs.rmSync(file, { force: true }); // stale: its process is gone
+    if (held) stopOrphans(held);
+    fs.rmSync(file, { force: true }); // stale: its process is gone or its heartbeat stopped
   }
   fail(`Could not take the run lock ${file}.`, 'run_in_progress', { lock: file });
 }
@@ -771,6 +912,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
   }
 
   const lock = acquireLock(root, state, { workflow, config: config || null });
+  let undoInterrupt = () => {};
   try {
     state = job.resolve(root, state.id);
     const decision = preflight(root, state, workflow, config);
@@ -809,6 +951,10 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     const wfBase = { wf_run: ctx.wfRun, job: state.id, decision_id: decision.id, workflow, config: brief.config || null };
     events.append(root, { event: 'workflow_start', ...wfBase, mode: brief.mode || null, round: typeof brief.round === 'number' ? brief.round : null, pid: process.pid });
     const wfEnd = (rec) => events.append(root, { event: 'workflow_end', ...wfBase, ms: Date.now() - t0, phases: ctx.phases.length, agents: ctx.runs.length, ...rec });
+    undoInterrupt = onInterrupt((sig) => {
+      wfEnd({ outcome: 'interrupted', status: null, signal: sig, error: `factory run was stopped (${sig}); its agents were stopped too` });
+      lock.release();
+    });
     const api = {
       agent: (prompt, opts) => runAgent(ctx, prompt, opts),
       phase: (m) => {
@@ -863,6 +1009,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     writeJson(resultFile, out);
     return out;
   } finally {
+    undoInterrupt();
     lock.release();
   }
 }
@@ -900,6 +1047,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     return { job: state.id, skipped: true, reason: `Nothing to learn from: ${why}. No agent was started. Run factory distill done.`, lessons: [], agents: [] };
   }
   const lock = acquireLock(root, state, { workflow: 'distill-write', config: null });
+  let undoInterrupt = () => {};
   try {
     state = job.resolve(root, state.id);
     const S = settings(root, state);
@@ -946,6 +1094,10 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     events.append(root, { event: 'workflow_phase', ...wfBase, text: 'distill: write lessons', index: 0 });
     ctx.phaseIndex = 0;
     const wfEnd = (rec) => events.append(root, { event: 'workflow_end', ...wfBase, ms: Date.now() - t0, phases: 1, agents: ctx.runs.length, ...rec });
+    undoInterrupt = onInterrupt((sig) => {
+      wfEnd({ outcome: 'interrupted', status: null, signal: sig, error: `factory distill write was stopped (${sig})` });
+      lock.release();
+    });
     let reply;
     try {
       reply = await runAgent(ctx, prompt, { agentType: `factory:${role}`, label: 'lesson-writer', schema: LESSON_REPLY, ...(model ? { model } : {}) });
@@ -977,6 +1129,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     };
     return out;
   } finally {
+    undoInterrupt();
     lock.release();
   }
 }
@@ -1060,4 +1213,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { run, distillWrite, runAgent, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, WORKFLOWS };
+module.exports = { run, distillWrite, runAgent, killAgents, HEARTBEAT_SEC, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, lockFileAlive, WORKFLOWS };

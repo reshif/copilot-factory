@@ -242,8 +242,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
   let runLive = null;
   const runnerLive = () => {
     if (runLive === null) {
-      const { lockAlive } = require('./runner');
-      try { runLive = lockAlive(readJson(path.join(jp.dir, 'run.lock'), null)); } catch { runLive = false; }
+      const { lockFileAlive } = require('./runner');
+      try { runLive = lockFileAlive(path.join(jp.dir, 'run.lock')); } catch { runLive = false; }
     }
     return runLive;
   };
