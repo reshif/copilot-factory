@@ -7,7 +7,7 @@ function load(file) {
   const src = fs.readFileSync(file, 'utf8').replace(/^export const meta =/m, 'const meta =');
   // eslint-disable-next-line no-new-func
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  return new AsyncFunction('args', 'agent', 'pipeline', 'phase', 'log', 'Date', 'Math', src);
+  return new AsyncFunction('args', 'agent', 'pipeline', 'phase', 'log', 'factory', 'Date', 'Math', src);
 }
 
 function mathNoRandom() {
@@ -19,7 +19,23 @@ function mathNoRandom() {
   return m;
 }
 
-async function run(file, args, agentImpl) {
+// `factory` stands in for the runner's deterministic steps (cli/core/runner.js workflowApi):
+// tests pass their own ({ verify(id) }), or, for a brief with a project root, verify runs the
+// real `task verify` in-process.
+function realFactory(brief) {
+  const tasks = require('../../cli/core/tasks');
+  return {
+    verify: async (id) => {
+      try {
+        return tasks.verify(brief.root, brief.job, id);
+      } catch (e) {
+        return { task: id, pass: false, error: { code: e.code || 'internal', message: e.message } };
+      }
+    },
+  };
+}
+
+async function run(file, args, agentImpl, factoryImpl) {
   const fn = load(file);
   const calls = [];
   const agentsDir = require('path').join(__dirname, '..', '..', 'agents');
@@ -40,7 +56,12 @@ async function run(file, args, agentImpl) {
   };
   const pipeline = async (items, f) => Promise.all(items.map((it) => f(it)));
   const forbidden = new Proxy({}, { get: () => () => { throw new Error('Date/Math.random are not allowed in workflows'); } });
-  const result = await fn(typeof args === 'string' ? args : JSON.stringify(args), agent, pipeline, () => {}, () => {}, forbidden, mathNoRandom());
+  const brief0 = typeof args === 'string' ? JSON.parse(args) : args;
+  const verifies = [];
+  const base = factoryImpl || (brief0 && brief0.root ? realFactory(brief0) : {});
+  const factory = { ...base, verify: async (id) => { verifies.push(id); if (!base.verify) throw new Error('this test gives realize no factory.verify'); return base.verify(id); } };
+  const result = await fn(typeof args === 'string' ? args : JSON.stringify(args), agent, pipeline, () => {}, () => {}, factory, forbidden, mathNoRandom());
+  calls.verifies = verifies;
   return { result, calls };
 }
 

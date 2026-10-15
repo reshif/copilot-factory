@@ -1,4 +1,3 @@
-{ "type": "object", "required": ["pass", "failures"], "properties": {
-  "pass": { "type": "boolean" }, "evidence_id": { "type": "string" },
-  "failures": { "type": "array", "items": { "type": "string" } },
-  "swept_checked": { "type": "array", "items": { "type": "string" } } } }
+{ "type": "object", "required": ["swept_checked"], "properties": {
+  "swept_checked": { "type": "array", "items": { "type": "string" } },
+  "concerns": { "type": "array", "items": { "type": "string" } } } }

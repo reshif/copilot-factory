@@ -322,7 +322,7 @@ test('concurrency is capped by policy.limits.max_parallel_agents', () => {
   assert.equal(peak, 2, 'three analysts after the intent gate, never more than two at once');
 });
 
-test('factory run realize: builders and testers start in their task worktree; the result is recorded', () => {
+test('factory run realize: builders start in their task worktree, task verify decides, the result is recorded', () => {
   const root = F.makeRepo();
   const J = newJob(root, { agents: { builder_escalation: ['opus'] } });
   let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
@@ -335,7 +335,7 @@ test('factory run realize: builders and testers start in their task worktree; th
   F.cli(root, ['plan', 'from-contract'], { allowFail: false });
   assert.equal(F.cli(root, ['next']).workflow, 'realize');
 
-  // attempt 1: the builder commits nothing useful, so the tester fails it; attempt 2 (escalated) fixes it
+  // attempt 1: the builder commits nothing useful, so task verify fails it; attempt 2 (escalated) fixes it
   const fixture = JSON.stringify(path.join(__dirname, 'helpers', 'fixture.js'));
   const h = harness(`const F = require(${fixture});
   module.exports = (c) => {
@@ -348,10 +348,6 @@ test('factory run realize: builders and testers start in their task worktree; th
       F.sh(c.cwd, 'git commit -qam "attempt"');
       return { status: 'done', summary: 'changed add', swept: ['src/add.js'] };
     }
-    if (c.agent === 'factory:tester') {
-      const v = F.cli(root, ['task', 'verify', 'T1']);
-      return { pass: v.pass, evidence_id: v.evidence_id, failures: (v.failures || []).map((f) => f.cmd) };
-    }
     return { exit: 1, stderr: 'unexpected ' + c.agent };
   };`);
   const r = h.run(root, ['realize']);
@@ -360,13 +356,17 @@ test('factory run realize: builders and testers start in their task worktree; th
   assert.equal(r.tasks[0].outcome, 'done', JSON.stringify(r));
   const wt = fs.realpathSync(path.join(root, '.factory', 'worktrees', `${J}-T1`));
   const calls = h.log();
-  assert.deepEqual(calls.map((c) => c.agent), ['factory:builder', 'factory:tester', 'factory:builder', 'factory:tester']);
+  assert.deepEqual(calls.map((c) => c.agent), ['factory:builder', 'factory:builder'], 'no LLM tester: the runner runs task verify');
+  assert.deepEqual(r.checks.map((x) => [x.step, x.task, x.pass]), [['verify', 'T1', false], ['verify', 'T1', true]]);
+  const second = fs.readFileSync(calls[1].argv[calls[1].argv.indexOf('-p') + 1].split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
+  assert.match(second, /`node tests\/add.test.js` exited 1/, 'attempt 2 gets the failing command');
+  assert.match(second, /add\(2,3\) = -1/, 'and its raw output');
   for (const c of calls) {
     assert.equal(c.cwd, wt, `${c.agent} runs in the task worktree`);
     assert.deepEqual(c.argv.map((a, i) => (a === '--add-dir' ? c.argv[i + 1] : null)).filter(Boolean), [root, F.PLUGIN], 'and may still read the job folder and run the factory CLI');
   }
   assert.equal(calls[0].model, null, 'attempt 1: the builder\'s own model');
-  assert.equal(calls[2].model, 'claude-opus-5.5', 'attempt 2: escalated, alias mapped to the Copilot id');
+  assert.equal(calls[1].model, 'claude-opus-5.5', 'attempt 2: escalated, alias mapped to the Copilot id');
   assert.equal(F.cli(root, ['next']).workflow, 'reconcile');
 });
 
@@ -662,7 +662,10 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
   });
   assert.match(F.cli(root, ['next']).command, /plan from-contract/);
   F.cli(root, ['plan', 'from-contract'], { allowFail: false });
-  step({ workflow: 'realize', dry: ['builder', 'tester'] }, (r) => assert.deepEqual(roles(r), ['builder', 'tester']));
+  step({ workflow: 'realize', dry: ['builder'] }, (r) => {
+    assert.deepEqual(roles(r), ['builder'], 'task verify decides: no tester agent');
+    assert.deepEqual(r.checks.map((x) => [x.step, x.task, x.pass]), [['verify', 'T1', true]]);
+  });
   step({ workflow: 'reconcile', dry: ['integrator'] }, (r) => assert.deepEqual(roles(r), ['integrator']));
   assert.match(F.cli(root, ['next']).command, /verify run/);
   assert.equal(F.cli(root, ['verify', 'run']).ok, true);
@@ -683,7 +686,7 @@ test('bug@low through factory run: clarify, ground, realize, reconcile, challeng
     assert.deepEqual(flagsOf(c.argv, '--allow-tool'), p.allow, `${role}: --allow-tool`);
     assert.deepEqual(flagsOf(c.argv, '--deny-tool'), p.deny, `${role}: --deny-tool`);
   }
-  for (const r of ['builder', 'tester', 'code-reviewer', 'finding-verifier', 'integrator', 'researcher', 'judge', 'verifier']) assert.ok(seen.has(r), `${r} ran`);
+  for (const r of ['builder', 'code-reviewer', 'finding-verifier', 'integrator', 'researcher', 'judge', 'verifier']) assert.ok(seen.has(r), `${r} ran`);
   const argvOf = (role) => h.log().find((c) => c.agent === `factory:${role}`).argv;
   const builder = argvOf('builder');
   assert.deepEqual(flagsOf(builder, '--allow-tool'), ['shell', 'write'], 'the builder edits and runs tests in its worktree');

@@ -46,10 +46,6 @@ test('bug@low through the real workflow scripts', async () => {
       F.sh(s.worktree, 'git commit -qam fix');
       return { status: 'done', summary: 'fixed', swept: ['src/add.js'] };
     }
-    if (type === 'factory:tester') {
-      const v = F.cli(root, ['task', 'verify', 'T1']);
-      return { pass: v.pass, evidence_id: v.evidence_id, failures: v.failures.map((f) => f.cmd) };
-    }
     if (type === 'factory:integrator') {
       const r = F.cli(root, ['reconcile', 'run']);
       return { status: r.status === 'merged' ? 'merged' : 'failed', summary: r.status };
@@ -90,6 +86,7 @@ test('bug@low through the real workflow scripts', async () => {
   // every workflow run left a sealed roster of the agents it started
   const ledger = fs.readFileSync(path.join(F.jobDir(root, F.cli(root, ['job', 'show']).id), 'ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   const ran = ledger.filter((e) => e.kind === 'agents').flatMap((e) => e.agents.map((a) => a.agent_type));
-  for (const t of ['factory:intent-mapper', 'factory:verifier', 'factory:intent-analyst', 'factory:researcher', 'factory:builder', 'factory:tester', 'factory:integrator', 'factory:code-reviewer']) assert.ok(ran.includes(t), `roster names ${t}`);
+  for (const t of ['factory:intent-mapper', 'factory:verifier', 'factory:intent-analyst', 'factory:researcher', 'factory:builder', 'factory:integrator', 'factory:code-reviewer']) assert.ok(ran.includes(t), `roster names ${t}`);
   assert.equal(ran.length, state.counters.agent_runs, 'the roster matches the counted agent runs');
+  assert.ok(!ran.includes('factory:tester'), 'no LLM tester: task verify decides');
 });

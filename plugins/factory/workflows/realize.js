@@ -1,6 +1,6 @@
 export const meta = {
   name: 'realize',
-  description: 'Software Factory: build tasks wave by wave, each in its own git worktree — builder then independent tester, retried up to each task\'s limit; a blocked or exhausted task skips only its dependents. Pass the JSON brief from `factory wfargs realize` as args.',
+  description: 'Software Factory: build tasks wave by wave, each in its own git worktree — builder, then `task verify` run by the CLI (its exit code decides), retried up to each task\'s limit; a blocked or exhausted task skips only its dependents. Pass the JSON brief from `factory wfargs realize` as args.',
 }
 
 const brief = (() => {
@@ -38,7 +38,26 @@ function builderModel(spec, attempt) {
   return up[Math.min(attempt - 2, up.length - 1)]
 }
 
+// The raw `task verify` result as the next attempt's input: the failing command, its exit code
+// and the tail of its output (verify keeps the last 4 KB), scope violations, or why verify
+// refused. Never a paraphrase.
+function tail(text, n) {
+  const t = String(text || '')
+  return t.length > n ? '…' + t.slice(t.length - n) : t
+}
+function verifyFailures(v) {
+  if (!v) return ['task verify returned nothing.']
+  if (v.error) return [`task verify refused (${v.error.code}): ${v.error.message}`]
+  const out = []
+  for (const f of v.failures || []) out.push(`\`${f.cmd}\` exited ${f.code}${f.flaky ? ' (it passed on a re-run: flaky, not accepted)' : ''}${f.timed_out ? ' (timed out)' : ''}. Output (tail):\n${tail(f.output, 1500).split('\n').map((l) => '      ' + l).join('\n')}`)
+  for (const p of v.scope_violations || []) out.push(`${p} was changed but is outside this task's allowed paths (or protected).`)
+  if (v.no_changes) out.push('No change was committed on the task branch since task start.')
+  if (!out.length) out.push('task verify did not pass.')
+  return out
+}
+
 let runs = 0
+const checks = []
 const T = brief.tasks
 const st = {}
 for (const id of Object.keys(T)) st[id] = { outcome: 'pending', attempts: 0, failures: [], swept: [], summary: '' }
@@ -88,7 +107,7 @@ for (let w = 0; w < brief.waves.length; w++) {
         .replace('{{failures}}', s.failures.length ? s.failures.map((f) => `  - ${f}`).join('\n') : '  - (none)')
       return call(prompt, opts({ ...T[id].builder, schema: brief.builder_schema }, `build ${id} #${s.attempts + 1}`, builderModel(T[id].builder, s.attempts + 1)))
     })
-    const toTest = []
+    const toVerify = []
     for (const id of active) {
       const b = built[id]
       const s = st[id]
@@ -102,10 +121,10 @@ for (let w = 0; w < brief.waves.length; w++) {
         continue
       }
       // A builder that returned nothing (crashed, timed out, no valid reply) built nothing this
-      // attempt: testing the branch would only re-test an older state. The attempt is spent.
+      // attempt: verifying the branch would only re-check an older state. The attempt is spent.
       if (!b) {
         s.attempts += 1
-        s.failures = [`Attempt ${s.attempts}: the builder returned no result (crashed, timed out or replied without the JSON); nothing was tested. Check the worktree for its unfinished work.`]
+        s.failures = [`Attempt ${s.attempts}: the builder returned no result (crashed, timed out or replied without the JSON); nothing was verified. Check the worktree for its unfinished work.`]
         if (s.attempts >= (T[id].retry_limit || 3)) {
           s.outcome = 'exhausted'
           s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures[0]}`
@@ -114,21 +133,37 @@ for (let w = 0; w < brief.waves.length; w++) {
       }
       s.swept = b.swept || []
       s.summary = b.summary || ''
-      toTest.push(id)
+      toVerify.push(id)
     }
-    const tested = await runAll(toTest, (id) => call(T[id].tester_prompt.replace('{{swept}}', st[id].swept.join(', ') || '(none listed)'), opts({ ...T[id].tester, schema: brief.tester_schema }, `test ${id}`)))
-    for (const id of toTest) {
+    // The CLI's `task verify` decides, by its exit code: no agent reads the result back.
+    const verified = {}
+    for (const group of chunks(toVerify, cap)) {
+      const res = await pipeline(group, (id) => factory.verify(id))
+      group.forEach((id, i) => { verified[id] = res[i] || null })
+    }
+    for (const id of toVerify) {
       const s = st[id]
       s.attempts += 1
-      const t = tested[id]
-      if (t && t.pass) {
+      const v = verified[id]
+      checks.push({ task: id, attempt: s.attempts, pass: Boolean(v && v.pass), ...(v && v.error ? { refused: v.error.code } : {}) })
+      if (v && v.pass) {
         s.outcome = 'done'
         continue
       }
-      s.failures = t ? t.failures : ['The tester returned nothing.']
+      s.failures = verifyFailures(v)
       if (s.attempts >= (T[id].retry_limit || 3)) {
         s.outcome = 'exhausted'
         s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures.slice(0, 2).join('; ')}`
+      }
+    }
+    // Optional, never deciding: a cheap agent looks at the places the builder says it swept
+    // for the same bug class (policy agents.sweep_check). Its notes go to the summary only.
+    const swept = toVerify.filter((id) => st[id].outcome === 'done' && T[id].sweep && st[id].swept.length)
+    if (swept.length) {
+      const notes = await runAll(swept, (id) => call(T[id].sweep_prompt.replace('{{swept}}', st[id].swept.join(', ')), opts({ ...T[id].sweep, schema: brief.sweep_schema }, `sweep ${id}`)))
+      for (const id of swept) {
+        const n = notes[id]
+        if (n && (n.concerns || []).length) st[id].summary = `${st[id].summary} Sweep check concerns (not deciding): ${n.concerns.join('; ')}`.trim()
       }
     }
     active = active.filter((id) => st[id].outcome === 'pending')
@@ -152,5 +187,5 @@ return {
   questions: [],
   park_reason: notDone.length ? `Tasks not done: ${notDone.map((t) => `${t.id} (${t.outcome})`).join(', ')}` : null,
   summary: `${tasks.length - notDone.length}/${tasks.length} task(s) done.`,
-  data: { tasks },
+  data: { tasks, verifications: checks },
 }

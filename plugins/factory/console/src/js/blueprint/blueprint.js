@@ -54,7 +54,7 @@
     intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["contract-editor", "contract editor"], ["god-eye", "God Eye"]] },
     design: { name: "Design agents", members: [["researcher", "researcher"], ["option-generator", "option generator"], ["threat-modeler", "threat-modeler"], ["architect", "architect"], ["god-eye", "God Eye"]] },
     plan: { name: "Plan agents", members: [["planner", "planner"], ["god-eye", "God Eye"]] },
-    build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["tester", "tester"], ["tester", "tester"], ["integrator", "integrator"]] },
+    build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["builder", "builder"], ["integrator", "integrator"]] },
     verify: { name: "CLI check", members: [] },
     review: { name: "Reviewers", members: [] },
     ship: { name: "CI and you", members: [] },
@@ -63,7 +63,7 @@
   var STEPS = {
     intake: [["c", "factory job new"]], intent: [["a", "intent map · scouts · verifier"], ["a", "analysts ×4 + judge"], ["a", "God Eye cold review"], ["h", "H1"]],
     design: [["a", "ground: researchers"], ["a", "decide: options · architect"], ["h", "H2"], ["h", "HF"]], plan: [["a", "decompose: planner"], ["c", "plan validate"], ["h", "H3"]],
-    build: [["a", "realize: builders per task"], ["a", "testers per task"], ["a", "reconcile: integrator"]], verify: [["c", "prove: every check"]],
+    build: [["a", "realize: builders per task"], ["c", "task verify per task"], ["a", "reconcile: integrator"]], verify: [["c", "prove: every check"]],
     review: [["a", "challenge: review lanes"], ["a", "finding verifier"]], ship: [["c", "ship: report · PR"], ["h", "HS"], ["h", "H4"]], done: [["a", "distill: lesson writer"], ["c", "close"]]
   };
   var LOOPS = { intent: "questions", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")

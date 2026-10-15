@@ -462,6 +462,8 @@ function logCommand(argv, res, err) {
       decision_id: r.decision_id || ctx.decision_id,
       ok: !err && process.exitCode !== 1 && process.exitCode !== 2,
       code: err ? err.code || 'internal' : null,
+      // a deterministic step `factory run` ran itself (realize's task verify), not the driver's command
+      ...(process.env.FACTORY_VIA === 'run' ? { via: 'run' } : {}),
       ...extra,
     });
   } catch {

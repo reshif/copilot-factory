@@ -84,7 +84,7 @@ function settings(root, state) {
 function loadScript(file) {
   const src = fs.readFileSync(file, 'utf8').replace(/^export const meta =/m, 'const meta =');
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  return new AsyncFunction('args', 'agent', 'pipeline', 'parallel', 'phase', 'log', 'Date', 'Math', 'require', 'process', src);
+  return new AsyncFunction('args', 'agent', 'pipeline', 'parallel', 'phase', 'log', 'factory', 'Date', 'Math', 'require', 'process', src);
 }
 
 function mathNoRandom() {
@@ -111,7 +111,7 @@ async function execute(file, args, api) {
   };
   const pipeline = async (items, f) => Promise.all(items.map((it, i) => f(it, i)));
   const parallel = async (thunks) => Promise.all(thunks.map((t) => (typeof t === 'function' ? t() : t)));
-  return fn(args, api.agent, pipeline, parallel, api.phase, api.log, forbidden, mathNoRandom(), noFs, undefined);
+  return fn(args, api.agent, pipeline, parallel, api.phase, api.log, api.factory || {}, forbidden, mathNoRandom(), noFs, undefined);
 }
 
 // ---------------------------------------------------------------- replies
@@ -521,11 +521,11 @@ function agentFileExists(role) {
   return exists(pluginPath('agents', `${role}.agent.md`)) || exists(pluginPath('agents', `${role}.md`));
 }
 
-// Builders and testers work in their task's worktree (realize labels: "build T1 #2", "test T1").
+// Builders and sweep checkers work in their task's worktree (realize labels: "build T1 #2", "sweep T1").
 function cwdFor(ctx, opts, { prepare }) {
   const b = ctx.brief;
   if (b.workflow !== 'realize') return ctx.root;
-  const m = /^(build|test) (\S+)/.exec(opts.label || '');
+  const m = /^(build|test|sweep) (\S+)/.exec(opts.label || '');
   if (!m || !b.tasks || !b.tasks[m[2]]) return ctx.root;
   const wt = b.tasks[m[2]].worktree || taskWorktree(ctx.root, b.job, m[2]);
   if (!prepare || exists(path.join(wt, '.git'))) return wt;
@@ -563,6 +563,66 @@ function unavailable(r) {
   if (r.code === -1 && !r.timedOut && /\b(ENOENT|EACCES|EINVAL|EPERM)\b/.test(text)) return { why: 'not_found', detail: text.trim().split('\n').pop().slice(0, 200) };
   if (r.code !== 0 && AUTH_TEXT.test(text)) return { why: 'not_signed_in', detail: (text.match(AUTH_TEXT) || [''])[0] };
   return null;
+}
+
+// ---------------------------------------------------------------- deterministic steps
+
+// The factory CLI run as a child of `factory run` (async, so running agents and their timers
+// are not blocked while a test suite runs), in its own process group like an agent so a stopped
+// run stops it too. It is the runner's own step, not an agent's: no FACTORY_RUNNER, and its
+// event line carries via "run". Resolves to the command's JSON (refusals included) and exit code.
+function cliChild(ctx, args, { timeoutSec = 3600 } = {}) {
+  return new Promise((resolve) => {
+    const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_VIA: 'run', FACTORY_JOB: ctx.brief.job };
+    for (const k of ['FACTORY_RUNNER', 'FACTORY_AGENT_ROLE', 'FACTORY_AGENT_LABEL']) delete env[k];
+    const started = Date.now();
+    let out = '';
+    let err = '';
+    let child;
+    try {
+      child = spawn(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'factory'), '--root', ctx.root, ...args, '--job', ctx.brief.job], { cwd: ctx.root, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
+    } catch (e) {
+      resolve({ code: -1, json: { error: true, code: 'internal', message: e.message }, ms: 0 });
+      return;
+    }
+    if (child.pid) LIVE.add(child);
+    const timer = setTimeout(() => killTree(child, 'SIGKILL'), timeoutSec * 1000);
+    child.stdout.on('data', (d) => { if (out.length < MAX_OUTPUT) out += d; });
+    child.stderr.on('data', (d) => { if (err.length < MAX_OUTPUT) err += d; });
+    const done = (code) => {
+      clearTimeout(timer);
+      LIVE.delete(child);
+      let json = null;
+      try {
+        json = JSON.parse(out);
+      } catch {
+        json = { error: true, code: 'internal', message: `${String(err || out).trim().slice(-500) || 'no output'}` };
+      }
+      resolve({ code: code === null ? -1 : code, json, ms: Date.now() - started });
+    };
+    child.on('error', (e) => { err += e.message; done(-1); });
+    child.on('close', (code) => done(code));
+  });
+}
+
+// factory.verify(taskId) for realize: `task verify` decides pass or fail by its exit code and
+// evidence; no agent reads it back. Returns { pass, evidence_id, failures, scope_violations,
+// no_changes } or { pass: false, error: { code, message } } when verify refused.
+async function verifyTask(ctx, taskId) {
+  const r = await cliChild(ctx, ['task', 'verify', taskId]);
+  const j = r.json || {};
+  const v = j.error
+    ? { task: taskId, pass: false, error: { code: j.code || 'internal', message: String(j.message || '').slice(0, 2000) } }
+    : { task: taskId, pass: r.code === 0 && j.pass === true, evidence_id: j.evidence_id || null, failures: j.failures || [], scope_violations: j.scope_violations || [], no_changes: Boolean(j.no_changes), ...(j.legacy ? { legacy: j.legacy } : {}) };
+  ctx.checks.push({ step: 'verify', task: taskId, pass: v.pass, code: v.error ? v.error.code : null, ms: r.ms });
+  ctx.say(`verify ${taskId}: ${v.pass ? 'pass' : v.error ? `refused (${v.error.code})` : 'fail'} in ${(r.ms / 1000).toFixed(1)}s`);
+  return v;
+}
+
+function workflowApi(ctx) {
+  return {
+    verify: (taskId) => verifyTask(ctx, String(taskId)),
+  };
 }
 
 async function runAgent(ctx, prompt, opts) {
@@ -717,7 +777,7 @@ function plannedAgents(ctx) {
     for (const id of Object.keys(b.tasks || {})) {
       const t = b.tasks[id];
       add(`build ${id} #1`, t.builder, t.builder_prompt.replace('{{attempt}}', '1').replace('{{failures}}', '  - (none)'), b.builder_schema);
-      add(`test ${id}`, t.tester, t.tester_prompt.replace('{{swept}}', '(from the builder)'), b.tester_schema);
+      if (t.sweep) add(`sweep ${id}`, t.sweep, t.sweep_prompt.replace('{{swept}}', '(from the builder)'), b.sweep_schema);
     }
     return items;
   }
@@ -926,6 +986,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
       brief,
       settings: S,
       runs: [],
+      checks: [],
       phases: [],
       notes: [],
       files: 0,
@@ -967,6 +1028,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
         ctx.notes.push(String(m));
         say(String(m));
       },
+      factory: workflowApi(ctx),
     };
     let envelope;
     try {
@@ -1003,6 +1065,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
       copilot: S.bin,
       max_parallel_agents: S.maxParallel,
       agents: ctx.runs,
+      ...(ctx.checks.length ? { checks: ctx.checks } : {}),
     };
     const resultFile = file.replace(/\.json$/, '.result.json');
     out.result_file = resultFile;
@@ -1213,4 +1276,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { run, distillWrite, runAgent, killAgents, HEARTBEAT_SEC, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, lockFileAlive, WORKFLOWS };
+module.exports = { run, distillWrite, runAgent, workflowApi, cliChild, killAgents, HEARTBEAT_SEC, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, lockFileAlive, WORKFLOWS };

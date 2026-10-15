@@ -1920,7 +1920,7 @@ html[data-theme="light"] .dx-blueprint{
 // Each agent: [stage, what it does]. Its Copilot tools come from its own agents/*.agent.md
 // `tools:` line: build.js writes them into AGENT_TOOLS, so the Crew never drifts from the files.
 // An agent that has "edit" can write; the others are read-only.
-const AGENT_TOOLS = {"architect":["read","search","grep","glob","edit","execute"],"builder":["read","search","grep","glob","edit","execute"],"code-reviewer":["read","search","grep","glob","execute"],"contract-editor":["read","grep","glob"],"epic-reviewer":["read","search","grep","glob","execute"],"finding-verifier":["read","search","grep","glob","execute"],"god-eye":["read","search","grep","glob","execute"],"integrator":["read","search","grep","glob","edit","execute"],"intent-analyst":["read","search","grep","glob"],"intent-mapper":["read","grep","glob"],"judge":["read","search","grep","glob"],"lesson-writer":["read","search","grep","glob","execute"],"option-generator":["read","search","grep","glob"],"planner":["read","search","grep","glob","edit","execute"],"researcher":["read","search","grep","glob","execute","web","web_fetch"],"security-reviewer":["read","search","grep","glob","execute"],"slicer":["read","search","grep","glob","edit","execute"],"test-reviewer":["read","search","grep","glob","execute"],"tester":["read","search","grep","glob","execute"],"threat-modeler":["read","search","grep","glob","edit","execute"],"ux-reviewer":["read","search","grep","glob","execute"],"verifier":["read","grep","glob","web","web_fetch"]};
+const AGENT_TOOLS = {"architect":["read","search","grep","glob","edit","execute"],"builder":["read","search","grep","glob","edit","execute"],"code-reviewer":["read","search","grep","glob","execute"],"contract-editor":["read","grep","glob"],"epic-reviewer":["read","search","grep","glob","execute"],"finding-verifier":["read","search","grep","glob","execute"],"god-eye":["read","search","grep","glob","execute"],"integrator":["read","search","grep","glob","edit","execute"],"intent-analyst":["read","search","grep","glob"],"intent-mapper":["read","grep","glob"],"judge":["read","search","grep","glob"],"lesson-writer":["read","search","grep","glob","execute"],"option-generator":["read","search","grep","glob"],"planner":["read","search","grep","glob","edit","execute"],"researcher":["read","search","grep","glob","execute","web","web_fetch"],"security-reviewer":["read","search","grep","glob","execute"],"slicer":["read","search","grep","glob","edit","execute"],"test-reviewer":["read","search","grep","glob","execute"],"tester":["read","search","grep","glob"],"threat-modeler":["read","search","grep","glob","edit","execute"],"ux-reviewer":["read","search","grep","glob","execute"],"verifier":["read","grep","glob","web","web_fetch"]};
 const AGENTS = {
   'intent-mapper': ['Clarify', 'Lists the unknowns before anyone asks you anything: repo, world, decision or yours, with their impact.'],
   'verifier': ['Clarify', 'Re-opens each high-impact or web finding, checks the quote, date and version; confirmed, contradicted or unverified.'],
@@ -1935,7 +1935,7 @@ const AGENTS = {
   'planner': ['Plan', 'Writes task contracts and validates them with the CLI.'],
   'slicer': ['Plan', 'Splits an epic into slices, S00 first.'],
   'builder': ['Build', 'Builds one task in its own worktree, only inside its allowed paths, and commits on its branch.'],
-  'tester': ['Build', 'Runs factory task verify independently and never edits code.'],
+  'tester': ['Build', 'Optional sweep check after task verify passed: reads the places the builder swept; never decides pass, never edits code.'],
   'integrator': ['Build', 'Merges task branches through the CLI; resolves only textual conflicts.'],
   'code-reviewer': ['Challenge', 'Correctness, error handling, fit with the codebase, accepted lessons.'],
   'test-reviewer': ['Challenge', 'Whether the tests really prove the criteria.'],
@@ -2016,11 +2016,11 @@ const STAGES = [
         detail: { what: 'Approval takes the path locks so no other job builds on the same files. In feature@low it is approved automatically when God Eye approves this exact plan.', you: ['approve', 'deny <what must change>'], floors: 'H3 (high)' } },
     ] },
   { id: 'build', name: 'Build', sub: 'workflows: realize · reconcile', gapAfter: 150,
-    what: 'Tasks build wave by wave, up to four at once, each in its own git worktree. Builders write and commit; independent testers run the CLI\'s verify. Then the integrator merges every task branch into the job branch.',
+    what: 'Tasks build wave by wave, up to four at once, each in its own git worktree. Builders write and commit; the CLI runs task verify itself and its exit code decides. Then the integrator merges every task branch into the job branch.',
     nodes: [
       { id: 'wf-realize', type: 'workflow', title: 'realize · wave by wave', step: 'realize',
-        groups: [[P('builder · T1', 'agent', 'builder'), P('builder · T2', 'agent', 'builder')], [P('tester · T1', 'agent', 'tester'), P('tester · T2', 'agent', 'tester')], [P('builder · T3', 'agent', 'builder')], [P('tester · T3', 'agent', 'tester')]],
-        detail: { what: 'Each builder runs factory task start (its own worktree and branch), works only inside its allowed paths and commits. The tester runs factory task verify, which runs the verify commands and records evidence bound to that exact tree. Failures retry up to the task\'s limit, with an optional stronger model; a blocked task skips only its dependents.', agents: ['builder', 'tester'], cmds: ['factory run realize', 'factory task start T1', 'factory task verify T1'], outputs: ['task branches factory/J-0007-T1…', 'evidence/*.json'], floors: 'isolation (all risks)' } },
+        groups: [[P('builder · T1', 'agent', 'builder'), P('builder · T2', 'agent', 'builder')], [P('task verify T1', 'cli'), P('task verify T2', 'cli')], [P('builder · T3', 'agent', 'builder')], [P('task verify T3', 'cli')]],
+        detail: { what: 'Each builder runs factory task start (its own worktree and branch), works only inside its allowed paths and commits. Then factory run runs factory task verify itself, which runs the verify commands and records evidence bound to that exact tree; its exit code decides. Failures retry up to the task\'s limit with the raw output, with an optional stronger model; a blocked task skips only its dependents.', agents: ['builder'], cmds: ['factory run realize', 'factory task start T1', 'factory task verify T1'], outputs: ['task branches factory/J-0007-T1…', 'evidence/*.json'], floors: 'isolation (all risks)' } },
       { id: 'wf-reconcile', type: 'workflow', title: 'reconcile', step: 'reconcile',
         groups: [[P('integrator', 'agent', 'integrator')], [P('CLI · reconcile run', 'cli')]],
         detail: { what: 'The CLI merges task branches in dependency order. The integrator may resolve only textual conflicts inside the tasks\' scopes; a behavioural conflict aborts and parks the job.', agents: ['integrator'], cmds: ['factory run reconcile', 'factory reconcile run', 'factory reconcile continue', 'factory reconcile abort'], outputs: ['job branch factory/J-0007', 'build fingerprint'] } },
@@ -2673,7 +2673,7 @@ const STEP_INFO = {
   decompose: ['Plan', 'Task contracts the CLI validates, in waves.'],
   H3: ['H3 · plan', 'You approve the plan, or God Eye does at low risk.'],
   EH3: ['EH3 · slices', 'You approve the slices.'],
-  realize: ['Build', 'Builders and independent testers, task by task, each in its own worktree.'],
+  realize: ['Build', 'Builders task by task, each in its own worktree; the CLI\'s task verify decides each one.'],
   reconcile: ['Integrate', 'Task branches merged into the job branch; the build gets a fingerprint.'],
   children: ['Slices', 'Each slice runs as its own job.'],
   prove: ['Prove', 'Every acceptance criterion proven on this exact build.'],
@@ -6254,7 +6254,7 @@ function toDisplay(data) {
     intent: { name: "Clarify agents", members: [["intent-mapper", "intent mapper"], ["researcher", "scouts · repo, web"], ["verifier", "evidence verifier"], ["intent-analyst", "analysts ×4"], ["judge", "judge"], ["contract-editor", "contract editor"], ["god-eye", "God Eye"]] },
     design: { name: "Design agents", members: [["researcher", "researcher"], ["option-generator", "option generator"], ["threat-modeler", "threat-modeler"], ["architect", "architect"], ["god-eye", "God Eye"]] },
     plan: { name: "Plan agents", members: [["planner", "planner"], ["god-eye", "God Eye"]] },
-    build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["tester", "tester"], ["tester", "tester"], ["integrator", "integrator"]] },
+    build: { name: "Build agents", members: [["builder", "builder"], ["builder", "builder"], ["builder", "builder"], ["integrator", "integrator"]] },
     verify: { name: "CLI check", members: [] },
     review: { name: "Reviewers", members: [] },
     ship: { name: "CI and you", members: [] },
@@ -6263,7 +6263,7 @@ function toDisplay(data) {
   var STEPS = {
     intake: [["c", "factory job new"]], intent: [["a", "intent map · scouts · verifier"], ["a", "analysts ×4 + judge"], ["a", "God Eye cold review"], ["h", "H1"]],
     design: [["a", "ground: researchers"], ["a", "decide: options · architect"], ["h", "H2"], ["h", "HF"]], plan: [["a", "decompose: planner"], ["c", "plan validate"], ["h", "H3"]],
-    build: [["a", "realize: builders per task"], ["a", "testers per task"], ["a", "reconcile: integrator"]], verify: [["c", "prove: every check"]],
+    build: [["a", "realize: builders per task"], ["c", "task verify per task"], ["a", "reconcile: integrator"]], verify: [["c", "prove: every check"]],
     review: [["a", "challenge: review lanes"], ["a", "finding verifier"]], ship: [["c", "ship: report · PR"], ["h", "HS"], ["h", "H4"]], done: [["a", "distill: lesson writer"], ["c", "close"]]
   };
   var LOOPS = { intent: "questions", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")

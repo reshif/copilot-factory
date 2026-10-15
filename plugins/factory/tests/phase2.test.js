@@ -174,3 +174,44 @@ test('finding accept|dismiss: a finding the human dismissed stays settled when a
   const f = core('ledger').lastStep(root, J, 'challenge').detail.findings[0];
   assert.equal(f.status, 'dismissed');
 });
+
+// ------------------------------------------------------------------ P2.5 deterministic tester
+
+const H = require('./helpers/workflow-harness');
+const REALIZE = path.join(F.PLUGIN, 'workflows', 'realize.js');
+function realizeBrief(tasks = { T1: {} }, extra = {}) {
+  const t = {};
+  for (const [id, o] of Object.entries(tasks)) {
+    t[id] = { id, worktree: `/tmp/none-${id}`, depends_on: o.depends_on || [], retry_limit: o.retry_limit || 3, builder: { agent_type: 'factory:builder', escalate: [] }, builder_prompt: `build ${id} attempt {{attempt}}\n{{failures}}`, ...(o.sweep ? { sweep: { agent_type: 'factory:tester' }, sweep_prompt: `sweep ${id} {{swept}}` } : {}) };
+  }
+  return { workflow: 'realize', job: 'J-0001', scope: 'all', input_hash: 'h', waves: [Object.keys(tasks)], tasks: t, max_parallel_tasks: 4, builder_schema: {}, sweep_schema: {}, ...extra };
+}
+
+test('P2.5: task verify\'s result decides; the optional sweep check runs after a pass and never changes it', async () => {
+  let n = 0;
+  const { result, calls } = await H.run(REALIZE, realizeBrief({ T1: { sweep: true } }), (prompt, opts) => {
+    if (opts.agentType === 'factory:tester') return { swept_checked: ['src/b.js:3: same bug'], concerns: ['src/b.js:3 still subtracts'] };
+    return { status: 'done', summary: 'built', swept: ['src/b.js'] };
+  }, { verify: async (id) => ((n += 1) === 1 ? { task: id, pass: false, failures: [{ cmd: 'pytest -x', code: 1, output: 'E   assert 1 == 2' }] } : { task: id, pass: true, failures: [] }) });
+  assert.deepEqual(calls.verifies, ['T1', 'T1']);
+  const sweeps = calls.filter((c) => c.opts.agentType === 'factory:tester');
+  assert.equal(sweeps.length, 1, 'the sweep check runs once, after the passing attempt only');
+  assert.equal(sweeps[0].opts.label, 'sweep T1');
+  assert.equal(result.data.tasks[0].outcome, 'done', 'a concern does not fail the task');
+  assert.match(result.data.tasks[0].summary, /Sweep check concerns \(not deciding\): src\/b.js:3 still subtracts/);
+  assert.deepEqual(result.data.verifications.map((v) => [v.task, v.attempt, v.pass]), [['T1', 1, false], ['T1', 2, true]]);
+  // the sweep check is off by default: the brief has no sweep agent
+  const root = F.makeRepo();
+  const J = grounded(root);
+  customPlan(root, J, [T1]);
+  F.cli(root, ['next']);
+  const b = F.cli(root, ['wfargs', 'realize']);
+  assert.equal(b.tasks.T1.sweep, undefined);
+  assert.equal(b.tasks.T1.tester, undefined, 'no tester agent in the brief');
+});
+
+test('P2.5: a verify refusal is the next attempt\'s input, word for word', async () => {
+  const { calls } = await H.run(REALIZE, realizeBrief({ T1: { retry_limit: 2 } }), () => ({ status: 'done', summary: 'built', swept: [] }), { verify: async (id) => ({ task: id, pass: false, error: { code: 'dirty_worktree', message: 'T1 has uncommitted changes. Commit them on the task branch first:\n M src/add.js' } }) });
+  const second = calls.filter((c) => c.opts.agentType === 'factory:builder')[1];
+  assert.match(second.prompt, /task verify refused \(dirty_worktree\): T1 has uncommitted changes[\s\S]*M src\/add.js/);
+});

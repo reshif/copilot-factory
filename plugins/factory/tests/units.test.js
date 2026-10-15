@@ -360,16 +360,19 @@ test('workflows: fanout-judge clarify / decide / challenge produce valid envelop
 test('workflows: realize retries, exhausts, blocks, and skips only dependents', async () => {
   const H = require('./helpers/workflow-harness');
   const env = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'schemas', 'envelope.json'), 'utf8'));
-  const task = (id, deps = [], limit = 2) => ({ id, depends_on: deps, retry_limit: limit, builder: { role: 'builder', agent_type: 'factory:builder', escalate: ['opus'] }, tester: { role: 'tester', agent_type: 'factory:tester' }, builder_prompt: `B ${id} {{attempt}} {{failures}}`, tester_prompt: `T ${id} {{swept}}` });
-  const brief = { workflow: 'realize', job: 'J-0001', input_hash: 'h', budgets: {}, waves: [['T1', 'T2', 'T3'], ['T4', 'T5']], tasks: { T1: task('T1'), T2: task('T2'), T3: task('T3'), T4: task('T4', ['T1']), T5: task('T5', ['T3']) }, max_parallel_tasks: 2, builder_schema: {}, tester_schema: {} };
+  const task = (id, deps = [], limit = 2) => ({ id, depends_on: deps, retry_limit: limit, builder: { role: 'builder', agent_type: 'factory:builder', escalate: ['opus'] }, builder_prompt: `B ${id} {{attempt}} {{failures}}` });
+  const brief = { workflow: 'realize', job: 'J-0001', input_hash: 'h', budgets: {}, waves: [['T1', 'T2', 'T3'], ['T4', 'T5']], tasks: { T1: task('T1'), T2: task('T2'), T3: task('T3'), T4: task('T4', ['T1']), T5: task('T5', ['T3']) }, max_parallel_tasks: 2, builder_schema: {} };
   let t1 = 0;
+  // task verify (factory.verify) decides: T1 fails once with its raw output, T3 always fails
+  const verify = async (id) => {
+    if (id === 'T1') return (t1 += 1) === 1 ? { task: id, pass: false, failures: [{ cmd: 'node t1.test.js', code: 1, output: 'AssertionError: flaky assert' }] } : { task: id, pass: true, failures: [] };
+    if (id === 'T3') return { task: id, pass: false, failures: [{ cmd: 'node t3.test.js', code: 1, output: 'always fails' }] };
+    return { task: id, pass: true, failures: [] };
+  };
   const r = await H.run(path.join(F.PLUGIN, 'workflows', 'realize.js'), brief, (prompt) => {
     if (prompt.startsWith('B T2')) return { status: 'blocked', summary: 'needs config', needs_paths: ['config/x'] };
-    if (prompt.startsWith('B')) return { status: 'done', summary: 'ok', swept: [] };
-    if (prompt.startsWith('T T1')) return (t1 += 1) === 1 ? { pass: false, failures: ['flaky assert'] } : { pass: true, failures: [] };
-    if (prompt.startsWith('T T3')) return { pass: false, failures: ['always fails'] };
-    return { pass: true, failures: [] };
-  });
+    return { status: 'done', summary: 'ok', swept: [] };
+  }, { verify });
   const by = Object.fromEntries(r.result.data.tasks.map((t) => [t.id, t]));
   assert.equal(by.T1.outcome, 'done');
   assert.equal(by.T1.attempts, 2);
@@ -379,11 +382,11 @@ test('workflows: realize retries, exhausts, blocks, and skips only dependents', 
   assert.equal(by.T5.outcome, 'skipped_dependency');
   assert.equal(r.result.status, 'park');
   assert.deepEqual(validate(env, r.result), []);
-  assert.ok(r.calls.some((c) => c.prompt.includes('flaky assert')), 'the retry sees the previous failures');
+  assert.ok(r.calls.some((c) => c.prompt.includes('`node t1.test.js` exited 1') && c.prompt.includes('AssertionError: flaky assert')), 'the retry sees the failing command and its raw output');
   const t1Builds = r.calls.filter((c) => c.prompt.startsWith('B T1'));
   assert.equal(t1Builds[0].opts.model, undefined, 'attempt 1 uses the agent\'s own model');
   assert.equal(t1Builds[1].opts.model, 'opus', 'attempt 2 escalates');
-  assert.ok(r.calls.filter((c) => c.prompt.startsWith('T ')).every((c) => c.opts.agentType === 'factory:tester'));
+  assert.ok(!r.calls.some((c) => c.opts.agentType === 'factory:tester'), 'no LLM tester decides');
   assert.ok(r.calls.filter((c) => c.prompt.startsWith('B ')).every((c) => c.opts.agentType === 'factory:builder'));
 });
 

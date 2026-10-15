@@ -17,7 +17,7 @@ const STEP_INFO = {
   decompose: ['Plan', 'Task contracts the CLI validates, in waves.'],
   H3: ['H3 · plan', 'You approve the plan, or God Eye does at low risk.'],
   EH3: ['EH3 · slices', 'You approve the slices.'],
-  realize: ['Build', 'Builders and independent testers, task by task, each in its own worktree.'],
+  realize: ['Build', 'Builders task by task, each in its own worktree; the CLI\'s task verify decides each one.'],
   reconcile: ['Integrate', 'Task branches merged into the job branch; the build gets a fingerprint.'],
   children: ['Slices', 'Each slice runs as its own job.'],
   prove: ['Prove', 'Every acceptance criterion proven on this exact build.'],

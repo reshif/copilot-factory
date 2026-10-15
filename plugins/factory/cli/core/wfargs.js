@@ -547,6 +547,7 @@ function realize(root, state, ctx, action) {
   const pendingIds = new Set(pending.map((t) => t.id));
   const waves = (plan.waves || [plan.tasks.map((t) => t.id)]).map((w) => w.filter((id) => pendingIds.has(id))).filter((w) => w.length);
   const jc = jobContext(root, state);
+  const sweep = Boolean((state.policy.agents || {}).sweep_check);
   const tasks = {};
   for (const t of pending) {
     const wt = taskWorktree(root, state.id, t.id);
@@ -566,17 +567,23 @@ function realize(root, state, ctx, action) {
       retry_limit: t.retry_limit || state.policy.limits.retry_limit,
       // Builders may move to a stronger model on retries (policy.agents.builder_escalation).
       builder: { ...agentSpec(state, 'builder'), escalate: ((state.policy.agents || {}).builder_escalation || []).slice() },
-      tester: agentSpec(state, 'tester'),
+      // policy agents.sweep_check: a cheap agent looks at the places the builder swept, after
+      // task verify passed; it never decides pass (task verify's exit code does).
+      ...(sweep ? { sweep: agentSpec(state, 'tester') } : {}),
       builder_prompt: prompt(
         'builder',
         `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\`\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.${fixNote ? `\n${fixNote}` : ''}`,
         'Attempt {{attempt}}. Previous tester failures, if any:\n{{failures}}',
       ),
-      tester_prompt: prompt(
-        'tester',
-        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- Verify with: \`${cli(root)} task verify ${t.id} --job ${state.id}\` (it runs in ${wt}).\n- The places the builder says it swept are listed below.`,
-        'Places the builder says it swept: {{swept}}',
-      ),
+      ...(sweep
+        ? {
+            sweep_prompt: prompt(
+              'tester',
+              `${jc}\n- Task: **${t.id}** — ${t.objective}\n- Worktree: ${wt}. \`task verify\` already passed; you do not decide pass or fail.\n- The places the builder says it swept are listed below.`,
+              'Places the builder says it swept: {{swept}}',
+            ),
+          }
+        : {}),
     };
   }
   return base(root, state, 'realize', {
@@ -586,7 +593,7 @@ function realize(root, state, ctx, action) {
     tasks,
     max_parallel_tasks: state.policy.limits.max_parallel_tasks,
     builder_schema: schema('builder'),
-    tester_schema: schema('tester'),
+    ...(sweep ? { sweep_schema: schema('tester') } : {}),
   });
 }
 
