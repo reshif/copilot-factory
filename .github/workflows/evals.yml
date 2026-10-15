@@ -1,0 +1,102 @@
+name: evals
+
+# Tier 2 (trigger and dispatch evals) and Tier 3 (planted-defect outcome evals) on a real
+# model. Nightly and on demand only: they cost model calls. Tier 0/1 (no model) run on every
+# PR in test.yml. Without a COPILOT_GITHUB_TOKEN secret every job skips cleanly.
+# Cost cap: --max-runs bounds the copilot -p / factory run invocations per job, and each job
+# has a timeout. See README "Quality and evals".
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per case (pass^k uses all of them)
+        default: '3'
+      max_runs:
+        description: Cost cap for Tier 2 (copilot -p invocations)
+        default: '300'
+      max_outcome_runs:
+        description: Cost cap for Tier 3 (factory run invocations)
+        default: '15'
+      model:
+        description: Model id for the runs (empty = the CLI default)
+        default: ''
+      gate:
+        description: Fail the job when a threshold is missed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals
+  cancel-in-progress: false
+
+env:
+  COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+  COPILOT_AUTO_UPDATE: 'false'
+  COPILOT_CLI_VERSION: '1.0.97'
+  RUNS: ${{ inputs.runs || '3' }}
+  MAX_RUNS: ${{ inputs.max_runs || '300' }}
+  MAX_OUTCOME_RUNS: ${{ inputs.max_outcome_runs || '15' }}
+  MODEL: ${{ inputs.model || '' }}
+  GATE: ${{ inputs.gate && '--gate' || '' }}
+
+jobs:
+  triggers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: skip without a Copilot token
+        id: token
+        run: |
+          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then echo "No COPILOT_GITHUB_TOKEN secret: Tier 2 skipped."; echo "skip=1" >> "$GITHUB_OUTPUT"; fi
+      - name: install the Copilot CLI (pinned)
+        if: steps.token.outputs.skip != '1'
+        run: npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"
+      - name: trigger and dispatch evals
+        if: steps.token.outputs.skip != '1'
+        run: node scripts/eval-triggers.js --suite all --runs "$RUNS" --max-runs "$MAX_RUNS" --max-minutes 100 ${MODEL:+--model "$MODEL"} $GATE
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.token.outputs.skip != '1'
+        with:
+          name: trigger-evals
+          path: evals/results/
+          if-no-files-found: ignore
+
+  outcomes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: git identity for the fixture repos
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      - name: skip without a Copilot token
+        id: token
+        run: |
+          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then echo "No COPILOT_GITHUB_TOKEN secret: Tier 3 skipped."; echo "skip=1" >> "$GITHUB_OUTPUT"; fi
+      - name: install the Copilot CLI (pinned)
+        if: steps.token.outputs.skip != '1'
+        run: npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"
+      - name: planted-defect outcome evals
+        if: steps.token.outputs.skip != '1'
+        run: node scripts/eval-outcomes.js --runs "$RUNS" --max-runs "$MAX_OUTCOME_RUNS" ${MODEL:+--model "$MODEL"} $GATE
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.token.outputs.skip != '1'
+        with:
+          name: outcome-evals
+          path: evals/results/
+          if-no-files-found: ignore

@@ -1,0 +1,23 @@
+{
+  "skill": "inspect",
+  "should_trigger": [
+    "Is the factory behaving?",
+    "Run the factory inspector on all jobs.",
+    "Audit the factory: did J-0005 follow its recipe?",
+    "What open inspector findings are there?",
+    "Check the factory's health: hook errors, guard denials, parks.",
+    "Inspect the active factory jobs.",
+    "Did the factory skip any steps it should have run?",
+    "Show the inspector's modes and clean streaks."
+  ],
+  "should_not_trigger": [
+    "Inspect this object in the debugger.",
+    "Audit our npm dependencies for vulnerabilities.",
+    "Check this code for security issues.",
+    "Inspect the network requests in this page.",
+    "Lint the project.",
+    "Is my code following the style guide?",
+    "Check the health endpoint of the API.",
+    "Review the Dockerfile."
+  ]
+}

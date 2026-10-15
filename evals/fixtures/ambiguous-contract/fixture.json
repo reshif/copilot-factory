@@ -1,0 +1,11 @@
+{
+  "description": "A contract whose goal and criterion can't be built or proven as written (planted for God Eye and the intent analysts). The clarify round must not approve it.",
+  "kind": "clarify",
+  "contract": {
+    "goal": "Make the export better and faster.",
+    "ac": "- AC-1: the export works well for users (evidence: human)",
+    "verify": "`node tests/smoke.js` (AC-1)",
+    "intent": ["- Problem: the export is not good", "- Who: users", "- Outcome: a better export", "- Why now: people asked", "- Success signal: users are happier"]
+  },
+  "expect": { "not_status": "ok", "any_of": ["questions", "critique"] }
+}

@@ -1,0 +1,23 @@
+{
+  "skill": "review",
+  "should_trigger": [
+    "Run the monthly factory review.",
+    "How is the factory doing this month?",
+    "Which factory recipes cost the most and change little?",
+    "Review the factory telemetry for the last 60 days.",
+    "Are any factory review lanes mostly raising false positives?",
+    "Should we change the factory's floors? Look at the numbers.",
+    "Give me the factory's quality signals: correction turns, parks, God Eye revisions.",
+    "Do the factory review."
+  ],
+  "should_not_trigger": [
+    "Review my pull request.",
+    "Review this diff for bugs.",
+    "Can you code review src/auth.js?",
+    "Review the README for typos.",
+    "Look over my changes before I commit.",
+    "Is this function correct?",
+    "Review the security of the login flow.",
+    "Summarise the last ten commits."
+  ]
+}

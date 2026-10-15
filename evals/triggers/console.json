@@ -1,0 +1,23 @@
+{
+  "skill": "console",
+  "should_trigger": [
+    "Show me the factory console.",
+    "Open the console so I can see all factory jobs.",
+    "I want to watch the factory job live while it runs.",
+    "Visualise what the factory's agents did on J-0003.",
+    "Give me a board of every factory job and what waits for me.",
+    "Can I see the factory's line map?",
+    "Show the factory jobs in a browser page.",
+    "Serve the factory console so it updates live."
+  ],
+  "should_not_trigger": [
+    "Open the browser dev tools console and show me the errors.",
+    "Print the console output of the last test run.",
+    "Add console.log statements to debug this function.",
+    "Show me the git log for this branch.",
+    "Start the dev server on port 3000.",
+    "Open README.md.",
+    "What's in the Node REPL console history?",
+    "List the running docker containers."
+  ]
+}

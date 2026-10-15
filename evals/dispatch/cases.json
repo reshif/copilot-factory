@@ -1,0 +1,15 @@
+{
+  "description": "Dispatch correctness for the step skills: the start skill runs `factory next` (a stub on PATH prints `next`), and the skill fired after start must be `expect`. `expect: null` means start handles it itself and no step skill may fire.",
+  "prompt": "Continue the current factory job.",
+  "cases": [
+    { "id": "clarify", "expect": "clarify", "next": { "job": "J-0001", "status": "active", "action": "skill", "skill": "clarify", "step": "clarify", "rule": "order.next_step" } },
+    { "id": "gate-h1", "expect": "gate", "next": { "job": "J-0001", "status": "active", "action": "gate", "step": "H1", "gate": { "id": "H1", "hash": "3f9a1c0b7e21aa00", "docs": [".factory/jobs/J-0001/contract.md"] }, "rule": "order.next_step" } },
+    { "id": "parked", "expect": "park", "next": { "job": "J-0001", "status": "parked", "action": "parked", "reason": "Review rounds exhausted (3 of 3).", "rule": "cap.review_rounds" } },
+    { "id": "ship", "expect": "ship", "next": { "job": "J-0001", "status": "active", "action": "skill", "skill": "ship", "step": "ship", "rule": "order.next_step" } },
+    { "id": "distill", "expect": "distill", "next": { "job": "J-0001", "status": "active", "action": "skill", "skill": "distill", "step": "distill", "rule": "order.next_step" } },
+    { "id": "amend", "expect": "amend", "next": { "job": "J-0001", "status": "active", "action": "skill", "skill": "amend", "step": "amend", "rule": "row2.drift" } },
+    { "id": "wait", "expect": null, "next": { "job": "J-0001", "status": "active", "action": "wait", "reason": "Waiting for the PR to merge.", "rule": "order.wait" } },
+    { "id": "done", "expect": null, "next": { "job": "J-0001", "status": "closed", "action": "done", "reason": "Job is closed." } },
+    { "id": "autopilot", "expect": null, "next": { "job": "J-0001", "status": "active", "action": "skill", "skill": "clarify", "step": "clarify", "autopilot": { "detected_at": "2026-10-14T10:00:00Z", "warning": "Copilot Autopilot was detected in this project. Tell the user to switch back to interactive mode and stop here." } } }
+  ]
+}

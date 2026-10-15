@@ -420,6 +420,7 @@ docs/                               DESIGN-COPILOT.md (port decisions) · COPILO
 plugins/factory/
   plugin.json                       plugin manifest (legacy Copilot format; version; read by the CLI and VS Code)
   skills/                           start · intake · clarify · gate · ship · distill · amend · park · why · console · review
+                                    (start/references/glossary.md defines the factory's terms once)
   agents/                           custom agents, one per role (<role>.agent.md): intent-mapper, verifier, intent-analyst, judge, god-eye,
                                     researcher, option-generator, threat-modeler, architect, planner, slicer, builder, tester, integrator,
                                     code/test/security/ux-reviewer, finding-verifier, epic-reviewer, lesson-writer
@@ -439,6 +440,8 @@ plugins/factory-inspector/
   plugin.json                       plugin manifest
   inspector/                        observe · rules · register · config · io
   hooks/ · skills/inspect/ · bin/factory-inspect · tests/
+evals/                              triggers/ (Tier 2 prompts) · dispatch/ (stub factory next cases) · fixtures/ (Tier 3 planted defects)
+scripts/                            eval-triggers.js · eval-outcomes.js (see Quality and evals) · verify-copilot.sh
 ```
 
 ## Develop / test
@@ -494,6 +497,32 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (21 factory ag
 | An assumption is wrong | Reply `change A-n <value>` or `drop A-n`. Before H1 clarify re-runs and H1 comes back; after H1 it opens an amendment |
 | The console doesn't update | Use `factory console --serve` (a written file is a snapshot); the LED shows live / reconnecting / snapshot |
 
+## Quality and evals
+
+The factory's prompts (skills, agents, briefs) are checked in four tiers, cheapest first. The tiers follow the quality benchmark: most problems sit at the seams between artifacts (description vs body, body vs schema, `tools:` vs runner flags), so the cheap static checks come first.
+
+| Tier | What | Where | When |
+|---|---|---|---|
+| 0 | Static lints, no model: every skill description has a "Use when" trigger, stays within its length budget (≤ 400 characters; console and inspect ≤ 260), lists no step sequence, and user-invocable skills say what they're **not** for; every `factory …` / `factory-inspect …` command a skill names exists in that CLI's help; references resolve one level deep and start with a load condition; no drifting counts (a number of agents, a range of rule ids) in skills, agents or READMEs. Agent frontmatter, tools and final-message contracts are in `packaging.test.js` and `contracts.test.js` | `plugins/factory/tests/quality-lint.test.js` | every PR (`npm test`, `.github/workflows/test.yml`) |
+| 1 | Deterministic contract tests: golden agent outputs against their schemas, the runner's parsing and correction turn, per-role tool permissions, the eval harnesses' scoring | `plugins/factory/tests/*.test.js` | every PR |
+| 2 | Trigger and dispatch evals on a real model: 8 should-trigger and 8 near-miss prompts for each user-invocable skill (start, console, review, why, inspect), and dispatch cases where a stub `factory next` must lead `start` to the right step skill (clarify, gate, park, ship, distill, amend) or to stop (wait, done, Autopilot warning). A factory agent started outside `factory run` is a must-not-fire violation. Reports a confusion matrix, recall, precision and false-trigger rate per skill | `evals/triggers/`, `evals/dispatch/`, `scripts/eval-triggers.js` | nightly and on demand (`.github/workflows/evals.yml`) |
+| 3 | Outcome evals on fixture repos with planted defects: SQL injection (security lane), a test that mocks away what it tests (tests lane), a missing loading state (ux lane), a prompt-injection comment next to a real bug (every lane; a canary file must not appear), an ambiguous contract (God Eye and the intent analysts must not approve it). Each runs the real `factory run` workflow and scores recall and precision per lane, finding-verifier agreement, pass@k and pass^k | `evals/fixtures/`, `scripts/eval-outcomes.js` | nightly and on demand |
+| 4 | Production telemetry: schema-correction-turn and null-result rate per role, refute and unverifiable rate per review lane, park reasons by rule, God Eye revise rate per focus (intent, design, plan) | `factory telemetry report` ("Quality signals"), the **review** skill | monthly review |
+
+Run them yourself:
+
+```bash
+cd plugins/factory && npm test                                        # Tier 0 + 1
+node scripts/eval-triggers.js --dry-run                               # what Tier 2 would run
+node scripts/eval-triggers.js --suite triggers --skills why --runs 3  # needs a signed-in copilot
+node scripts/eval-outcomes.js --dry-run                               # sets up every fixture, no model
+node scripts/eval-outcomes.js --fixtures sql-injection --runs 3 --gate
+```
+
+Both eval scripts need a Copilot CLI that can answer (signed in, `COPILOT_GITHUB_TOKEN`, or a BYOK provider via `COPILOT_PROVIDER_BASE_URL`); otherwise they print `{"skipped": true, …}` and exit 0. They load the plugins from this checkout with `--plugin-dir`, run in throwaway repos, deny writes, URLs and (for trigger cases) the shell, and write a JSON and a Markdown report to `evals/results/` (git-ignored). `--max-runs` and `--max-minutes` cap the cost; `--gate` makes a missed threshold (default 0.9 for trigger precision and recall and dispatch accuracy; every planted blocker found in every run for outcomes) fail the run.
+
+In CI, `evals.yml` runs both nightly and on `workflow_dispatch` (inputs: runs, cost caps, model, gate). It runs only when the repository has a `COPILOT_GITHUB_TOKEN` secret (a fine-grained token with the Copilot Requests permission) and skips cleanly otherwise; the Copilot CLI version is pinned. The thresholds are proposals to ratify after a pilot month; until then the nightly run reports without `--gate`. Read a sample of the transcripts behind any number that moves (`.factory/scratch/runner/` in a `--keep` run): a grader is only as good as what it was checked against.
+
 ## Status: verified here vs. needs checking on a real Copilot CLI
 
 **Verified in this repository** (automated tests, no Copilot needed): the CLI core, routing, floors, seals, record, console and inspector (unchanged from claude-factory); the workflow scripts under the harness; `factory run` against a fake `copilot`; the manifests and every agent and skill frontmatter against the field lists in Copilot's docs (`tests/packaging.test.js`).
@@ -530,6 +559,7 @@ Then check `/skills` (11 factory skills plus `inspect`), `/agent` (21 factory ag
 - [x] `/factory:start` runs the factory's start skill in an interactive session.
 - [x] `sessionStart` `additionalContext` reaches the model: in a session Copilot ran the factory by the absolute `node "…/installed-plugins/copilot-factory/factory/bin/factory"` command that only the hook provides.
 - [x] Per-role tool pre-approval (`--allow-tool` / `--deny-tool` instead of `--allow-all-tools`): in a real `factory run realize`, the builder ran `task start`, edited `src/add.js` with the edit tool, ran the test and committed in its worktree, and `git push` was refused; the tester ran `task verify`, and its `touch`, `git commit` and `>` redirection were refused. Probes: a reviewer's `sed -i`, `curl` (`url` denied) and the missing write tools are refused; a researcher's `web_fetch` needs `url`.
+- [x] The eval harnesses on the real CLI: `eval-triggers.js` read which skill fired from `tool.execution_start` (`toolName: "skill"`) events; in dispatch cases the `factory` stub on PATH was run through `shell(factory:*)` and the mock-driven start skill dispatched clarify, gate, park, ship, distill and amend and stopped on wait, done and the Autopilot warning; without sign-in both scripts skip cleanly. `eval-outcomes.js` built the sql-injection and prompt-injection fixture jobs, ran the real `factory run fanout-judge --config challenge` with the reviewers and the finding-verifier, and scored the lanes.
 
 **Still to check while signed in.** Run `bash scripts/verify-copilot.sh` (it makes a few short headless calls in a throwaway repo — a few premium requests — writes `report.md` under `$TMPDIR/copilot-verify-<time>/`, or `$VERIFY_OUT`, and exits 1 if any check FAILs): its guard probe uses the builder agent, so the protected write is really attempted. The rest come from the research reports in [`docs/research/`](docs/research/):
 
