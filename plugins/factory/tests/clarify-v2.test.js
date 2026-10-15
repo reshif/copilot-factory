@@ -339,9 +339,15 @@ test('E: God Eye\'s checklist: unpointed or settled items are notes (approve wit
   // revise, nothing actionable: notes only
   let r = await H.run(WF, sb(), crew({ GOD: () => ({ ...APPROVE, verdict: 'revise', items: [{ issue: 'The goal could be tighter', severity: 'minor' }, { issue: NXOS[1], severity: 'major', ref: 'U-1' }, { issue: 'Log format?', severity: 'major' }] }) }));
   assert.equal(r.result.status, 'ok');
-  assert.equal(r.result.data.approved_with_notes, true);
+  // 0.6.1: majors and blockers are never approval, even about a settled issue: God Eye objects (shown at H1)
+  assert.equal(r.result.data.approved_with_notes, false);
+  assert.deepEqual(r.result.data.god_eye_objects.map((o) => [o.ref, o.severity]), [['U-1', 'major'], [null, 'major']]);
   assert.equal(r.result.data.notes.length, 3);
   assert.match(r.result.data.notes.find((n) => n.ref === 'U-1').text, /already settled \(deferred_to_design/);
+  // only minor items left: approve with notes
+  r = await H.run(WF, sb(), crew({ GOD: () => ({ ...APPROVE, verdict: 'revise', items: [{ issue: 'The goal could be tighter', severity: 'minor' }] }) }));
+  assert.equal(r.result.data.approved_with_notes, true);
+  assert.equal(r.result.data.god_eye_objects, undefined);
   // a pointed blocker: editor → God Eye again → approve
   let god = 0;
   r = await H.run(WF, sb(), crew({

@@ -443,7 +443,7 @@ test('the printed result is the RECORDED result: envelope ok but the contract ha
   assert.ok(lines.length < 25, `compact: ${lines.length} lines`);
 });
 
-test('God Eye asks for revisions: an item with no pointer is a note (approve with notes); a pointed blocker is revised, then asked with its default', () => {
+test('God Eye asks for revisions: an item with no pointer is a note, and a major one an objection at H1 (never approval); a pointed blocker is revised, then asked with its default', () => {
   // clarify v2: "revise" with nothing actionable never leaves the user with nothing to answer
   let root = F.makeRepo();
   newJob(root);
@@ -453,9 +453,11 @@ test('God Eye asks for revisions: an item with no pointer is a note (approve wit
   let t = h.text(root, ['fanout-judge', '--config', 'clarify']);
   assert.equal(t.status, 0, t.stdout + t.stderr);
   assert.match(t.stdout, /^status: ok/);
-  assert.match(t.stdout, /approve with notes/);
+  // 0.6.1: a major is never approval: God Eye objects, and H1 shows it
+  assert.match(t.stdout, /God Eye did NOT approve the contract \(verdict: revise\): it objects to 1 item\(s\)/);
   let full = JSON.parse(fs.readFileSync(t.stdout.match(/full result: (\S+)/)[1], 'utf8'));
   assert.equal(full.notes[0].text, 'AC-1 does not say what add(-1, 1) returns');
+  assert.equal(full.god_eye_objects[0].issue, 'AC-1 does not say what add(-1, 1) returns');
   // a blocker that points at AC-1: the contract editor revises, God Eye looks again; still a
   // blocker → one question whose default is God Eye's suggestion
   root = F.makeRepo();

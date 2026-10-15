@@ -834,7 +834,8 @@ function researchGaps(data) {
 }
 
 // What H1 / EH1 must show besides the contract (factory next carries it as `clarify` on the
-// gate): issues dropped, with who dropped them and why; research that could not run.
+// gate): issues dropped, with who dropped them and why; research that could not run; what
+// God Eye still objects to.
 function h1Summary(root, state) {
   try {
     const intent = require('./intent');
@@ -846,6 +847,12 @@ function h1Summary(root, state) {
     if (dropped.length) out.dropped = dropped.map((x) => x.line);
     const gaps = researchGaps(data);
     if (gaps) out.research_incomplete = gaps.text;
+    // God Eye's objections to this very contract (it did not approve; nothing was left to ask)
+    const crit = readJson(path.join(jobPaths(root, state.id).critiquesDir, 'intent.json'), null);
+    const hash = require('./invalidation').current(root, state).contract;
+    if (crit && crit.hash === hash && Array.isArray(crit.god_eye_objects) && crit.god_eye_objects.length) {
+      out.god_eye_objects = crit.god_eye_objects.map((o) => `${o.severity}${o.ref ? ` (${o.ref})` : ''}: ${clip(o.issue, 240)}${o.suggestion ? ` — suggests: ${clip(o.suggestion, 160)}` : ''}`);
+    }
     return Object.keys(out).length ? { ...out, status_command: `factory clarify status --job ${state.id}` } : null;
   } catch {
     return null;

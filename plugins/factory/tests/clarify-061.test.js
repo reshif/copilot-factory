@@ -225,3 +225,41 @@ test('5: a failed intent mapper and an unavailable web are said in the round res
   // research that ran fully adds nothing
   assert.equal(clarify.researchGaps({ rounds: [{ mapped: true, map_ok: true }], web: { enabled: true, available: true }, unknowns: [] }), null);
 });
+
+// ---------------------------------------------------------------- 6. God Eye's blockers are never approval
+test('6: God Eye revise with blockers on settled issues is never approved-with-notes: the round ends with its objections, and H1 shows them under God Eye objects', async () => {
+  const settled = (id, text, subject, by) => ({ ...issue(id, text, 'scope'), owner: 'user', status: 'settled', settled_by: by, subject, subject_explicit: true, answer: 'x' });
+  const prior = { unknowns: [settled('U-1', 'How should VLANs be scoped for the six tenants?', 'vlan.scoping', 'user'), settled('U-4', 'Which Nautobot API holds VLAN locations?', 'nautobot.vlan.locations', 'evidence')], evidence: [], assumptions: [], versions: [] };
+  const revise = { ...APPROVE, verdict: 'revise', items: [
+    { issue: 'Scoping was settled without research; the model for six tenants is unclear', severity: 'blocker', ref: 'U-1' },
+    { issue: 'A-1 rests on 3.x docs while 2.4 is used', severity: 'blocker', ref: 'U-4' },
+    { issue: 'AC-7 promises credentials docs nothing decides', severity: 'major', ref: 'AC-7' },
+    { issue: 'Wording', severity: 'minor' },
+  ] };
+  const w = await H.run(WF, brief({ prior, next_ids: { U: 4, E: 0, A: 0 } }), crew({ GOD: () => revise }));
+  assert.equal(w.result.status, 'ok', 'nothing is left to ask');
+  assert.equal(w.result.data.approved_with_notes, false, '0.6.0 called this "approve with notes"');
+  assert.deepEqual(w.result.data.god_eye_objects.map((o) => [o.ref, o.severity]), [['U-1', 'blocker'], ['U-4', 'blocker'], ['AC-7', 'major']]);
+  assert.doesNotMatch(w.result.summary, /approve with notes/);
+
+  // factory record: not approval; the round ends (clarify can do no more) and H1 shows the objections
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const r = round(root, { scout: scoutData(prior.unknowns), critique: revise, approved_with_notes: false, god_eye_objects: w.result.data.god_eye_objects, notes: w.result.data.notes }, 'ok');
+  assert.equal(r.status, 'ok');
+  assert.equal(r.approved, false);
+  assert.match(r.message, /God Eye did NOT approve the contract \(verdict: revise\): it objects to 3 item\(s\)/);
+  assert.match(r.message, /H1 shows them under "God Eye objects"/);
+  const step = require('../cli/core/ledger').steps(root, J, 'clarify').slice(-1)[0];
+  assert.deepEqual([step.detail.outcome, step.detail.approved, step.detail.approved_with_notes], ['god_eye_objects', false, undefined]);
+  const n = F.cli(root, ['next']);
+  assert.equal(n.step, 'H1');
+  assert.deepEqual(n.clarify.god_eye_objects, ['blocker (U-1): Scoping was settled without research; the model for six tenants is unclear', 'blocker (U-4): A-1 rests on 3.x docs while 2.4 is used', 'major (AC-7): AC-7 promises credentials docs nothing decides']);
+  // an approving God Eye has nothing to object to at H1
+  const root2 = F.makeRepo();
+  newJob(root2);
+  F.cli(root2, ['next']);
+  assert.match(round(root2, { scout: scoutData(prior.unknowns), critique: APPROVE }, 'ok').message, /^God Eye approved the contract/);
+  assert.equal(F.cli(root2, ['next']).clarify, undefined);
+});

@@ -120,7 +120,8 @@ function recClarify(root, state, env) {
   const unconfirmed = Boolean(crit0 && crit0.intent_confirmed === false);
   // CLI fallback: God Eye's blockers the workflow did not turn into questions (an older
   // workflow, or no ledger) are asked here, so a round never ends with nothing to answer.
-  const geAsks = crit0 && !d.approved_with_notes && !((d.judge && d.judge.questions) || []).length && !(crit0.verdict === 'approve' && !unconfirmed) ? godEyeAsks(crit0) : [];
+  const objects = (crit0 && Array.isArray(d.god_eye_objects) ? d.god_eye_objects : []).slice(0, 20);
+  const geAsks = crit0 && !d.approved_with_notes && !objects.length && !((d.judge && d.judge.questions) || []).length && !(crit0.verdict === 'approve' && !unconfirmed) ? godEyeAsks(crit0) : [];
   const judgeQs = [...((d.judge && d.judge.questions) || []), ...geAsks];
   const dismissed = (d.judge && d.judge.dismissed) || [];
   const asks = idata ? ledgerAsks(clarifyMod, idata, judgeQs, dismissed) : [];
@@ -230,7 +231,7 @@ function recClarify(root, state, env) {
   state.clarify_shown = n.questions.length ? n.questions.map((q) => q.id) : waitingIds;
   job.save(root, state);
   if (crit) {
-    writeJson(path.join(jp.critiquesDir, 'intent.json'), seal({ hash: b.contract, verdict: crit.verdict, intent_confirmed: crit.intent_confirmed !== false, restatement: crit.restatement || null, checklist: crit.checklist || null, items: crit.items, researchable_questions: (crit && crit.researchable_questions) || [], ungrounded_claims: crit.ungrounded_claims || [], approved_with_notes: Boolean(d.approved_with_notes), notes: (d.notes || []).slice(0, 30), at: nowIso() }));
+    writeJson(path.join(jp.critiquesDir, 'intent.json'), seal({ hash: b.contract, verdict: crit.verdict, ...(objects.length ? { god_eye_objects: objects } : {}), intent_confirmed: crit.intent_confirmed !== false, restatement: crit.restatement || null, checklist: crit.checklist || null, items: crit.items, researchable_questions: (crit && crit.researchable_questions) || [], ungrounded_claims: crit.ungrounded_claims || [], approved_with_notes: Boolean(d.approved_with_notes), notes: (d.notes || []).slice(0, 30), at: nowIso() }));
   }
   // Waiting: questions asked in earlier rounds with no default are still the user's.
   const waiting = idata ? idata.unknowns.filter((u) => u.status === 'proposed' && u.question_id && u.impact !== 'low' && !n.questions.some((q) => q.unknown === u.id)) : [];
@@ -238,18 +239,23 @@ function recClarify(root, state, env) {
   const legacyResearchable = !idata ? (crit && crit.researchable_questions) || [] : [];
   const intentConfirmed = Boolean(crit && crit.intent_confirmed !== false); // older critiques carry no flag
   const approved = Boolean(crit && ((crit.verdict === 'approve' && intentConfirmed) || d.approved_with_notes));
+  // God Eye objects (revise with blockers or majors and nothing left to ask): never approval.
+  // Clarify can do no more, so the round ends and H1 shows the objections under "God Eye
+  // objects"; only the user's own approve takes the contract past them.
+  const objected = Boolean(crit && !approved && objects.length && intentConfirmed);
   // God Eye judged the editor's revision; a revision the CLI refused is not the contract, so
   // that approval does not carry to H1.
   const refused = Boolean(revision && revision.rejected);
-  const ok = Boolean(approved && !refused && !legacyResearchable.length && !probs.length && !n.questions.length && !blocking.length && !degradedRound);
-  const stepDetail = (extra) => ({ ...extra, round, questions: n.questions.length, question_ids: n.questions.map((q) => q.id), categories: n.questions.map((q) => q.category), intent_open: n.intent_open, held: n.held.length, dropped: n.dropped.length, degraded: d.degraded || [], contract_problems: probs, ...(researchDetail ? { research: researchDetail } : {}), ...(ledgerDetail ? { ledger: ledgerDetail } : {}), ...(d.approved_with_notes ? { approved_with_notes: true } : {}), ...(revision ? { contract_revision: { written: revision.written, applied: revision.applied.length, ...(revision.rejected ? { rejected: revision.rejected } : {}) } } : {}) });
+  const ok = Boolean((approved || objected) && !refused && !legacyResearchable.length && !probs.length && !n.questions.length && !blocking.length && !degradedRound);
+  const stepDetail = (extra) => ({ ...extra, round, questions: n.questions.length, question_ids: n.questions.map((q) => q.id), categories: n.questions.map((q) => q.category), intent_open: n.intent_open, held: n.held.length, dropped: n.dropped.length, degraded: d.degraded || [], contract_problems: probs, ...(researchDetail ? { research: researchDetail } : {}), ...(ledgerDetail ? { ledger: ledgerDetail } : {}), ...(d.approved_with_notes && !objected ? { approved_with_notes: true } : {}), ...(objected ? { approved: false, god_eye_objects: objects.length } : {}), ...(revision ? { contract_revision: { written: revision.written, applied: revision.applied.length, ...(revision.rejected ? { rejected: revision.rejected } : {}) } } : {}) });
   const askedNow = n.questions.length || waiting.length;
-  ledger.append(root, state.id, { kind: 'step', step: 'clarify', ok, bound: { contract: b.contract }, detail: stepDetail(askedNow && !ok ? { outcome: 'needs_user' } : {}) });
+  ledger.append(root, state.id, { kind: 'step', step: 'clarify', ok, bound: { contract: b.contract }, detail: stepDetail(askedNow && !ok ? { outcome: 'needs_user' } : objected && ok ? { outcome: 'god_eye_objects' } : {}) });
   // a failed mapper or an unavailable web is said in every round result while it holds
   const gaps = idata ? clarifyMod.researchGaps(idata) : null;
   const gapNote = gaps ? `${gaps.text} ` : '';
   const extra = { ...grounding, ...(warnings.length ? { warnings } : {}), ...(gaps ? { research_incomplete: gaps.text } : {}) };
   const notesText = (d.notes || []).length ? ` God Eye's notes (${d.notes.length}) are recorded.` : '';
+  if (ok && objected) return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', approved: false, god_eye_objects: objects, notes: d.notes || [], restatement: (crit && crit.restatement) || null, ...extra, message: `${gapNote}God Eye did NOT approve the contract (verdict: ${crit.verdict}): it objects to ${objects.length} item(s) clarify cannot settle: ${objects.slice(0, 3).map((o) => `${o.ref ? `${o.ref}: ` : ''}${String(o.issue).slice(0, 120)}`).join('; ')}${objects.length > 3 ? '; …' : ''}. Next: H1 shows them under "God Eye objects"; the contract goes on only if the user approves over them, or they deny with what must change.` };
   if (ok) return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', restatement: (crit && crit.restatement) || null, ...extra, ...(d.approved_with_notes ? { notes: d.notes || [] } : {}), message: `${gapNote}God Eye ${d.approved_with_notes ? 'approved with notes' : 'approved the contract and confirmed the intent'}.${notesText}${idata && intentMod.liveAssumptions(idata).length ? ' The evidence-backed assumptions are in the contract; the user can override one with "change A-n <value>" or "drop A-n".' : ''} Next: present it for your approval.` };
   const answerHow = 'The user answers in chat with a numbered reply ("1 yes, 2 …", or "defaults"), or record each with factory answer Q-n "…" (factory answer Q-n --default accepts the default); an unanswered question takes its default next round. Do not edit the contract (the guard refuses it during clarify): run factory next.';
   if (n.questions.length) {

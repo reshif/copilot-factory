@@ -730,18 +730,22 @@ if (brief.config === 'clarify') {
     if (critique) shaped = shape([...withLedger(judge), ...direct])
   }
   const approved = Boolean(critique && critique.verdict === 'approve' && critique.intent_confirmed !== false)
-  const withNotes = Boolean(critique && !approved && !shaped.questions.length)
+  // God Eye's blockers and majors are never approval: with nothing left to ask, what God Eye
+  // still objects to (settled issues it disputes included) goes to H1 as its objections, for the
+  // user to approve over explicitly. Only minor items make an approve-with-notes.
+  const objections = critique && !approved && !shaped.questions.length ? (critique.items || []).filter((it) => it && it.issue && ['blocker', 'major'].includes(it.severity)).map((it) => ({ ref: it.ref || null, severity: it.severity, issue: String(it.issue).slice(0, 300), ...(it.suggestion ? { suggestion: String(it.suggestion).slice(0, 300) } : {}) })) : []
+  const withNotes = Boolean(critique && !approved && !shaped.questions.length && !objections.length)
   const status = degraded.length && !brief.accept_degraded ? 'degraded' : shaped.questions.length ? 'needs_user' : critique ? 'ok' : 'needs_user'
   const summary = degraded.length
     ? `Missing angle(s): ${degraded.join(', ')}.`
     : shaped.questions.length
       ? `${shaped.questions.length} ${shaped.intent_open ? 'intent ' : ''}question(s) for you.${held.length ? ` Held until intent is clear: ${held.map((f) => f.id).join(', ')}.` : ''}`
-      : critique ? `God Eye: ${approved ? 'approve' : withNotes ? `approve with notes (${notes.length})` : critique.verdict}.` : 'No critique.'
+      : critique ? `God Eye: ${approved ? 'approve' : withNotes ? `approve with notes (${notes.length})` : objections.length ? `${critique.verdict}; it objects to ${objections.length} item(s), shown at H1` : critique.verdict}.` : 'No critique.'
   if (scout) for (const u of scout.unknowns) u.resolution = compatRes(u)
   const scoutData = scout ? { ...scout, open: openQuestions(), researchable_dropped: researchable } : null
   const researchNote = scout ? ` Ledger: ${scout.unknowns.length} issue(s), ${scout.unknowns.filter((u) => FINALS.has(u.status)).length} closed, ${scout.raised.created.length} new, ${scout.raised.folded.length + scout.raised.notes.length} raised again and folded; ${scout.evidence.length} finding(s)${scout.degraded.length ? `, degraded: ${scout.degraded.join(', ')}` : ''}.` : ''
   const contract = revised ? { text: revised, edits } : edits.length ? { text: null, edits } : null
-  return envelope(status, `${summary}${researchNote}`, { analysts: inputs, degraded, quiet, intent_open: shaped.intent_open || (intentOpen && held.length > 0), held_back: held.map((f) => f.id), judge: { ...judge, questions: shaped.questions, held: [...(judge.held || []), ...shaped.held.map((q) => ({ question: q.question, category: q.category }))], over_budget_or_repeat: shaped.dropped }, critique, critiques: critiques.length, approved_with_notes: withNotes, notes, ...(contract ? { contract } : {}), ...(scoutData ? { scout: scoutData } : {}) }, { questions: shaped.questions })
+  return envelope(status, `${summary}${researchNote}`, { analysts: inputs, degraded, quiet, intent_open: shaped.intent_open || (intentOpen && held.length > 0), held_back: held.map((f) => f.id), judge: { ...judge, questions: shaped.questions, held: [...(judge.held || []), ...shaped.held.map((q) => ({ question: q.question, category: q.category }))], over_budget_or_repeat: shaped.dropped }, critique, critiques: critiques.length, approved_with_notes: withNotes, ...(objections.length ? { god_eye_objects: objections } : {}), notes, ...(contract ? { contract } : {}), ...(scoutData ? { scout: scoutData } : {}) }, { questions: shaped.questions })
 }
 
 const degraded = degradedNow([])
