@@ -19,7 +19,7 @@
 .bgh .gs { font: 400 12px var(--body); color: var(--muted); }
 .bgh .gr { flex: 1; height: 1px; }
 .g-turn { --gk: var(--sig-amber); } .g-running { --gk: var(--live); } .g-parked { --gk: var(--skill); } .g-stopped { --gk: var(--sig-red); } .g-done { --gk: var(--track); }
-.brow { --cols: 14px 58px minmax(120px, 1fr) 124px 66px 136px 34px 62px 60px 64px 42px;
+.brow { --cols: 14px 58px minmax(120px, 1fr) 124px 66px 136px 34px 70px 56px 60px 42px;
   width: 100%; display: grid; grid-template-columns: var(--cols); align-items: center; column-gap: 8px; height: 35px; padding: 0 6px 0 8px; border: 0; border-bottom: 1px solid var(--rule); background: transparent; text-align: left; cursor: pointer; font: 400 13px/1.2 var(--body); color: var(--ink); position: relative; }
 .brow:hover { background: var(--sheet); }
 .brow:focus-visible { outline: 2px solid var(--live); outline-offset: -2px; }
@@ -58,7 +58,7 @@
 .pip.live { animation: pipb 1.6s ease-in-out infinite; }
 .pip.stale { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--muted); }
 @keyframes pipb { 50% { opacity: .45; } }
-.btask { display: grid; gap: 3px; font: 500 10.5px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.btask { display: grid; gap: 3px; white-space: nowrap; font: 500 10.5px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .tbar { height: 4px; border-radius: 2px; background: var(--rule); overflow: hidden; display: block; }
 .tbar i { display: block; height: 100%; background: var(--track); border-radius: 2px; }
 .bflags { display: flex; gap: 7px; font: 500 11px var(--mono); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }

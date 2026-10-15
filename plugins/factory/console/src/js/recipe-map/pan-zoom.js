@@ -10,16 +10,17 @@ function zoomAt(f, cx, cy) {
 }
 function fitAll() {
   const b = canvasBox();
-  view.s = Math.max(0.16, Math.min(b.width / LAYOUT.width, b.height / LAYOUT.height));
+  view.s = Math.max(0.16, Math.min(b.width / LAYOUT.width, (b.height - HINT_H - 8) / LAYOUT.height));
   view.x = Math.max(8, (b.width - LAYOUT.width * view.s) / 2);
-  view.y = Math.max(0, (b.height - LAYOUT.height * view.s) / 2);
+  view.y = Math.max(HINT_H, (b.height - LAYOUT.height * view.s) / 2);
   apply();
 }
+const HINT_H = 34; // the hint line over the canvas' top-left corner: the floor plan starts below it
 function startView() {
   const b = canvasBox();
-  view.s = Math.max(0.42, Math.min(1, b.height / LAYOUT.height));
+  view.s = Math.max(0.42, Math.min(1, (b.height - HINT_H - 8) / LAYOUT.height));
   view.x = 8;
-  view.y = Math.max(0, (b.height - LAYOUT.height * view.s) / 2);
+  view.y = Math.max(HINT_H, (b.height - LAYOUT.height * view.s) / 2);
   apply();
 }
 let camRaf = 0;

@@ -7,6 +7,7 @@ function renderCrew() {
     }
   }
   const groups = [...new Set(Object.values(AGENTS).map((a) => a[0]))];
+  $('#crew-n').textContent = String(Object.keys(AGENTS).length);
   $('#crew').innerHTML = groups.map((g) => {
     const list = Object.entries(AGENTS).filter(([, a]) => a[0] === g);
     return `<section class="crew-group"><h2>${esc(g)} <small>${list.length} agent${list.length > 1 ? 's' : ''}</small></h2><div class="agents">${list.map(([name, [, role, tools, write]]) => {

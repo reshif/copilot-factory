@@ -52,6 +52,9 @@
   .story { grid-template-columns: minmax(0, 1fr); }
   .nowcard { position: static; }
 }
+@media (max-width: 520px) {
+  .nav button { padding: 6px 6px; font-size: 12.5px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .beacon, .pip.live, .led i, .kpi .k i, .wireh h2 i, .lm .headp { animation: none !important; }
   .brow.sweep::after, .witem.fresh::after { animation: none; opacity: 0; }

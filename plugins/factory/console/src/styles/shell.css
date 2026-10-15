@@ -6,6 +6,7 @@ html, body { margin: 0; }
 body { min-height: 100dvh; }
 .app { position: relative; z-index: 1; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100dvh; min-width: 0; }
 .app[data-view="plan"] .kpis, .app[data-view="crew"] .kpis, .app[data-view="job"] .kpis { display: none; }
+.app > .bar { grid-row: 1; } .app > .kpis { grid-row: 2; } .app > .floor { grid-row: 3; } .app > .foot2 { grid-row: 4; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; border: 1px solid var(--rule-2); border-bottom-width: 2px; color: var(--muted); background: var(--sheet); }
 
@@ -90,10 +91,10 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; 
 .facets { border-right: 1px solid var(--rule); padding: 12px 12px 30px 14px; display: grid; align-content: start; gap: 16px; background: var(--paper); }
 .facet h3 { font: 600 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
 .facet h3 button { border: 0; background: none; color: var(--live); font: 500 10px var(--mono); cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
-.fopt { --w: 0%; width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 6px; border: 0; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--rule) 55%, transparent) var(--w), transparent var(--w)); text-align: left; cursor: pointer; font: 400 12.5px/1.25 var(--body); color: var(--ink); position: relative; margin-bottom: 2px; }
+.fopt { --w: 0%; width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 6px; border: 0; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--muted) 45%, transparent) var(--w), color-mix(in srgb, var(--rule) 45%, transparent) var(--w)) left bottom / 100% 2px no-repeat; text-align: left; cursor: pointer; font: 400 12.5px/1.25 var(--body); color: var(--ink); position: relative; margin-bottom: 2px; }
 .fopt:hover { box-shadow: inset 0 0 0 1px var(--rule-2); }
 .fopt .sw2 { width: 8px; height: 8px; border-radius: 2px; box-shadow: inset 0 0 0 1.5px var(--rule-2); }
-.fopt[aria-pressed="true"] { background: var(--live-soft); }
+.fopt[aria-pressed="true"] { background: linear-gradient(90deg, var(--live) var(--w), color-mix(in srgb, var(--live) 25%, transparent) var(--w)) left bottom / 100% 2px no-repeat, var(--live-soft); }
 .fopt[aria-pressed="true"] .sw2 { background: var(--live); box-shadow: none; }
 .fopt .fl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fopt .fc { font: 500 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }

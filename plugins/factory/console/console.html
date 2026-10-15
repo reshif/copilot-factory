@@ -485,14 +485,15 @@ svg text { font-family: var(--body); }
 .token circle.halo { fill: var(--live); opacity: 0.22; }
 
 /* ---------- crew */
-.crew { display: grid; gap: 22px; margin-top: 20px; }
+.crew { columns: 290px; column-gap: 18px; margin-top: 20px; }
+.crew-group { break-inside: avoid; margin-bottom: 22px; }
 .crew-group h2 { font: 800 22px/1 var(--display); text-transform: uppercase; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .crew-group h2 small { font: 500 12px var(--mono); text-transform: none; color: var(--muted); }
-.agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-top: 10px; }
+.agents { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 10px; }
 .agent-card { padding: 12px 14px; display: grid; gap: 8px; align-content: start; }
 .agent-card .name { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.agent-card .name b { font: 500 14px var(--mono); }
-.badge { font: 500 10.5px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 6px; border-radius: 2px; }
+.agent-card .name b { font: 500 14px var(--mono); overflow-wrap: anywhere; }
+.badge { flex: none; white-space: nowrap; font: 500 10.5px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 6px; border-radius: 2px; }
 .badge.write { color: var(--stop); background: var(--stop-soft); }
 .badge.read { color: var(--track); background: var(--track-soft); }
 .agent-card p { margin: 0; font-size: 13.5px; color: var(--muted); }
@@ -516,6 +517,7 @@ html, body { margin: 0; }
 body { min-height: 100dvh; }
 .app { position: relative; z-index: 1; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100dvh; min-width: 0; }
 .app[data-view="plan"] .kpis, .app[data-view="crew"] .kpis, .app[data-view="job"] .kpis { display: none; }
+.app > .bar { grid-row: 1; } .app > .kpis { grid-row: 2; } .app > .floor { grid-row: 3; } .app > .foot2 { grid-row: 4; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; border: 1px solid var(--rule-2); border-bottom-width: 2px; color: var(--muted); background: var(--sheet); }
 
@@ -600,10 +602,10 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; 
 .facets { border-right: 1px solid var(--rule); padding: 12px 12px 30px 14px; display: grid; align-content: start; gap: 16px; background: var(--paper); }
 .facet h3 { font: 600 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
 .facet h3 button { border: 0; background: none; color: var(--live); font: 500 10px var(--mono); cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
-.fopt { --w: 0%; width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 6px; border: 0; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--rule) 55%, transparent) var(--w), transparent var(--w)); text-align: left; cursor: pointer; font: 400 12.5px/1.25 var(--body); color: var(--ink); position: relative; margin-bottom: 2px; }
+.fopt { --w: 0%; width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 6px; border: 0; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--muted) 45%, transparent) var(--w), color-mix(in srgb, var(--rule) 45%, transparent) var(--w)) left bottom / 100% 2px no-repeat; text-align: left; cursor: pointer; font: 400 12.5px/1.25 var(--body); color: var(--ink); position: relative; margin-bottom: 2px; }
 .fopt:hover { box-shadow: inset 0 0 0 1px var(--rule-2); }
 .fopt .sw2 { width: 8px; height: 8px; border-radius: 2px; box-shadow: inset 0 0 0 1.5px var(--rule-2); }
-.fopt[aria-pressed="true"] { background: var(--live-soft); }
+.fopt[aria-pressed="true"] { background: linear-gradient(90deg, var(--live) var(--w), color-mix(in srgb, var(--live) 25%, transparent) var(--w)) left bottom / 100% 2px no-repeat, var(--live-soft); }
 .fopt[aria-pressed="true"] .sw2 { background: var(--live); box-shadow: none; }
 .fopt .fl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fopt .fc { font: 500 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -632,7 +634,7 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; 
 .bgh .gs { font: 400 12px var(--body); color: var(--muted); }
 .bgh .gr { flex: 1; height: 1px; }
 .g-turn { --gk: var(--sig-amber); } .g-running { --gk: var(--live); } .g-parked { --gk: var(--skill); } .g-stopped { --gk: var(--sig-red); } .g-done { --gk: var(--track); }
-.brow { --cols: 14px 58px minmax(120px, 1fr) 124px 66px 136px 34px 62px 60px 64px 42px;
+.brow { --cols: 14px 58px minmax(120px, 1fr) 124px 66px 136px 34px 70px 56px 60px 42px;
   width: 100%; display: grid; grid-template-columns: var(--cols); align-items: center; column-gap: 8px; height: 35px; padding: 0 6px 0 8px; border: 0; border-bottom: 1px solid var(--rule); background: transparent; text-align: left; cursor: pointer; font: 400 13px/1.2 var(--body); color: var(--ink); position: relative; }
 .brow:hover { background: var(--sheet); }
 .brow:focus-visible { outline: 2px solid var(--live); outline-offset: -2px; }
@@ -671,7 +673,7 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; 
 .pip.live { animation: pipb 1.6s ease-in-out infinite; }
 .pip.stale { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--muted); }
 @keyframes pipb { 50% { opacity: .45; } }
-.btask { display: grid; gap: 3px; font: 500 10.5px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.btask { display: grid; gap: 3px; white-space: nowrap; font: 500 10.5px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .tbar { height: 4px; border-radius: 2px; background: var(--rule); overflow: hidden; display: block; }
 .tbar i { display: block; height: 100%; background: var(--track); border-radius: 2px; }
 .bflags { display: flex; gap: 7px; font: 500 11px var(--mono); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -1594,6 +1596,9 @@ html[data-theme="light"] .dx-blueprint{
   .story { grid-template-columns: minmax(0, 1fr); }
   .nowcard { position: static; }
 }
+@media (max-width: 520px) {
+  .nav button { padding: 6px 6px; font-size: 12.5px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .beacon, .pip.live, .led i, .kpi .k i, .wireh h2 i, .lm .headp { animation: none !important; }
   .brow.sweep::after, .witem.fresh::after { animation: none; opacity: 0; }
@@ -1773,7 +1778,7 @@ html[data-theme="light"] .dx-blueprint{
 
       <!-- THE CREW -->
       <section id="view-crew" aria-label="The crew" hidden>
-        <p class="lede">Nineteen agents, each with one role and its own tool limits. Workflows start them by agent type, so a reviewer can't write and a builder can only touch its task's paths. The guard hook enforces the rest.</p>
+        <p class="lede"><span id="crew-n">Every</span> agents, each with one role and its own tool limits. Workflows start them by agent type, so a reviewer can't write and a builder can only touch its task's paths. The guard hook enforces the rest.</p>
         <div class="crew" id="crew"></div>
       </section>
 
@@ -2353,16 +2358,17 @@ function zoomAt(f, cx, cy) {
 }
 function fitAll() {
   const b = canvasBox();
-  view.s = Math.max(0.16, Math.min(b.width / LAYOUT.width, b.height / LAYOUT.height));
+  view.s = Math.max(0.16, Math.min(b.width / LAYOUT.width, (b.height - HINT_H - 8) / LAYOUT.height));
   view.x = Math.max(8, (b.width - LAYOUT.width * view.s) / 2);
-  view.y = Math.max(0, (b.height - LAYOUT.height * view.s) / 2);
+  view.y = Math.max(HINT_H, (b.height - LAYOUT.height * view.s) / 2);
   apply();
 }
+const HINT_H = 34; // the hint line over the canvas' top-left corner: the floor plan starts below it
 function startView() {
   const b = canvasBox();
-  view.s = Math.max(0.42, Math.min(1, b.height / LAYOUT.height));
+  view.s = Math.max(0.42, Math.min(1, (b.height - HINT_H - 8) / LAYOUT.height));
   view.x = 8;
-  view.y = Math.max(0, (b.height - LAYOUT.height * view.s) / 2);
+  view.y = Math.max(HINT_H, (b.height - LAYOUT.height * view.s) / 2);
   apply();
 }
 let camRaf = 0;
@@ -5226,6 +5232,7 @@ function renderCrew() {
     }
   }
   const groups = [...new Set(Object.values(AGENTS).map((a) => a[0]))];
+  $('#crew-n').textContent = String(Object.keys(AGENTS).length);
   $('#crew').innerHTML = groups.map((g) => {
     const list = Object.entries(AGENTS).filter(([, a]) => a[0] === g);
     return `<section class="crew-group"><h2>${esc(g)} <small>${list.length} agent${list.length > 1 ? 's' : ''}</small></h2><div class="agents">${list.map(([name, [, role, tools, write]]) => {
