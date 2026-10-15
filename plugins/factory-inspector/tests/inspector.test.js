@@ -705,3 +705,30 @@ test('clarify v2: R6 reads the ceiling each round recorded, R19 flags stalled ro
   const j2 = { id: 'J-0002', state: {}, lock: null, ledger: [], decisions: [{ id: 'D1', ts: at(1), action: 'gate', step: 'H1' }], events: [cli(1.1, 'D1', { cmd: 'clarify', sub: 'status' })] };
   assert.deepEqual(rules.driverFidelity(j2), [], 'clarify status while waiting at a gate is a look, not an action');
 });
+
+test('outcome integrity: a serious finding left unverified and never settled, and a task counted done after its builder failed (e2e audit)', () => {
+  const base = { id: 'J-0001', state: { status: 'active', tasks: {} }, lock: null, ledgerLines: [], decisionLines: [], eventLines: [], events: [], decisions: [] };
+  const code1 = { id: 'code-1', lane: 'code', severity: 'major', file: 'src/alerts.js', line: 3, summary: 'an item without reorder_at is never alerted', status: 'unverified' };
+  // the e2e run: round 1 unverified, round 2 the reviewer did not raise it, the round passed, the job shipped
+  const lostJob = { ...base, ledger: [
+    { kind: 'step', step: 'challenge', ok: false, at: '2026-01-01T00:00:01Z', bound: { fingerprint: 'fp' }, detail: { round: 1, findings: [code1] } },
+    { kind: 'step', step: 'challenge', ok: true, at: '2026-01-01T00:00:02Z', bound: { fingerprint: 'fp' }, detail: { round: 1, findings: [] } },
+    { kind: 'step', step: 'ship', ok: true, at: '2026-01-01T00:00:03Z', bound: { fingerprint: 'fp' }, detail: {} },
+  ] };
+  const lost = rules.evidenceChain(lostJob).find((x) => x.rule === 'R5.unverified_finding_lost');
+  assert.ok(lost, 'flagged');
+  assert.match(lost.summary, /the job shipped: code-1 \[major\] src\/alerts.js:3/);
+  // carried (the factory since this fix) or settled later: not flagged
+  const carried = { ...lostJob, ledger: [lostJob.ledger[0], { ...lostJob.ledger[1], ok: false, detail: { round: 1, findings: [{ ...code1, carried: { from_round: 1, times: 1 } }] } }] };
+  assert.ok(!rules.evidenceChain(carried).some((x) => x.rule === 'R5.unverified_finding_lost'));
+  const settled = { ...lostJob, ledger: [lostJob.ledger[0], { ...lostJob.ledger[1], detail: { round: 1, findings: [{ ...code1, status: 'refuted' }] } }, lostJob.ledger[2]] };
+  assert.ok(!rules.evidenceChain(settled).some((x) => x.rule === 'R5.unverified_finding_lost'));
+  // T2's builder crashed, its tester passed the stale branch
+  const roster = { kind: 'agents', workflow: 'realize', at: '2026-01-01T00:00:05Z', agents: [
+    { label: 'build T1 #1', outcome: 'done' }, { label: 'build T2 #1', outcome: 'no_result' }, { label: 'test T1', outcome: 'pass' }, { label: 'test T2', outcome: 'pass' },
+  ] };
+  const done = rules.evidenceChain({ ...base, ledger: [roster], state: { tasks: { T3: { outcome: 'done', outcome_at: '2026-01-01T00:00:06Z', builder: { outcome: 'blocked' } } } } }).find((x) => x.rule === 'R5.done_without_builder');
+  assert.ok(done, 'flagged');
+  assert.deepEqual(done.evidence, ['T2', 'T3']);
+  assert.ok(!rules.evidenceChain({ ...base, ledger: [{ ...roster, agents: roster.agents.filter((a) => !/T2/.test(a.label)) }] }).some((x) => x.rule === 'R5.done_without_builder'));
+});

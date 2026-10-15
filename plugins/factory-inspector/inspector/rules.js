@@ -161,7 +161,54 @@ function evidenceChain(job) {
     const fp = s.bound && s.bound.fingerprint;
     if (fp && (!has('prove', fp, s.at) || !has('challenge', fp, s.at))) out.push(f({ rule: 'R5.shipped_unverified', class: 'deviation', severity: 'high', subject: `${job.id}:ship@${fp.slice(0, 12)}`, job: job.id, summary: 'Shipped a build without both a passing proof and a passing review on that exact build.', evidence: [s.at], question: 'How did ship pass its floors?' }));
   }
-  return out;
+  return [...out, ...lostFindings(job), ...doneWithoutBuilder(job)];
+}
+
+// Outcome integrity: a blocker/major finding left unverified by a review round (verifier
+// timeout, "unverifiable") that no later round settled (confirmed or refuted), yet the job
+// shipped or a later round passed. Older factory versions let such a finding vanish when the next
+// reviewer did not raise it again; now it is carried until settled.
+function lostFindings(job) {
+  const rounds = job.ledger.filter((e) => e.kind === 'step' && e.step === 'challenge' && e.detail && Array.isArray(e.detail.findings)).sort((a, b) => (a.at < b.at ? -1 : 1));
+  const ships = job.ledger.filter((e) => e.kind === 'step' && e.step === 'ship' && e.ok).map((e) => e.at);
+  const lost = [];
+  rounds.forEach((r, i) => {
+    for (const x of r.detail.findings.filter((y) => SERIOUS.has(y.severity) && y.status === 'unverified')) {
+      const later = rounds.slice(i + 1);
+      if (!later.length) continue;
+      const settled = later.some((e) => e.detail.findings.some((y) => (y.id === x.id || sameIssue(x, y, false)) && ['confirmed', 'refuted'].includes(y.status)));
+      const carried = later[later.length - 1].detail.findings.some((y) => (y.id === x.id || (y.carried && sameIssue(x, y, false))) && y.status === 'unverified');
+      if (settled || carried) continue;
+      const passedAfter = later.find((e) => e.ok);
+      const shipped = ships.find((t) => t > r.at);
+      if (passedAfter || shipped) lost.push({ x, round: r.detail.round || 1, at: (passedAfter && passedAfter.at) || shipped, shipped: Boolean(shipped) });
+    }
+  });
+  if (!lost.length) return [];
+  const seen = new Set();
+  const uniq = lost.filter((l) => !seen.has(l.x.id) && seen.add(l.x.id));
+  return [f({ rule: 'R5.unverified_finding_lost', class: 'deviation', severity: 'high', subject: job.id, job: job.id, latest: latest(uniq, 'at'), summary: `${uniq.length} serious finding(s) left unverified in a review round were never settled, yet ${uniq.some((l) => l.shipped) ? 'the job shipped' : 'a later round passed'}: ${uniq.slice(0, 4).map((l) => `${l.x.id} [${l.x.severity}] ${l.x.file || ''}${l.x.line ? `:${l.x.line}` : ''} (round ${l.round})`).join('; ')}.`, evidence: uniq.slice(0, 6).map((l) => `round ${l.round}: ${l.x.id}`), question: 'Did the verifier time out and the next reviewer not raise it again? Was the bug real?' })];
+}
+
+// Outcome integrity: a task counted as done although its builder did not finish: a tester
+// ran after its builder returned nothing (or blocked) in the same realize run, or the state
+// records a done task whose latest builder reply was not "done".
+function doneWithoutBuilder(job) {
+  const hits = [];
+  for (const e of job.ledger.filter((x) => x.kind === 'agents' && x.workflow === 'realize')) {
+    const lastBuild = {};
+    for (const a of e.agents || []) {
+      const m = /^(build|test) (\S+)/.exec(a.label || '');
+      if (!m) continue;
+      if (m[1] === 'build') lastBuild[m[2]] = a.outcome;
+      else if (a.outcome === 'pass' && lastBuild[m[2]] && lastBuild[m[2]] !== 'done') hits.push({ task: m[2], why: `tested and passed after its builder came back ${lastBuild[m[2]]}`, at: e.at });
+    }
+  }
+  for (const [id, t] of Object.entries((job.state && job.state.tasks) || {})) {
+    if (t.outcome === 'done' && t.builder && t.builder.outcome !== 'done') hits.push({ task: id, why: `marked done, but its latest builder reply was ${t.builder.outcome}`, at: t.outcome_at || null });
+  }
+  if (!hits.length) return [];
+  return [f({ rule: 'R5.done_without_builder', class: 'deviation', severity: 'high', subject: job.id, job: job.id, latest: latest(hits.filter((h) => h.at), 'at'), summary: `${hits.length} task result(s) in ${job.id} counted work its builder did not finish: ${hits.slice(0, 4).map((h) => `${h.task} ${h.why}`).join('; ')}.`, evidence: [...new Set(hits.map((h) => h.task))], question: 'Was a stale branch verified (a crashed, timed-out or blocked builder)? Does the task branch hold its dependencies?' })];
 }
 
 // ---------------------------------------------------------------- R6 loop accounting
