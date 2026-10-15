@@ -1,0 +1,1 @@
+{"answers": [{"decision": 1, "choice": "other", "text": "reject them with a TypeError", "quote": "strings should throw a TypeError"}], "facts": [], "unclear": []}

@@ -119,8 +119,14 @@ function isDone(ctx, stepDef) {
   const id = stepDef.step;
   const fresh = (step, bound) => Boolean(ledger.freshStep(root, state.id, step, bound));
   switch (id) {
-    case 'clarify':
-      return fresh('clarify', { contract: b.contract });
+    case 'clarify': {
+      // Before H1, clarify v3 is done only when its record passed the readiness check for this
+      // exact contract and no denial waits to be read back; after H1 the step record decides
+      // (an approved amendment carries it forward).
+      const ok = fresh('clarify', { contract: b.contract });
+      const approved = state.approvals && (state.approvals.H1 || state.approvals.EH1);
+      return approved ? ok : ok && require('./clarify').ready(root, state);
+    }
     case 'H1':
     case 'EH1':
     case 'H2':

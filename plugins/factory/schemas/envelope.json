@@ -1,6 +1,6 @@
 { "$comment": "Result every workflow returns. The CLI validates it in factory record.",
   "type": "object", "required": ["workflow", "job", "status", "input_hash", "budgets", "summary", "data"], "properties": {
-  "workflow": { "enum": ["ground", "fanout-judge", "decompose", "realize", "reconcile"] },
+  "workflow": { "enum": ["clarify", "ground", "fanout-judge", "decompose", "realize", "reconcile"] },
   "config": { "type": ["string", "null"] }, "mode": { "type": ["string", "null"] },
   "job": { "type": "string", "pattern": "^J-\\d+$" },
   "status": { "enum": ["ok", "needs_user", "degraded", "stale", "park", "error"] },

@@ -1,0 +1,8 @@
+{ "$comment": "interviewer, mode interpret (clarify v3): the user's free-form reply to the decision sheet, mapped to its numbered decisions and facts; every mapping quotes the reply exactly. What it cannot map goes under unclear: it never answers for the user.",
+  "type": "object", "required": ["answers", "facts", "unclear"], "properties": {
+  "answers": { "type": "array", "items": { "type": "object", "required": ["decision", "choice", "text", "quote"], "properties": {
+    "decision": { "type": "integer", "minimum": 1 }, "choice": { "enum": ["a", "b", "c", "d", "e", "recommended", "other", "defer"] },
+    "text": { "type": "string" }, "quote": { "type": "string" } } } },
+  "facts": { "type": "array", "items": { "type": "object", "required": ["fact", "text", "quote"], "properties": {
+    "fact": { "type": "integer", "minimum": 1 }, "text": { "type": "string" }, "quote": { "type": "string" } } } },
+  "unclear": { "type": "array", "items": { "type": "string" } } } }

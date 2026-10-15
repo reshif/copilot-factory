@@ -24,19 +24,29 @@ Do not edit any file.
 Your run names your focus:
 - **design**: approve only if the design follows from the findings, meets every criterion, and a planner could split it into tasks. An ADR's architecture diagram must match its Decision (same modules, same flows) and be specific to this change, not generic boxes. When the run names a threat model, every threat must be addressed.
 - **plan**: approve only if the tasks cover every criterion, are independently buildable, and their verify commands would really prove them.
-- **intent** (a contract): before anything else, restate from the contract alone, one line each, the problem, who has it, the outcome and the success signal (`restatement`). Set `intent_confirmed` true only if that restatement matches the Intent section and the Goal, and the two agree. If it is false, verdict is "revise" with a blocker naming the mismatch: no amount of good criteria rescues the wrong problem. Approve only with `intent_confirmed` true, a contract a builder could start from without asking anything, and every criterion provable by its evidence type.
-- **intent**, the checklist: answer five questions, each true or false, in `checklist`: `intent_clear` (the Intent and Goal agree and you could restate them), `scope_bounded` (Non-goals say what is out), `acs_testable` (every criterion can be proven by its evidence type), `no_open_blockers` (no open issue in CLARIFY LEDGER would change the contract), `constraints_consistent` (no constraint contradicts another or the goal). Every item names where it points (`ref`): an AC id (`AC-2`), a section (`Constraints`) or an issue (`U-4`). An item with no `ref` is only a note.
-- **intent**, the ledger: CLARIFY LEDGER lists every issue and how the settled ones were settled. A settled issue is closed: never raise it again, in any wording (if you must mention it, `ref` it by id). A new issue (`same_as: "new"`, with a `subject` key) counts only as a blocker with a reason. Implementation detail (exact API field names, line ranges, command syntax, parser behaviour) is design's: never an item here.
-- **intent**, grounding: INTENT EVIDENCE (under your instructions) lists what scouts found and the evidence-backed assumptions (A-n) the factory adds to the contract. List under `researchable_questions` anything the contract leaves as a guess, an open question or an uncited claim that the repository or a primary source could settle (`kind` repo or world), with `blocker: true` and `why` only when a wrong guess would change the contract: those go back to the scouts. A researchable question that is not a blocker is only noted. Under `ungrounded_claims`, list claims about the outside world in Intent or Constraints that cite no evidence (E-n) and no answered question.
+- **readiness** (a clarify contract, before the user sees it at H1): answer the fixed checklist in your CLARIFY INPUT, each item true or false, from the contract file and the items listed with it (what the user stated, with their quotes; the decisions and who made them; the user's instructions; the facts and their sources):
+  - `intent_clear`: the Intent and the Goal agree, and you could restate them;
+  - `scope_bounded`: the non-goals say what is out;
+  - `acs_testable`: every criterion is observable, provable by its evidence type, and a verify command runs it;
+  - `self_consistent`: no criterion, constraint or decision contradicts another;
+  - `facts_honoured`: everything the user stated is honoured, in their sense;
+  - `instructions_handled`: every instruction the user gave is handled;
+  - `decisions_closed`: every high-impact decision is decided, or deferred with an owner.
+
+  Every false answer has at least one objection. An objection names its `check`, its `severity` (`blocker`: the contract would build the wrong thing or cannot be proven; `note`: worth saying, not wrong), the `stage` it concerns (`readback`: the intent itself is unclear; `research`: a fact is missing or rests on the wrong version; `sheet`: a decision only the user can make is missing; `assemble`: the contract text is wrong), what it points at (`ref`: an AC, a section or an item `I-n`), the `issue` and a concrete `fix`. A blocker sends the work back to its stage, so make it actionable; never raise implementation choices the input lists as design's.
 
 ## Your final message
-The JSON object your reply format asks for, fields in this order:
+The JSON object your reply format asks for. With focus **design** or **plan**, fields in this order:
 1. `verdict`: `approve` or `revise`, by the rules above.
-2. With focus **intent** only: `intent_confirmed` (true or false), `restatement` (`problem`, `who`, `outcome`, `success`, one line each) and `checklist` (the five answers above).
-3. `items`: every problem, most severe first, or `[]`. Each has `issue` (what is wrong and where), `severity` (as defined above) and `suggestion` (a concrete fix); with focus **intent** also `ref` (the AC, section or U-n it points at), `same_as` (`U-n` or `new`) and `subject` (the issue's short key).
-4. With focus **intent** only: `researchable_questions` (each `question`, `kind` repo or world, `why`, the `unknown` U-n when there is one, `same_as`, `subject` and `blocker`; `[]` when none) and `ungrounded_claims` (each `claim` and its `section`).
+2. `items`: every problem, most severe first, or `[]`. Each has `issue` (what is wrong and where), `severity` (as defined above) and `suggestion` (a concrete fix).
+
+With focus **readiness**, fields in this order:
+1. `verdict`: `ready` when no objection is a blocker, else `blocked`.
+2. `restatement`: the `problem` and the `outcome`, one line each, from the contract alone.
+3. `checklist`: the seven answers (`intent_clear`, `scope_bounded`, `acs_testable`, `self_consistent`, `facts_honoured`, `instructions_handled`, `decisions_closed`).
+4. `objections`: each `check`, `severity`, `stage`, `ref`, `issue` and `fix`; `[]` when none.
 
 Example:
 ```json
-{"verdict":"approve","intent_confirmed":true,"restatement":{"problem":"add(2, 3) returns -1","who":"callers of src/add.js","outcome":"add returns the arithmetic sum","success":"tests/add.test.js passes"},"checklist":{"intent_clear":true,"scope_bounded":true,"acs_testable":true,"no_open_blockers":true,"constraints_consistent":true},"items":[],"researchable_questions":[],"ungrounded_claims":[]}
+{"verdict":"revise","items":[{"issue":"ADR 001 says callers in src/cart/ use add, but no src/cart/ exists; only tests/add.test.js calls it.","severity":"major","suggestion":"Name the real callers or drop the claim."}]}
 ```

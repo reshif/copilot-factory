@@ -1,0 +1,1 @@
+{"mode": "repo", "versions": [{"name": "node", "version": ">=18", "source": "package.json:3"}], "evidence": [{"plan": "P-1", "claim": "add is implemented in src/add.js and subtracts", "source": "src/add.js:1", "source_tier": "repo", "quote": "module.exports = (a, b) => a - b; // bug: should add", "confidence": "high"}], "unresolved": [], "failed_sources": []}

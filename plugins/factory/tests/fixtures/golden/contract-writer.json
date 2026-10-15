@@ -1,12 +1,1 @@
-{
-  "contract": "# Fix add\n\n## Intent\n- Problem: add(2, 3) returns -1\n- Who: callers of src/add.js\n- Outcome: add returns the arithmetic sum\n- Success signal: tests/add.test.js passes\n\n## Goal\nadd(a, b) returns a + b for numbers.\n\n## Non-goals\n- Numeric strings are not converted\n\n## Acceptance criteria\n- AC-1: add(2, 3) returns 5 (evidence: test)\n\n## Constraints\n- No new dependencies\n\n## Allowed paths\n- src/add.js\n- tests/add.test.js\n\n## Verify commands\n- `node tests/add.test.js` (AC-1)\n\n## Assumptions\n- None\n",
-  "applied": [
-    {
-      "ref": "U-2",
-      "section": "Non-goals",
-      "change": "Numeric strings are not converted (the user's answer to Q-1)."
-    }
-  ],
-  "skipped": [],
-  "removed": []
-}
+{"contract": "# Fix add\n\n## Intent\n- Problem: add(2, 3) returns -1\n- Who: callers of src/add.js\n- Outcome: add returns the arithmetic sum\n- Success signal: tests/add.test.js passes\n\n## Goal\nadd(a, b) returns a + b for numbers and rejects numeric strings.\n\n## Non-goals\n- Other arithmetic\n\n## Acceptance criteria\n- AC-1: add(2, 3) returns 5 (evidence: test)\n- AC-2: add('2', 3) throws a TypeError (evidence: test)\n\n## Constraints\n- No new dependencies\n\n## Allowed paths\n- src/add.js\n- tests/add.test.js\n\n## Verify commands\n- `node tests/add.test.js` (AC-1, AC-2)\n\n## Assumptions\n- None\n", "covers": [{"item": "I-2", "where": "AC-1", "how": "add(2, 3) returns 5"}, {"item": "I-4", "where": "AC-2", "how": "numeric strings are rejected"}], "uncovered": []}

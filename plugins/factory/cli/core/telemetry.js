@@ -64,6 +64,27 @@ function intentMetrics(root, state) {
   };
 }
 
+// Clarify v3: what clarify cost the user (turns) and the factory (passes, checks), and what it
+// could not research.
+function clarifyMetrics(root, state) {
+  const data = require('./clarify').load(root, state.id);
+  if (!data || data.tampered) return null;
+  return {
+    version: 3,
+    user_turns: data.words.filter((w) => w.via !== 'request' && w.via !== 'migration').length,
+    research_passes: data.research.passes.length,
+    sheets: data.sheets.length,
+    decisions: data.items.filter((it) => it.kind === 'decision').length,
+    decided_by_user: data.items.filter((it) => it.kind === 'decision' && it.strength === 'user').length,
+    recommendations_accepted: data.items.filter((it) => it.kind === 'decision' && it.strength === 'accepted').length,
+    redirects: data.redirects.length,
+    readiness_checks: data.checks.length,
+    failures: data.failures.length,
+    proceeded: Boolean(data.proceeded),
+    migrated_from: data.migration ? data.migration.from : null,
+  };
+}
+
 function reverts(root, state) {
   if (!state.pr || !state.pr.merge_commit) return 0;
   try {
@@ -112,6 +133,7 @@ function jobMetrics(root, state, all) {
     decisions: decs.length,
     lanes: byLane,
     intent: intentMetrics(root, state),
+    clarify: clarifyMetrics(root, state),
   };
 }
 

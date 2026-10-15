@@ -8,7 +8,7 @@ const path = require('path');
 const { FactoryError, fail, readText, writeJson } = require('./lib/util');
 const { requireRoot, findRoot, PLUGIN_ROOT } = require('./lib/paths');
 
-const BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default', 'none', 'proposed']);
+const BOOL = new Set(['h1', 'epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default', 'none', 'proposed']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -48,18 +48,19 @@ function readStdin() {
 const HELP = `factory — Software Factory CLI (plugin at ${PLUGIN_ROOT})
 
 Setup      init [--base <branch>] · doctor · ci install · shim [--dir ~/.local/bin] [--force]   (links factory, factory-inspect onto PATH)
-Jobs       job new --title "…" --type <work type> --risk low|medium|high [--epic] · job show · job list · use <job>
+Jobs       job new --title "…" --type <work type> --risk low|medium|high [--epic] [--request "<the user's words>"] · job show · job list · use <job>
 Routing    next · why [--format md] · finalize [--mode before_ship|full] [--check]
 Contract   contract show · contract check [--plan-fields]
-           answer <U-n|Q-n> "<answer>" · answer <U-n|Q-n> --default · answer --id Q-n --answer "…" · answer --question "…" --answer "…"
-Clarify    clarify status [--json]   (the issue ledger: id, subject, status, owner, next action; per-round trend)
-           clarify note <U-n|contract> "<note>"   (context for the next clarify round)
-           clarify split <U-n> <alias U-n>   (human-only: undo a wrong fold; the alias becomes its own issue)
-Intent     intent show   (clarify's research: unknowns, cited evidence, evidence-backed assumptions, grounding problems)
-Workflows  wfargs <ground|fanout-judge|decompose|realize|reconcile> [--config clarify|decide|challenge] [--mode m] [--scope s] [--lanes a,b]
+           answer "<the user's words>"   (during clarify: the same as clarify reply; after H1: answer --question "…" --answer "…")
+Clarify    clarify reply "<the user's words>"   (read-back ok or edit, sheet answers, a redirect's ok; not a gate verb)
+           clarify redirect "<the user's words>"   (change course at any time before H1: read back, then restarted)
+           clarify status [--json] [--h1]   (stage, items with strength and source, the sheet, failures, checks; --h1 the H1 view)
+           clarify note "<text>"   (the same as clarify reply) · clarify split   (v3 keeps no folded issues: says so)
+Intent     intent show   (a v2 job's research record: unknowns, cited evidence, evidence-backed assumptions)
+Workflows  wfargs <clarify|ground|fanout-judge|decompose|realize|reconcile> [--config decide|challenge] [--mode m] [--scope s] [--lanes a,b]
            [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
            record --file <envelope.json | ->
-           run <ground|fanout-judge|decompose|realize|reconcile> [--config c] [--mode m] [--scope s] [--lanes a,b] [--accept-degraded]
+           run <clarify|ground|fanout-judge|decompose|realize|reconcile> [--config c] [--mode m] [--scope s] [--lanes a,b] [--accept-degraded]
                [--threat-model | --no-threat-model] [--plan-critique] [--dry-run] [--json]
                runs the workflow on the Copilot CLI (one \`copilot -p --agent factory:<role>\` per agent) and records it;
                only the workflow factory next asked for, one run per job at a time. Prints the recorded result
@@ -80,7 +81,7 @@ Learning   distill context · distill write · distill done · lessons list · l
 Console    console [--out file.html] [--job J] [--label "…"] [--data data.json]   (read-only page of every job)
            console --serve [--port 4477] [--job J]   (the same page, live: updates as Copilot works)
 Human only (your terminal, or reply in chat):
-           approve [gate] · deny --reason "…" · resume [step] · cancel · abandon · waive <floor> --reason "…"
+           approve [gate] · deny --reason "…" · resume [step] · proceed (after a clarify cap: go on, gaps shown) · cancel · abandon · waive <floor> --reason "…"
            merged <commit> · confirm <AC> · lessons accept|reject <L> · lessons promote <L> --check "cmd" · reseal
            assumption change <A-n> --value "…" · assumption drop <A-n>   (chat: change A-3 <value> · drop A-3)
            finding accept|dismiss <id> --reason "…"   (a serious finding no verifier settled; chat: dismiss finding code-1 <reason>)
@@ -169,7 +170,7 @@ function run(argv) {
       const job = C('job');
       if (sub === 'new') {
         if (!opt.title || !opt.type || !opt.risk) fail('job new needs --title, --type and --risk', 'bad_input');
-        const s = job.create(R(), { title: opt.title, workType: opt.type, risk: opt.risk, epic: Boolean(opt.epic) });
+        const s = job.create(R(), { title: opt.title, workType: opt.type, risk: opt.risk, epic: Boolean(opt.epic), request: typeof opt.request === 'string' ? opt.request : null });
         return { job: s.id, recipe: `${s.recipe.id} v${s.recipe.version}`, risk: s.risk, risk_raised_by_policy: s.risk !== s.risk_proposed, branch: s.branch, contract: path.join(R(), '.factory', 'jobs', s.id, 'contract.md'), next: 'factory next' };
       }
       if (sub === 'show') return job.resolve(R(), J);
@@ -221,16 +222,18 @@ function run(argv) {
       if (sub !== 'show') fail('intent show', 'bad_input');
       return C('intent').show(R(), J);
     case 'answer': {
-      // factory answer <U-n|Q-n> "<answer>" | <U-n|Q-n> --default | --id Q-n --answer "…" | --question "…" --answer "…"
-      const ref = sub && /^[UQ]-\d+$/i.test(sub) ? sub : opt.id;
-      const text = opt.answer || (sub && /^[UQ]-\d+$/i.test(sub) ? pos.slice(2).join(' ') : '') || '';
+      // factory answer "<the user's words>" | <n|D-n.n> "<words>" | --default | --question "…" --answer "…"
+      const idLike = (x) => x && /^([UQ]-\d+|D-\d+\.\d+|\d{1,2})$/i.test(x);
+      const ref = idLike(sub) ? sub : opt.id;
+      const text = opt.answer || (idLike(sub) ? pos.slice(2).join(' ') : pos.slice(1).join(' ')) || '';
       return C('record').answer(R(), { jobId: J, ref, question: opt.question, answer: text, acceptDefault: Boolean(opt.default) });
     }
     case 'clarify':
-      if (sub === 'status') return C('clarify').status(R(), { jobId: J, json: Boolean(opt.json) });
-      if (sub === 'note') return C('clarify').note(R(), { jobId: J, ref: pos[2], text: opt.text || pos.slice(3).join(' ') });
-      if (sub === 'split') return C('clarify').split(R(), { jobId: J, ref: pos[2], alias: pos[3], channel: tty });
-      return fail('clarify status [--json] | clarify note <U-n|contract> "<note>" | clarify split <U-n> [<alias U-n>]', 'bad_input');
+      if (sub === 'status') return C('clarify').status(R(), { jobId: J, json: Boolean(opt.json), h1: Boolean(opt.h1) });
+      if (sub === 'reply' || sub === 'note') return C('clarify').reply(R(), { jobId: J, text: opt.text || pos.slice(2).join(' ') });
+      if (sub === 'redirect') return C('clarify').redirect(R(), { jobId: J, text: opt.text || pos.slice(2).join(' ') });
+      if (sub === 'split') return C('clarify').split(R(), { jobId: J });
+      return fail('clarify reply "<words>" | clarify redirect "<words>" | clarify status [--json] [--h1]', 'bad_input');
     case 'wfargs': {
       const brief = C('wfargs').build(R(), {
         jobId: J,
@@ -407,6 +410,8 @@ function run(argv) {
       return C('human').deny(R(), { jobId: J, reason: opt.reason || pos.slice(1).join(' '), channel: tty });
     case 'resume':
       return C('human').resume(R(), { jobId: J, step: sub, channel: tty });
+    case 'proceed':
+      return C('clarify').proceed(R(), { jobId: J, channel: tty });
     case 'cancel':
       return C('human').stop(R(), { jobId: J, kind: 'cancelled', channel: tty, reason: opt.reason });
     case 'abandon':
@@ -459,7 +464,7 @@ function run(argv) {
   }
 }
 
-const HUMAN_CLI = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'assumption', 'finding', 'reseal']);
+const HUMAN_CLI = new Set(['approve', 'deny', 'resume', 'proceed', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'assumption', 'finding', 'reseal']);
 
 const PROSE = new Set(['reason', 'text', 'question', 'answer', 'title', 'note', 'by', 'check', 'label', 'why', 'value']);
 
@@ -478,7 +483,7 @@ function logCommand(argv, res, err) {
     const args = {};
     for (const [k, v] of Object.entries(opt)) args[k] = PROSE.has(k) && typeof v === 'string' ? `${v.slice(0, 60)}${v.length > 60 ? '…' : ''}` : v;
     // answers and notes are prose: their positional text is clipped like --answer
-    const proseArg = (pos[0] === 'answer' || (pos[0] === 'clarify' && pos[1] === 'note')) && pos.length > 2;
+    const proseArg = (pos[0] === 'answer' || (pos[0] === 'clarify' && ['note', 'reply', 'redirect'].includes(pos[1]))) && pos.length > 2;
     const r = res && typeof res === 'object' ? res : {};
     const extra = {};
     if (pos[0] === 'wfargs') Object.assign(extra, { workflow: r.workflow || pos[1] || null, config: r.config || opt.config || null, mode: r.mode || null, brief_hash: r.input_hash || null });
@@ -486,7 +491,7 @@ function logCommand(argv, res, err) {
     if (pos[0] === 'next') Object.assign(extra, { action: r.action || null, step: r.step || null });
     // A human-only command that went through came from a terminal the CLI accepted as yours
     // (TTY, typed confirmation): the inspector reads it as a human action, not the driver's.
-    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1])) || (pos[0] === 'clarify' && pos[1] === 'split') || (pos[0] === 'env' && pos[1] === 'set')) extra.channel = 'tty';
+    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1])) || (pos[0] === 'env' && pos[1] === 'set')) extra.channel = 'tty';
     events.append(root, {
       event: 'cli',
       cmd: pos[0],

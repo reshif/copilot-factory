@@ -200,11 +200,9 @@ function waitingOnHuman(root, state, log = readLog(root)) {
   const { jobPaths } = require('../cli/lib/paths');
   const ledger = require('../cli/core/ledger');
   const answers = readJson(jobPaths(root, state.id).answers, []);
-  const answeredIds = new Set(answers.map((a) => a.id).filter(Boolean));
   const answeredQs = new Set(answers.map((a) => a.question));
-  const clarify = ledger.lastStep(root, state.id, 'clarify');
-  const openQ = clarify && !clarify.ok && clarify.detail ? (clarify.detail.question_ids || []).filter((id) => !answeredIds.has(id)) : [];
-  if (openQ.length) return `clarify questions unanswered (${openQ.join(', ')})`;
+  const clarifyWait = require('../cli/core/clarify').waitingForUser(root, state);
+  if (clarifyWait) return clarifyWait;
   const ground = ledger.lastStep(root, state.id, 'ground');
   const blocking = ground && !ground.ok && ground.detail ? (ground.detail.blocking || []).filter((q) => !answeredQs.has(q)) : [];
   if (blocking.length) return `${blocking.length} blocking question(s) from ground unanswered`;

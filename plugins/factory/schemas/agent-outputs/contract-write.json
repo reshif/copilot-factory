@@ -1,0 +1,7 @@
+{ "$comment": "contract-writer (clarify v3): the full outcome contract and the coverage map (for every item, the AC id or section that honours it); items it could not honour are listed with why. The CLI checks it, writes it, and writes its own sections from the record.",
+  "type": "object", "required": ["contract", "covers", "uncovered"], "properties": {
+  "contract": { "type": "string", "minLength": 20 },
+  "covers": { "type": "array", "items": { "type": "object", "required": ["item", "where"], "properties": {
+    "item": { "type": "string", "pattern": "^I-\\d+$" }, "where": { "type": "string" }, "how": { "type": "string" } } } },
+  "uncovered": { "type": "array", "items": { "type": "object", "required": ["item", "why"], "properties": {
+    "item": { "type": "string" }, "why": { "type": "string" } } } } } }

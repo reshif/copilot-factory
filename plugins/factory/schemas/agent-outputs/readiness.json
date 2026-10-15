@@ -1,0 +1,12 @@
+{ "$comment": "god-eye, focus readiness (clarify v3): the fixed checklist answered true or false, and every objection with its check, severity (blocker or note), the stage it concerns (readback, research, sheet, assemble) and a fix. A blocker sends the work back to that stage.",
+  "type": "object", "required": ["verdict", "restatement", "checklist", "objections"], "properties": {
+  "verdict": { "enum": ["ready", "blocked"] },
+  "restatement": { "type": "object", "required": ["problem", "outcome"], "properties": {
+    "problem": { "type": "string" }, "outcome": { "type": "string" } } },
+  "checklist": { "type": "object", "required": ["intent_clear", "scope_bounded", "acs_testable", "self_consistent", "facts_honoured", "instructions_handled", "decisions_closed"], "properties": {
+    "intent_clear": { "type": "boolean" }, "scope_bounded": { "type": "boolean" }, "acs_testable": { "type": "boolean" }, "self_consistent": { "type": "boolean" },
+    "facts_honoured": { "type": "boolean" }, "instructions_handled": { "type": "boolean" }, "decisions_closed": { "type": "boolean" } } },
+  "objections": { "type": "array", "items": { "type": "object", "required": ["check", "severity", "stage", "ref", "issue", "fix"], "properties": {
+    "check": { "enum": ["intent_clear", "scope_bounded", "acs_testable", "self_consistent", "facts_honoured", "instructions_handled", "decisions_closed"] },
+    "severity": { "enum": ["blocker", "note"] }, "stage": { "enum": ["readback", "research", "sheet", "assemble"] },
+    "ref": { "type": "string" }, "issue": { "type": "string" }, "fix": { "type": "string" } } } } } }

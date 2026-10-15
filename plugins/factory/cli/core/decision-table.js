@@ -185,7 +185,7 @@ function decisionKey(result) {
 }
 
 // Commands that only look: running them is not an attempt at the step factory next chose.
-const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'intent', 'doc', 'report', 'recipe', 'telemetry', 'finalize', 'use', 'shim', 'task:show', 'lessons:list', 'distill:context']);
+const LOOKS = new Set(['next', 'why', 'help', 'doctor', 'console', 'job', 'contract', 'intent', 'doc', 'report', 'recipe', 'telemetry', 'finalize', 'use', 'shim', 'task:show', 'lessons:list', 'distill:context', 'clarify:status']);
 const REFUSED_RUN = new Set(['not_waiting_for_workflow', 'run_in_progress', 'copilot_unavailable', 'bad_input']); // nothing was tried
 
 // Was anything tried under the decision in force (a workflow ran, a record or step command
@@ -238,7 +238,7 @@ function deniedReroute(ctx, gate) {
   if (ledger.steps(root, state.id, from).some((e) => e.at > denied.at)) return null;
   const why = denied.reason ? `: "${denied.reason}"` : '';
   const how = from === 'clarify'
-    ? 'Clarify runs again with your reason in its brief: its contract editor revises the contract (don\'t edit it by hand).'
+    ? 'Clarify reads your words back as tracked items, then restarts from the earliest step they touch.'
     : producer.run.startsWith('skill:')
     ? `Revise the document to address it, then run the ${from} step again.`
     : `factory run ${producer.run.slice(9)}${producer.config ? ` --config ${producer.config}` : ''} redoes it; the reason is in its brief.`;
@@ -415,18 +415,12 @@ function route(root, jobId) {
     }
   }
 
+  // Clarify v3: the stage to run or the screen the user answers (its caps live in the stages).
+  if (action.action === 'skill' && action.skill === 'clarify') {
+    action.clarify = require('./clarify').nextInfo(root, state);
+    state = job.load(root, state.id);
+  }
   // Caps on loops that live inside a step.
-  // Clarify v2: the hard ceiling counts rounds that were not degraded (the no-progress rule
-  // parks earlier, from factory record).
-  const CL = action.step === 'clarify' ? require('./clarify').limits(state) : null;
-  if (CL && CL.counted >= CL.ceiling) {
-    park(root, state, `Clarify reached its ceiling of ${CL.ceiling} rounds without an approvable contract (factory clarify status shows what is open).`, 'clarify');
-    return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'cap.clarify_rounds' }));
-  }
-  if (CL && action.action === 'skill' && action.skill === 'clarify') {
-    const summary = require('./clarify').nextSummary(root, state);
-    if (summary) action.clarify = summary;
-  }
   if (action.step === 'decompose' && state.counters.decompose_rounds >= L.max_plan_validate_rounds) {
     park(root, state, `The plan still fails validation after ${state.counters.decompose_rounds} rounds.`, 'decompose');
     return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'cap.decompose_rounds' }));
@@ -441,6 +435,10 @@ function route(root, jobId) {
       job.save(root, state);
     }
     action.gate = state.pending_gate;
+    if (['H1', 'EH1'].includes(action.step)) {
+      const h1 = require('./clarify').h1View(root, state);
+      if (h1) action.clarify_h1 = h1;
+    }
   } else if (action.action === 'merge') {
     if (state.pr && state.pr.mode === 'github') {
       const justSynced = String(state.last_decision || '').startsWith('cli:H4:');

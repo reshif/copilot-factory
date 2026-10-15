@@ -42,7 +42,6 @@ function snapshot(root, state) {
     used: {
       agent_runs: state.counters.agent_runs || 0,
       tree_agent_runs: treeAgentRuns(root, state),
-      clarify_rounds: state.counters.clarify_rounds,
       review_rounds: state.counters.review_rounds,
       verify_fix_rounds: state.counters.verify_fix_rounds,
       wall_hours: Math.round(((Date.now() - Date.parse(state.created_at)) / 36e5) * 10) / 10,
@@ -50,7 +49,6 @@ function snapshot(root, state) {
     limit: {
       agent_runs: L.max_agent_runs_per_job,
       tree_agent_runs: L.max_agent_runs_per_tree,
-      clarify_rounds: require('./clarify').limits(state).ceiling,
       review_rounds: L.max_review_rounds,
       verify_fix_rounds: L.max_verify_fix_rounds,
     },

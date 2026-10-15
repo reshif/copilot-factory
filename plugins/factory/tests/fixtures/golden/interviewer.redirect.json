@@ -1,0 +1,1 @@
+{"clauses": [{"quote": "also reject numeric strings", "item": "I-4", "action": "decide", "text": "Whether numeric strings are rejected", "tag": null}, {"quote": "keep the error message short", "item": "new", "action": "instruction", "text": "Keep the error message short", "tag": null}]}

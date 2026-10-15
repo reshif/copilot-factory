@@ -1,88 +1,19 @@
 {
   "id": "clarify",
-  "description": "Turn a request into an approvable contract through one issue ledger the CLI owns: research first (an intent mapper lists the issues, repo and web scouts research the research-owned ones within the risk budget with one longer retry, a verifier re-checks), then an intent gate, three analysts and a judge that review only what changed, a cold God Eye checklist once nothing is open, and a contract editor that applies what was settled. Raised issues are deduplicated by subject; settled is final.",
-  "scout": {
-    "mapper": {
-      "role": "intent-mapper",
-      "schema": "intent-map"
-    },
-    "repo": {
-      "role": "researcher",
-      "schema": "scout",
-      "mode": "repo"
-    },
-    "web": {
-      "role": "researcher",
-      "schema": "scout",
-      "mode": "web"
-    },
-    "verifier": {
-      "role": "verifier",
-      "schema": "evidence-check"
-    },
-    "kinds": [
-      "repo",
-      "world",
-      "decision",
-      "user"
-    ],
-    "impacts": [
-      "high",
-      "medium",
-      "low"
-    ]
+  "version": 3,
+  "description": "Clarify v3 (docs/DESIGN-CLARIFY-v3.md): one stage per factory run clarify. The interviewer reads the user's words back (and later redirects, and free-form sheet answers); the researchers (repo, docs) run once per research pass, time-boxed and pinned to the confirmed versions, and the brief writer turns their findings into decision records; the contract writer writes the contract once; God Eye answers the fixed readiness checklist. Every rule is cli/core/clarify.js's; the workflow only dispatches.",
+  "agents": {
+    "interviewer": { "role": "interviewer", "stages": ["readback", "redirect", "interpret"] },
+    "repo": { "role": "researcher", "stages": ["research"], "mode": "repo" },
+    "docs": { "role": "researcher", "stages": ["research"], "mode": "docs" },
+    "brief": { "role": "brief-writer", "stages": ["research"] },
+    "writer": { "role": "contract-writer", "stages": ["assemble"] },
+    "check": { "role": "god-eye", "stages": ["check"], "focus": "readiness" }
   },
-  "fanout": [
-    {
-      "role": "intent-analyst",
-      "focus": "intent",
-      "category": "intent",
-      "gate": true,
-      "brief": "Can you restate, from the contract alone, the problem, who has it, the outcome they get and the signal that proves it worked, each in one line, and would the requester agree? Ask only where you can't."
-    },
-    {
-      "role": "intent-analyst",
-      "focus": "ambiguity",
-      "category": "scope",
-      "brief": "Where could two competent engineers read this contract's scope differently (what's in, what's out)?"
-    },
-    {
-      "role": "intent-analyst",
-      "focus": "constraints",
-      "category": "constraint",
-      "brief": "What limits (compatibility, performance, security, data, style) does the repo impose that the contract doesn't state?"
-    },
-    {
-      "role": "intent-analyst",
-      "focus": "testability",
-      "category": "acceptance",
-      "brief": "Can every acceptance criterion be proven by its stated evidence type? What would the test actually check?"
-    }
-  ],
-  "judge": {
-    "role": "judge",
-    "schema": "judge"
+  "caps": {
+    "max_research_passes": 2,
+    "max_sheet_decisions": 5,
+    "max_writer_attempts": 2
   },
-  "critique": {
-    "role": "god-eye",
-    "focus": "intent",
-    "when": "no_questions",
-    "schema": "intent-critique"
-  },
-  "editor": {
-    "role": "contract-editor",
-    "schema": "contract-edit"
-  },
-  "priority": [
-    "intent",
-    "scope",
-    "constraint",
-    "acceptance"
-  ],
-  "limits": {
-    "early_questions": 5,
-    "early_rounds": 1,
-    "later_questions": 3,
-    "intent_rounds": 2
-  }
+  "checklist": ["intent_clear", "scope_bounded", "acs_testable", "self_consistent", "facts_honoured", "instructions_handled", "decisions_closed"]
 }

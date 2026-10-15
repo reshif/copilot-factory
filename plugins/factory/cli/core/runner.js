@@ -51,7 +51,7 @@ const { pluginPath, taskWorktree, PLUGIN_ROOT } = require('../lib/paths');
 const { validate } = require('../lib/schema');
 const events = require('./events');
 
-const WORKFLOWS = ['ground', 'fanout-judge', 'decompose', 'realize', 'reconcile'];
+const WORKFLOWS = ['clarify', 'ground', 'fanout-judge', 'decompose', 'realize', 'reconcile'];
 const MAX_OUTPUT = 32 * 1024 * 1024;
 
 // Aliases used by policy.agents.models / builder_escalation → Copilot model ids. Defaults
@@ -919,7 +919,7 @@ function readEvents(root) {
 function askedFor(d) {
   if (!d) return null;
   if (d.action === 'workflow' && d.workflow) return { workflow: d.workflow, config: d.config || null };
-  if (d.action === 'skill' && d.skill === 'clarify') return { workflow: 'fanout-judge', config: 'clarify' }; // the clarify skill's round
+  if (d.action === 'skill' && d.skill === 'clarify') return { workflow: 'clarify', config: null }; // the clarify skill's stage
   return null;
 }
 
@@ -1147,6 +1147,8 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
       copilotUnavailable(ctx);
     }
     wfEnd({ outcome: 'ok', status: (envelope && envelope.status) || null });
+    // clarify lists every failure explicitly: it gets how each agent came back (timeout, exit …)
+    if (workflow === 'clarify' && envelope && envelope.data) envelope.data.runs = ctx.runs.map((r) => ({ label: r.label, role: r.role, outcome: r.outcome, ms: r.ms, ...(r.time_cap_sec ? { time_cap_sec: r.time_cap_sec } : {}), ...(r.errors ? { errors: r.errors.slice(0, 2) } : {}) }));
     const file = path.join(root, '.factory', 'scratch', 'runs', `${state.id}-${workflow}${brief.config ? `-${brief.config}` : ''}-${Date.now()}.json`);
     writeJson(file, envelope);
 
@@ -1322,31 +1324,14 @@ function summaryText(r) {
       L.push(`  ${i + 1}. ${q.id ? `${q.id} ` : ''}${q.category ? `[${q.category}] ` : ''}${q.question}${q.why ? ` | why: ${q.why}` : ''}${opts}${q.default !== undefined && q.default !== null ? ` | default: ${one(q.default)}` : ''}${ground}`);
     });
   }
-  if (r.intent_first !== undefined) L.push(`intent_first: ${r.intent_first}`);
-  // Grounded intent (clarify): what research found, what the factory assumes, and where it all is.
-  if (Array.isArray(r.findings) && r.findings.length) {
-    L.push(`findings (${r.findings.length}):`);
-    for (const f of r.findings) L.push(`  - ${f.id} [${f.verdict}${f.confidence ? `, ${f.confidence}` : ''}] ${f.claim} — ${f.source}${f.retrieved_at ? ` (${f.retrieved_at})` : ''}`);
+  // clarify v3: the stage it moved to, and the screen to show the user as it is
+  if (r.stage) L.push(`clarify stage: ${r.stage}`);
+  if (r.research && Array.isArray(r.research.failures) && r.research.failures.length) {
+    L.push('research failures:');
+    for (const f of r.research.failures.slice(0, 10)) L.push(`  - ${f.what}: ${f.reason}`);
   }
-  if (Array.isArray(r.assumptions) && r.assumptions.length) {
-    L.push(`assumptions (${r.assumptions.length}) — reply "change A-n <value>" or "drop A-n" to override:`);
-    for (const a of r.assumptions) L.push(`  - ${a.id}: ${a.statement}${a.overridden ? ' (overridden by user)' : ` (evidence: ${(a.evidence || []).join(', ')})`}`);
-  }
-  if (r.research) {
-    const x = r.research;
-    L.push(`research: ${x.unknowns || 0} unknown(s), ${x.evidence || 0} finding(s) (${x.confirmed || 0} confirmed), web ${x.web || 'n/a'}${x.researchable_dropped ? `, ${x.researchable_dropped} researchable question(s) not asked` : ''}${(x.degraded || []).length ? `, degraded: ${x.degraded.join(', ')}` : ''}`);
-  }
-  if (r.intent_findings) L.push(`intent_findings: ${r.intent_findings}`);
-  // clarify v2: the ledger in one line, and God Eye's approve-with-notes remarks
-  if (r.clarify && r.clarify.open_by_owner) {
-    const o = r.clarify.open_by_owner;
-    const rd = r.clarify.round || {};
-    L.push(`clarify: open — you ${o.user || 0}, research ${o.research || 0}, design ${o.design || 0}; this round opened ${rd.opened || 0}, settled ${rd.settled || 0}, deferred ${rd.deferred || 0}${rd.progress === false ? ' (no progress)' : ''}${(r.clarify.deferred_to_design || []).length ? `; handed to design: ${r.clarify.deferred_to_design.map((d) => d.id).join(', ')}` : ''} · ${r.clarify.status_command}`);
-  }
-  if (Array.isArray(r.notes) && r.notes.length) {
-    L.push(`notes (${r.notes.length}):`);
-    for (const n of r.notes.slice(0, 8)) L.push(`  - ${n.ref ? `${n.ref}: ` : ''}${one(n.text)}`);
-  }
+  if (r.refused) L.push(`refused: ${r.refused}`);
+  if (r.screen) L.push('screen (show it to the user as it is):', r.screen);
   if (Array.isArray(r.warnings) && r.warnings.length) {
     L.push('warnings:');
     for (const w of r.warnings.slice(0, 10)) L.push(`  - ${one(w)}`);

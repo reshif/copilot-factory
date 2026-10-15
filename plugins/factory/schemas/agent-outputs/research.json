@@ -1,0 +1,21 @@
+{ "$comment": "researcher in clarify v3 (mode repo or docs): findings for the plan items it was given (P-n), each with its exact quote; docs findings name the system and the version their page documents. What it could not find, and every source that failed, are listed.",
+  "type": "object", "required": ["mode", "evidence", "unresolved"], "properties": {
+  "mode": { "enum": ["repo", "docs"] },
+  "web_available": { "type": "boolean" },
+  "versions": { "type": "array", "items": { "type": "object", "required": ["name", "version", "source"], "properties": {
+    "name": { "type": "string" }, "version": { "type": "string" }, "source": { "type": "string" } } } },
+  "evidence": { "type": "array", "maxItems": 40, "items": { "type": "object", "required": ["plan", "claim", "source", "source_tier", "quote", "confidence"], "properties": {
+    "plan": { "type": "string", "pattern": "^P-\\d+$" },
+    "claim": { "type": "string" },
+    "source": { "type": "string" },
+    "source_tier": { "enum": ["official", "primary", "standard", "secondary", "forum", "repo"] },
+    "quote": { "type": "string" },
+    "system": { "type": "string" },
+    "version": { "type": "string" },
+    "retrieved_at": { "type": "string" },
+    "confidence": { "enum": ["high", "medium", "low"] },
+    "contradicts": { "type": "string", "pattern": "^I-\\d+$" } } } },
+  "unresolved": { "type": "array", "items": { "type": "object", "required": ["plan", "reason"], "properties": {
+    "plan": { "type": "string" }, "reason": { "type": "string" } } } },
+  "failed_sources": { "type": "array", "items": { "type": "object", "required": ["source", "reason"], "properties": {
+    "plan": { "type": "string" }, "source": { "type": "string" }, "reason": { "type": "string" } } } } } }

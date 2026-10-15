@@ -92,7 +92,8 @@ function checkWrite(root, absIn, policy) {
   if (r.startsWith('.factory/')) {
     const parts = r.split('/');
     if (parts[1] === 'scratch') return null;
-    if (parts[1] === 'jobs' && parts.length === 4 && JOB_DOCS.test(parts[3])) return parts[3] === 'contract.md' ? clarifyLock(root, parts[2]) : null;
+    // Clarify v3: the user may edit contract.md at any time; the CLI re-checks it before H1.
+    if (parts[1] === 'jobs' && parts.length === 4 && JOB_DOCS.test(parts[3])) return null;
     if (parts[1] === 'worktrees' && parts.length >= 4) {
       const scope = taskScope(root, parts[2]);
       const inner = parts.slice(3).join('/');
@@ -107,25 +108,6 @@ function checkWrite(root, absIn, policy) {
   if (r.startsWith('.git/') || r === '.git') return 'Editing git internals is not allowed.';
   if (matchesAny(r, policy.protected_paths)) return `${r} is a protected path (policy.protected_paths).`;
   return null;
-}
-
-// Clarify v2, one writer: while a job is in clarify (a clarify round recorded, H1/EH1 not
-// approved, no amendment open) its contract changes only through the clarify workflow and
-// factory record. The first draft (before round 1: intake, the clarify skill) and
-// amendments after H1 stay writable. Best effort: an unreadable state allows the write.
-function clarifyLock(root, jobId) {
-  let st;
-  try {
-    st = JSON.parse(require('fs').readFileSync(path.join(root, '.factory', 'jobs', jobId, 'state.json'), 'utf8'));
-  } catch {
-    return null;
-  }
-  if (!st || !['active', 'parked'].includes(st.status)) return null;
-  const rounds = (st.counters && st.counters.clarify_rounds) || 0;
-  const approved = st.approvals && (st.approvals.H1 || st.approvals.EH1);
-  const amending = st.amendment && ['open', 'submitted'].includes(st.amendment.status);
-  if (rounds < 1 || approved || amending) return null;
-  return `${jobId} is in clarify: its contract is changed only by the clarify workflow (the contract editor) and factory record, not by hand. Record the user's answers with \`factory answer <U-n|Q-n> "<answer>"\` (or --default), add context with \`factory clarify note <U-n|contract> "<note>"\`, see what is open with \`factory clarify status\`, then run \`factory next\`.`;
 }
 
 function checkRead(root, absIn, policy) {
@@ -177,9 +159,9 @@ function checkReadTool(root, tool, ti, absFile, cwd, policy) {
 
 // ---- factory CLI recognition -------------------------------------------------------------
 
-const HUMAN_ONLY = new Set(['approve', 'deny', 'resume', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding']);
+const HUMAN_ONLY = new Set(['approve', 'deny', 'resume', 'proceed', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding']);
 // Mirrors cli/main.js parseArgs: --k=v, --k v (unless the flag is boolean or v starts with --), and --.
-const CLI_BOOL = new Set(['epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force']);
+const CLI_BOOL = new Set(['h1', 'epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force']);
 const TTY_FAKERS = /^(script|unbuffer|expect|socat|faketty|ptyexec|zpty|empty)$/;
 const SHELLS = /^(bash|sh|zsh|dash|ksh|mksh|fish|csh|tcsh|ash|busybox)$/;
 const PWSH = /^(pwsh|powershell|powershell\.exe|pwsh\.exe)$/i;
@@ -199,7 +181,7 @@ const KNOWN_VARS = /^(HOME|PWD|OLDPWD|PATH|TMPDIR|TMP|TEMP|USER|SHELL|VIRTUAL_EN
 // (builder), task verify (tester), reconcile run / continue / abort (integrator), doc check
 // (architect, threat modeler, slicer, planner); agent bodies: doc template; lesson-writer:
 // lessons add. Everything else drives the job (next, run, record, wfargs, ship, close, init,
-// use, job new, amend, park, followup, epic, distill, finalize, answer, clarify note, verify run, evidence,
+// use, job new, amend, park, followup, epic, distill, finalize, answer, clarify reply/redirect, verify run, evidence,
 // ci, pr, shim, console …) or is the human's (HUMAN_ONLY): the main session's or yours.
 const AGENT_ALLOWED = {
   help: '*',
@@ -229,7 +211,7 @@ function agentAllowed(a, b) {
 }
 
 function isHumanOnly(a, b) {
-  return HUMAN_ONLY.has(a) || (a === 'lessons' && ['accept', 'reject', 'promote'].includes(b)) || (a === 'ci' && b === 'install') || (a === 'clarify' && b === 'split') || (a === 'env' && b === 'set');
+  return HUMAN_ONLY.has(a) || (a === 'lessons' && ['accept', 'reject', 'promote'].includes(b)) || (a === 'ci' && b === 'install') || (a === 'env' && b === 'set');
 }
 
 function humanMessage(a, b) {
@@ -801,4 +783,4 @@ function normalise(cmd) {
   return parse(cmd).map((c) => c.words.map((w) => w.text).join(' ')).join('; ');
 }
 
-module.exports = { checkWrite, clarifyLock, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
+module.exports = { checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };

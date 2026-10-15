@@ -172,7 +172,7 @@ function rulebookSnapshot({ recipe, policy, workType, risk, effRisk, epic }) {
   });
 }
 
-function create(root, { title, workType, risk, epic = false, parent = null, sliceId = null, contractText = null, followupOf = null }) {
+function create(root, { title, workType, risk, epic = false, parent = null, sliceId = null, contractText = null, followupOf = null, request = null }) {
   const policy = policyMod.load(root);
   if (!policy.work_types.includes(workType)) fail(`Unknown work type "${workType}". Use one of: ${policy.work_types.join(', ')}`, 'bad_input');
   if (!policyMod.RISKS.includes(risk)) fail(`Unknown risk "${risk}". Use low, medium or high.`, 'bad_input');
@@ -201,6 +201,8 @@ function create(root, { title, workType, risk, epic = false, parent = null, slic
   const state = {
     id,
     title,
+    // the user's request, verbatim: clarify's read-back quotes it (cli/core/clarify.js)
+    request: request ? String(request).slice(0, 8000) : null,
     created_at: nowIso(),
     work_type: workType,
     risk: effRisk,

@@ -1,0 +1,17 @@
+{ "$comment": "interviewer, mode readback (clarify v3): the intent and scope in its words, what it took from the user's words (each quoted exactly), the version pins (a repo line or the user's words), the research plan (each item tagged repo, docs or decision), questions only the user can answer, and what design may choose. Items it keeps from an earlier read-back name their id (I-n); new ones say new.",
+  "type": "object", "required": ["intent", "scope", "took", "pins", "plan", "questions"], "properties": {
+  "intent": { "type": "object", "required": ["problem", "who", "outcome", "success"], "properties": {
+    "problem": { "type": "string" }, "who": { "type": "string" }, "outcome": { "type": "string" }, "success": { "type": "string" } } },
+  "scope": { "type": "object", "required": ["in", "out"], "properties": {
+    "in": { "type": "array", "items": { "type": "string" } }, "out": { "type": "array", "items": { "type": "string" } } } },
+  "took": { "type": "array", "maxItems": 20, "items": { "type": "object", "required": ["item", "text", "quote"], "properties": {
+    "item": { "type": "string", "pattern": "^(I-\\d+|new)$" }, "text": { "type": "string" }, "quote": { "type": "string", "minLength": 3 } } } },
+  "pins": { "type": "array", "maxItems": 20, "items": { "type": "object", "required": ["system", "version", "source", "quote"], "properties": {
+    "system": { "type": "string" }, "version": { "type": "string" }, "source": { "enum": ["user", "repo"] }, "file": { "type": "string" }, "quote": { "type": "string" } } } },
+  "plan": { "type": "array", "maxItems": 15, "items": { "type": "object", "required": ["item", "what", "tag", "impact"], "properties": {
+    "item": { "type": "string", "pattern": "^(I-\\d+|new)$" }, "what": { "type": "string" }, "tag": { "enum": ["repo", "docs", "decision"] },
+    "pins": { "type": "array", "items": { "type": "string" } }, "impact": { "enum": ["high", "medium", "low"] }, "why": { "type": "string" },
+    "options": { "type": "array", "items": { "type": "string" } } } } },
+  "questions": { "type": "array", "maxItems": 5, "items": { "type": "object", "required": ["item", "question", "why"], "properties": {
+    "item": { "type": "string", "pattern": "^(I-\\d+|new)$" }, "question": { "type": "string" }, "why": { "type": "string" } } } },
+  "design_may_choose": { "type": "array", "items": { "type": "string" } } } }

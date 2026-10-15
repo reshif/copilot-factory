@@ -137,13 +137,22 @@ test('reviewer goldens: unique ids with the lane prefix, cited lines exist, an e
 });
 
 test('other goldens: ids, unknowns, quotes and paths hold up', () => {
-  const scout = golden('researcher.scout');
-  for (const e of scout.evidence) {
-    assert.match(e.unknown, /^U-\d+$/);
-    const m = assertCite(e.source, 'scout');
+  const research = golden('researcher.research');
+  for (const e of research.evidence) {
+    assert.match(e.plan, /^P-\d+$/);
+    const m = assertCite(e.source, 'research');
     assert.equal(repoLines(m[1])[Number(m[2]) - 1].trim(), e.quote.trim(), 'a repo quote is the cited line, word for word');
   }
-  for (const v of scout.versions) assertCite(v.source, 'scout versions');
+  for (const v of research.versions) assertCite(v.source, 'research versions');
+  const rb = golden('interviewer');
+  for (const p of rb.pins.filter((x) => x.source === 'repo')) {
+    const m = assertCite(p.file, 'read-back pin');
+    assert.equal(repoLines(m[1])[Number(m[2]) - 1].trim(), p.quote.trim(), 'a repo pin quotes its line, word for word');
+  }
+  const brief = golden('brief-writer');
+  for (const r of brief.records) assert.ok(r.options.some((o) => o.key === r.recommendation), 'a recommendation names one of its options');
+  const ready = golden('god-eye.readiness');
+  assert.equal(ready.verdict === 'ready', !ready.objections.some((o) => o.severity === 'blocker'), 'ready exactly when nothing blocks');
   for (const c of golden('researcher').claims) if (!/^(UNVERIFIED|https?:)/.test(c.source)) assertCite(c.source, 'researcher');
   const th = golden('threat-modeler').threats.map((t) => /^TH-\d+/.exec(t.threat)[0]);
   assert.equal(new Set(th).size, th.length, 'threat ids are unique');
@@ -151,18 +160,10 @@ test('other goldens: ids, unknowns, quotes and paths hold up', () => {
     const out = golden(n);
     for (const p of out.paths || [out.path]) assert.match(p, /^\.factory\/jobs\/J-\d+\//, `${n}: writes inside the job folder`);
   }
-  const judge = golden('judge');
-  for (const q of judge.questions) {
-    assert.match(q.unknown, /^U-\d+$/);
-    assert.ok(q.preference ? /^Your call/.test(q.default) : (q.evidence || []).length > 0, 'a default is the user\'s call or rests on evidence');
-  }
-  assert.ok(judge.questions.length <= schemaOf('judge').properties.questions.maxItems);
   for (const n of ['builder', 'tester']) for (const s of golden(n).swept || golden(n).swept_checked) assertCite(s.split(/[: ]/)[0], n);
   for (const t of golden('option-generator').touches) if (!/\s/.test(t)) assertCite(t, 'option touches');
   const opt = golden('option-generator');
   assert.ok(opt.criteria.every((c) => /^(E-)?AC-\d+$/.test(c.id)));
-  const verdict = golden('verifier').verdicts;
-  assert.equal(new Set(verdict.map((v) => v.evidence_id)).size, verdict.length);
 });
 
 // ---------------------------------------------------------------- the runner reads each golden

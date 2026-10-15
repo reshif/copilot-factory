@@ -1,0 +1,15 @@
+{ "$comment": "brief-writer (clarify v3): the research brief. One decision record per decision plan item (Decision, Options with consequences, Evidence by source, Recommendation, why), one fact per researched fact item, and the gaps. Evidence is cited by the source string a researcher gave.",
+  "type": "object", "required": ["summary", "records", "facts", "gaps"], "properties": {
+  "summary": { "type": "string" },
+  "records": { "type": "array", "items": { "type": "object", "required": ["plan", "decision", "options", "evidence", "recommendation", "why"], "properties": {
+    "plan": { "type": "string", "pattern": "^P-\\d+$" }, "decision": { "type": "string" },
+    "options": { "type": "array", "minItems": 1, "maxItems": 5, "items": { "type": "object", "required": ["key", "text", "consequences"], "properties": {
+      "key": { "type": "string", "pattern": "^[a-e]$" }, "text": { "type": "string" }, "consequences": { "type": "string" } } } },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "recommendation": { "type": ["string", "null"] }, "why": { "type": "string" } } } },
+  "facts": { "type": "array", "items": { "type": "object", "required": ["plan", "statement", "evidence"], "properties": {
+    "plan": { "type": "string", "pattern": "^P-\\d+$" }, "statement": { "type": "string" },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "contradicts": { "type": "string", "pattern": "^I-\\d+$" } } } },
+  "gaps": { "type": "array", "items": { "type": "object", "required": ["plan", "why"], "properties": {
+    "plan": { "type": "string" }, "why": { "type": "string" } } } } } }

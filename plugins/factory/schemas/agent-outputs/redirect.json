@@ -1,0 +1,6 @@
+{ "$comment": "interviewer, mode redirect (clarify v3): the user's redirect as clauses, each quoting the user exactly, linked to an existing item by id or new, with what to do: research, decide, fix (the contract text), fact (the user states it) or instruction.",
+  "type": "object", "required": ["clauses"], "properties": {
+  "clauses": { "type": "array", "minItems": 1, "maxItems": 12, "items": { "type": "object", "required": ["quote", "item", "action", "text"], "properties": {
+    "quote": { "type": "string", "minLength": 4 }, "item": { "type": "string", "pattern": "^(I-\\d+|new)$" },
+    "action": { "enum": ["research", "decide", "fix", "fact", "instruction"] }, "text": { "type": "string" },
+    "tag": { "enum": ["repo", "docs", null] } } } } } }

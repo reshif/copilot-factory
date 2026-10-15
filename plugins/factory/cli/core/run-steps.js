@@ -16,19 +16,18 @@
 // to the workflow code: a phase text that no template step matches is still shown, as it ran.
 var RUN_STEPS = (function () {
   var TEMPLATES = {
-    // fanout-judge.js, clarify: scoutPhase() → contract editor (what was settled) → intent gate → fan-out → judge → God Eye (intent) → contract editor (God Eye's items) and God Eye again
-    'fanout-judge:clarify': {
-      next: 'your answers or H1',
+    // clarify.js (v3): one stage per run: the read-back, a research pass (researchers, then the
+    // brief writer), reading a sheet reply or a redirect, the contract writer, the readiness check
+    clarify: {
+      next: 'the next clarify stage, your reply, or H1',
       steps: [
-        { key: 'map', label: 'map the unknowns', match: /^clarify: scout · map the unknowns/, roles: ['intent-mapper'] },
-        { key: 'research', label: 'research the unknowns', match: /^clarify: scout · research/, roles: ['researcher'] },
-        { key: 'verify', label: 'verify findings', match: /^clarify: scout · verify/, roles: ['verifier'] },
-        { key: 'edit', label: 'apply what was settled', match: /^clarify: contract editor \(apply/, roles: ['contract-editor'], optional: true, only_when_run: true },
-        { key: 'gate', label: 'intent gate', match: /^clarify: intent gate/, roles: ['intent-analyst'] },
-        { key: 'fanout', label: 'fan-out', match: /^clarify: fan-out/, roles: ['intent-analyst'] },
-        { key: 'judge', label: 'judge', match: /^clarify: judge/, roles: ['judge'] },
-        { key: 'god-eye', label: 'God Eye (intent)', match: /^clarify: God Eye/, roles: ['god-eye'] },
-        { key: 'revise', label: 'contract editor revises', match: /^clarify: contract editor \(God Eye/, roles: ['contract-editor', 'god-eye'], optional: true, only_when_run: true },
+        { key: 'readback', label: 'read your words back', match: /^clarify: readback/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'research', label: 'research (pinned versions)', match: /^clarify: research · research · /, roles: ['researcher'], optional: true, only_when_run: true },
+        { key: 'brief', label: 'research brief', match: /^clarify: research · research brief/, roles: ['brief-writer'], optional: true, only_when_run: true },
+        { key: 'interpret', label: 'read your sheet answer', match: /^clarify: interpret/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'redirect', label: 'read your redirect back', match: /^clarify: redirect/, roles: ['interviewer'], optional: true, only_when_run: true },
+        { key: 'write', label: 'write the contract', match: /^clarify: assemble/, roles: ['contract-writer'], optional: true, only_when_run: true },
+        { key: 'check', label: 'readiness check', match: /^clarify: check/, roles: ['god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
@@ -79,7 +78,7 @@ var RUN_STEPS = (function () {
     for (var i = 0; i < tpl.steps.length; i++) if (tpl.steps[i].match.test(String(text || ''))) return i;
     return -1;
   }
-  // the phase text in plain words: "clarify: scout · research 4 unknown(s) with 2 scout(s)" → "research 4 unknowns" (the scouts are named with the step)
+  // the phase text in plain words: "decide: fan-out (3)" → "fan-out (3)"; "N thing(s)" → "N things"
   function cleanText(text) {
     return String(text || '').replace(/^[a-z-]+: /, '').replace(/^scout · /, '').replace(/ with \d+ scout\(s\)/, '')
       .replace(/(\d+) ([A-Za-z-]+)\(s\)/g, function (_, n, w) { return n + ' ' + w + (n === '1' ? '' : 's'); })

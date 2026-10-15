@@ -47,25 +47,9 @@
     "role": "god-eye",
     "schema": "critique"
   },
-  "god-eye.intent": {
-    "role": "god-eye",
-    "schema": "intent-critique"
-  },
   "integrator": {
     "role": "integrator",
     "schema": "integrator"
-  },
-  "intent-analyst": {
-    "role": "intent-analyst",
-    "schema": "analyst"
-  },
-  "intent-mapper": {
-    "role": "intent-mapper",
-    "schema": "intent-map"
-  },
-  "judge": {
-    "role": "judge",
-    "schema": "judge"
   },
   "lesson-writer": {
     "role": "lesson-writer",
@@ -87,10 +71,6 @@
     "role": "researcher",
     "schema": "researcher"
   },
-  "researcher.scout": {
-    "role": "researcher",
-    "schema": "scout"
-  },
   "tester": {
     "role": "tester",
     "schema": "tester"
@@ -99,12 +79,32 @@
     "role": "threat-modeler",
     "schema": "threat"
   },
-  "verifier": {
-    "role": "verifier",
-    "schema": "evidence-check"
+  "interviewer": {
+    "role": "interviewer",
+    "schema": "readback"
   },
-  "contract-editor": {
-    "role": "contract-editor",
-    "schema": "contract-edit"
+  "interviewer.redirect": {
+    "role": "interviewer",
+    "schema": "redirect"
+  },
+  "interviewer.interpret": {
+    "role": "interviewer",
+    "schema": "interpret"
+  },
+  "brief-writer": {
+    "role": "brief-writer",
+    "schema": "brief"
+  },
+  "contract-writer": {
+    "role": "contract-writer",
+    "schema": "contract-write"
+  },
+  "researcher.research": {
+    "role": "researcher",
+    "schema": "research"
+  },
+  "god-eye.readiness": {
+    "role": "god-eye",
+    "schema": "readiness"
   }
 }

@@ -69,8 +69,6 @@
   ],
   "checks": [],
   "limits": {
-    "max_intent_rounds": 10,
-    "clarify_no_progress_rounds": 2,
     "max_design_critique_rounds": 2,
     "max_plan_validate_rounds": 3,
     "retry_limit": 3,
@@ -114,31 +112,22 @@
   },
   "intent_research": {
     "web": true,
-    "search_mcp": null,
-    "budgets": {
-      "low": {
-        "repo_scouts": 3,
-        "web_scouts": 1,
-        "minutes": 2,
-        "strict_second_source": false
-      },
-      "medium": {
-        "repo_scouts": 4,
-        "web_scouts": 3,
-        "minutes": 4,
-        "strict_second_source": false
-      },
-      "high": {
-        "repo_scouts": 5,
-        "web_scouts": 5,
-        "minutes": 5,
-        "strict_second_source": true
-      }
+    "search_mcp": null
+  },
+  "clarify": {
+    "max_research_passes": 2,
+    "max_sheet_decisions": 5,
+    "max_writer_attempts": 2,
+    "research_minutes": {
+      "low": 6,
+      "medium": 10,
+      "high": 15
     },
-    "unknowns_per_scout": 3,
-    "max_unknowns": 12,
-    "verifier_batch": 4,
-    "max_verifiers": 2,
-    "mapper_seconds": 180
+    "agent_seconds": {
+      "interviewer": 600,
+      "brief-writer": 900,
+      "contract-writer": 900,
+      "god-eye": 900
+    }
   }
 }

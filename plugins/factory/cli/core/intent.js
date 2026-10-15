@@ -1,5 +1,8 @@
 'use strict';
-// Grounded intent: research first, ask only what research can't answer.
+// Grounded intent, the v1/v2 record (clarify before v3). Since clarify v3
+// (docs/DESIGN-CLARIFY-v3.md, cli/core/clarify.js) this module only reads and shows that
+// record: for jobs whose contract was approved under v2 (ground, decide, the floor, the
+// console) and for the migration of jobs still in clarify. What follows describes the record.
 //
 // Clarify's scout phase (workflows/fanout-judge.js) maps the unknowns (U-n), researches the
 // repo and world ones within the risk budget, verifies findings (E-n) and turns confirmed
@@ -56,10 +59,6 @@ function settings(root, state) {
   };
 }
 
-// ---------------------------------------------------------------- the record
-function empty(state) {
-  return { version: 2, job: state.id, updated_at: null, rounds: [], web: null, versions: [], unknowns: [], evidence: [], assumptions: [], notes: [] };
-}
 
 // The record, or null when the scout phase never ran. A record that fails its seal is
 // reported as tampered (the floor fails on it) instead of being trusted.
@@ -78,194 +77,19 @@ function save(root, jobId, data) {
 }
 
 const num = (id) => Number(String(id || '').replace(/^[A-Z]-/, '')) || 0;
-function nextIds(data) {
-  const max = (list) => list.reduce((m, x) => Math.max(m, num(x.id)), 0);
-  return { U: max(data.unknowns || []), E: max(data.evidence || []), A: max(data.assumptions || []) };
-}
 
 const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 const clip = (s, n) => String(s === undefined || s === null ? '' : s).slice(0, n);
 
-function cleanUnknown(u) {
-  return {
-    id: String(u.id),
-    text: clip(u.text, 400),
-    kind: KINDS.includes(u.kind) ? u.kind : 'user',
-    impact: IMPACTS.includes(u.impact) ? u.impact : 'medium',
-    draft: clip(u.draft || u.text, 400),
-    ...(Array.isArray(u.options) && u.options.length ? { options: u.options.slice(0, 5).map((o) => clip(o, 160)) } : {}),
-    research: ['repo', 'web', 'none'].includes(u.research) ? u.research : u.kind === 'repo' ? 'repo' : u.kind === 'world' ? 'web' : 'none',
-    ...(u.search ? { search: clip(u.search, 300) } : {}),
-    ...(u.why ? { why: clip(u.why, 300) } : {}),
-    resolution: RESOLUTIONS.includes(u.resolution) ? u.resolution : 'pending',
-    evidence: Array.isArray(u.evidence) ? u.evidence.map(String) : [],
-    assumption: u.assumption || null,
-    question_id: u.question_id || null,
-    answer: u.answer || null,
-    note: u.note ? clip(u.note, 300) : null,
-    researched: Boolean(u.researched),
-    source: u.source || 'mapper',
-    round: u.round || null,
-  };
-}
 
-function cleanEvidence(e) {
-  return {
-    id: String(e.id),
-    unknown: String(e.unknown || ''),
-    claim: clip(e.claim, 500),
-    source: clip(e.source, 500),
-    source_tier: TIERS.includes(e.source_tier) ? e.source_tier : 'secondary',
-    retrieved_at: e.retrieved_at ? clip(e.retrieved_at, 40) : null,
-    quote: clip(e.quote, 1000),
-    applies_to_version: e.applies_to_version ? clip(e.applies_to_version, 80) : null,
-    confidence: IMPACTS.includes(e.confidence) ? e.confidence : 'low',
-    scout: e.scout === 'web' ? 'web' : 'repo',
-    verdict: VERDICTS.includes(e.verdict) ? e.verdict : 'unchecked',
-    verdict_confidence: e.verdict_confidence || null,
-    verdict_reason: e.verdict_reason ? clip(e.verdict_reason, 300) : null,
-    second_source: e.second_source && e.second_source.source ? { source: clip(e.second_source.source, 500), quote: clip(e.second_source.quote, 500) } : null,
-    counter_source: e.counter_source && e.counter_source.source ? { source: clip(e.counter_source.source, 500), quote: clip(e.counter_source.quote, 500) } : null,
-    checks: Array.isArray(e.checks) ? e.checks.slice(0, 5) : [],
-    ...(/^U-\d+$/.test(String(e.contradicts || '')) ? { contradicts: String(e.contradicts) } : {}),
-    round: e.round || null,
-  };
-}
 
-// v2: the workflow's issues folded into the ledger. Settled is final: a settled, deferred or
-// dropped issue keeps the CLI's copy (only new notes and evidence links come through); the
-// rest take the workflow's view, keeping what the human did (answers, notes) and history.
-function mergeIssues(out, sc, round) {
-  const clarify = require('./clarify');
-  const key = (h) => `${h.round}|${h.event}|${h.actor}|${h.text || ''}`;
-  for (const raw of sc.unknowns || []) {
-    if (!raw || !/^U-\d+$/.test(raw.id || '')) continue;
-    const u = clarify.cleanIssue({ round, ...raw });
-    const i = out.unknowns.findIndex((x) => x.id === u.id);
-    if (i === -1) {
-      out.unknowns.push(u);
-      continue;
-    }
-    const old = out.unknowns[i];
-    const seen = new Set((old.history || []).map(key));
-    const history = [...(old.history || []), ...(u.history || []).filter((h) => !seen.has(key(h)))];
-    const nseen = new Set((old.notes || []).map((n) => `${n.round}|${n.text}`));
-    const notes = [...(old.notes || []), ...(u.notes || []).filter((n) => !nseen.has(`${n.round}|${n.text}`))];
-    const aliases = [...(old.aliases || [])];
-    for (const a of u.aliases || []) if (!aliases.some((x) => x.id === a.id)) aliases.push(a);
-    if (clarify.FINAL.has(old.status)) {
-      out.unknowns[i] = { ...old, history, notes, aliases };
-      continue;
-    }
-    const human = old.answered && old.answer ? { answer: old.answer, answered: old.answered } : {};
-    out.unknowns[i] = { ...old, ...u, ...human, history, notes, aliases, question_id: old.question_id || u.question_id, applied_round: old.applied_round || u.applied_round || null };
-  }
-}
 
-// Fold one clarify run's scout data (envelope data.scout) into the record. Ids come from
-// the workflow, which continued from the brief's next_ids, so new items are new; what the
-// human did (answers, overrides, drops) is kept.
-function merge(data, sc, round) {
-  const out = { ...data, unknowns: data.unknowns.slice(), evidence: data.evidence.slice(), assumptions: data.assumptions.slice(), versions: (data.versions || []).slice(), rounds: (data.rounds || []).slice() };
-  if (!sc || typeof sc !== 'object') return out;
-  const at = (list, id) => list.findIndex((x) => x.id === id);
-  if (data.version === 2) mergeIssues(out, sc, round);
-  for (const raw of data.version === 2 ? [] : sc.unknowns || []) {
-    if (!raw || !/^U-\d+$/.test(raw.id || '')) continue;
-    const u = cleanUnknown({ round, ...raw });
-    const i = at(out.unknowns, u.id);
-    if (i === -1) out.unknowns.push(u);
-    else {
-      const old = out.unknowns[i];
-      const human = ['answered', 'dropped'].includes(old.resolution);
-      out.unknowns[i] = { ...old, ...u, ...(human ? { resolution: old.resolution, answer: old.answer } : {}), question_id: old.question_id || u.question_id };
-    }
-  }
-  for (const raw of sc.evidence || []) {
-    if (!raw || !/^E-\d+$/.test(raw.id || '')) continue;
-    const e = cleanEvidence({ round, ...raw });
-    const i = at(out.evidence, e.id);
-    if (i === -1) out.evidence.push(e);
-    else out.evidence[i] = { ...out.evidence[i], ...e };
-  }
-  for (const raw of sc.assumptions || []) {
-    if (!raw || !/^A-\d+$/.test(raw.id || '')) continue;
-    const i = at(out.assumptions, raw.id);
-    const a = { id: raw.id, unknown: String(raw.unknown || ''), statement: clip(raw.statement, 500), evidence: (raw.evidence || []).map(String), overridden: false, override: null, dropped: false, withdrawn: false };
-    if (i === -1) out.assumptions.push(a);
-    else if (!out.assumptions[i].overridden && !out.assumptions[i].dropped) out.assumptions[i] = { ...out.assumptions[i], statement: a.statement, evidence: a.evidence, withdrawn: false };
-  }
-  for (const v of sc.versions || []) {
-    if (v && v.name && !out.versions.some((x) => x.name === v.name)) out.versions.push({ name: clip(v.name, 120), version: clip(v.version, 60), source: clip(v.source, 300) });
-  }
-  if (sc.web) {
-    const known = sc.web.available === undefined || sc.web.available === null ? (data.web ? data.web.available : null) : sc.web.available;
-    out.web = { enabled: Boolean(sc.web.enabled), reason: sc.web.reason || null, available: known === undefined ? null : known, search_mcp: sc.web.search_mcp || null };
-  }
-  out.rounds.push({
-    round,
-    at: nowIso(),
-    scouted: Boolean(sc.ran),
-    mapped: Boolean(sc.map && sc.map.ran),
-    map_ok: sc.map ? sc.map.ok : null,
-    scouts: (sc.scouts || []).map((s) => ({ label: clip(s.label, 80), mode: s.mode, unknowns: (s.unknowns || []).slice(0, 20), outcome: s.outcome || null })),
-    verifiers: Number(sc.verifiers) || 0,
-    degraded: (sc.degraded || []).map(String).slice(0, 20),
-    budget: sc.budget || null,
-  });
-  return out;
-}
 
 // ---------------------------------------------------------------- CLI checks on evidence
 const squash = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-// "src/a.js:12", "src/a.js:12-20", "src/a.js#L12" → { file, from, to } (lines 1-based) or null.
-function repoSource(src) {
-  const m = String(src || '').trim().replace(/^`|`$/g, '').match(/^(.+?)(?::|#L)(\d+)(?:[-–](?:L)?(\d+))?$/);
-  if (!m || /^https?:/.test(m[1])) return null;
-  return { file: m[1], from: Number(m[2]), to: Number(m[3] || m[2]) };
-}
 
-// The quote must be at the cited place in the repo (a few lines of slack either side).
-function repoQuoteOk(root, e) {
-  const s = repoSource(e.source);
-  if (!s) return { ok: false, why: `source "${clip(e.source, 80)}" is not path:line` };
-  const abs = path.resolve(root, s.file);
-  if (!abs.startsWith(path.resolve(root) + path.sep) || abs.includes(`${path.sep}.factory${path.sep}`)) return { ok: false, why: 'source is outside the repository' };
-  const text = readText(abs, null);
-  if (text === null) return { ok: false, why: `${s.file} does not exist` };
-  if (!squash(e.quote)) return { ok: false, why: 'no quote' };
-  const lines = text.split('\n');
-  const near = lines.slice(Math.max(0, s.from - 4), Math.min(lines.length, s.to + 3)).join('\n');
-  if (squash(near).includes(squash(e.quote))) return { ok: true };
-  return { ok: false, why: squash(text).includes(squash(e.quote)) ? `quote is in ${s.file} but not at line ${s.from}` : `quote not found in ${s.file}` };
-}
 
-// Re-check what the CLI can check itself. Returns the evidence list with verdicts adjusted.
-function checkEvidence(root, data, { strict = false } = {}) {
-  const uById = Object.fromEntries(data.unknowns.map((u) => [u.id, u]));
-  return data.evidence.map((e0) => {
-    const e = { ...e0, checks: (e0.checks || []).slice() };
-    if (e.cli_checked) return e;
-    const down = (why) => {
-      if (e.verdict === 'confirmed' || e.verdict === 'unchecked') e.verdict = 'unverified';
-      e.verdict_reason = `${why} (CLI check)`;
-      e.checks.push(why);
-    };
-    if (e.scout === 'repo') {
-      const q = repoQuoteOk(root, e);
-      if (!q.ok) down(q.why);
-    } else {
-      if (!/^https?:\/\//.test(e.source)) down('web evidence without a URL source');
-      else if (!squash(e.quote)) down('web evidence without an exact quote');
-      else if (!['official', 'primary', 'standard'].includes(e.source_tier) && e.verdict === 'confirmed' && !e.second_source) down(`a ${e.source_tier} source alone does not confirm a claim`);
-    }
-    const u = uById[e.unknown];
-    if (strict && u && u.impact === 'high' && e.verdict === 'confirmed' && !e.second_source) down('high risk: a scope-changing claim needs a second independent source');
-    e.cli_checked = true;
-    return e;
-  });
-}
 
 // ---------------------------------------------------------------- sorting
 // Same rules as the workflow's scout phase (workflows can't import, so they're written twice):
@@ -280,172 +104,9 @@ function usable(e, u) {
   return e.scout === 'repo' && u.impact !== 'high' && e.confidence !== 'low';
 }
 
-function sort(data) {
-  const out = { ...data, unknowns: data.unknowns.map((u) => ({ ...u })), assumptions: data.assumptions.map((a) => ({ ...a })) };
-  const evBy = {};
-  for (const e of out.evidence) (evBy[e.unknown] = evBy[e.unknown] || []).push(e);
-  let nextA = nextIds(out).A;
-  for (const u of out.unknowns) {
-    const evs = evBy[u.id] || [];
-    u.evidence = evs.map((e) => e.id);
-    const a = out.assumptions.find((x) => x.unknown === u.id && !x.withdrawn);
-    if (a && (a.overridden || a.dropped)) {
-      u.resolution = a.dropped ? 'dropped' : 'assumption';
-      u.assumption = a.id;
-      continue;
-    }
-    if (['answered', 'dismissed', 'dropped'].includes(u.resolution)) continue;
-    const good = evs.filter((e) => usable(e, u));
-    let res;
-    if (u.kind === 'user') res = 'question';
-    else if (u.kind === 'decision') res = u.impact === 'low' && !evs.length ? 'deferred' : 'question';
-    else if (good.length) res = 'assumption';
-    else if (u.impact === 'low' && !evs.length) res = 'deferred';
-    else if (u.resolution === 'pending' && !u.researched && !evs.length) res = 'pending';
-    else res = 'question';
-    if (res === 'question' && !u.note && evs.length) {
-      const bad = evs.filter((e) => !usable(e, u));
-      u.note = bad.some((e) => e.verdict === 'contradicted') ? `sources disagree: ${bad.map((e) => `${e.id} ${e.verdict}`).join(', ')}` : `research did not confirm it: ${bad.map((e) => `${e.id} ${e.verdict}${e.verdict_reason ? ` (${e.verdict_reason})` : ''}`).join(', ')}`;
-    }
-    if (res === 'deferred' && !u.note) u.note = 'low impact: assumed, not researched';
-    u.resolution = res;
-    if (res === 'assumption') {
-      const statement = good.map((e) => e.claim).join('; ');
-      const ids = good.map((e) => e.id);
-      if (a) Object.assign(a, { statement, evidence: ids, withdrawn: false });
-      else {
-        nextA += 1;
-        out.assumptions.push({ id: `A-${nextA}`, unknown: u.id, statement, evidence: ids, overridden: false, override: null, dropped: false, withdrawn: false });
-      }
-      u.assumption = a ? a.id : `A-${nextA}`;
-    } else if (a) {
-      a.withdrawn = true; // its evidence no longer holds: the unknown is asked instead
-      u.assumption = null;
-    }
-  }
-  return out;
-}
 
-// v2 (docs/DESIGN-CLARIFY-v2.md, state machine): re-derive the status of every issue that
-// is not final from the evidence, the same rules as the workflow. Settled is final; it
-// reopens only on new confirmed evidence that says it contradicts that issue.
-function advance(data, round = null) {
-  const clarify = require('./clarify');
-  const out = { ...data, unknowns: data.unknowns.map((u) => ({ ...u })), assumptions: data.assumptions.map((a) => ({ ...a })) };
-  const evBy = {};
-  for (const e of out.evidence) (evBy[e.unknown] = evBy[e.unknown] || []).push(e);
-  let nextA = nextIds(out).A;
-  const liveA = (u) => out.assumptions.find((x) => x.unknown === u.id && !x.withdrawn);
-  for (const u of out.unknowns) {
-    const evs = evBy[u.id] || [];
-    u.evidence = evs.map((e) => e.id);
-    const a = liveA(u);
-    if (a && a.dropped && u.status !== 'dropped') {
-      u.status = 'dropped';
-      clarify.event(u, round, 'dropped', 'user', `dropped ${a.id}`);
-    } else if (a && a.overridden && !(u.status === 'settled' && u.settled_by === 'user')) {
-      u.answer = a.override.value;
-      u.answered = { via: a.override.via || 'chat', at: a.override.at, question_id: null };
-      clarify.settle(u, 'user', round, 'user', `changed ${a.id}`);
-    }
-    if (u.status === 'settled') {
-      const c = evs.find((e) => e.contradicts === u.id && e.verdict === 'confirmed' && !(u.history || []).some((h) => h.event === 'reopened' && h.text === e.id));
-      if (c) {
-        u.status = 'proposed';
-        u.owner = 'user';
-        u.settled_by = null;
-        u.question_id = null;
-        u.default = clip(c.claim, 300);
-        u.reason = `new evidence ${c.id} contradicts how it was settled`;
-        clarify.event(u, round, 'reopened', 'evidence', c.id);
-      }
-    }
-    if (u.status === 'settled' && u.settled_by === 'evidence' && !a) {
-      // settled by evidence without its assumption (an older or hand-made record): state it
-      const good = evs.filter((e) => usable(e, u));
-      if (good.length) {
-        nextA += 1;
-        out.assumptions.push({ id: `A-${nextA}`, unknown: u.id, statement: good.map((e) => e.claim).join('; '), evidence: good.map((e) => e.id), overridden: false, override: null, dropped: false, withdrawn: false });
-        u.assumption = `A-${nextA}`;
-      }
-    }
-    if (clarify.FINAL.has(u.status)) {
-      if (a && !(u.status === 'settled' && u.settled_by === 'evidence') && !a.overridden && !a.dropped) a.withdrawn = true;
-      u.resolution = clarify.compatResolution(u);
-      continue;
-    }
-    if (u.owner === 'design') {
-      u.status = 'deferred_to_design';
-      u.settled_by = 'design_deferral';
-      clarify.event(u, round, 'deferred_to_design', 'cli', 'implementation detail: settled in ground/decide');
-    } else if (u.owner === 'research') {
-      const good = evs.filter((e) => usable(e, u));
-      if (good.length) {
-        const statement = good.map((e) => e.claim).join('; ');
-        const ids = good.map((e) => e.id);
-        if (a) Object.assign(a, { statement, evidence: ids, withdrawn: false });
-        else {
-          nextA += 1;
-          out.assumptions.push({ id: `A-${nextA}`, unknown: u.id, statement, evidence: ids, overridden: false, override: null, dropped: false, withdrawn: false });
-        }
-        u.assumption = a ? a.id : `A-${nextA}`;
-        clarify.settle(u, 'evidence', round, 'research', ids.join(', '));
-      } else if (u.impact === 'low' && !evs.length) {
-        u.note = u.note || 'low impact: assumed, not researched';
-        clarify.settle(u, 'assumption_accepted', round, 'cli', u.note);
-      } else if ((u.status === 'open' && !u.researched && !evs.length) || u.status === 'researching') {
-        // not researched yet, or a retry is due: stays with research
-      } else {
-        const bad = evs.filter((e) => !usable(e, u));
-        const why = u.note || (bad.length ? (bad.some((e) => e.verdict === 'contradicted') ? `sources disagree: ${bad.map((e) => `${e.id} ${e.verdict}`).join(', ')}` : `research did not confirm it: ${bad.map((e) => `${e.id} ${e.verdict}${e.verdict_reason ? ` (${e.verdict_reason})` : ''}`).join(', ')}`) : 'research could not settle it');
-        u.owner = 'user';
-        u.status = 'proposed';
-        u.reason = clip(u.reason || why, 300);
-        u.note = u.note || clip(why, 300);
-        if (clarify.isNone(u.default)) u.default = clip(u.draft, 300);
-        clarify.event(u, round, 'proposed', 'research', u.reason);
-      }
-    } else if (u.impact === 'low' && !u.question_id) {
-      u.note = u.note || 'low impact: assumed, not asked';
-      clarify.settle(u, 'assumption_accepted', round, 'cli', u.note);
-    } else if (u.status === 'open') {
-      u.status = 'proposed';
-    }
-    if (a && !(u.status === 'settled' && u.settled_by === 'evidence')) {
-      a.withdrawn = true;
-      u.assumption = null;
-    }
-    u.researched = u.researched || evs.length > 0;
-    u.resolution = clarify.compatResolution(u);
-  }
-  return out;
-}
 
-// Answers recorded with `factory answer --id Q-n` settle the unknown that question was for.
-function applyAnswers(data, state, answers) {
-  const log = state.question_log || [];
-  const out = { ...data, unknowns: data.unknowns.map((u) => ({ ...u })) };
-  for (const a of answers || []) {
-    const q = a.id ? log.find((x) => x.id === a.id) : log.find((x) => norm(x.question) === norm(a.question));
-    const uid = q && q.unknown;
-    const u = uid && out.unknowns.find((x) => x.id === uid);
-    if (u && u.resolution !== 'dropped') {
-      u.resolution = 'answered';
-      u.answer = clip(a.answer, 400);
-      u.question_id = u.question_id || q.id;
-    }
-  }
-  return out;
-}
 
-// Repo and world unknowns research could not settle are asked even when the judge left them
-// out: web off, no web access, unverified, contradicted, research budget spent.
-function mustAsk(data, questions, dismissed, log = []) {
-  const covered = new Set([...(questions || []).map((q) => String(q.unknown || '').toUpperCase()), ...(dismissed || []).map((x) => String(x.unknown || '').toUpperCase()), ...log.map((q) => q.unknown).filter(Boolean)]);
-  return data.unknowns
-    .filter((u) => ['repo', 'world'].includes(u.kind) && u.impact !== 'low' && u.resolution === 'question' && !u.question_id && !covered.has(u.id))
-    .map((u) => ({ question: /\?$/.test(u.draft) ? u.draft : `Is this right: ${u.draft}?`, category: 'constraint', why: `Research could not settle it: ${u.note || 'no confirmed evidence'}.`, default: 'None: answer needed', unknown: u.id, kind: u.kind, evidence: u.evidence, preference: !u.evidence.length, ...(u.options ? { options: u.options } : {}) }));
-}
 
 // ---------------------------------------------------------------- the contract section
 function liveAssumptions(data) {
@@ -464,12 +125,7 @@ function writeContract(root, state, data) {
   const f = jobPaths(root, state.id).contract;
   const text = readText(f, null);
   if (text === null) return false;
-  let next = contract.setGrounded(text, contractLines(data));
-  if (data.version === 2) {
-    // v2: the clarify ledger's sections (user answers and accepted defaults; deferred to design)
-    const clarify = require('./clarify');
-    next = contract.setDeferred(contract.setClarified(next, clarify.clarificationLines(data)), clarify.deferredLines(data));
-  }
+  const next = contract.setGrounded(text, contractLines(data));
   if (next === text) return false;
   writeText(f, next);
   return true;
@@ -599,7 +255,7 @@ function briefText(data, { forGround = false } = {}) {
     L.push('- Still open or assumed without research:');
     for (const u of open) L.push(`  - ${u.id} [${u.kind}, ${u.impact}] ${clip(u.text, 140)} → ${u.resolution}${u.question_id ? ` (asked as ${u.question_id})` : ''}${u.note ? ` — ${clip(u.note, 120)}` : ''}`);
   }
-  const deferred = require('./clarify').deferredText(data);
+  const deferred = require('./clarify-migrate').legacyDeferredText(data);
   if (deferred) L.push(deferred);
   if ((data.versions || []).length) L.push(`- Versions in use: ${data.versions.map((v) => `${v.name} ${v.version} (${v.source})`).join(', ')}`);
   const f = data.evidence.filter((e) => e.verdict === 'confirmed' || (e.scout === 'repo' && e.verdict === 'unchecked'));
@@ -738,6 +394,6 @@ function show(root, jobId) {
 }
 
 module.exports = {
-  KINDS, IMPACTS, TIERS, files, settings, empty, load, save, nextIds, merge, checkEvidence, repoQuoteOk, repoSource, usable, sort, advance, applyAnswers, mustAsk,
+  KINDS, IMPACTS, TIERS, files, settings, load, save, usable,
   liveAssumptions, contractLines, writeContract, groundedProblems, floorOk, topFindings, assumptionsView, counts, briefText, findingsMarkdown, render, override, show,
 };

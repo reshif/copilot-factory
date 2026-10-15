@@ -114,29 +114,11 @@ function resultText(step, ok, d) {
   }
 }
 
-// Clarify v2: the issue ledger as the page shows it (the Clarify block in the job and section
-// views, the Board's question count). A pre-v2 record is shown migrated, as factory clarify
-// status shows it; nothing is written.
-function clarifyBlock(state, idata, jp) {
-  if (!idata || !Array.isArray(idata.unknowns)) return null;
+// Clarify v3: the stage, the items with who decided them, the open sheet and the failures, as
+// factory clarify status shows them (the latest state). Jobs approved before v3 show none.
+function clarifyBlock(root, state) {
   try {
-    const clarify = require('./clarify');
-    const data = idata.version === 2 ? idata : clarify.migrate(idata, state, readJson(jp.answers, []) || []).data;
-    const v = clarify.view(null, state, data);
-    return {
-      version: idata.version === 2 ? 2 : 1,
-      migrated: Boolean(data.migration),
-      totals: v.totals,
-      open_by_owner: v.open_by_owner,
-      questions: v.questions.map((q) => ({ id: q.id, issue: q.issue, question: short(String(q.question || ''), 200), default: q.default ? short(String(q.default), 140) : null })),
-      issues: v.issues.slice(0, 60).map((r) => ({ id: r.id, subject: r.subject, title: short(r.title, 160), kind: r.kind, status: r.status, owner: r.owner, settled_by: r.settled_by || null, next: short(r.next, 160), aliases: r.aliases, answer: r.answer ? short(r.answer, 140) : null })),
-      deferred: v.deferred_to_design,
-      rounds: v.rounds,
-      trend: v.trend,
-      limits: v.limits,
-      notes: (v.notes || []).slice(-5).map((n) => ({ round: n.round || null, ref: n.ref || null, text: short(String(n.text || ''), 200) })),
-      migration: data.migration ? { folded: (data.migration.folded || []).length, matched_answers: (data.migration.matched_answers || []).map((m) => m.issue), deferred: (data.migration.deferred || []).map((d) => d.id) } : null,
-    };
+    return require('./clarify').consoleBlock(root, state);
   } catch {
     return null;
   }
@@ -205,6 +187,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
   checker.check(lock);
   const idata = readJson(path.join(jp.dir, 'intent-evidence.json'), null);
   if (idata) checker.check(idata);
+  const cdata = readJson(path.join(jp.dir, 'clarify.json'), null);
+  if (cdata) checker.check(cdata);
   const intentRounds = {};
   const ledger = readJsonl(jp.ledger).filter((e) => e && e.job === id);
   ledger.forEach(checker.check);
@@ -420,7 +404,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     pr: state.pr ? { mode: state.pr.mode, url: state.pr.url || null, merged: Boolean(state.pr.merged), merged_at: state.pr.merged_at || null } : null,
     review_lanes: reviewLanes.map(String),
     // the caps the job runs under (policy.limits), so the page never assumes them
-    limits: Object.fromEntries(['max_review_rounds', 'max_verify_fix_rounds', 'max_intent_rounds', 'max_design_critique_rounds', 'max_plan_validate_rounds', 'retry_limit'].filter((k) => Number.isInteger((policy.limits || {})[k])).map((k) => [k, policy.limits[k]])),
+    limits: Object.fromEntries(['max_review_rounds', 'max_verify_fix_rounds', 'max_design_critique_rounds', 'max_plan_validate_rounds', 'retry_limit'].filter((k) => Number.isInteger((policy.limits || {})[k])).map((k) => [k, policy.limits[k]])),
     models: ((state.policy || {}).agents || {}).models || {},
     escalation: ((state.policy || {}).agents || {}).builder_escalation || [],
     steps,
@@ -431,7 +415,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     runs_live: { running: liveRun ? liveRun.id : null, last_by_stage: lastByStage },
     tasks,
     lessons,
-    clarify: clarifyBlock(state, idata, jp),
+    clarify: clarifyBlock(root, state),
     intent: idata ? {
       web: idata.web || null,
       unknowns: (idata.unknowns || []).length,
