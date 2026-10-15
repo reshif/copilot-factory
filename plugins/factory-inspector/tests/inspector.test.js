@@ -682,3 +682,25 @@ test('R20 from synthetic records: web off is low severity; limits and quiet jobs
   rw.decisions.splice(2, 1);
   assert.ok(rules.conformance(rw).some((x) => x.rule === 'R3.unexplained_rewind'), 'without the override the rewind is unexplained');
 });
+
+test('clarify v2: R6 reads the ceiling each round recorded, R19 flags stalled rounds and re-raised issues, R7 lets clarify status and notes through', () => {
+  const { LIMITS } = require('../inspector/config');
+  const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
+  const step = (h, round, lg) => ({ kind: 'step', step: 'clarify', ok: false, at: at(h), detail: { round, questions: 0, question_ids: [], ledger: { opened: 0, settled: 0, deferred: 0, asked: 0, progress: false, degraded: false, ceiling: 10, counted: round, reraised: 0, ...lg } } });
+  const job = { id: 'J-0002', state: { status: 'active', updated_at: at(9) }, lock: { limits: { max_intent_rounds: 4 } }, decisions: [], events: [],
+    ledger: [step(1, 1, { progress: true, asked: 3, reraised: 2 }), step(2, 2, { degraded: true }), step(3, 3, { reraised: 1 }), step(4, 4, {}), step(5, 5, { progress: true, settled: 2 }), step(6, 6), step(7, 7), step(8, 8)] };
+  // 8 clarify entries is over the v1 cap (4 + 2), but each v2 round was within the ceiling it recorded
+  assert.ok(!rules.loops(job).some((x) => x.rule === 'R6.clarify_over_cap'));
+  job.ledger.push(step(9, 11, { ceiling: 10, counted: 11 }));
+  assert.match(rules.loops(job).find((x) => x.rule === 'R6.clarify_over_cap').summary, /11 counted rounds; the ceiling it recorded was 10/);
+  const ids = rules.jobHealth(job, LIMITS, at(10)).map((x) => x.rule);
+  assert.ok(ids.includes('R19.clarify_stalled'), ids.join());
+  assert.match(rules.jobHealth(job, LIMITS, at(10)).find((x) => x.rule === 'R19.clarify_stalled').summary, /4 round\(s\) in a row/, 'the degraded round is not counted; the longest streak');
+  assert.ok(ids.includes('R19.issues_reraised'));
+  // R7: clarify status is read-only, clarify note belongs to the clarify step
+  const exp = rules.expectationsFor({ action: 'skill', skill: 'clarify' });
+  assert.ok(exp.allowed.has('clarify:note') && exp.allowed.has('answer'));
+  const cli = (h, d, extra) => ({ event: 'cli', ts: at(h), job: 'J-0002', decision_id: d, ok: true, ...extra });
+  const j2 = { id: 'J-0002', state: {}, lock: null, ledger: [], decisions: [{ id: 'D1', ts: at(1), action: 'gate', step: 'H1' }], events: [cli(1.1, 'D1', { cmd: 'clarify', sub: 'status' })] };
+  assert.deepEqual(rules.driverFidelity(j2), [], 'clarify status while waiting at a gate is a look, not an action');
+});

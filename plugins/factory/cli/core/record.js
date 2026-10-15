@@ -187,7 +187,8 @@ function recClarify(root, state, env) {
     ? { findings: intentMod.topFindings(idata), assumptions: intentMod.assumptionsView(idata), research: researchView, intent_findings: intentMod.files(root, state.id).md, intent_evidence: intentMod.files(root, state.id).json, ...(g.researchable.length ? { researchable_dropped: g.researchable } : {}), ...(g.flagged.length ? { flagged: g.flagged } : {}), clarify: clarifyOut }
     : {};
   const researchDetail = idata ? { ...researchView, researchable_asked: n.questions.filter((q) => q.researchable).length, scouted: Boolean(d.scout && d.scout.ran), scouts: ((d.scout && d.scout.scouts) || []).length, verifiers: (d.scout && d.scout.verifiers) || 0 } : null;
-  const ledgerDetail = measure ? { opened: measure.opened, settled: measure.settled, deferred: measure.deferred, asked: measure.asked, progress: measure.progress, degraded: measure.degraded, open_by_owner: measure.totals.by_owner, no_progress_streak: C.clarify_no_progress || 0 } : null;
+  // ceiling and counted: what the CLI held this round to (the inspector checks rounds against it)
+  const ledgerDetail = measure ? { opened: measure.opened, settled: measure.settled, deferred: measure.deferred, asked: measure.asked, progress: measure.progress, degraded: measure.degraded, open_by_owner: measure.totals.by_owner, no_progress_streak: C.clarify_no_progress || 0, ceiling: CL.ceiling, counted: clarifyMod.limits(state).counted, reraised: ((d.scout && d.scout.raised && d.scout.raised.notes) || []).length } : null;
   if (idata) {
     ledger.append(root, state.id, {
       kind: 'intent', round,
