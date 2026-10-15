@@ -470,7 +470,8 @@ test('factory next: a notice when chat replies are not reaching the factory (dea
   let n = toH1(root, J);
   assert.equal(n.step, 'H1');
   assert.match(n.notice, /Chat replies aren't reaching the factory: no chat prompt has ever reached/);
-  for (const re of [/Chat: Configure Hooks/, /GitHub Copilot Chat Hooks/, /chat\.useHooks/, /Workspace Trust/, /\/plugin list/, /Session Target/, new RegExp(`factory approve H1 --job ${J}`), /shows a short code on that terminal/]) assert.match(n.notice, re);
+  for (const re of [/Chat: Configure Hooks/, /GitHub Copilot Chat Hooks/, /chat\.useHooks/, /Workspace Trust/, /\/plugin list/, /Session Target/, new RegExp(`factory approve H1 --job ${J}`), /run this in your own terminal/, /it will ask you to type a code shown there/]) assert.match(n.notice, re);
+  assert.doesNotMatch(n.notice, /type (it )?back|paste (it|the code) (back|here)|tell me/i, 'the notice never asks the user to bring the code back to the chat');
   assert.equal(F.cli(root, ['next']).notice, undefined, 'once per wait');
   // hooks ran before the gate, then nothing since it opened: said on the next look
   root = F.makeRepo();

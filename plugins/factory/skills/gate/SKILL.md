@@ -27,7 +27,7 @@ Read the files in `docs` yourself and summarise faithfully — don't hide open c
 **Build environment.** When `factory next` carries `environment` (no environment is confirmed for this repository yet), show it after the gate's documents, at H1 and every later gate until the user decides: its name, setup commands, env, services and the files it was detected from (`evidence`), and its `hash`. The user replies `confirm environment <hash>` to use it, or `confirm environment none` for bare worktrees; to change it, write a copy under `.factory/scratch/`, run `factory env propose --file <copy>` and show the new hash (`factory env show` prints both). Never confirm it for them: its setup commands run on their machine.
 
 ## Then
-If `factory next` gave a `notice` (chat replies aren't reaching the factory), show it once, above the line below: a chat `approve` would not be applied, and the notice says how to check the hooks and which command the user can run in their own terminal instead (it shows a short code on their terminal for them to type back; never run it for them).
+If `factory next` gave a `notice` (chat replies aren't reaching the factory), show it once, above the line below: a chat `approve` would not be applied, and the notice says how to check the hooks and which command the user can run instead. Say it this way: "run this in your own terminal; it will ask you to type a code shown there." Never run it for them. Never ask the user for that code, never ask them to paste it into the chat, and never offer "or just tell me it's done" as a substitute: the code belongs on their terminal only, and `factory next` (`last_reply`, the gate state) shows whether it went through.
 
 Example, gate H3 for a two-task plan:
 

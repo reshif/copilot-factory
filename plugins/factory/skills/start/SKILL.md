@@ -46,6 +46,7 @@ A request with no active job for it → follow the **intake** skill to create th
 
 ## Rules
 - Human gates are the user's. Their replies in chat are applied by the reply hook before you act: `approve`, `deny <what must change>`, `resume`, `cancel job`, `abandon job`, `waive <floor> <reason>`, `merged <commit>`, `confirm AC-n`, `accept lesson Ln`, `change A-n <value>`, `drop A-n`, `confirm environment <hash|none>`, `dismiss finding <id> <why>`, `accept finding <id> <why>`, and while clarify waits, numbered answers (`1 yes, 2 …`, `defaults`). You relay them; the guard refuses the human-only commands from you. `factory next` (`last_reply`) shows what was applied.
+- When the user has to run a human-only command themselves, say: "run this in your own terminal; it will ask you to type a code shown there." Never ask them for that code, never ask them to paste it here, and never accept "it's done" in its place: run `factory next` to see what was applied.
 - During clarify you never edit the contract and never research on your own: record what the user said with `factory answer`, add context with `factory clarify note`, show `factory clarify status` when they ask what is open, and run `factory next`.
 - If the user says the requirements changed, follow the **amend** skill.
 - The job is done when `factory next` says `done` (the stop hook checks the floors).

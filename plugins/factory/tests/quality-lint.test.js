@@ -211,3 +211,47 @@ test('no hard-coded counts that drift in skills and agents; no rule-id ranges in
   assert.deepEqual(problems, []);
   assert.deepEqual(counts('the 21 agents and R10–R20'), ['agent count "21 agents"', 'rule-id range "R10–R20"']);
 });
+
+// --- the confirmation code stays on the user's terminal -----------------------------------------
+// A human-only command typed in the user's own terminal shows a random code there and asks for it
+// there. An agent must never ask the user for it (J-0001: "Paste the code back here, or just tell
+// me it's done"): the code is what keeps the command the user's, and "tell me it's done" is no
+// substitute for `factory next` showing what was applied. Skills, their references, agents and the
+// CLI's own notice say instead: "run this in your own terminal; it will ask you to type a code
+// shown there".
+const ASKS_FOR_CODE = [
+  [/\b(paste|send|share|give|tell|read|copy)\b[^.\n|]{0,40}\bcode\b[^.\n|]{0,40}\b(back|here|to me|in(to)? (the |this )?chat|to the (agent|assistant|chat))\b/i, 'asks the user to bring the confirmation code to the chat'],
+  [/\bcode\b[^.\n|]{0,60}\b(type|paste|send|read)\s+(it\s+)?back\b/i, 'asks for the code "back" (to whom? it is typed on the terminal only)'],
+  [/\b(just|or)\s+tell\s+me\s+(it'?s|when it'?s|that it'?s|it is)\s+done\b/i, 'accepts "tell me it\'s done" in place of what factory next shows'],
+];
+function asksForCode(text) {
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    // a line that forbids it ("never ask … for the code") is the rule, not a breach
+    if (/\b(never|don't|do not|not)\b[^.]{0,80}\bcode\b/i.test(line) && !/\bpaste the code back here\b/i.test(line)) continue;
+    for (const [re, what] of ASKS_FOR_CODE) if (re.test(line)) out.push(`${what}: "${line.trim().slice(0, 120)}"`);
+  }
+  return out;
+}
+
+test('lint self-check: asking the user for the confirmation code is caught; the right wording is not', () => {
+  assert.ok(asksForCode('It prints a short code on that terminal. Paste the code back here, or just tell me it\'s done.').length >= 2);
+  assert.ok(asksForCode('(it shows a short code on their terminal for them to type back; never run it for them)').length >= 1);
+  assert.deepEqual(asksForCode('Run this in your own terminal; it will ask you to type a code shown there.'), []);
+  assert.deepEqual(asksForCode('Never ask the user for that code, never ask them to paste it into the chat.'), []);
+});
+
+test('skills, agents and the CLI\'s notices never ask the user for the confirmation code', () => {
+  const problems = [];
+  const files = [];
+  for (const s of skills()) files.push(s.file, ...s.refFiles);
+  for (const f of fs.readdirSync(path.join(PLUGIN, 'agents'))) files.push(path.join(PLUGIN, 'agents', f));
+  for (const f of ['reply-watch.js', 'human.js']) files.push(path.join(PLUGIN, 'cli', 'core', f));
+  for (const f of files) for (const p of asksForCode(fs.readFileSync(f, 'utf8'))) problems.push(`${path.relative(REPO, f)}: ${p}`);
+  assert.deepEqual(problems, []);
+  // and the skills that send the user to a terminal say how
+  for (const name of ['gate', 'start']) {
+    const s = skills().find((x) => x.plugin === 'factory' && x.name === name);
+    assert.match(s.body, /run this in your own terminal; it will ask you to type a code shown there/, `${name} says how the code works`);
+  }
+});
