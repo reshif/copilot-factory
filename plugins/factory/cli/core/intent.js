@@ -360,6 +360,15 @@ function advance(data, round = null) {
         clarify.event(u, round, 'reopened', 'evidence', c.id);
       }
     }
+    if (u.status === 'settled' && u.settled_by === 'evidence' && !a) {
+      // settled by evidence without its assumption (an older or hand-made record): state it
+      const good = evs.filter((e) => usable(e, u));
+      if (good.length) {
+        nextA += 1;
+        out.assumptions.push({ id: `A-${nextA}`, unknown: u.id, statement: good.map((e) => e.claim).join('; '), evidence: good.map((e) => e.id), overridden: false, override: null, dropped: false, withdrawn: false });
+        u.assumption = `A-${nextA}`;
+      }
+    }
     if (clarify.FINAL.has(u.status)) {
       if (a && !(u.status === 'settled' && u.settled_by === 'evidence') && !a.overridden && !a.dropped) a.withdrawn = true;
       u.resolution = clarify.compatResolution(u);

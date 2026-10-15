@@ -318,8 +318,12 @@ function applyRevision(root, state, c, data, unappliedBefore, round) {
     const pb = contractMod.problems(contractMod.parse(cur)).length;
     const pn = contractMod.parse(next);
     const pa = contractMod.problems(pn).length;
+    const known = new Set([...Object.keys(contractMod.sections(cur)), 'intent', 'goal', 'non-goals', 'acceptance criteria', 'constraints', 'allowed paths', 'verify commands', 'assumptions', ...contractMod.CLI_OWNED]);
+    const foreign = Object.keys(contractMod.sections(next)).filter((k) => !known.has(k));
     if (approved) out.rejected = 'the contract is approved: changes go through an amendment';
     else if (!pn.intent.present) out.rejected = 'the revision has no Intent section';
+    else if (foreign.length) out.rejected = `the revision adds sections a contract does not have (${foreign.slice(0, 3).join(', ')})`;
+    else if (/^## Reply format|^# Factory [a-z-]+ — this run/m.test(next)) out.rejected = 'the revision carries the agent\'s own instructions';
     else if (pa > pb) out.rejected = `the revision adds contract problems (${pa} > ${pb})`;
     else {
       writeText(jobPaths(root, state.id).contract, next.endsWith('\n') ? next : `${next}\n`);

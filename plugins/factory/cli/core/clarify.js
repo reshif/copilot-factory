@@ -33,6 +33,7 @@ function stem(w) {
   if (SYN[w]) return SYN[w];
   let x = w;
   if (x.length > 4 && x.endsWith('ies')) x = `${x.slice(0, -3)}y`;
+  else if (x.length > 5 && /(ches|shes|xes|sses)$/.test(x)) x = x.slice(0, -2);
   else if (x.length > 3 && x.endsWith('s') && !/(ss|os|us|is)$/.test(x)) x = x.slice(0, -1);
   return SYN[x] || x;
 }
@@ -49,7 +50,7 @@ function tokens(text) {
 }
 // The normalised subject key: "NX-OS switchport command" → "nxos.switchport.command".
 function subjectKey(s) {
-  return tokens(String(s || '').replace(/[._/:-]+/g, ' ')).join('.');
+  return tokens(norm(s).replace(/[._/:-]+/g, ' ')).join('.');
 }
 // An issue's subject: the agent's, normalised, or derived from its text (first four tokens).
 function subjectOf(raw) {
@@ -58,7 +59,7 @@ function subjectOf(raw) {
 }
 // The faces an issue is known by: its subject and text, and each alias's text.
 function faces(x) {
-  const subj = tokens(String(x.subject || '').replace(/[._/:-]+/g, ' '));
+  const subj = tokens(norm(x.subject).replace(/[._/:-]+/g, ' '));
   const out = [new Set([...subj, ...tokens(x.text || x.question || '')])];
   for (const a of x.aliases || []) out.push(new Set(tokens(a.text || '')));
   return out.filter((f) => f.size);
@@ -138,7 +139,9 @@ function limits(state) {
 // ---------------------------------------------------------------- issues
 const clip = (s, n) => String(s === undefined || s === null ? '' : s).slice(0, n);
 const num = (id) => Number(String(id || '').replace(/^[A-Z]-/, '')) || 0;
-const isNone = (d) => !d || /^none\b/i.test(String(d).trim());
+const isNone = (d) => !d || /^none\b/i.test(String(d).trim()) || /^your call\.?:?\s*$/i.test(String(d).trim());
+// "Your call: keep coercion" → "keep coercion" (the default itself, not the label)
+const defaultValue = (d) => String(d || '').replace(/^your call\s*:\s*/i, '').trim();
 
 function event(u, round, ev, actor, text) {
   u.history = u.history || [];
@@ -207,7 +210,7 @@ function cleanIssue(u, { round = null } = {}) {
 function settle(u, by, round, actor, text) {
   u.status = 'settled';
   u.settled_by = by;
-  if (by !== 'evidence') u.owner = u.owner === 'research' && by === 'user' ? 'user' : u.owner;
+  if (by === 'user') u.owner = 'user'; // the user's word settles it, whoever owned it
   event(u, round, `settled:${by}`, actor, text);
   u.resolution = compatResolution(u);
 }
@@ -334,9 +337,9 @@ function acceptDefaults(data, state, round) {
     if (u.status !== 'proposed' || !u.question_id) continue;
     const q = asked[u.question_id];
     if (!q || (q.round || 0) >= round) continue;
-    const d = u.default || q.default;
+    const d = isNone(u.default) ? q.default : u.default;
     if (isNone(d) || q.category === 'intent' || u.kind === 'intent') continue;
-    u.answer = clip(d, 400);
+    u.answer = clip(defaultValue(d), 400);
     u.answered = { via: 'default', at: nowIso(), question_id: u.question_id, default_accepted: true };
     settle(u, 'assumption_accepted', round, 'default', `unanswered: the default "${clip(d, 120)}" applies`);
     out.push(u.id);
@@ -383,7 +386,7 @@ function applyAnswer(data, state, { issue, answer, acceptDefault = false, via = 
   const takeDefault = acceptDefault || ACCEPT.test(text) || (yes && !isNone(u.default));
   if (takeDefault) {
     if (isNone(u.default)) fail(`${u.id} has no proposed default to accept: answer it in words (factory answer ${u.question_id || u.id} "…").`, 'no_default');
-    text = u.default;
+    text = defaultValue(u.default);
   }
   if (!text) fail('The answer is empty.', 'bad_input');
   const was = { status: u.status, settled_by: u.settled_by, answer: u.answer };
@@ -394,7 +397,6 @@ function applyAnswer(data, state, { issue, answer, acceptDefault = false, via = 
   u.answer = clip(text, 400);
   u.answered = { via, at: nowIso(), question_id: questionId || u.question_id || null, ...(takeDefault ? { default_accepted: true } : {}) };
   if (['world', 'repo'].includes(u.kind)) u.user_asserted = true;
-  u.owner = u.owner === 'design' ? 'design' : 'user';
   u.applied_round = null;
   u.edit_attempts = 0;
   settle(u, takeDefault ? 'assumption_accepted' : 'user', round, via === 'chat' ? 'user (chat)' : 'user', clip(text, 200));
@@ -559,7 +561,7 @@ function trend(data) {
   const r = (data.rounds || []).filter((x) => x.ledger);
   const list = r.map((x) => ({ round: x.round, opened: x.ledger.opened, settled: x.ledger.settled, deferred: x.ledger.deferred, asked: x.ledger.asked, progress: x.ledger.progress, degraded: Boolean(x.ledger.degraded) }));
   const last = list.slice(-2);
-  const word = !list.length ? 'no rounds yet' : last.every((x) => !x.progress && !x.degraded) && last.length === 2 ? 'stalled' : last.some((x) => x.settled > x.opened) ? 'converging' : last.some((x) => x.opened > x.settled) ? 'growing' : 'steady';
+  const word = !list.length ? (data.migration ? 'no v2 rounds yet (migrated)' : 'no rounds yet') : last.every((x) => !x.progress && !x.degraded) && last.length === 2 ? 'stalled' : last.some((x) => x.settled > x.opened) ? 'converging' : last.some((x) => x.opened > x.settled) ? 'growing' : 'steady';
   return { rounds: list, trend: word };
 }
 
@@ -567,7 +569,8 @@ function view(root, state, data) {
   const t = totals(data);
   const L = limits(state);
   const tr = trend(data);
-  const questions = data.unknowns.filter((u) => u.status === 'proposed' && u.owner === 'user' && u.question_id).map((u) => ({ id: u.question_id, issue: u.id, question: u.draft || u.text, default: isNone(u.default) ? null : u.default }));
+  const logQ = Object.fromEntries((state.question_log || []).map((q) => [q.id, q]));
+  const questions = data.unknowns.filter((u) => u.status === 'proposed' && u.owner === 'user' && u.question_id).map((u) => ({ id: u.question_id, issue: u.id, question: (logQ[u.question_id] && logQ[u.question_id].question) || u.draft || u.text, default: isNone(u.default) ? null : u.default }));
   return {
     job: state.id,
     version: data.version,
@@ -665,6 +668,6 @@ function deferredText(data) {
 module.exports = {
   KINDS, OWNERS, STATUSES, SETTLED_BY, FINAL, QUESTION_KINDS,
   tokens, subjectKey, subjectOf, sameIssue, findSame, isImplementationFact, classify, limits, compatResolution, cleanIssue, settle, event,
-  migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, inClarify, isNone,
+  migrate, ensure, acceptDefaults, questionSet, resolveRef, applyAnswer, answer, parseNumbered, applyNumbered, note, inClarify, isNone, defaultValue,
   rows, totals, trend, view, statusText, status, nextSummary, clarificationLines, deferredLines, deferredText, openIds,
 };

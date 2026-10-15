@@ -105,6 +105,7 @@ function stem(w) {
   if (SYN[w]) return SYN[w]
   let x = w
   if (x.length > 4 && x.endsWith('ies')) x = `${x.slice(0, -3)}y`
+  else if (x.length > 5 && /(ches|shes|xes|sses)$/.test(x)) x = x.slice(0, -2)
   else if (x.length > 3 && x.endsWith('s') && !/(ss|os|us|is)$/.test(x)) x = x.slice(0, -1)
   return SYN[x] || x
 }
@@ -118,13 +119,13 @@ function tokens(text) {
   }
   return out
 }
-const subjectKey = (s) => tokens(String(s || '').replace(/[._/:-]+/g, ' ')).join('.')
+const subjectKey = (s) => tokens(normText(s).replace(/[._/:-]+/g, ' ')).join('.')
 function subjectOf(raw) {
   if (raw && raw.subject && subjectKey(raw.subject)) return { subject: subjectKey(raw.subject), explicit: true }
   return { subject: tokens((raw && (raw.text || raw.question)) || '').slice(0, 4).join('.'), explicit: false }
 }
 function faces(x) {
-  const subj = tokens(String(x.subject || '').replace(/[._/:-]+/g, ' '))
+  const subj = tokens(normText(x.subject).replace(/[._/:-]+/g, ' '))
   const out = [new Set([...subj, ...tokens(x.text || x.question || '')])]
   for (const a of x.aliases || []) out.push(new Set(tokens(a.text || '')))
   return out.filter((f) => f.size)
@@ -153,7 +154,7 @@ function classify(raw, kind) {
   if (kind === 'decision' && ['repo', 'web'].includes(raw && raw.research)) return 'research'
   return 'user'
 }
-const isNone = (d) => !d || /^none\b/i.test(String(d).trim())
+const isNone = (d) => !d || /^none\b/i.test(String(d).trim()) || /^your call\.?:?\s*$/i.test(String(d).trim())
 // the v1 resolution, derived, for older readers (cli/core/clarify.js compatResolution)
 const compatRes = (u) => (u.status === 'dropped' ? (u.dismissed ? 'dismissed' : 'dropped') : u.status === 'deferred_to_design' ? 'deferred' : u.status === 'settled' ? (u.settled_by === 'evidence' ? 'assumption' : u.settled_by === 'assumption_accepted' && !u.answer ? 'deferred' : 'answered') : u.status === 'proposed' ? 'question' : 'pending')
 function hist(u, event, actor, text) {
@@ -522,14 +523,14 @@ async function editContract(todo, label) {
   if (!brief.editor || !todo.length) return null
   if (label === 'God Eye\'s items') phase(`clarify: contract editor (God Eye's items)`)
   else phase('clarify: contract editor (apply what was settled)')
-  const r = await one(`${brief.editor.prompt}\n\nCHANGES TO APPLY:\n${JSON.stringify(todo, null, 2)}${revised ? `\n\nCURRENT CONTRACT (revised earlier this round; edit this text, not the file):\n${revised}` : ''}`, brief.editor, `contract editor · ${label}`)
+  const r = await one(`${brief.editor.prompt}\n\nCHANGES TO APPLY:\n${JSON.stringify(todo, null, 2)}${revised ? `\n\nCURRENT CONTRACT (revised earlier this round; edit this text, not the file):\n----- BEGIN CONTRACT -----\n${revised}\n----- END CONTRACT -----` : ''}`, brief.editor, `contract editor · ${label}`)
   if (!r || typeof r.contract !== 'string' || !r.contract.trim()) { edits.push({ label, ok: false }); return null }
   revised = r.contract
   edits.push({ label, ok: true, applied: r.applied || [], skipped: r.skipped || [] })
   for (const s of r.skipped || []) if (scout && s && s.question) raise({ text: s.question, kind: 'scope', owner: 'user', impact: 'high', default: s.default || null, reason: s.reason || null }, 'contract-editor')
   return r
 }
-const revisedBlock = () => (revised ? `\n\nREVISED CONTRACT (this round's revision of the contract file; the CLI writes it when it records the round, so read this text instead of the file):\n${revised}` : '')
+const revisedBlock = () => (revised ? `\n\nREVISED CONTRACT (this round's revision of the contract file; the CLI writes it when it records the round, so read this text instead of the file):\n----- BEGIN CONTRACT -----\n${revised}\n----- END CONTRACT -----` : '')
 const ctxBlock = () => `${brief.config === 'clarify' ? evidenceBlock() : ''}${revisedBlock()}`
 if (brief.config === 'clarify' && brief.editor && (brief.editor.todo || []).length) await editContract(brief.editor.todo, 'apply what was settled')
 

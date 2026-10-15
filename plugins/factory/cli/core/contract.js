@@ -186,7 +186,7 @@ function parse(text) {
 
 // Replace (or add, before "## Assumptions") a section the CLI owns. With no lines and no
 // section, the text is unchanged.
-function setSection(text, heading, comment, lines) {
+function setSection(text, heading, comment, lines, before = /^##\s+assumptions\s*$/i) {
   const src = String(text || '');
   const body = [heading, comment, ...lines].join('\n');
   const all = src.split('\n');
@@ -201,7 +201,8 @@ function setSection(text, heading, comment, lines) {
     return next.join('\n') + (tail.length ? '' : '\n');
   }
   if (!lines.length) return src;
-  const at = all.findIndex((l) => /^##\s+assumptions\s*$/i.test(l));
+  let at = all.findIndex((l) => before.test(l));
+  if (at === -1) at = all.findIndex((l) => /^##\s+assumptions\s*$/i.test(l));
   if (at !== -1) return [...all.slice(0, at), ...body.split('\n'), '', ...all.slice(at)].join('\n');
   return `${src.replace(/\n*$/, '\n')}\n${body}\n`;
 }
@@ -221,7 +222,7 @@ const DEFERRED_COMMENT = '<!-- Implementation details clarify handed to ground/d
 const CLI_OWNED = ['assumptions (evidence-backed)', 'clarifications (settled)', 'deferred to design'];
 
 function setClarified(text, lines) {
-  return setSection(text, CLARIFIED_HEADING, CLARIFIED_COMMENT, lines);
+  return setSection(text, CLARIFIED_HEADING, CLARIFIED_COMMENT, lines, /^##\s+deferred to design\s*$/i);
 }
 function setDeferred(text, lines) {
   return setSection(text, DEFERRED_HEADING, DEFERRED_COMMENT, lines);
