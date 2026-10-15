@@ -251,8 +251,17 @@ function ciVerify(root, { manifestDir, jobId, commit }) {
   if (exists(wt)) git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
   git.run(root, ['worktree', 'add', '--detach', wt, at]);
   const m = readJson(path.join(wt, '.factory-ship', `${state.id}.json`), null) || manifest(root, state);
-  const results = m.commands.map((c) => runCommand(c.cmd, wt, { timeoutSec: state.policy.limits.command_timeout_seconds, reruns: 0 }));
-  git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+  // inside the build environment, as task verify and prove ran them (a venv, services…)
+  const envMod = require('./environment');
+  let results;
+  try {
+    const E = envMod.ensure(root, state, { taskId: 'ci', wt });
+    if (!E.ok) fail(`${E.broken.reason}\nThe environment is broken, not the merge result: fix it (factory env check, factory env set), then run factory ci verify again.`, 'environment_broken', E.broken);
+    results = m.commands.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c.cmd), wt, { timeoutSec: state.policy.limits.command_timeout_seconds, reruns: 0 }), cmd: c.cmd }));
+  } finally {
+    envMod.teardown(root, state, { taskId: 'ci', wt });
+    git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+  }
   const ok = results.every((r) => r.pass);
   state.pr.checks = { ...(state.pr.checks || {}), [state.policy.ci.required_check]: ok ? 'success' : 'failure' };
   state.pr.ci_local = { at: nowIso(), commit: at, ok };

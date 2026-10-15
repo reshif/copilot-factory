@@ -19,10 +19,15 @@ function finalize(root, { jobId, mode = 'full' }) {
 
 function cleanup(root, state) {
   const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
+  const envMod = require('./environment');
+  const torn = (r) => r && require('./events').append(root, { event: 'environment_teardown', job: state.id, cmd: r.cmd, code: r.code });
   for (const t of plan.tasks || []) {
+    // what the build environment started for this worktree (a compose project…), then the worktree
+    torn(envMod.teardown(root, state, { taskId: t.id, wt: taskWorktree(root, state.id, t.id) }));
     git.run(root, ['worktree', 'remove', '--force', taskWorktree(root, state.id, t.id)], { allowFail: true });
     git.run(root, ['branch', '-D', steps.taskBranch(state, t.id)], { allowFail: true });
   }
+  torn(envMod.teardown(root, state, { taskId: null, wt: jobPaths(root, state.id).worktree }));
   git.run(root, ['worktree', 'remove', '--force', jobPaths(root, state.id).worktree], { allowFail: true });
   git.run(root, ['worktree', 'prune'], { allowFail: true });
 }

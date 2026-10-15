@@ -98,3 +98,56 @@ test('per-wave integration routes a break to this wave\'s tasks named in the out
   assert.deepEqual(Object.keys(r.route), ['T2'], 'this wave\'s task named in the output, not the earlier wave\'s producer');
   assert.equal(stateOf(root, J).tasks.T1.needs_work, undefined, 'T1 (done, integrated, unchanged) is not reopened');
 });
+
+test('local ci verify (the merge result re-verified for ci_reverify) runs inside the confirmed build environment, like task verify and prove', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'Env job', '--type', 'bug', '--risk', 'low']).job;
+  // a verify command that passes only inside the environment (as `python -m pytest` needs the venv)
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText({ verify: '`test "$FACTORY_REVIEW_MARK" = inside` (AC-1)' }));
+  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
+  fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'marked', setup: [], env: { FACTORY_REVIEW_MARK: 'inside' } }));
+  core('environment').confirm(root, { file: envFile, channel: 'chat' });
+  const s = stateOf(root, J);
+  s.pr = { merged: true, merge_commit: F.sh(root, 'git rev-parse HEAD').trim() };
+  core('job').save(root, s);
+  const r = core('ship').ciVerify(root, { jobId: J });
+  assert.equal(r.ok, true, JSON.stringify(r.failed));
+});
+
+test('environment teardown: what setup started per worktree (a compose project per worktree) is torn down when the job\'s worktrees are removed; the Nautobot preset uses invoke destroy', () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  customPlan(root, J, [
+    { id: 'T1', objective: 'fix add', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: VC },
+    { id: 'T2', objective: 'never started', allowed_paths: ['src/b.js'], criteria_ids: ['AC-1'], verify_commands: VC },
+  ]);
+  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
+  const marks = path.join(root, '..', `${path.basename(root)}-torn`);
+  fs.mkdirSync(marks);
+  fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'compose', setup: ['true'], teardown: `touch ${marks}/{slug}` }));
+  assert.deepEqual(core('environment').problems(JSON.parse(fs.readFileSync(envFile, 'utf8'))), []);
+  core('environment').confirm(root, { file: envFile, channel: 'chat' });
+  const state = stateOf(root, J);
+  const wt = core('tasks').prepareWorktree(root, state, 'T1');
+  assert.equal(core('environment').ensure(root, state, { taskId: 'T1', wt }).ok, true);
+  core('tasks').prepareWorktree(root, state, 'T2'); // a worktree setup never ran in: nothing to tear down
+  core('lifecycle').cleanup(root, stateOf(root, J));
+  assert.deepEqual(fs.readdirSync(marks), [`${J.toLowerCase()}-t1`]);
+  // the Nautobot app preset: one compose project per worktree, removed with invoke destroy
+  const nb = F.makeRepo();
+  F.write(nb, 'pyproject.toml', '[tool.poetry]\nname = "nautobot-app-x"\n[tool.poetry.dependencies]\nnautobot = "^2"\n');
+  F.write(nb, 'tasks.py', 'from invoke import Collection\nnamespace = Collection("nautobot_app_x")\n');
+  assert.equal(core('environment').detect(nb).teardown, 'invoke destroy');
+});
+
+test('environment detection never builds a setup command from a file name that carries shell syntax', () => {
+  const root = F.makeRepo();
+  F.write(root, 'requirements-dev.txt', 'pytest\n');
+  F.write(root, 'requirements$(touch pwned).txt', 'x\n');
+  F.write(root, 'requirements-test;touch pwned;.txt', 'x\n');
+  const p = core('environment').detect(root);
+  assert.equal(p.name, 'python-venv');
+  assert.ok(p.setup.includes('.venv/bin/pip install -q -r requirements-dev.txt'), JSON.stringify(p.setup));
+  for (const c of p.setup) assert.doesNotMatch(c, /[;$`|&()]/, c);
+  assert.ok(!p.evidence.some((e) => /[;$]/.test(e)), JSON.stringify(p.evidence));
+});

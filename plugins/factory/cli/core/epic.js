@@ -100,8 +100,17 @@ function gate(root, { jobId }) {
   if (exists(wt)) git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
   git.run(root, ['worktree', 'add', '--detach', wt, at]);
   const cmds = doc.epic_verify_commands || [];
-  const results = cmds.map((c) => runCommand(c, wt, { timeoutSec: epic.policy.limits.command_timeout_seconds, reruns: epic.policy.limits.flaky_reruns }));
-  git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+  // inside the build environment, as each slice's verify ran them
+  const envMod = require('./environment');
+  let results;
+  try {
+    const E = envMod.ensure(root, epic, { taskId: 'gate', wt });
+    if (!E.ok) fail(`${E.broken.reason}\nThe environment is broken, not the slices: fix it (factory env check, factory env set), then run the epic gate again.`, 'environment_broken', E.broken);
+    results = cmds.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c), wt, { timeoutSec: epic.policy.limits.command_timeout_seconds, reruns: epic.policy.limits.flaky_reruns }), cmd: c }));
+  } finally {
+    envMod.teardown(root, epic, { taskId: 'gate', wt });
+    git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+  }
   const merged = kids.every((k) => k.pr && k.pr.merged && git.isAncestor(root, k.pr.merge_commit, at));
   const ok = merged && results.every((r) => r.pass) && cmds.length > 0;
   const childrenHash = invalidation.childrenHash(root, epic, job.load);

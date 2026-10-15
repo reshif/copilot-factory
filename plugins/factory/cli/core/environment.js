@@ -16,6 +16,11 @@
 //     "prefix": "",                                put before each verify command (e.g. "poetry run")
 //     "services": { "up": "…", "health": "…", "down": "…" },
 //                                                  once per job, from the project root
+//     "teardown": "invoke destroy",                run in each worktree setup ran in, before
+//                                                  the worktree is removed (job close, the
+//                                                  scratch worktrees of env check and ci verify):
+//                                                  what setup or the tests started there, e.g.
+//                                                  a compose project per worktree
 //     "ignore": [".venv/"],                        what setup creates: kept out of git status
 //     "timeout_seconds": 1200
 //   }
@@ -38,7 +43,7 @@ const git = require('../lib/git');
 
 const FILE = (root) => path.join(root, '.factory', 'environment.json');
 const PROPOSED = (root) => path.join(root, '.factory', 'environment.proposed.json');
-const KEYS = ['version', 'name', 'setup', 'cache_key', 'env', 'prefix', 'services', 'ignore', 'timeout_seconds', 'notes'];
+const KEYS = ['version', 'name', 'setup', 'cache_key', 'env', 'prefix', 'services', 'teardown', 'ignore', 'timeout_seconds', 'notes'];
 
 // The schema check: the smallest set that covers a plain venv repo and a compose-based one.
 function problems(e) {
@@ -55,6 +60,7 @@ function problems(e) {
   strs(e.ignore, 'ignore');
   if (e.env !== undefined && (typeof e.env !== 'object' || Array.isArray(e.env) || Object.entries(e.env).some(([k, v]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || typeof v !== 'string'))) out.push('env must map variable names to strings');
   if (e.prefix !== undefined && typeof e.prefix !== 'string') out.push('prefix must be a string');
+  if (e.teardown !== undefined && (typeof e.teardown !== 'string' || !e.teardown.trim())) out.push('teardown must be a command');
   if (e.services !== undefined) {
     const s = e.services;
     if (!s || typeof s !== 'object' || Array.isArray(s)) out.push('services must be an object {up, health, down}');
@@ -107,7 +113,8 @@ const has = (root, f) => exists(path.join(root, f));
 // or edits it; nothing runs until then.
 function detect(root) {
   const py = read(root, 'pyproject.toml');
-  const reqs = fs.existsSync(root) ? fs.readdirSync(root).filter((f) => /^requirements.*\.txt$/.test(f)) : [];
+  // file names go into shell commands: only plain ones (requirements-dev.txt), never shell syntax
+  const reqs = fs.existsSync(root) ? fs.readdirSync(root).filter((f) => /^requirements[\w.-]*\.txt$/.test(f)) : [];
   const tasksPy = read(root, 'tasks.py');
   const pkg = read(root, 'package.json');
   const evidence = [];
@@ -126,9 +133,11 @@ function detect(root) {
       cache_key: ['poetry.lock', 'pyproject.toml', 'development/Dockerfile', 'development/*.yml', 'development/*.env'],
       env: { [`${V}_PROJECT_NAME`]: 'factory-{slug}', [`${V}_LOCAL`]: 'false' },
       prefix: '',
+      // invoke unittest leaves the project's database and redis containers running
+      teardown: 'invoke destroy',
       ignore: [],
       timeout_seconds: 1800,
-      notes: `Each worktree gets its own compose project (${V}_PROJECT_NAME=factory-{slug}): its own Postgres, Redis and Nautobot containers, with that worktree's code mounted. Verify commands look like "invoke unittest --failfast --label ${ns}.tests.test_x". Remove a project with "invoke destroy" in its worktree. For a shared Postgres/Redis stack and one test database per task instead, see the README recipe.`,
+      notes: `Each worktree gets its own compose project (${V}_PROJECT_NAME=factory-{slug}): its own Postgres, Redis and Nautobot containers, with that worktree's code mounted. Verify commands look like "invoke unittest --failfast --label ${ns}.tests.test_x". Each project is removed with "invoke destroy" (teardown) when the job closes; for a cancelled job, run it in each .factory/worktrees/<job>-<task> yourself. For a shared Postgres/Redis stack and one test database per task instead, see the README recipe.`,
       evidence,
     };
   }
@@ -401,12 +410,39 @@ function check(root, { proposed = false } = {}) {
   try {
     const { evidence: _e, notes: _n, source: _s, ...run } = e;
     const r = ensure(root, null, { taskId: 'envcheck', wt, env: run });
+    const torn = teardown(root, null, { taskId: 'envcheck', wt, env: run });
     let down = null;
     if (e.services && e.services.down) down = sh(expand(e.services.down, vars(root, null, 'envcheck', wt)), root, 600).code;
-    return { ok: r.ok, which, name: e.name || null, ran: r.ran || [], ...(r.ok ? {} : { broken: r.broken, message: r.broken.reason }), ...(down !== null ? { services_down_exit: down } : {}) };
+    return { ok: r.ok, which, name: e.name || null, ran: r.ran || [], ...(r.ok ? {} : { broken: r.broken, message: r.broken.reason }), ...(torn ? { teardown_exit: torn.code } : {}), ...(down !== null ? { services_down_exit: down } : {}) };
   } finally {
     git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
   }
+}
+
+// Undo what setup (or the tests) started for one worktree: the environment's teardown, run in
+// that worktree before it is removed. Only where setup ran (its marker is there). Best effort:
+// { cmd, code } or null.
+function teardown(root, state, { taskId = null, wt, env: given } = {}) {
+  let e = given;
+  if (e === undefined) {
+    try {
+      e = load(root);
+    } catch {
+      return null;
+    }
+  }
+  if (!e || !e.teardown || !wt || !exists(wt)) return null;
+  let marker = null;
+  try {
+    marker = readJson(markerFile(wt), null);
+  } catch {
+    marker = null;
+  }
+  if (!marker) return null;
+  const v = vars(root, state, taskId, wt);
+  const cmd = expand(e.teardown, v);
+  const r = sh(`${preamble(e, v)}${cmd}`, wt, 600, processEnv(e, v));
+  return { cmd, code: r.code, ...(r.code === 0 ? {} : { tail: String(r.output || '').trim().split('\n').slice(-5).join('\n') }) };
 }
 
 // The job's services down (job close): best effort, logged by the caller.
@@ -444,4 +480,4 @@ function notice(root) {
   };
 }
 
-module.exports = { servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };
+module.exports = { teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };
