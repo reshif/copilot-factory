@@ -234,15 +234,19 @@ function integrateWave(root, jobId, ids, { wave = null } = {}) {
   const results = cmds.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c.cmd), wt, { timeoutSec: L.command_timeout_seconds, reruns: L.flaky_reruns }), cmd: c.cmd, owners: c.owners, from: c.from }));
   const failed = results.filter((r) => !r.pass);
   if (failed.length) {
-    // Route each failure: the integrated tasks whose files its output names, else the tasks
-    // owning the command, else this wave's tasks.
+    // Route each failure: the integrated tasks whose files its output names (this wave's
+    // first: the build passed before their merge, so a traceback that also passes through an
+    // earlier wave's file names a caller, not a cause), else the tasks owning the command, else
+    // this wave's tasks.
     const tasksIn = (plan.tasks || []).filter((t) => integratedIds.includes(t.id));
     const route = {};
     for (const f of failed) {
       const named = pathsIn(f.output);
       // a path in a stack trace is often absolute (…/worktrees/J-0001/src/x.js): any suffix counts
       const hits = (t) => named.some((p) => p.split('/').some((_, i, a) => matchesAny(a.slice(i).join('/'), t.allowed_paths || [])));
-      let to = tasksIn.filter(hits).map((t) => t.id);
+      const namedTasks = tasksIn.filter(hits).map((t) => t.id);
+      const inWave = namedTasks.filter((id) => ids.includes(id));
+      let to = inWave.length ? inWave : namedTasks;
       if (!to.length) to = f.owners.filter((o) => integratedIds.includes(o));
       if (!to.length) to = ids.slice();
       const line = { cmd: f.cmd, code: f.code, ...(f.flaky ? { flaky: true } : {}), output: f.output.length > 3000 ? `…${f.output.slice(-3000)}` : f.output, named_files: named.slice(0, 10) };

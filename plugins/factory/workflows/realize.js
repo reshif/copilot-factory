@@ -189,19 +189,21 @@ async function settle(ids) {
 // After a wave: merge its finished tasks into the job branch and run the job's checks on the
 // integrated tree (`factory reconcile wave`, run by the CLI). A failure goes back, with its
 // raw output, to the task(s) whose files it names; they are rebuilt on the integrated branch
-// (within their retry limit) and the wave is integrated again.
+// (within their retry limit) and the wave is integrated again. Returns null when the wave is
+// integrated (or had nothing to integrate), else why the integrated build is still broken.
 const integrations = []
 async function integrate(w) {
   for (;;) {
     const done = brief.waves[w].concat(Object.keys(st).filter((id) => st[id].reopened && !brief.waves[w].includes(id))).filter((id) => st[id] && st[id].outcome === 'done')
-    if (!done.length) return
+    if (!done.length) return null
     const ig = await factory.integrate(done, w + 1)
     integrations.push({ wave: w + 1, tasks: done, ok: Boolean(ig && ig.ok), kind: (ig && ig.kind) || null, route: Object.keys((ig && ig.route) || {}), ...(ig && ig.reconciled ? { reconciled: true } : {}) })
-    if (!ig || ig.ok) return
-    if (ig.kind === 'environment') {
+    if (ig && ig.ok) return null
+    if (ig && ig.kind === 'environment') {
       envBroken = { reason: (ig.broken && ig.broken.reason) || ig.message || 'environment broken' }
-      return
+      return envBroken.reason
     }
+    const why = !ig ? 'the integration step returned nothing' : ig.kind === 'commands' ? `${(ig.failures || []).map((f) => `\`${f.cmd}\` exited ${f.code}`).join(', ') || 'its checks failed'}` : `${ig.kind || 'error'}${ig.message ? `: ${String(ig.message).slice(0, 200)}` : ''}`
     const again = []
     for (const [id, lines] of Object.entries(ig.route || {})) {
       const s = st[id]
@@ -217,10 +219,26 @@ async function integrate(w) {
       s.reopened = true
       again.push(id)
     }
-    if (!again.length) return
+    if (!again.length) return why
     phase(`realize: wave ${w + 1}: rebuilding ${again.join(', ')} on the integrated branch`)
     await settle(again)
-    if (envBroken) return
+    if (envBroken) return envBroken.reason
+    // A task rebuilt for the integration that still failed leaves its broken merge in the job
+    // branch: the wave is not integrated, whatever the remaining tasks' checks say.
+    const unfixed = again.filter((id) => st[id].outcome !== 'done')
+    if (unfixed.length) return `${why}; ${unfixed.join(', ')} could not fix it`
+  }
+}
+
+// The integrated build after a wave stayed broken (its failing tasks are exhausted, blocked or
+// were built before this run): later waves would start from broken code, so they don't start.
+function skipAfterBrokenIntegration(w, why) {
+  for (let v = w + 1; v < brief.waves.length; v++) {
+    for (const id of brief.waves[v]) {
+      if (!st[id] || st[id].outcome !== 'pending') continue
+      st[id].outcome = 'skipped_dependency'
+      st[id].summary = `Skipped: the integrated build after wave ${w + 1} is broken (${why}); it would start from broken code.`
+    }
   }
 }
 
@@ -239,7 +257,13 @@ for (let w = 0; w < brief.waves.length && !envBroken; w++) {
   }
   await settle(active)
   if (envBroken) break
-  if (brief.integrate_each_wave && factory.integrate) await integrate(w)
+  if (brief.integrate_each_wave && factory.integrate) {
+    const broken = await integrate(w)
+    if (broken && !envBroken) {
+      skipAfterBrokenIntegration(w, broken)
+      break
+    }
+  }
 }
 skipDependents()
 
