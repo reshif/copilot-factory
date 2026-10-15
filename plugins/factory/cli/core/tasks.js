@@ -199,7 +199,7 @@ function currentFindings(root, state, task) {
   const all = (rec && rec.detail && rec.detail.findings) || [];
   const serious = all.filter((f) => ['blocker', 'major'].includes(f.severity) && f.status === 'confirmed');
   const owners = (state.fix && state.fix.owners) || null;
-  if (owners) return serious.filter((f) => owners[f.id] === task.id);
+  if (owners) return serious.filter((f) => owners[f.id] === task.id || owners[f.id] === '*').map((f) => (owners[f.id] === '*' ? { ...f, shared: true } : f));
   const mine = serious.filter((f) => f.file && matchesAny(f.file, task.allowed_paths));
   return mine.length ? mine : serious;
 }

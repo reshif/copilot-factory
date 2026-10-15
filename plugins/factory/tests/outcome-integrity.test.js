@@ -325,3 +325,24 @@ test('P1.1: a carried finding keeps its own id when a new finding reuses it', ()
   const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
   assert.deepEqual(b.carried.map((c) => c.id), ['code-1@r1']);
 });
+
+// ------------------------------------------------------------------------------- P1.3
+
+test('P1.3: a confirmed finding with no file (or in no task\'s paths) reaches every reopened task\'s fix brief', () => {
+  const root = F.makeRepo();
+  const J = toProve(root);
+  const orphan = { id: 'tests-1', severity: 'major', file: null, summary: 'no test covers negative numbers' };
+  const outside = { id: 'code-2', severity: 'major', file: 'docs/usage.md', summary: 'the usage doc shows the old signature' };
+  const { rec } = challengeRound(root, { lanes: [{ lane: 'code', findings: [orphan, outside] }], verifications: [{ finding_id: 'tests-1', status: 'confirmed' }, { finding_id: 'code-2', status: 'confirmed' }] });
+  assert.equal(rec.status, 'fix');
+  const n = F.cli(root, ['next']);
+  assert.equal(n.scope, 'fix');
+  const st = stateOf(root, J);
+  assert.deepEqual(st.fix.tasks, ['T1']);
+  assert.equal(st.fix.owners['tests-1'], '*', 'no owner: shared by every reopened task');
+  const show = F.cli(root, ['task', 'show', 'T1']);
+  assert.deepEqual(show.fix_findings.map((f) => f.id).sort(), ['code-2', 'tests-1']);
+  assert.ok(show.fix_findings.every((f) => f.shared), 'marked shared, so the builder knows others got it too');
+  const brief = F.cli(root, ['wfargs', 'realize', '--scope', 'fix']);
+  assert.match(fs.readFileSync(brief.tasks.T1.builder_prompt.split('\n').find((l) => l.trim().startsWith('/')).trim(), 'utf8'), /no single owner/);
+});

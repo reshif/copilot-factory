@@ -38,7 +38,7 @@ The first failing check decides; if none fails, the recipe's first undone step r
 | 2 | `no_drift` | approved contract changed · approved plan changed after building started | factory:amend → gate A | `row2.drift_contract` / `row2.drift_plan` |
 | | | files outside allowed paths or inside protected paths on the job branch | park | `row2.drift_scope` |
 | 3 | `floors_satisfied_so_far` | a pre-build floor step undone once building started · a pre-merge floor step undone once shipped | that step | `row3.floor_missing` |
-| 4 | `no_confirmed_serious` | confirmed blocker/major on the current build (not yet scheduled) | realize, scope `fix` (one owner per finding: the task whose commit `git blame` shows, by its `Factory-Task` trailer) | `row4.confirmed_serious` |
+| 4 | `no_confirmed_serious` | confirmed blocker/major on the current build (not yet scheduled) | realize, scope `fix` (one owner per finding: the task whose commit `git blame` shows, by its `Factory-Task` trailer; a finding with no file, or in a file no task's paths cover, reopens every task and is in every reopened task's `fix_findings`, marked `shared`) | `row4.confirmed_serious` |
 | 5 | `acs_proven` | latest proof on this build failed (not yet scheduled) | a failing command or test/run proof: realize, scope `verifyFix` (owning tasks) | `row5.acs_unproven` |
 | | | only a doc/diff record missing | action `evidence`: the main session runs `factory evidence add` (no fix round, no counter), then prove again | `row5.evidence_missing` / `row5.evidence_recorded` |
 | | | only a human check missing | wait for `confirm AC-n` | `row5.human_confirm` |

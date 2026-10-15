@@ -23,7 +23,10 @@ function park(root, state, reason, from) {
 // One owner per finding: the task whose commit last wrote the finding's line (git blame on
 // the job branch, then that commit's Factory-Task trailer, else the first task in build order
 // whose branch holds the commit); without a line, the first task in build order whose paths
-// cover the file. Only a finding no task's paths cover goes to every task.
+// cover the file. Only a finding no task's paths cover goes to every task, and to each of
+// their fix briefs (owner '*'): one integration task with widened paths would need an
+// amendment the human approves, so the reopened builders get it and say blocked
+// (needs_paths) when it lies outside their paths.
 function blameOwner(ctx, f, tasks) {
   const { root, state } = ctx;
   if (!f.file || !f.line || !state.branch) return null;
@@ -52,7 +55,12 @@ function ownersOfFindings(ctx, findings) {
     if (owner) {
       owners.add(owner);
       if (f.id) byFinding[f.id] = owner;
-    } else tasks.forEach((t) => owners.add(t.id));
+    } else {
+      // No owner (no file, or a file no task's paths cover): every task is reopened and the
+      // finding goes to every reopened builder ('*'), never to none of them.
+      tasks.forEach((t) => owners.add(t.id));
+      if (f.id) byFinding[f.id] = '*';
+    }
   }
   return { owners: [...owners], byFinding };
 }

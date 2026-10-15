@@ -552,7 +552,7 @@ function realize(root, state, ctx, action) {
     const wt = taskWorktree(root, state.id, t.id);
     const fixNote = state.fix && (state.fix.tasks || []).includes(t.id)
       ? state.fix.kind === 'fix'
-        ? '- This is a fix round for confirmed review findings (`task show` lists them under fix_findings).'
+        ? `- This is a fix round for confirmed review findings (\`task show\` lists them under fix_findings).${Object.values(state.fix.owners || {}).includes('*') ? ' Findings marked `shared` have no single owner (no file, or a file no task owns): every reopened task gets them. Fix the part inside your allowed paths; if the fix needs other files, reply blocked with needs_paths.' : ''}`
         : '- This is a verify-fix round: commands failed on the integrated build (`task show` lists them under verify_failures).'
       : t.id && state.tasks[t.id] && state.tasks[t.id].needs_work === 'amendment'
         ? '- The contract or plan was amended; rebuild this task against the amended version.'
