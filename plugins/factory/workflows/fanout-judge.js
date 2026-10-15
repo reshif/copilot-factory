@@ -665,7 +665,7 @@ if (brief.config === 'clarify') {
     if (scout && rq.length) {
       const fresh = []
       for (const q of rq) {
-        if (q.blocker !== true || !q.why) { notes.push({ ref: q.unknown || q.same_as || null, severity: 'minor', text: `not a blocker: ${q.question}` }); continue }
+        if (q.blocker !== true || !q.why) { notes.push({ ref: [q.unknown, q.same_as].find((x) => /^U-\d+$/i.test(String(x || ''))) || null, severity: 'minor', text: `not a blocker: ${q.question}` }); continue }
         const r = raise({ text: q.question, kind: q.kind, impact: 'high', draft: q.question, why: q.why, same_as: q.same_as || q.unknown, subject: q.subject }, 'god-eye')
         if (r.created && r.issue.owner === 'research') fresh.push(r.issue)
       }
