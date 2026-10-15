@@ -238,3 +238,31 @@ test('a pre-v2 job: rounds run before the upgrade do not count against the v2 ce
   assert.ok(clarify.limits(s2).ceiling >= 10);
 });
 
+test('migration: clarify status shows each free-form answer matched by overlap, with the question it came from', () => {
+  const root = F.makeRepo();
+  const J = J2.build(root);
+  const v = F.cli(root, ['clarify', 'status', '--json']);
+  assert.ok(v.migration.matched_answers.length, 'the fixture has free-form answers');
+  const text = spawnSync('node', [F.BIN, 'clarify', 'status', '--job', J], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '' } }).stdout;
+  for (const m of v.migration.matched_answers) assert.ok(text.includes(`→ ${m.issue}`) && text.includes(m.question.slice(0, 40)), `${m.issue}: ${text}`);
+});
+
+test('after H1, factory answer does not change a clarify issue behind the approved contract', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  round(root, { scout: scoutData([user('U-1', 'Should the sync prune VLANs not in Nautobot?', { default: 'yes' })]) });
+  F.cli(root, ['answer', 'Q-1', 'yes']);
+  F.cli(root, ['next']);
+  round(root, { scout: scoutData(ledgerOf(root, J).unknowns), critique: APPROVE }, 'ok');
+  F.cli(root, ['next']);
+  F.reply(root, 'approve');
+  const r = F.cli(root, ['answer', 'U-1', 'no, keep them']);
+  assert.equal(r.code, 'approved');
+  assert.equal(ledgerOf(root, J).unknowns[0].answer, 'yes');
+  // a free-text answer after H1 is ground's: recorded, never matched to a clarify issue
+  const g = F.cli(root, ['answer', '--question', 'Should the sync prune VLANs that are not in Nautobot?', '--answer', 'only on leaf switches']);
+  assert.equal(g.issue, undefined, JSON.stringify(g));
+  assert.equal(g.answers, 2, 'recorded in answers.json');
+  assert.equal(ledgerOf(root, J).unknowns[0].answer, 'yes');
+});

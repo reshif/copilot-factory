@@ -455,7 +455,11 @@ function answer(root, { jobId, ref, text, question, acceptDefault = false, via =
   const list = readJson(f, []);
   const R = String(ref || '').trim().toUpperCase();
   const round = (state.counters.clarify_rounds || 0) + 1;
-  let issue = data ? resolveRef(data, state, R, R ? null : question) : null;
+  // After H1 the ledger is what the approved contract rests on: a clarify issue changes only
+  // through an amendment, and a free-text answer is ground's (recorded, never matched to one).
+  const approved = Boolean(state.approvals && (state.approvals.H1 || state.approvals.EH1));
+  let issue = data && !(approved && !R) ? resolveRef(data, state, R, R ? null : question) : null;
+  if (issue && approved) fail(`${state.id}'s contract is approved, so clarify's ${issue.id} no longer changes by an answer. To change what the contract says, start an amendment (factory amend start --reason "…").`, 'approved');
   const logged = /^Q-\d+$/.test(R) ? (state.question_log || []).find((q) => q.id === R) : issue && issue.question_id ? (state.question_log || []).find((q) => q.id === issue.question_id) : null;
   if (R && !issue && !logged) fail(`${state.id} has no issue or question ${R}.${data ? ` Open: ${openIds(data).join(', ') || 'none'}.` : ''}`, 'bad_input');
   if (!issue && data && inClarify(state)) {
@@ -689,6 +693,10 @@ function statusText(v) {
   if (v.migration) {
     const m = v.migration;
     L.push('', `Migrated from v${m.from}: ${m.folded.length} duplicate(s) folded${m.folded.length ? ` (${m.folded.map((x) => `${x.id}→${x.into}`).join(', ')})` : ''}; ${m.matched_answers.length} free-form answer(s) matched${m.matched_answers.length ? ` (${m.matched_answers.map((x) => x.issue).join(', ')})` : ''}; ${m.deferred.length} deferred to design${m.deferred.length ? ` (${m.deferred.map((x) => x.id).join(', ')})` : ''}; ceiling ${m.ceiling} rounds.`);
+    if (m.matched_answers.length) {
+      L.push('  Free-form answers matched by word overlap (check them; factory answer U-n "…" corrects one):');
+      for (const x of m.matched_answers) L.push(`    "${x.question}" → ${x.issue}: ${x.answer}`);
+    }
     if (m.unmatched_answers.length) L.push(`  Not matched: ${m.unmatched_answers.map((x) => `"${x.question}"`).join('; ')}`);
   }
   return L.join('\n');
