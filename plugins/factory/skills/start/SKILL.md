@@ -22,7 +22,7 @@ A request with no active job for it → follow the **intake** skill to create th
 
 | action | what you do | then |
 |---|---|---|
-| `skill` | Follow the factory skill named in `skill` (clarify, ship, distill, amend). | step 1 |
+| `skill` | Follow the factory skill named in `skill` (clarify, ship, distill, amend). For clarify, `clarify` carries the ledger summary: open issues by owner, the open questions and the exact `answer_commands`. | step 1 |
 | `workflow` | Run it (see *Running a workflow*). | step 1 |
 | `cli` | Run exactly the `command` shown. If it fails, show the message. | step 1 |
 | `evidence` | For each AC in `acs`, check the job worktree shows it, then run its line in `commands` with the real file path (relative to the repo root). If it isn't there, tell the user and **stop**. | step 1 |
@@ -38,14 +38,15 @@ A request with no active job for it → follow the **intake** skill to create th
    `factory run <workflow> [--config <config>] [--mode <mode>] [--scope <scope>] [--lanes a,b] [--threat-model | --no-threat-model] [--plan-critique]`
    It starts each agent as its own Copilot process, checks their JSON, records the result and prints a summary starting with `status: <x>`. It is the only way a workflow runs: briefs, envelopes and agent fan-out all happen inside it. If your shell hands control back while it runs, keep reading that same command's output. A second `factory run` for the job is refused with `run_in_progress` (the job's run lock), so wait for the first one's output instead.
 2. Act on the top-level `status` line and the fields after it, never on `workflow.status` (the workflow's own summary):
-   - `ok` / `fix` / `retry` / `stale` / `error` / `park` → step 1; `factory next` handles retries, fix rounds and parking.
-   - A **clarify** round (`--config clarify`) with `needs_user`, `degraded` or `ok` → the **clarify** skill says what to show and do.
+   - `ok` / `fix` / `retry` / `revise` / `stale` / `error` / `park` → step 1; `factory next` handles retries, fix rounds and parking.
+   - A **clarify** round (`--config clarify`) with any status → the **clarify** skill says what to show and do (`revise` and `retry` just loop back to step 1).
    - `needs_user` with `questions` from **ground** → ask exactly those questions as one numbered list and **stop**; record each answer with `factory answer --question "…" --answer "…"`, then step 1.
    - `degraded` (any other workflow) → ask the user: re-run, or go on without the missing angle. **Stop.** To go on, write the angle under Assumptions in the contract and run the same command with `--accept-degraded`.
 3. If `factory run` refuses instead of printing a result, read `code`: `not_waiting_for_workflow` → step 1 and follow it; `run_in_progress` → tell the user it is still running and wait for that run's output; `copilot_unavailable` → tell the user the fix (`not_found`: install the Copilot CLI or put it on PATH; `not_signed_in`: `copilot login`) and **stop**; anything else → show the message, then step 1.
 
 ## Rules
-- Human gates are the user's. Their replies in chat are applied by the reply hook before you act: `approve`, `deny <what must change>`, `resume`, `cancel job`, `abandon job`, `waive <floor> <reason>`, `merged <commit>`, `confirm AC-n`, `accept lesson Ln`, `change A-n <value>`, `drop A-n`. You relay them; the guard refuses those commands from you. `factory next` (`last_reply`) shows what was applied.
+- Human gates are the user's. Their replies in chat are applied by the reply hook before you act: `approve`, `deny <what must change>`, `resume`, `cancel job`, `abandon job`, `waive <floor> <reason>`, `merged <commit>`, `confirm AC-n`, `accept lesson Ln`, `change A-n <value>`, `drop A-n`, and while clarify waits, numbered answers (`1 yes, 2 …`, `defaults`). You relay them; the guard refuses the human-only commands from you. `factory next` (`last_reply`) shows what was applied.
+- During clarify you never edit the contract and never research on your own: record what the user said with `factory answer`, add context with `factory clarify note`, show `factory clarify status` when they ask what is open, and run `factory next`.
 - If the user says the requirements changed, follow the **amend** skill.
 - The job is done when `factory next` says `done` (the stop hook checks the floors).
 - If the user asks why something happened, `factory why --format md` explains every routing decision.

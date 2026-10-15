@@ -13,5 +13,7 @@ Read this when a factory output or skill uses a term you don't know. Each term i
 - **Envelope**: the JSON result a workflow returns, which `factory run` passes to `factory record` to be checked and sealed. You never write one.
 - **Seal**: a signature on every factory record; a record changed by hand fails its seal and is refused.
 - **Park**: the factory stopping a job instead of guessing (a cap, a budget, no progress). Only the user's reply (`resume`, `cancel job`, `abandon job`) moves it.
+- **Clarify ledger**: the one list of clarify's issues (`U-n`), kept by the CLI in the job's `intent-evidence.json`. Each has a subject, an owner (research, the user, or design), a status (open, researching, proposed, settled, deferred to design, dropped) and how it was settled. `factory clarify status` prints it. Settled is final: an agent that raises it again only adds a note.
+- **Deferred to design**: an implementation detail (exact field names, line ranges, command syntax, parser behaviour) clarify hands to ground and decide instead of asking; it never blocks H1.
 - **Evidence-backed assumption** (`A-n`): a fact research confirmed, with evidence ids (`E-n`), stated in the contract instead of asked. The user overrides one with `change A-n <value>` or `drop A-n`.
 - **Lesson** (`L-n`): a scoped rule distilled from a merged job; it applies to later jobs only after the user replies `accept lesson Ln`.

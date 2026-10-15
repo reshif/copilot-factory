@@ -1,5 +1,7 @@
 # Grounded intent — research first, ask only what research can't answer (approved design)
 
+> **Superseded in part by [DESIGN-CLARIFY-v2.md](DESIGN-CLARIFY-v2.md).** The scout phase below still runs, but the unknowns are now issues in one CLI-owned ledger (subject, owner, status, settled_by), identified by subject instead of wording; research gets one longer retry and then one question with a default; implementation details are deferred to design; rounds review only what changed; clarify parks on lack of progress rather than a round count. Where the two disagree, v2 wins.
+
 ## Problem
 Clarify's analysts read only the repo, web research happens in `ground` AFTER H1, and question "defaults" are model guesses. Users get asked researchable questions and approve an intent not backed by evidence.
 
