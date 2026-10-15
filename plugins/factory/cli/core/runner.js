@@ -646,11 +646,10 @@ async function verifyTask(ctx, taskId) {
   if (v.error) {
     // a refusal (dirty worktree, missing dependency, no builder result) is this attempt's result too
     try {
-      const job = require('./job');
-      const st = job.load(ctx.root, ctx.brief.job);
-      const t = st.tasks[taskId] || {};
-      st.tasks[taskId] = { ...t, history: require('./tasks').noteAttempt(t.history, t.attempts || 0, { verify: { pass: false, refused: v.error.code, message: v.error.message.slice(0, 1500), at: new Date().toISOString() } }) };
-      job.save(ctx.root, st);
+      require('./job').mutate(ctx.root, ctx.brief.job, (st) => {
+        const t = st.tasks[taskId] || {};
+        st.tasks[taskId] = { ...t, history: require('./tasks').noteAttempt(t.history, t.attempts || 0, { verify: { pass: false, refused: v.error.code, message: v.error.message.slice(0, 1500), at: new Date().toISOString() } }) };
+      });
     } catch {
       /* the history is a convenience; the refusal is in the result either way */
     }

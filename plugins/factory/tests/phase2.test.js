@@ -392,3 +392,15 @@ test('P2.3: a task whose branch only points into the job branch (blocked, restar
   const rec = core('ledger').lastStep(root, J, 'integrate');
   assert.deepEqual(rec.detail.commands.map((c) => c.cmd), ['node tests/add.test.js'], 'T2 is not integrated: its command does not run');
 });
+
+test('parallel task updates (builders\' task start, the runner\'s verify for several tasks) never lose each other: state writes are locked', async () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  const ids = Array.from({ length: 24 }, (_, i) => `T${i + 1}`);
+  customPlan(root, J, ids.slice(0, 6).map((id) => ({ id, objective: `task ${id}`, allowed_paths: [`src/${id}.js`], criteria_ids: ['AC-1'], verify_commands: VC })));
+  const { spawn } = require('child_process');
+  const one = (id) => new Promise((res) => spawn('node', [F.BIN, 'task', 'state', id, 'exhausted', '--reason', `r-${id}`, '--job', J], { cwd: root, env: { ...process.env, FACTORY_ROOT: '' } }).on('close', res));
+  for (let round = 0; round < 3; round++) await Promise.all(ids.map(one));
+  const st = stateOf(root, J);
+  assert.deepEqual(ids.filter((id) => (st.tasks[id] || {}).outcome_reason === `r-${id}`), ids, 'every parallel update is kept');
+});

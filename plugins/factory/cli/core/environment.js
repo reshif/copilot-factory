@@ -285,10 +285,7 @@ function ensureServices(root, state, e, v) {
   if (!fresh || !fresh.environment_services || fresh.environment_services.key !== key) {
     const r = sh(expand(s.up, jv), root, T, env);
     if (r.code !== 0) return { ok: false, broken: broken('services.up', expand(s.up, jv), r) };
-    if (fresh) {
-      fresh.environment_services = { key, up_at: nowIso() };
-      job.save(root, fresh);
-    }
+    if (fresh) job.mutate(root, fresh.id, (st) => { st.environment_services = { key, up_at: nowIso() }; });
   }
   if (s.health) {
     const r = sh(expand(s.health, jv), root, Math.min(T, 300), env);

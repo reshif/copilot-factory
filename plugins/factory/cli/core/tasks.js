@@ -100,9 +100,9 @@ function resetToJobBranch(root, state, wt, taskId, attempt) {
 }
 
 function conflict(root, state, taskId, message) {
-  const fresh = job.load(root, state.id);
-  fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), start_error: { code: 'dependency_conflict', message, at: nowIso() } };
-  job.save(root, fresh);
+  job.mutate(root, state.id, (fresh) => {
+    fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), start_error: { code: 'dependency_conflict', message, at: nowIso() } };
+  });
   fail(`${message} This is not a build failure: stop and reply with status "blocked", blocked_reason "dependency_conflict" and this message as the summary. It needs a plan change (paths or dependencies).`, 'dependency_conflict');
 }
 
@@ -136,11 +136,11 @@ function start(root, jobId, taskId) {
   for (const d of deps) bring(steps.taskBranch(state, d), d);
   const inFix = Boolean(state.fix && (state.fix.tasks || []).includes(taskId));
   fixMarker(wt, inFix ? state.fix.kind : null);
-  const fresh = job.load(root, state.id);
-  const t = fresh.tasks[taskId] || {};
   const head = git.revParse(wt, 'HEAD');
+  const fresh = job.mutate(root, state.id, (fs0) => {
+  const t = fs0.tasks[taskId] || {};
   const { start_error: _e, ...rest } = t;
-  fresh.tasks[taskId] = {
+  fs0.tasks[taskId] = {
     ...rest,
     started_at: t.started_at || nowIso(),
     // after a restart the task's own changes are counted from the restarted branch
@@ -152,7 +152,7 @@ function start(root, jobId, taskId) {
     builder_tracking: BUILDER_TRACKING,
     ...(restart ? { restarted_for: restart.key, restarted: { reason: restart.reason, backup, at: nowIso() } } : {}),
   };
-  job.save(root, fresh);
+  });
   return { job: state.id, task: taskId, worktree: wt, branch, attempt: fresh.tasks[taskId].attempts, allowed_paths: task.allowed_paths, ...(restart ? { restarted: { reason: restart.reason, backup } } : {}) };
 }
 
@@ -161,7 +161,7 @@ function start(root, jobId, taskId) {
 // A builder that returned nothing after `task start` refused with dependency_conflict did not
 // crash: its result becomes the typed blocked result it should have replied with.
 function afterBuilder(root, jobId, taskId, result, { startedAt, label, sessionId, resumed, wip, outcome: run } = {}) {
-  const state = job.load(root, jobId);
+  return job.mutate(root, jobId, (state) => {
   const t = state.tasks[taskId] || {};
   let r = result || null;
   const se = t.start_error;
@@ -173,8 +173,8 @@ function afterBuilder(root, jobId, taskId, result, { startedAt, label, sessionId
   const builder = { attempt, outcome, at: nowIso(), label: label || null, ...(r && r.blocked_reason ? { blocked_reason: r.blocked_reason } : {}), ...(sessionId ? { session_id: sessionId } : {}), ...(wip ? { wip_commit: wip } : {}) };
   const entry = { builder: outcome, ...(run && run !== 'ok' ? { run } : {}), ...(r && r.summary ? { summary: String(r.summary).slice(0, 400) } : {}), ...(r && (r.needs_paths || []).length ? { needs_paths: r.needs_paths } : {}), ...(sessionId ? { session_id: sessionId, resumed: Boolean(resumed) } : {}), ...(wip ? { wip_commit: wip } : {}), builder_at: builder.at };
   state.tasks[taskId] = { ...t, builder, history: noteAttempt(t.history, attempt, entry) };
-  job.save(root, state);
-  return r;
+  return r || null;
+  });
 }
 
 // The task's attempt history, one entry per attempt (builder reply, then task verify's
@@ -283,9 +283,9 @@ function verify(root, jobId, taskId) {
   }
   const b = legacy ? { attempt: t.attempts || 0, outcome: 'done', at: `legacy:${t.last_attempt_at || t.started_at || ''}`, legacy: true } : t.builder;
   if (legacy) {
-    const fresh0 = job.load(root, state.id);
-    fresh0.tasks[taskId] = { ...(fresh0.tasks[taskId] || {}), legacy_verify: { attempt: t.attempts || 0, at: nowIso() } };
-    job.save(root, fresh0);
+    job.mutate(root, state.id, (fresh0) => {
+      fresh0.tasks[taskId] = { ...(fresh0.tasks[taskId] || {}), legacy_verify: { attempt: t.attempts || 0, at: nowIso() } };
+    });
     require('./events').append(root, { event: 'legacy_verify', job: state.id, task: taskId, attempt: t.attempts || 0, reason: 'task started before builder replies were recorded (factory upgraded mid-build): verified once without a builder record' });
   }
   if (!b || b.attempt !== (t.attempts || 0) || b.outcome !== 'done') {
@@ -330,12 +330,12 @@ function verify(root, jobId, taskId) {
     ...(E.env && !E.none ? { environment: { name: E.env.name || null, key: E.key, cached: E.cached } } : {}),
   };
   writeJson(file, ev);
-  const fresh = job.load(root, state.id);
   const tail = (x, n) => (String(x || '').length > n ? `…${String(x).slice(-n)}` : String(x || ''));
   const verifyEntry = { pass, at: ev.at, evidence_id: id, failures: commands.filter((c) => !c.pass).map((c) => ({ cmd: c.cmd, code: c.code, ...(c.flaky ? { flaky: true } : {}), tail: tail(c.output, 1500) })), ...(scopeViolations.length ? { scope_violations: scopeViolations } : {}), ...(changed.length ? {} : { no_changes: true }) };
-  fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), evidence: { id, file, pass, tree: ev.tree, at: ev.at, builder_at: b.at }, history: noteAttempt((fresh.tasks[taskId] || {}).history, t.attempts || 0, { verify: verifyEntry }) };
-  if (pass) delete fresh.tasks[taskId].needs_work;
-  job.save(root, fresh);
+  job.mutate(root, state.id, (fresh) => {
+    fresh.tasks[taskId] = { ...(fresh.tasks[taskId] || {}), evidence: { id, file, pass, tree: ev.tree, at: ev.at, builder_at: b.at }, history: noteAttempt((fresh.tasks[taskId] || {}).history, t.attempts || 0, { verify: verifyEntry }) };
+    if (pass) delete fresh.tasks[taskId].needs_work;
+  });
   return {
     job: state.id,
     task: taskId,
@@ -350,10 +350,11 @@ function verify(root, jobId, taskId) {
 
 function setState(root, jobId, taskId, value, reason) {
   if (!['blocked', 'exhausted'].includes(value)) fail('task state must be blocked or exhausted', 'bad_input');
-  const state = job.resolve(root, jobId);
-  state.tasks[taskId] = { ...(state.tasks[taskId] || {}), outcome: value, outcome_reason: reason || '', outcome_at: nowIso() };
-  job.save(root, state);
-  return { job: state.id, task: taskId, state: value };
+  const id = job.resolve(root, jobId).id;
+  job.mutate(root, id, (state) => {
+    state.tasks[taskId] = { ...(state.tasks[taskId] || {}), outcome: value, outcome_reason: reason || '', outcome_at: nowIso() };
+  });
+  return { job: id, task: taskId, state: value };
 }
 
 module.exports = { start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, legacyAttempt, lastFailures, noteAttempt, FAILED };

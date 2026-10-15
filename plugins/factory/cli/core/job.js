@@ -43,6 +43,45 @@ function save(root, state) {
   return state;
 }
 
+// Load, change and save the job state under a lock, for writes that run in parallel: builders'
+// task start, the runner recording their replies, task verify for several tasks at once, the
+// per-wave integration. Without it, two load-modify-save cycles lose one update (an attempt
+// count, a task's evidence). The lock is a file created exclusively; one older than 60 s is
+// taken over (its holder died).
+function mutate(root, jobId, fn) {
+  const fs = require('fs');
+  const file = `${jobPaths(root, jobId).state}.lock`;
+  const until = Date.now() + 30000;
+  let fd = null;
+  while (fd === null) {
+    try {
+      fd = fs.openSync(file, 'wx');
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try {
+        if (Date.now() - fs.statSync(file).mtimeMs > 60000) fs.rmSync(file, { force: true });
+      } catch {
+        /* released meanwhile */
+      }
+      if (Date.now() > until) fail(`${jobId}/state.json stayed locked for 30 s (${file}); another factory command is writing it.`, 'state_locked');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+    }
+  }
+  try {
+    const state = load(root, jobId);
+    const out = fn(state);
+    save(root, state);
+    return out === undefined ? state : out;
+  } finally {
+    try {
+      fs.closeSync(fd);
+      fs.rmSync(file, { force: true });
+    } catch {
+      /* gone */
+    }
+  }
+}
+
 // Human-only: accept a hand-edited state.json.
 function reseal(root, jobId) {
   const s = readJson(jobPaths(root, jobId).state, null);
@@ -190,4 +229,4 @@ function tasksOf(root, state) {
   return plan && Array.isArray(plan.tasks) ? plan.tasks : [];
 }
 
-module.exports = { reseal, listJobIds, nextJobId, load, save, current, setCurrent, resolve, create, tasksOf, path };
+module.exports = { mutate, reseal, listJobIds, nextJobId, load, save, current, setCurrent, resolve, create, tasksOf, path };

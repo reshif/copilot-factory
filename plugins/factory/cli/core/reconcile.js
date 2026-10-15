@@ -198,9 +198,7 @@ function integrateWave(root, jobId, ids, { wave = null } = {}) {
       git.run(wt, ['merge', '--abort'], { allowFail: true });
       git.run(wt, ['reset', '--hard', before]);
       const line = { cmd: `merge ${t.id} into the job branch`, code: 1, output: `Merging ${t.id} into the integrated job branch conflicts in ${files.join(', ') || 'its files'}: rebuild it on the integrated branch.` };
-      const fresh = job.load(root, state.id);
-      routeTo(fresh, { [t.id]: [line] });
-      job.save(root, fresh);
+      job.mutate(root, state.id, (fresh) => routeTo(fresh, { [t.id]: [line] }));
       record(false, { kind: 'conflict', task: t.id, files });
       return { job: state.id, ok: false, kind: 'conflict', wave, task: t.id, files, route: { [t.id]: [line] } };
     }
@@ -215,9 +213,7 @@ function integrateWave(root, jobId, ids, { wave = null } = {}) {
       const id = d.task && ids.includes(d.task) ? d.task : ids[0];
       (route[id] = route[id] || []).push({ cmd: `merge ${id} into the job branch`, code: 1, output: `Merging would drop ${d.file}: "${String(d.line).slice(0, 120)}" (${d.by}). Rebuild on the integrated branch and keep that line.` });
     }
-    const fresh = job.load(root, state.id);
-    routeTo(fresh, route);
-    job.save(root, fresh);
+    job.mutate(root, state.id, (fresh) => routeTo(fresh, route));
     record(false, { kind: 'regression', dropped: dropped.slice(0, 20) });
     return { job: state.id, ok: false, kind: 'regression', wave, dropped: dropped.slice(0, 20), route };
   }
@@ -252,15 +248,13 @@ function integrateWave(root, jobId, ids, { wave = null } = {}) {
       const line = { cmd: f.cmd, code: f.code, ...(f.flaky ? { flaky: true } : {}), output: f.output.length > 3000 ? `…${f.output.slice(-3000)}` : f.output, named_files: named.slice(0, 10) };
       for (const id of to) (route[id] = route[id] || []).push(line);
     }
-    const fresh = job.load(root, state.id);
-    routeTo(fresh, route);
-    job.save(root, fresh);
+    job.mutate(root, state.id, (fresh) => routeTo(fresh, route));
     record(false, { kind: 'commands', commit: head, merged, commands: results.map((r) => ({ cmd: r.cmd, pass: r.pass, code: r.code, from: r.from })), route: Object.fromEntries(Object.entries(route).map(([k, v]) => [k, v.map((x) => x.cmd)])) });
     return { job: state.id, ok: false, kind: 'commands', wave, commit: head, merged, failures: failed.map((f) => ({ cmd: f.cmd, code: f.code, output: f.output })), route };
   }
-  const fresh = job.load(root, state.id);
-  for (const id of ids) if (fresh.tasks[id] && fresh.tasks[id].integration_failure) delete fresh.tasks[id].integration_failure;
-  job.save(root, fresh);
+  job.mutate(root, state.id, (fresh) => {
+    for (const id of ids) if (fresh.tasks[id] && fresh.tasks[id].integration_failure) delete fresh.tasks[id].integration_failure;
+  });
   record(true, { commit: head, merged, commands: results.map((r) => ({ cmd: r.cmd, pass: r.pass, from: r.from })) });
   // Every task is built and integrated: this is the reconcile step's result too (no
   // integrator agent needed; the regression guard ran above).
