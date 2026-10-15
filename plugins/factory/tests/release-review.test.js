@@ -169,3 +169,51 @@ test('job.mutate: a state lock left by a process that died (Ctrl+C during task v
   assert.throws(() => core('job').mutate(root, J, () => {}, { waitMs: 300 }), /stayed locked/);
   fs.rmSync(file, { force: true });
 });
+
+test('environment services: when the health check fails after the job brought them up (a reboot, docker restarted), they are brought up again, not parked on every resume', () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  customPlan(root, J, [{ id: 'T1', objective: 'fix add', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: VC }]);
+  const svc = path.join(root, '..', `${path.basename(root)}-svc`);
+  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
+  fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'svc', setup: ['true'], services: { up: `mkdir -p ${svc} && touch ${svc}/running && echo x >> ${svc}/ups`, health: `test -f ${svc}/running`, down: `rm -f ${svc}/running` } }));
+  core('environment').confirm(root, { file: envFile, channel: 'chat' });
+  const wt = core('tasks').prepareWorktree(root, stateOf(root, J), 'T1');
+  assert.equal(core('environment').ensure(root, stateOf(root, J), { taskId: 'T1', wt }).ok, true);
+  assert.equal(core('environment').ensure(root, stateOf(root, J), { taskId: 'T1', wt }).ok, true);
+  assert.equal(fs.readFileSync(path.join(svc, 'ups'), 'utf8').trim().split('\n').length, 1, 'up once per job while healthy');
+  fs.rmSync(path.join(svc, 'running')); // the machine rebooted: the containers are gone
+  const r = core('environment').ensure(root, stateOf(root, J), { taskId: 'T1', wt });
+  assert.equal(r.ok, true, JSON.stringify(r.broken));
+  assert.equal(fs.readFileSync(path.join(svc, 'ups'), 'utf8').trim().split('\n').length, 2, 'brought up again once');
+  // still unhealthy after a fresh up: that is a broken environment
+  fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'svc', setup: ['true'], services: { up: 'true', health: 'false' } }));
+  core('environment').confirm(root, { file: envFile, channel: 'chat' });
+  const b = core('environment').ensure(root, stateOf(root, J), { taskId: 'T1', wt });
+  assert.equal(b.ok, false);
+  assert.match(b.broken.reason, /^environment broken: false exit 1/);
+});
+
+test('environment services: a wave\'s tasks prepared in parallel bring the job\'s services up once, not concurrently', async () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  const ids = ['T1', 'T2', 'T3', 'T4'];
+  customPlan(root, J, ids.map((id) => ({ id, objective: `task ${id}`, allowed_paths: [`src/${id}.js`], criteria_ids: ['AC-1'], verify_commands: VC })));
+  const svc = path.join(root, '..', `${path.basename(root)}-svc`);
+  fs.mkdirSync(svc);
+  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
+  // like two `docker compose up` on one project at once: the second fails while the first works
+  const up = `if [ -e ${svc}/busy ]; then exit 1; fi; touch ${svc}/busy; sleep 1; touch ${svc}/running; echo x >> ${svc}/ups; rm ${svc}/busy`;
+  fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'svc', setup: ['true'], services: { up, health: `test -f ${svc}/running` } }));
+  core('environment').confirm(root, { file: envFile, channel: 'chat' });
+  const { spawn } = require('child_process');
+  const prep = (id) => new Promise((res) => {
+    let out = '';
+    const c = spawn('node', [F.BIN, 'env', 'prepare', id, '--job', J], { cwd: root, env: { ...process.env, FACTORY_ROOT: '' } });
+    c.stdout.on('data', (d) => { out += d; });
+    c.on('close', () => res(JSON.parse(out)));
+  });
+  const rs = await Promise.all(ids.map(prep));
+  assert.deepEqual(rs.map((r) => r.ok), [true, true, true, true], JSON.stringify(rs.filter((r) => !r.ok)));
+  assert.equal(fs.readFileSync(path.join(svc, 'ups'), 'utf8').trim().split('\n').length, 1);
+});

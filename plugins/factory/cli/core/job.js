@@ -65,9 +65,11 @@ function lockHolderGone(file) {
   }
 }
 
-function mutate(root, jobId, fn, { waitMs = 30000 } = {}) {
+// An exclusive lock file naming its holder, held while fn runs. A holder whose process is gone
+// (on this host) is taken over at once; one older than staleMs too (another machine, or hung).
+// Waits up to waitMs, then fails with state_locked.
+function withLock(file, fn, { waitMs = 30000, staleMs = 60000, what = file } = {}) {
   const fs = require('fs');
-  const file = `${jobPaths(root, jobId).state}.lock`;
   const until = Date.now() + waitMs;
   let fd = null;
   while (fd === null) {
@@ -77,19 +79,16 @@ function mutate(root, jobId, fn, { waitMs = 30000 } = {}) {
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
       try {
-        if (Date.now() - fs.statSync(file).mtimeMs > 60000 || lockHolderGone(file)) fs.rmSync(file, { force: true });
+        if (Date.now() - fs.statSync(file).mtimeMs > staleMs || lockHolderGone(file)) fs.rmSync(file, { force: true });
       } catch {
         /* released meanwhile */
       }
-      if (Date.now() > until) fail(`${jobId}/state.json stayed locked for ${Math.round(waitMs / 1000)} s (${file}); another factory command is writing it.`, 'state_locked');
+      if (Date.now() > until) fail(`${what} stayed locked for ${Math.round(waitMs / 1000)} s (${file}); another factory command is writing it.`, 'state_locked');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
     }
   }
   try {
-    const state = load(root, jobId);
-    const out = fn(state);
-    save(root, state);
-    return out === undefined ? state : out;
+    return fn();
   } finally {
     try {
       fs.closeSync(fd);
@@ -98,6 +97,15 @@ function mutate(root, jobId, fn, { waitMs = 30000 } = {}) {
       /* gone */
     }
   }
+}
+
+function mutate(root, jobId, fn, { waitMs = 30000 } = {}) {
+  return withLock(`${jobPaths(root, jobId).state}.lock`, () => {
+    const state = load(root, jobId);
+    const out = fn(state);
+    save(root, state);
+    return out === undefined ? state : out;
+  }, { waitMs, what: `${jobId}/state.json` });
 }
 
 // Human-only: accept a hand-edited state.json.
@@ -247,4 +255,4 @@ function tasksOf(root, state) {
   return plan && Array.isArray(plan.tasks) ? plan.tasks : [];
 }
 
-module.exports = { mutate, reseal, listJobIds, nextJobId, load, save, current, setCurrent, resolve, create, tasksOf, path };
+module.exports = { mutate, withLock, reseal, listJobIds, nextJobId, load, save, current, setCurrent, resolve, create, tasksOf, path };

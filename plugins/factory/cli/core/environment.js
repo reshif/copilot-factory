@@ -282,24 +282,50 @@ function ensureIgnored(root, e) {
 }
 
 // Job-level services: up once per job (recorded in the job state), health checked every time.
+// A wave's tasks are prepared in parallel: the first brings the services up while the others
+// wait for it (two `docker compose up` on one project at once fail), then each checks health.
 function ensureServices(root, state, e, v) {
   const s = e.services;
   if (!s || !s.up) return { ok: true };
+  if (!state) return servicesUp(root, null, e, v);
+  const T = e.timeout_seconds || 1200;
+  const file = path.join(require('../lib/paths').jobPaths(root, state.id).dir, 'services.lock');
+  return require('./job').withLock(file, () => servicesUp(root, state, e, v), { waitMs: (2 * T + 360) * 1000, staleMs: (2 * T + 360) * 1000, what: `${state.id}'s services` });
+}
+
+function servicesUp(root, state, e, v) {
+  const s = e.services;
   const T = e.timeout_seconds || 1200;
   const job = require('./job');
   const key = hash({ up: s.up, env: e.env || {} });
   const fresh = state ? job.load(root, state.id) : null;
   const jv = { ...v, worktree: root, task: 'job', slug: `${v.job}`.toLowerCase(), db: `factory_${String(v.job).toLowerCase().replace(/[^a-z0-9]/g, '')}` };
   const env = processEnv(e, jv);
-  if (!fresh || !fresh.environment_services || fresh.environment_services.key !== key) {
+  const up = () => {
     const r = sh(expand(s.up, jv), root, T, env);
-    if (r.code !== 0) return { ok: false, broken: broken('services.up', expand(s.up, jv), r) };
+    if (r.code !== 0) return broken('services.up', expand(s.up, jv), r);
     if (fresh) job.mutate(root, fresh.id, (st) => { st.environment_services = { key, up_at: nowIso() }; });
-  }
-  if (s.health) {
+    return null;
+  };
+  const healthy = () => {
+    if (!s.health) return null;
     const r = sh(expand(s.health, jv), root, Math.min(T, 300), env);
-    if (r.code !== 0) return { ok: false, broken: broken('services.health', expand(s.health, jv), r) };
+    return r.code === 0 ? null : broken('services.health', expand(s.health, jv), r);
+  };
+  const wasUp = Boolean(fresh && fresh.environment_services && fresh.environment_services.key === key);
+  if (!wasUp) {
+    const b = up();
+    if (b) return { ok: false, broken: b };
   }
+  let h = healthy();
+  // Brought up earlier in this job but unhealthy now (the machine rebooted, docker restarted):
+  // up once more before calling the environment broken, or every resume would park again.
+  if (h && wasUp) {
+    const b = up();
+    if (b) return { ok: false, broken: b };
+    h = healthy();
+  }
+  if (h) return { ok: false, broken: h };
   return { ok: true };
 }
 
