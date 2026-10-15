@@ -326,3 +326,22 @@ test('review 6: the console never says God Eye approved a contract it objects to
   const html = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
   assert.match(html, /God Eye objects/, 'the page renders them');
 });
+
+test('review 4: the degraded park reason says what resume does (one automatic retry, then parked again), and the clarify skill never leads an objected round with "approved"', () => {
+  const root = F.makeRepo();
+  newJob(root);
+  F.cli(root, ['next']);
+  const failed = () => {
+    const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'clarify']);
+    return F.record(root, F.envelope(b, 'degraded', { analysts: [], degraded: ['intent-analyst:intent'], judge: { questions: [], dismissed: [] }, scout: scoutData([]) }));
+  };
+  failed();
+  F.cli(root, ['next']);
+  const r = failed();
+  assert.equal(r.status, 'park');
+  assert.doesNotMatch(r.park_reason, /the next failure parks again/, 'after resume the next failure is retried once');
+  assert.match(r.park_reason, /two more failed rounds in a row park it again/);
+  const skill = fs.readFileSync(path.join(F.PLUGIN, 'skills', 'clarify', 'SKILL.md'), 'utf8');
+  const ok = skill.split('\n').find((l) => /^\s*- `ok`:/.test(l));
+  assert.doesNotMatch(ok, /^\s*- `ok`: God Eye approved/, 'an ok round may be one God Eye objects to');
+});
