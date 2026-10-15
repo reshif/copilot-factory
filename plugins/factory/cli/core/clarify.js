@@ -1776,9 +1776,10 @@ function h1Screen(state, v) {
   if (v.skipped.length) L.push('', `**Sources skipped:** ${v.skipped.length} (${[...new Set(v.skipped.map((x) => x.why))].join('; ')}); none of them is relied on.`);
   const open = v.objections.filter((o) => o.open);
   const notes = v.objections.filter((o) => !o.open);
+  // God Eye's objections are never approval: with one open, the screen never says the checks pass
   if (open.length) L.push('', '**God Eye objects** (it did not approve this contract; you chose to proceed: `approve` takes it on over them, `deny <what must change>` sends it back)', ...open.map((o) => `- ${o.check} (${o.ref}): ${o.issue}`));
-  if (v.dropped) L.push('', '**Dropped**', ...v.dropped.map((x) => `- ${x}`));
   else L.push('', `**God Eye:** all ${CHECKLIST.length} checks pass${notes.length ? `; remarks: ${notes.map((o) => o.issue).join('; ')}` : ''}.`);
+  if (v.dropped) L.push('', '**Dropped**', ...v.dropped.map((x) => `- ${x}`));
   for (const R of v.redirects) {
     L.push('', `**Your redirect ${R.id}:** ${R.done} of ${R.of} done`);
     for (const c of R.clauses) L.push(`- ${c.done ? '✓' : '✗'} "${clip(c.quote, 120)}" — ${c.how}`);

@@ -14,7 +14,7 @@ user-invocable: false
    > So: **shoppers with a discount code see the wrong cart total; after this it matches checkout.** I'd run it as a **bug** fix at **low** risk, as a single job (it touches only `src/cart/`). Right, or correct any of those?
    Stop and wait. If the user corrects the intent, restate once more in the same one-question form; if it still isn't clear, create the job anyway and leave the unclear Intent lines as placeholders — clarify asks about them first.
 7. On confirmation run:
-   `factory job new --title "<short title>" --type <type> --risk <risk> [--epic]`
-   Tell the user the job id and the recipe the CLI chose (one line). If `risk_raised_by_policy` is true, say so. Write the confirmed restatement into the contract's **Intent** section (Problem, Who, Outcome) straight away.
-   Write only what the user said and what you read in the repo: facts about libraries, vendors or standards are researched by clarify's scouts, with sources.
+   `factory job new --title "<short title>" --type <type> --risk <risk> --request "<the user's request, word for word>" [--epic]`
+   `--request` keeps the user's own words: clarify's read-back quotes them, and version pins may come only from them or from a repo file. Tell the user the job id and the recipe the CLI chose (one line). If `risk_raised_by_policy` is true, say so. Write the confirmed restatement into the contract's **Intent** section (Problem, Who, Outcome) straight away.
+   Write only what the user said and what you read in the repo: facts about libraries, vendors or standards are researched by clarify, with sources, for the versions the user confirms.
 8. Return to the start skill loop (`factory next`).

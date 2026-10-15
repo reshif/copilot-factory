@@ -1,5 +1,7 @@
 # Clarify v2: a convergent clarify stage (design)
 
+> **Superseded by [DESIGN-CLARIFY-v3.md](DESIGN-CLARIFY-v3.md).** Clarify v3 replaces the analyst panel, the judge loop, token-overlap identity, the contract lock and progress-parking described here with a read-back, one pinned research pass, one decision sheet, one contract writer and a readiness check. Kept as history; v2 records migrate on their first v3 touch.
+
 Builds on [DESIGN-GROUNDED-INTENT.md](DESIGN-GROUNDED-INTENT.md) (research first, ask only
 what research can't answer). That design made clarify grounded; this one makes it
 **converge**: one ledger of issues that the CLI owns, identity by subject instead of wording,

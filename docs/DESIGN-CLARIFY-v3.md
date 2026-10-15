@@ -101,8 +101,12 @@ A redirect can also be given at any time during clarify (`factory clarify redire
   | repo quote not at the line | `bad_quote` | no |
   | docs, version matches the pin (`2.4.x` ↔ `2.4.3`, `/v2.4.x/` in the URL) | `pinned` | yes |
   | docs for another version (`3.2`, `/en/v3.0/`) | `other_version` | no |
-  | docs with no version, or `/stable/` `/latest/` | `unpinned` | no |
-  | docs about a system with no pin | `unversioned` | only when the plan item names no pin |
+  | docs for a pinned system with no version, or `/stable/` `/latest/` | `unpinned` | no |
+  | docs about a system with no pin (an RFC, a vendor API with no version) | `docs` | yes |
+  | no URL or no quote | `unsourced` | no |
+
+  Every docs finding names the `system` its page documents; that is how the CLI matches it to a
+  pin (never by word overlap with the plan item).
 
   Evidence for another version cannot confirm anything. When a pin changes, every finding is
   re-judged against the new pin.
@@ -319,8 +323,8 @@ redirect read-back; the skill shows it as is.
 > 3. 6 tenants, each with its own locations — "6 tenants, each with their own locations"
 >
 > **Versions I will research against**
-> - Nautobot 2.4.x — you said "we run Nautobot 2.4.x" (the repo allows ">=2.0,<4.0", pyproject.toml:8)
-> - netmiko ^4.3 — pyproject.toml:9
+> - Nautobot 2.4.x — you said "we run Nautobot 2.4.x" (the repo allows ">=2.0,<4.0", pyproject.toml:7)
+> - netmiko ^4.3 — pyproject.toml:8
 >
 > **What I will find out** (about 10 minutes)
 > 1. [docs] How Nautobot 2.4 scopes a VLAN: Location, VLAN Group, Tenant
@@ -355,10 +359,10 @@ redirect read-back; the skill shows it as is.
 >
 > **Facts I'll assume** (say if one is wrong)
 > 1. Jobs are registered in jobs/__init__.py with register_jobs (jobs/__init__.py:1)
-> 2. Job tests run with pytest (pyproject.toml:12)
+> 2. Job tests run with pytest (pyproject.toml:11)
 >
-> **Not researched**
-> - 1 page skipped: docs.nautobot.com/projects/core/en/stable/… documents the latest release, not 2.4.x.
+> **Sources skipped** (not relied on)
+> - docs.nautobot.com/projects/core/en/stable/…: a moving page (stable/latest), not the confirmed version
 >
 > Reply **ok** to take my recommendations, or say what to change: **ok, but 2 b**, **3: other: …**, **2 defer**.
 
@@ -384,9 +388,15 @@ redirect read-back; the skill shows it as is.
 > - Name mismatch → report, never rename (you: "2 b")
 > - Credentials → the device's Secrets Group (recommended; you accepted)
 >
-> **Design may still choose:** the connection library, parallelism, enable mode.
-> **Research gaps:** one page skipped (documents 3.x).
+> **Design may still choose:** the connection library; parallelism; enable mode.
+>
+> **Sources skipped:** 1 (a moving page (stable/latest), not the confirmed version); none of them is relied on.
+>
 > **God Eye:** all 7 checks pass.
+
+When the user chose `proceed` over an open blocker, the God Eye line is replaced by **God Eye
+objects** (it did not approve this contract …) with each objection; drops are listed under
+**Dropped** with who dropped each item and why; open research gaps under **Research gaps**.
 >
 > **Gate H1** · hash `…` — reply **approve**, or **deny <what must change>**.
 
