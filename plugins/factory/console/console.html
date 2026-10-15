@@ -7218,8 +7218,10 @@ function toDisplay(data) {
       var cw = -1; waves.some(function (wv, i) { if (wv.some(function (tk) { return taskStatusAt(j, tk, t) !== "passing"; })) { cw = i; return true; } return false; }); if (cw < 0) cw = waves.length - 1;
       kids(g, [detailBox(x, y, w, h, "A", "Build", j.slug + " · wave " + (cw + 1) + " of " + Math.max(1, waves.length) + (recs.length > 1 ? " · " + (recs.length - 1) + " more job" + (recs.length > 2 ? "s" : "") + " in Build" : ""), r.ag.length ? "building now" : "in build", r.ag.length > 0)]);
       var TX = x + 82, perRow = Math.max(2, Math.min(10, Math.floor((w - 82 - 190) / 48)));
-      waves.slice(0, 2).forEach(function (wv, wi) {
-        var yy = y + 76 + wi * 44;
+      // two rows fit: the wave at work and the next one (the last two once the last wave is at work)
+      var w0 = Math.max(0, Math.min(cw, waves.length - 2));
+      waves.slice(w0, w0 + 2).forEach(function (wv, k0) {
+        var wi = w0 + k0, yy = y + 76 + k0 * 44;
         kids(g, [tx(x + 12, yy + 20, "Wave " + (wi + 1), { "font-size": 13, "class": "t-disp" + (wi === cw ? "" : " t2"), "font-weight": 700 })]);
         var shownT = wv.slice(0, perRow);
         shownT.forEach(function (tk, k) {
@@ -7234,7 +7236,7 @@ function toDisplay(data) {
       if (!j.tasks.length) kids(g, [tx(x + w / 2, y + 104, "no plan yet", { "text-anchor": "middle", "font-size": 13, "class": "t2" })]);
       var pt = passing + " / " + j.tasks.length;
       kids(g, [tx(x + 12, y + h - 15, pt, { "font-size": 22, "class": "t-disp", "font-weight": 700 }),
-        tx(x + 24 + measure(pt, "t-disp", 22, 700), y + h - 16, "tasks passing · " + plural(r.ag.length, "agent") + " at work", { "font-size": 13, "class": "t2", "data-fit": w - 90 })]);
+        tx(x + 24 + measure(pt, "t-disp", 22, 700), y + h - 16, "tasks passing · " + plural(r.ag.length, "agent") + " at work" + (w0 > 0 ? " · " + (w0 === 1 ? "wave 1" : "waves 1–" + w0) + " done" : "") + (waves.length > w0 + 2 ? " · " + (waves.length - w0 - 2 === 1 ? "wave " + waves.length : "waves " + (w0 + 3) + "–" + waves.length) + " still to come" : ""), { "font-size": 13, "class": "t2", "data-fit": w - 90 })]);
       if (r.failing) kids(g, [Z("path", { d: cloudPath(TX - 8, y + 68, Math.min(w - (TX - x) - 4, 16 + perRow * 48 + 190), 46), "class": "cloud" })]);
       return g;
     }
