@@ -562,7 +562,7 @@
         for (var i = rw.a; i <= rw.b; i++) {
           var key = STAGES[i].key;
           mx = Math.max(mx, o.st[key].h);
-          rows = Math.max(rows, bankRows(key) + (key === "done" && S.lessonsWaiting.length ? 1 : 0));
+          rows = Math.max(rows, bankRows(key, o.cell[i].w) + (key === "done" && S.lessonsWaiting.length ? 1 : 0));
         }
         rw.SY = y; rw.SH = mx ? 62 + mx + 12 : 72; rw.PY = y + 38;
         rw.BY = y + rw.SH + 32; rw.BH = 30 + rows * 21 + 4;
@@ -764,9 +764,127 @@
       bankMembers(key).forEach(function (m) { if (by[m[0]]) { by[m[0]].n++; return; } by[m[0]] = { role: m[0], n: 1, name: roleName(m[0], key) }; out.push(by[m[0]]); });
       return out;
     }
-    function bankRows(key) {
+    function bankRows(key, w) {
+      var lr = bankRun(key);
+      if (lr.live) return Math.max(2, runRows(lr, w).length);
       var work = {}; (S.byStage[key] || []).forEach(function (r) { r.ag.forEach(function (a) { work[a.agent] = 1; }); });
       return Math.max(2, bankGroups(key).reduce(function (n, gr) { return n + (work[gr.role] ? 2 : 1); }, 0));
+    }
+    // ------------- the workflow run in a bank: its steps, as they stood at the replay time (RUN_STEPS.view, cli/core/run-steps.js)
+    var HAS_RUNS = typeof RUN_STEPS !== "undefined";
+    function runView(run, t) { if (!HAS_RUNS) return null; try { return RUN_STEPS.view(run, t); } catch (e) { return null; } }
+    // the run at work at this station at S.t (the most urgent: one with a failed agent, else the latest started), how many
+    // other jobs run here too, and the last run that finished here (for an idle bank's footnote)
+    function bankRun(key) {
+      S.runAt = S.runAt || {};
+      if (S.runAt[key]) return S.runAt[key];
+      var live = [], last = null;
+      JOBS.forEach(function (j) {
+        arr(j.runs).forEach(function (run) {
+          if (run.station !== key) return;
+          var v = runView(run, S.t); if (!v) return;
+          if (v.status === "running") { if ((S.byStage[key] || []).some(function (r) { return r.j === j; })) live.push({ j: j, v: v }); }
+          else if (!last || P(v.ended_at) > P(last.v.ended_at)) last = { j: j, v: v };
+        });
+      });
+      var bad = function (x) { return x.v.steps.some(function (st) { return st.roles.some(function (r) { return r.failed; }); }) ? 1 : 0; };
+      live.sort(function (a, b) { return bad(b) - bad(a) || P(b.v.started_at) - P(a.v.started_at); });
+      return (S.runAt[key] = { key: key, live: live[0] || null, more: live.slice(1), last: last });
+    }
+    var STEP_ROLE = { "intent-mapper": ["mapper", "mappers"], researcher: ["researcher", "researchers"], verifier: ["verifier", "verifiers"], "intent-analyst": ["analyst", "analysts"], judge: ["judge", "judges"],
+      "god-eye": ["God Eye", "God Eye"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
+      slicer: ["slicer", "slicer"], builder: ["builder", "builders"], tester: ["tester", "testers"], integrator: ["integrator", "integrator"], "finding-verifier": ["verifier", "verifiers"], "lesson-writer": ["lesson writer", "lesson writer"] };
+    function stepRole(role, n, key) {
+      if (role === "researcher" && key === "intent") return n === 1 ? "scout" : "scouts";
+      if (ROLE_LANE[role]) return ROLE_LANE[role] + " lane";
+      var w = STEP_ROLE[role]; return w ? w[n === 1 ? 0 : 1] : agentLabel(role);
+    }
+    // who ran in a step: "analysts ×4 · 1 failed" (the bank), "analysts ×4 · 1 at work · 1 failed · 1 retry" (the section view),
+    // "×4 ✕1" when even the short form does not fit a bank
+    function rolesText(st, key, mode) {
+      if (!st.roles.length) return st.planned && st.planned.length && st.state === "pending" ? st.planned.map(function (r) { return stepRole(r, 1, key); }).join(", ") : "";
+      return st.roles.map(function (r) {
+        if (mode === "terse") return "×" + r.total + (r.failed ? " ✕" + r.failed : "");
+        var bits = [stepRole(r.role, r.total, key) + (r.total > 1 ? " ×" + r.total : "")];
+        if (mode === "full" && r.running && r.total > 1) bits.push(r.running + " at work");
+        if (r.failed) bits.push(r.failed + " failed");
+        if (mode === "full" && r.retries) bits.push(plural(r.retries, "retry").replace("retrys", "retries"));
+        return bits.join(" · ");
+      }).join(mode === "terse" ? " " : ", ");
+    }
+    function stepLabel(st) { return st.label + (st.state === "running" ? " · " + fD(S.t - P(st.started_at)) : ""); }
+    var STEP_GLYPH = { done: "✓", running: "●", pending: "○", skipped: "–", failed: "✕" };
+    function runHead(v, j) {
+      var bits = [];
+      if (v.round) bits.push("round " + v.round); else if (v.visit > 1) bits.push("run " + v.visit);
+      if (v.at) bits.push("step " + v.at + " of " + v.of);
+      bits.push(fD(S.t - P(v.started_at)));
+      return bits.join(" · ");
+    }
+    // the rows a bank draws for its run: the job line, the steps (the earliest done ones folded when there are many), what comes next
+    var MAX_STEP_ROWS = 8;
+    function runRows(lr, SW) {
+      var v = lr.live.v, steps = v.steps.slice(), out = [], key = lr.key;
+      out.push({ kind: "job" });
+      var fold = 0;
+      while (steps.length > MAX_STEP_ROWS && (steps[0].state === "done" || steps[0].state === "skipped")) { steps.shift(); fold++; }
+      if (fold) out.push({ kind: "fold", n: fold });
+      steps.forEach(function (st) {
+        out.push({ kind: "step", st: st });
+        // the step at work names who is at work on a line of its own when the two do not fit on one
+        if (st.state === "running" && st.roles.length && measure(stepLabel(st), "t-agent", 13, 700) + measure(rolesText(st, key, "bank"), "t2", 13) + 40 > SW) out.push({ kind: "who", st: st });
+      });
+      out.push({ kind: lr.more.length ? "more" : "next" });
+      return out;
+    }
+    function drawRun(g, s, x, SW, BY, lr) {
+      var v = lr.live.v, j = lr.live.j, rows = runRows(lr, SW), key = s.key, split = {};
+      rows.forEach(function (row) { if (row.kind === "who") split[row.st.i] = 1; });
+      rows.forEach(function (row, k) {
+        var y = BY + 40 + k * 21 + 4.5;
+        if (row.kind === "job") {
+          var head = runHead(v, j), hw = Math.min(measure(head, "t-agent", 13, 600), SW * .62);
+          kids(g, [Z("g", { "class": "mk", "data-open": j.id, tabindex: 0, role: "button", "aria-label": "Open " + j.slug + ": " + head },
+            Z("title", null, j.slug + " — " + (v.workflow || "") + (v.config ? " " + v.config : "") + " · " + head),
+            tx(x + 8, y, "▸ " + j.slug, { "font-size": 13, "class": "t-agent", "font-weight": 700, "data-fit": SW - 24 - hw }),
+            tx(x + SW - 8, y, head, { "text-anchor": "end", "font-size": 13, "class": "t-agent", "font-weight": 600, "data-fit": SW * .62 }))]);
+          return;
+        }
+        if (row.kind === "who") {
+          var who = row.st.roles.map(function (r) { return stepRole(r.role, r.total, key) + ": " + [r.running ? r.running + " at work" : "", r.ok ? r.ok + " done" : "", r.failed ? r.failed + " failed" : ""].filter(Boolean).join(" · "); }).join(" · ");
+          kids(g, [tx(x + 24, y, "▸ " + who, { "font-size": 13, "class": row.st.roles.some(function (r) { return r.failed; }) ? "t-fail" : "t-agent", "font-weight": 600, "data-fit": SW - 32 })]);
+          return;
+        }
+        if (row.kind === "fold") { kids(g, [tx(x + 8, y, "✓ " + plural(row.n, "earlier step"), { "font-size": 13, "class": "t3" })]); return; }
+        if (row.kind === "next") {
+          var nx = v.next ? "○ → " + v.next : "";
+          if (nx) kids(g, [tx(x + 8, y, nx, { "font-size": 13, "class": "t3", "data-fit": SW - 16 })]);
+          return;
+        }
+        if (row.kind === "more") {
+          var others = lr.more.map(function (m) { return m.j.slug + (m.v.at ? " (step " + m.v.at + "/" + m.v.of + ")" : ""); }).join(", ");
+          kids(g, [Z("g", { "class": "mk", "data-more": key, tabindex: 0, role: "button", "aria-label": plural(lr.more.length, "more job") + " at work here: " + others },
+            Z("title", null, "also at work here: " + others), tx(x + 8, y, "+" + plural(lr.more.length, "more job") + " at work · " + others, { "font-size": 13, "class": "t-agent", "font-weight": 600, "data-fit": SW - 16 }))]);
+          return;
+        }
+        var st = row.st, gl = STEP_GLYPH[st.state] || "·", failed = st.roles.some(function (r) { return r.failed; });
+        var cls = st.state === "running" ? "t-agent" : st.state === "failed" ? "t-fail" : st.state === "done" ? "t2" : "t3";
+        var label = stepLabel(st);
+        var rt = split[st.i] && st.state === "running" ? "" : rolesText(st, key, "bank"), rw = rt ? measure(rt, "t2", 13) : 0;
+        if (rt && rw > SW * .55) { rt = rolesText(st, key, "terse"); rw = measure(rt, "t2", 13); }
+        var tip = gl + " " + st.label + " — " + (st.state === "running" ? "at work for " + fD(S.t - P(st.started_at)) : st.state === "pending" ? "not yet" : st.state) + (st.roles.length ? " · " + st.roles.map(function (r) { return stepRole(r.role, r.total, key) + ": " + r.total + " run" + (r.total === 1 ? "" : "s") + (r.running ? ", " + r.running + " at work" : "") + (r.ok ? ", " + r.ok + " ok" : "") + (r.failed ? ", " + r.failed + " failed" : "") + (r.retries ? ", " + r.retries + " retr" + (r.retries === 1 ? "y" : "ies") : ""); }).join("; ") : "") + (st.text ? " · “" + st.text + "”" : "");
+        var rowG = Z("g", { "class": "steprow st-" + st.state }, Z("title", null, tip),
+          st.state === "running" ? Z("circle", { cx: x + 12.5, cy: y - 4.5, r: 5.5, "class": "lamp-ring pulse" }) : null,
+          tx(x + 8, y, gl, { "font-size": 13, "class": failed && st.state === "done" ? "t-fail" : st.state === "done" ? "t-ok" : cls, "font-weight": 700 }),
+          tx(x + 24, y, label, { "font-size": 13, "class": cls, "font-weight": st.state === "running" ? 700 : 400, "data-fit": SW - 24 - 8 - (rt ? rw + 10 : 0) }),
+          rt ? tx(x + SW - 8, y, rt, { "text-anchor": "end", "font-size": 13, "class": failed ? "t-fail" : st.state === "running" ? "t-agent" : st.state === "pending" || st.state === "skipped" ? "t3" : "t2", "font-weight": failed || st.state === "running" ? 600 : 400 }) : null);
+        kids(g, [rowG]);
+      });
+    }
+    // an idle bank's footnote, only where its row already leaves a line free: how the last run here ended, and when
+    function lastRunLine(lr) {
+      var v = lr.last.v, ok = v.status === "done", bad = v.steps.reduce(function (n, st) { return n + st.roles.reduce(function (m, r) { return m + r.failed; }, 0); }, 0);
+      return "last run " + (ok ? "✓" : "✕ " + (v.error ? "stopped" : "failed")) + (bad ? " (" + plural(bad, "agent") + " failed)" : "") + " · " + fD(S.t - P(v.ended_at)) + " ago · " + lr.last.j.slug;
     }
     // what one agent is doing, in plain words: job, task (builders and testers), how long
     function doing(role, j, since) {
@@ -780,6 +898,9 @@
     }
     function bankNode(s, i, recs, ag) {
       var c = L.cell[i], rw = L.row[c.r], x = c.x, SW = c.w, BY = rw.BY, BH = rw.BH;
+      // a run at work here counts its own agents too (a replay between the agent lines still reads "at work")
+      var lr = bankRun(s.key);
+      if (lr.live) ag = Math.max(ag, lr.live.v.steps.reduce(function (n, st) { return n + st.roles.reduce(function (m, r) { return m + r.running; }, 0); }, 0));
       var bk0 = BANKS[s.key] || { name: s.label, members: [] }, g = Z("g", { "class": "bank" + (ag ? " active" : "") });
       var bk = { name: s.key === "ship" && bankMembers("ship").length ? "Post-merge review" : bk0.name, members: bankMembers(s.key) };
       var groups = bankGroups(s.key), work = {};
@@ -789,10 +910,11 @@
       // the bank's name, and how many of its agents are at work
       // idle, but not forgotten: a job here waits on your answers (Q), so the bank waits on you
       var waitsOnYou = !ag && recs.some(function (r) { return r.g === "Q"; });
-      var cnt = bk.members.length ? (ag ? Math.min(ag, bk.members.length) + " of " + bk.members.length + " at work" : waitsOnYou ? "waiting on you" : "idle") : "", cw = cnt ? measure(cnt, "t2", 13, 600) + 18 : 0;
+      var cnt = bk.members.length ? (ag ? Math.min(ag, bk.members.length) + " of " + bk.members.length + " at work" : waitsOnYou ? "waiting on you" : "idle") : lr.live ? (ag ? ag + " at work" : "running") : "", cw = cnt ? measure(cnt, "t2", 13, 600) + 18 : 0;
       if (ag && measure(bk.name, "t-disp tight", 13, 700) + cw + 16 > SW) { cnt = Math.min(ag, bk.members.length) + " of " + bk.members.length; cw = measure(cnt, "t2", 13, 600) + 18; }
       kids(g, [tx(x + 8, BY + 19, bk.name, { "font-size": 13, "class": "t-disp tight", "font-weight": 700, "data-fit": SW - 14 - cw })]);
       if (cnt) kids(g, [tx(x + SW - 8, BY + 19, cnt, { "text-anchor": "end", "font-size": 13, "class": ag ? "t-agent" : waitsOnYou ? "t-hl" : "t3", "font-weight": 600 })]);
+      if (lr.live) { drawRun(g, s, x, SW, BY, lr); groups = []; }
       var ry = 0;
       groups.forEach(function (gr) {
         var cy = BY + 40 + ry * 21, jobs = work[gr.role] || [], lit = Math.min(gr.n, jobs.length), lx = x + 13;
@@ -807,9 +929,14 @@
         kids(g, [row]);
         ry++;
       });
-      if (!bk.members.length) {
+      if (!bk.members.length && !lr.live) {
         var bl = s.key === "ship" ? ["CI re-verifies the merge;", "only you merge it (H4)"] : s.key === "review" ? ["No review lanes", "in these recipes"] : ["A CLI check:", "no agent is needed"];
         kids(g, [tx(x + 8, BY + 42, bl[0], { "font-size": 13, "class": "t2", "data-fit": SW - 14 }), tx(x + 8, BY + 61, bl[1], { "font-size": 13, "class": "t2", "data-fit": SW - 14 })]);
+      }
+      if (!lr.live && lr.last && bk.members.length && BY + 40 + ry * 21 + 4.5 <= BY + BH - 8 - (s.key === "done" && S.lessonsWaiting.length ? 24 : 0)) {
+        var ll = lastRunLine(lr);
+        kids(g, [Z("g", { "class": "mk lastrun", "data-open": lr.last.j.id, tabindex: 0, role: "button", "aria-label": ll + ": open the job" }, Z("title", null, ll + " — open the job for its steps"),
+          tx(x + 8, BY + 40 + ry * 21 + 4.5, ll, { "font-size": 13, "class": lr.last.v.status === "done" ? "t3" : "t-fail", "data-fit": SW - 16 }))]);
       }
       var lw = s.key === "done" ? S.lessonsWaiting.length : 0;
       if (lw) kids(g, [Z("g", { "class": "mk lesson-tag", "data-notes": "lessons", tabindex: 0, role: "button", "aria-label": plural(lw, "lesson") + " wait on you: open the notes" },
@@ -1348,6 +1475,8 @@
       if (api.conversation) out.push(H("section", { "class": "sec-blk cvblk", "aria-label": "Latest exchange about this job, as of " + fT(t) }, api.conversation(j.id, t)));
       // 2. path
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Path", H("em", { text: "each stop is a stay at a station · amber stripe = waiting on you · ↺ = " + wd("revise") })), pathHTML(j, t)));
+      // 2b. workflow runs: each run's steps, as they stood at the replay time, the latest first
+      out.push(runsBlock(j, t));
       // 3. tasks by wave
       var waves = wavesOf(j.tasks), npass = j.tasks.filter(function (tk) { return taskStatusAt(j, tk, t) === "passing"; }).length;
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Tasks", H("em", { text: npass + " / " + j.tasks.length + " passing" + (waves.length > 1 ? " · " + plural(waves.length, "wave") : "") })),
@@ -1398,6 +1527,32 @@
       // 7. history
       out.push(H("section", { "class": "sec-blk hist" }, H("h3", null, "History by station", H("em", { text: plural(j.history.filter(function (h) { return P(h.at) <= t; }).length, "move") })), historyNodes(j, t)));
       fill(secBody, H("div", { "class": "sec-wrap" }, out));
+    }
+    var RUN_NAME = { "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
+    function runName(v) { return RUN_NAME[v.workflow + ":" + v.config] || RUN_NAME[v.workflow] || (v.workflow + (v.config ? " " + v.config : "")); }
+    function runsBlock(j, t) {
+      var vs = arr(j.runs).map(function (r) { var v = runView(r, t); return v ? { r: r, v: v } : null; }).filter(Boolean).reverse();
+      var em = vs.length ? plural(vs.length, "run") + (vs[0].v.status === "running" ? " · one at work" : "") : "";
+      if (!HAS_RUNS || !vs.length) return H("section", { "class": "sec-blk wfruns" }, H("h3", null, "Workflow runs", H("em", { text: em })),
+        H("p", { "class": "meta", text: arr(j.runs).length ? "No run had started by " + fT(t) + "." : "No step-by-step record: this job's runs were logged before workflow steps were." }));
+      return H("section", { "class": "sec-blk wfruns" }, H("h3", null, "Workflow runs", H("em", { text: em + " · latest first" })),
+        vs.map(function (x) {
+          var v = x.v, run = v.status === "running", end = run ? t : P(v.ended_at);
+          var chip = run ? ["ag", "● at work"] : v.status === "failed" ? ["fail", "✕ failed"] : ["ok", "✓ " + (v.result || "done")];
+          var head = [v.round ? "round " + v.round : v.visit > 1 ? "run " + v.visit : null, v.mode, run && v.at ? "step " + v.at + " of " + v.of : plural(v.of, "step"), fT(P(v.started_at)) + " · " + fD(end - P(v.started_at))].filter(Boolean).join(" · ");
+          return H("article", { "class": "wfrun" + (run ? " live" : "") },
+            H("header", null, H("b", { "class": "disp", text: runName(v) }), H("span", { "class": "chip " + chip[0], text: chip[1] }), H("span", { "class": "meta", text: head })),
+            v.error ? H("div", { "class": "meta now-block", text: "✕ " + v.error }) : null,
+            H("ol", { "class": "wfsteps" }, v.steps.map(function (st) {
+              var dur = st.started_at ? fD((st.ended_at ? Math.min(P(st.ended_at), t) : t) - P(st.started_at)) : "";
+              var failed = st.roles.some(function (r) { return r.failed; });
+              return H("li", { "class": "wfs st-" + st.state + (failed ? " bad" : "") },
+                H("span", { "class": "g", "aria-hidden": "true", text: STEP_GLYPH[st.state] || "·" }),
+                H("span", { "class": "lbl", text: st.label, title: st.text || st.label }),
+                H("span", { "class": "who", text: rolesText(st, x.r.station, "full") || (st.state === "skipped" ? "skipped" : "") }),
+                H("span", { "class": "meta tm", text: st.state === "pending" ? "not yet" : st.state === "skipped" ? "" : (st.started_at ? fHM(P(st.started_at)) + " · " + dur : "") }));
+            }), run && v.next ? H("li", { "class": "wfs st-pending" }, H("span", { "class": "g", "aria-hidden": "true", text: "○" }), H("span", { "class": "lbl", text: "→ " + v.next }), H("span", { "class": "who" }), H("span", { "class": "meta tm", text: "then" })) : null));
+        }));
     }
     function docBody(d) {
       var key = "d:" + sel + ":" + (d.name || ""), txt = d.excerpt || "", long = txt.split("\n").length > 16 || txt.length > 1400, open = !!secOpen[key];

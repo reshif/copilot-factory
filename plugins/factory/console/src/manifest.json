@@ -57,6 +57,7 @@
     "js/blueprint/host.js",
     "js/blueprint/words.js",
     "js/blueprint/epicpick.js",
+    "../../cli/core/run-steps.js",
     "js/blueprint/adapter.js",
     "js/blueprint/blueprint.js",
     "js/boot.js"

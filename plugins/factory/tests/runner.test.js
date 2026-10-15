@@ -174,6 +174,70 @@ test('factory run fanout-judge --config clarify: agents as copilot processes, en
   assert.ok(a.agents.length === 7 && a.agents.every((x) => typeof x.ms === 'number'), JSON.stringify(a.agents));
 });
 
+test('factory run logs each workflow step as it starts (workflow_phase), the run\'s start and end, and tags each agent with its run and step', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const h = harness(CLARIFY);
+  const r = h.run(root, ['fanout-judge', '--config', 'clarify']);
+  assert.equal(r.__code, 0, JSON.stringify(r) + r.__stderr);
+  const ev = events(root);
+  const mine = ev.filter((e) => /^workflow_/.test(e.event));
+  assert.deepEqual(mine.map((e) => e.event), ['workflow_start', ...r.workflow.phases.map(() => 'workflow_phase'), 'workflow_end'], 'start, one line per step, end');
+  const phases = mine.filter((e) => e.event === 'workflow_phase');
+  assert.deepEqual(phases.map((e) => e.text), r.workflow.phases, 'the steps in the order the workflow ran them');
+  assert.deepEqual(phases.map((e) => e.text), ['clarify: scout · map the unknowns', 'clarify: intent gate (1)', 'clarify: fan-out (3)', 'clarify: judge', 'clarify: God Eye (intent)']);
+  assert.deepEqual(phases.map((e) => e.index), [0, 1, 2, 3, 4]);
+  const run = mine[0].wf_run;
+  assert.match(run, /^[0-9a-f-]{36}$/);
+  for (const e of mine) {
+    assert.equal(e.job, J);
+    assert.equal(e.decision_id, r.decision_id, 'tied to the routing decision in force');
+    assert.equal(e.workflow, 'fanout-judge');
+    assert.equal(e.config, 'clarify');
+    assert.equal(e.wf_run, run, 'one id for the whole run');
+    assert.equal(require('../cli/lib/seal').valid(e), true, 'sealed like every log line');
+  }
+  assert.equal(mine[0].round, 1);
+  assert.equal(mine[0].pid > 0, true);
+  const endLine = mine[mine.length - 1];
+  assert.deepEqual([endLine.outcome, endLine.status, endLine.phases, endLine.agents], ['ok', 'ok', 5, 7]);
+  // every agent line names its run and the step it was started in, in log order after that step's line
+  const agents = ev.filter((e) => e.event === 'agent_start' || e.event === 'agent_run');
+  assert.ok(agents.every((e) => e.wf_run === run && Number.isInteger(e.step)), JSON.stringify(agents.map((e) => [e.label, e.step])));
+  const stepOf = Object.fromEntries(agents.filter((e) => e.event === 'agent_start').map((e) => [e.label, e.step]));
+  assert.deepEqual(stepOf, { 'intent map': 0, 'analyst · intent': 1, 'analyst · ambiguity': 2, 'analyst · constraints': 2, 'analyst · testability': 2, judge: 3, 'god-eye · intent': 4 });
+  const pos = (pred) => ev.findIndex(pred);
+  for (const a of agents.filter((e) => e.event === 'agent_start')) assert.ok(pos((e) => e === a) > pos((e) => e.event === 'workflow_phase' && e.index === a.step), `${a.label} starts after its step`);
+  // and the console folds them into the run's steps
+  const job = require('../cli/core/console').build(root, { job: J }).jobs[0];
+  assert.equal(job.runs.length, 1);
+  assert.equal(job.runs[0].step, 'clarify');
+  assert.equal(job.runs[0].stage, 'contract');
+  assert.equal(job.runs[0].status, 'done');
+  assert.deepEqual(job.runs[0].steps.map((s) => [s.state, s.label, s.roles.map((x) => `${x.role}×${x.total}`).join(',')]), [
+    ['done', 'map the unknowns', 'intent-mapper×1'], ['skipped', 'research the unknowns', ''], ['skipped', 'verify findings', ''], ['done', 'intent gate (1)', 'intent-analyst×1'],
+    ['done', 'fan-out (3)', 'intent-analyst×3'], ['done', 'judge', 'judge×1'], ['done', 'God Eye (intent)', 'god-eye×1'],
+  ]);
+  assert.deepEqual(job.runs_live, { running: null, last_by_stage: { contract: run } });
+});
+
+test('a run that cannot finish (Copilot missing) ends as failed in the log, so the console never shows it at work', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const h = harness(CLARIFY, { COPILOT_BIN: path.join(os.tmpdir(), 'no-such-copilot-bin') });
+  const r = h.run(root, ['fanout-judge', '--config', 'clarify']);
+  assert.notEqual(r.__code, 0);
+  const mine = events(root).filter((e) => /^workflow_/.test(e.event));
+  assert.deepEqual(mine.map((e) => e.event), ['workflow_start', 'workflow_phase', 'workflow_end']);
+  assert.equal(mine[2].outcome, 'failed');
+  assert.match(mine[2].error, /copilot unavailable/);
+  const run = require('../cli/core/console').build(root, { job: J }).jobs[0].runs[0];
+  assert.equal(run.status, 'failed');
+  assert.deepEqual(run.steps.filter((x) => x.text).map((x) => [x.state, x.label]), [['failed', 'map the unknowns']]);
+});
+
 test('a reply that misses the schema gets one corrective turn in the same session', () => {
   const root = F.makeRepo();
   newJob(root);
@@ -788,6 +852,11 @@ test('distill write: runs the lesson-writer through copilot -p like factory run,
   const dw = ev.filter((e) => e.event === 'distill_write');
   assert.deepEqual(dw.map((e) => e.outcome), ['skipped', 'ok']);
   assert.deepEqual(dw[1].lessons, ['L1']);
+  // the Learn bank's step list: one run, one step, the lesson-writer in it
+  const wf = ev.filter((e) => /^workflow_/.test(e.event));
+  assert.deepEqual(wf.map((e) => [e.event, e.workflow, e.text || e.outcome || null]), [['workflow_start', 'distill', null], ['workflow_phase', 'distill', 'distill: write lessons'], ['workflow_end', 'distill', 'ok']], 'skipped distills start no run');
+  const lr = require('../cli/core/console').build(root, { job: J }).jobs[0].runs[0];
+  assert.deepEqual([lr.workflow, lr.stage, lr.status, lr.steps[0].label, lr.steps[0].roles[0].role], ['distill', 'learn', 'done', 'write lessons', 'lesson-writer']);
   // the lesson is proposed, for the human
   assert.equal(F.cli(root, ['lessons', 'list']).lessons[0].status, 'proposed');
   // Copilot missing: a clear error, nothing recorded

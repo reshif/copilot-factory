@@ -29,6 +29,8 @@ const HUMAN_GATES = new Set(['H1', 'H2', 'H3', 'HF', 'HS', 'EH1', 'EH2', 'EH3', 
 // a crashed or closed session never sends the stop, so past this age, or once the job is no
 // longer active, it is listed as stale instead of running forever.
 const STALE_AGENT_MS = 2 * 3600 * 1000;
+// the workflow runs kept per job (the latest), with their steps
+const MAX_RUNS = 40;
 
 function secretFile() {
   return process.env.FACTORY_SECRET_FILE || path.join(require('os').homedir(), '.config', 'software-factory', 'secret');
@@ -224,6 +226,28 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     else staleNow.push({ ...a, stale: true });
   }
 
+  // Workflow runs, step by step (run-steps.js): from workflow_start / workflow_phase / workflow_end
+  // and the agent lines tagged with their run. A run with no end is at work while its own
+  // `factory run` still holds the job's run lock. Older logs have no such lines: no runs, and the
+  // page shows the agents as before.
+  let lockPid;
+  const lockHolder = () => {
+    if (lockPid === undefined) {
+      const held = readJson(path.join(jp.dir, 'run.lock'), null);
+      lockPid = held && runnerLive() ? held.pid : null;
+    }
+    return lockPid;
+  };
+  const RS = require('./run-steps');
+  const allRuns = RS.fromEvents(events, { stepOfDecision, alive: (r) => state.status === 'active' && r.pid && lockHolder() === r.pid });
+  const runs = allRuns.slice(-MAX_RUNS).map((r) => {
+    const v = RS.view(r);
+    return { ...r, stage: STAGE_OF[r.step] || null, steps: v.steps, at: v.at, of: v.of, next: v.next };
+  });
+  const lastByStage = {};
+  for (const r of runs) if (r.stage && r.status !== 'running') lastByStage[r.stage] = r.id;
+  const liveRun = runs.filter((r) => r.status === 'running').pop() || null;
+
   const T = [];
   let seq = 0;
   const push = (o) => { if (o.t) { o.seq = seq++; if (o.step && STAGE_OF[o.step]) o.stage = STAGE_OF[o.step]; T.push(o); } };
@@ -375,6 +399,8 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     timeline: T,
     running_agents: runningNow,
     stale_agents: staleNow,
+    runs,
+    runs_live: { running: liveRun ? liveRun.id : null, last_by_stage: lastByStage },
     tasks,
     lessons,
     intent: idata ? {

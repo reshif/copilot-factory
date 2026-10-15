@@ -1271,6 +1271,8 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-ln-agent{stroke:var(--agent);fill:none;stroke-width:1.3}
 .dx-blueprint .bp-trail{fill:none;stroke:var(--agent);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;opacity:0;animation:bp-trail 2.4s ease-out forwards}
 .dx-blueprint .bp-lamprow.bp-on text{letter-spacing:.02em}
+.dx-blueprint .bp-steprow.bp-st-running text{letter-spacing:.02em}
+.dx-blueprint .bp-lastrun{cursor:pointer}
 @keyframes bp-trail{0%{opacity:.85;stroke-dasharray:4 6}60%{opacity:.6}100%{opacity:0}}
 .dx-blueprint.bp-snapshot .bp-trail{display:none}
 
@@ -1432,6 +1434,30 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint ol.bp-finds .bp-fh .bp-fref{margin:0}
 .dx-blueprint .bp-chip.bp-sev-blocker,.dx-blueprint .bp-chip.bp-sev-major{border-color:var(--fail);color:var(--fail)}
 .dx-blueprint .bp-chip.bp-sev-minor,.dx-blueprint .bp-chip.bp-sev-nit{border-color:var(--rule);color:var(--ink-2)}
+/* workflow runs: each run's steps (the same list a bank shows while it runs) */
+.dx-blueprint .bp-wfrun + .bp-wfrun{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule)}
+.dx-blueprint .bp-wfrun header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px}
+.dx-blueprint .bp-wfrun header .bp-disp{font-size:15px;min-width:70px}
+.dx-blueprint .bp-wfrun.bp-live{border-left:3px solid var(--agent);padding-left:10px}
+.dx-blueprint ol.bp-wfsteps{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:18px minmax(0,max-content) minmax(0,max-content) auto;justify-content:start;gap:3px 24px;align-items:baseline;max-width:110ch}
+.dx-blueprint ol.bp-wfsteps li{display:contents}
+.dx-blueprint .bp-wfs .bp-g{font:700 13px var(--f-mono);color:var(--ink-3);text-align:center}
+.dx-blueprint .bp-wfs .bp-lbl{overflow-wrap:anywhere}
+.dx-blueprint .bp-wfs .bp-who{color:var(--ink-2);overflow-wrap:anywhere}
+.dx-blueprint .bp-wfs .bp-tm{white-space:nowrap}
+.dx-blueprint .bp-wfs.bp-st-done .bp-g{color:var(--ok)}
+.dx-blueprint .bp-wfs.bp-st-running .bp-g,.dx-blueprint .bp-wfs.bp-st-running .bp-lbl,.dx-blueprint .bp-wfs.bp-st-running .bp-who{color:var(--agent);font-weight:700}
+.dx-blueprint .bp-wfs.bp-st-pending .bp-lbl,.dx-blueprint .bp-wfs.bp-st-skipped .bp-lbl,.dx-blueprint .bp-wfs.bp-st-pending .bp-who,.dx-blueprint .bp-wfs.bp-st-skipped .bp-who{color:var(--ink-3)}
+.dx-blueprint .bp-wfs.bp-st-skipped .bp-lbl{text-decoration:line-through;text-decoration-color:var(--ink-3)}
+.dx-blueprint .bp-wfs.bp-st-failed .bp-g,.dx-blueprint .bp-wfs.bp-st-failed .bp-lbl,.dx-blueprint .bp-wfs.bp-bad .bp-who,.dx-blueprint .bp-wfs.bp-bad .bp-g{color:var(--fail)}
+@media (max-width: 860px){
+  .dx-blueprint ol.bp-wfsteps{display:flex;flex-direction:column;align-items:stretch;gap:6px}
+  .dx-blueprint ol.bp-wfsteps li{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:0 10px;align-items:baseline}
+  .dx-blueprint .bp-wfs .bp-g{grid-column:1;grid-row:1}
+  .dx-blueprint .bp-wfs .bp-lbl{grid-column:2;grid-row:1}
+  .dx-blueprint .bp-wfs .bp-tm{grid-column:3;grid-row:1}
+  .dx-blueprint .bp-wfs .bp-who{grid-column:2 / 4;grid-row:2;font-size:12.5px}
+}
 /* documents */
 .dx-blueprint .bp-sec-wrap pre.bp-doc{max-height:none;max-width:100ch;font-size:13px;line-height:1.6;padding:12px 14px}
 .dx-blueprint .bp-sec-wrap pre.bp-doc.bp-clamped{max-height:22em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 80%,transparent)}
@@ -5614,6 +5640,230 @@ APP.epicPick = (function () {
   }
   return { choices: choices, preferred: preferred, fill: fill, make: make, fromDisplay: fromDisplay, fromId: fromId, word: word };
 })();
+// ===================================================================== workflow runs, step by step
+// One file, read by two sides: the CLI (`factory console`, require()) and the page itself
+// (console/build.js puts it into console.html, before the Blueprint), so the step list the page
+// shows while replaying is folded by the same code, from the same templates, as the data.
+//
+// A run is one `factory run <workflow>` (or `factory distill write`). The runner logs:
+//   workflow_start  { wf_run, job, decision_id, workflow, config, mode, round }
+//   workflow_phase  { wf_run, job, decision_id, workflow, config, text, index }   each phase(...) call
+//   workflow_end    { wf_run, job, decision_id, workflow, config, outcome: ok|failed, status, ms, error }
+//   agent_start / agent_run carry { wf_run, step } (step = the phase index in force when agent() was called)
+// fromEvents() turns those lines into runs; view(run, t) is the step list as it stood at time t.
+//
+// TEMPLATES: the steps each workflow config can take, in the order its source runs them
+// (plugins/factory/workflows/*.js). `match` is tested against the phase text; a step the run
+// passes without its phase is "skipped", one it has not reached yet "pending". Keep them honest
+// to the workflow code: a phase text that no template step matches is still shown, as it ran.
+var RUN_STEPS = (function () {
+  var TEMPLATES = {
+    // fanout-judge.js, clarify: scoutPhase() → intent gate → fan-out → judge → God Eye (intent)
+    'fanout-judge:clarify': {
+      next: 'your answers or H1',
+      steps: [
+        { key: 'map', label: 'map the unknowns', match: /^clarify: scout · map the unknowns/, roles: ['intent-mapper'] },
+        { key: 'research', label: 'research the unknowns', match: /^clarify: scout · research/, roles: ['researcher'] },
+        { key: 'verify', label: 'verify findings', match: /^clarify: scout · verify/, roles: ['verifier'] },
+        { key: 'gate', label: 'intent gate', match: /^clarify: intent gate/, roles: ['intent-analyst'] },
+        { key: 'fanout', label: 'fan-out', match: /^clarify: fan-out/, roles: ['intent-analyst'] },
+        { key: 'judge', label: 'judge', match: /^clarify: judge/, roles: ['judge'] },
+        { key: 'god-eye', label: 'God Eye (intent)', match: /^clarify: God Eye/, roles: ['god-eye'] },
+      ],
+    },
+    // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
+    'fanout-judge:decide': {
+      next: 'H2',
+      steps: [
+        { key: 'fanout', label: 'options', match: /^decide: fan-out/, roles: ['option-generator', 'threat-modeler'] },
+        { key: 'architect', label: 'architect decides', match: /^decide: architect$/, roles: ['architect'] },
+        { key: 'god-eye', label: 'God Eye (design)', match: /^decide: God Eye/, roles: ['god-eye'] },
+        { key: 'revise', label: 'architect revises', match: /^decide: architect revises/, roles: ['architect'], optional: true },
+      ],
+    },
+    // fanout-judge.js, challenge: one reviewer per lane → a verifier per serious finding
+    'fanout-judge:challenge': {
+      next: 'the verdict per lane',
+      steps: [
+        { key: 'fanout', label: 'review lanes', match: /^challenge: fan-out/, roles: ['code-reviewer', 'test-reviewer', 'security-reviewer', 'ux-reviewer', 'epic-reviewer'] },
+        { key: 'verify', label: 'verify findings', match: /^challenge: verify/, roles: ['finding-verifier'] },
+      ],
+    },
+    // ground.js: the probes in parallel
+    ground: { next: 'decide', steps: [{ key: 'probes', label: 'research probes', match: /^ground:/, roles: ['researcher'] }] },
+    // decompose.js: planner rounds until valid → God Eye (plan) rounds, the planner revising between them
+    decompose: {
+      next: 'plan validate, then H3',
+      steps: [
+        { key: 'planner', label: 'planner', match: /^decompose: (?!God Eye)/, roles: ['planner', 'slicer'] },
+        { key: 'god-eye', label: 'God Eye (plan)', match: /^decompose: God Eye/, roles: ['god-eye', 'planner'], optional: true },
+      ],
+    },
+    // realize.js: wave by wave, builders then testers per task (a wave whose tasks were all skipped has no phase)
+    realize: { next: 'reconcile', steps: [{ key: 'wave', label: 'wave', match: /^realize: wave/, roles: ['builder', 'tester'], series: /wave (\d+)\/(\d+)/ }] },
+    // reconcile.js: the integrator
+    reconcile: { next: 'prove', steps: [{ key: 'integrate', label: 'integrate task branches', match: /^reconcile:/, roles: ['integrator'] }] },
+    // runner.js distillWrite: the lesson-writer
+    distill: { next: 'distill done, then close', steps: [{ key: 'write', label: 'write lessons', match: /^distill:/, roles: ['lesson-writer'] }] },
+  };
+  var BAD = { fail: 1, no_result: 1, blocked: 1, failed: 1, exhausted: 1, error: 1, timeout: 1, invalid: 1, copilot_unavailable: 1 };
+  var ms = function (s) { var v = Date.parse(s); return isNaN(v) ? null : v; };
+
+  function templateKey(workflow, config) {
+    if (TEMPLATES[workflow + ':' + config]) return workflow + ':' + config;
+    return TEMPLATES[workflow] ? workflow : null;
+  }
+  function templateOf(run) { var k = run && (run.template || templateKey(run.workflow, run.config)); return k ? TEMPLATES[k] : null; }
+  function matchStep(tpl, text) {
+    if (!tpl) return -1;
+    for (var i = 0; i < tpl.steps.length; i++) if (tpl.steps[i].match.test(String(text || ''))) return i;
+    return -1;
+  }
+  // the phase text in plain words: "clarify: scout · research 4 unknown(s) with 2 scout(s)" → "research 4 unknowns" (the scouts are named with the step)
+  function cleanText(text) {
+    return String(text || '').replace(/^[a-z-]+: /, '').replace(/^scout · /, '').replace(/ with \d+ scout\(s\)/, '')
+      .replace(/(\d+) ([A-Za-z-]+)\(s\)/g, function (_, n, w) { return n + ' ' + w + (n === '1' ? '' : 's'); })
+      .replace(/\(s\)/g, 's')
+      .replace(/^wave (\d+)\/(\d+) \((.+)\)$/, 'wave $1 of $2: $3');
+  }
+
+  // ------------------------------------------------------------ the log → runs (CLI side)
+  // events: the job's lines in log order. Lines from before workflow_* existed make no run: the
+  // console then shows the agents as it always did. opts.alive(): is this job's run lock live.
+  function fromEvents(events, opts) {
+    opts = opts || {};
+    var runs = [], by = {}, open = {};
+    var stepOf = opts.stepOfDecision || {};
+    (events || []).forEach(function (e) {
+      if (!e || !e.event) return;
+      if (e.event === 'workflow_start' && e.wf_run) {
+        var r = {
+          id: e.wf_run, workflow: e.workflow || null, config: e.config || null, mode: e.mode || null, template: templateKey(e.workflow, e.config),
+          decision_id: e.decision_id || null, step: stepOf[e.decision_id] || null, round: typeof e.round === 'number' ? e.round : null, visit: 1,
+          started_at: e.ts, ended_at: null, status: 'running', result: null, error: null, pid: e.pid || null, phases: [], agents: [],
+        };
+        r.visit = runs.filter(function (x) { return x.workflow === r.workflow && x.config === r.config && x.mode === r.mode; }).length + 1;
+        runs.push(r); by[r.id] = r;
+        return;
+      }
+      var run = e.wf_run ? by[e.wf_run] : null;
+      if (!run) return;
+      if (e.event === 'workflow_phase') {
+        var tpl = templateOf(run), k = matchStep(tpl, e.text);
+        run.phases.push({ i: typeof e.index === 'number' ? e.index : run.phases.length, text: String(e.text || ''), at: e.ts, key: k >= 0 ? tpl.steps[k].key : null });
+      } else if (e.event === 'agent_start' && e.run_id) {
+        var a = { role: String(e.role || String(e.agent_type || '').replace(/^factory:/, '')), label: String(e.label || ''), step: typeof e.step === 'number' ? e.step : null, at: e.ts, end: null, outcome: null, retry: /\(retry\)$/.test(String(e.label || '')) };
+        if (a.step === null) a.step = run.phases.length ? run.phases[run.phases.length - 1].i : -1;   // by time: the step in force when it started
+        run.agents.push(a); open[e.run_id] = a;
+      } else if (e.event === 'agent_run') {
+        var b = e.run_id ? open[e.run_id] : null;
+        if (!b) {   // never started (no worktree, its time budget spent while queued): a run that ended at once
+          b = { role: String(e.role || String(e.agent_type || '').replace(/^factory:/, '')), label: String(e.label || ''), step: typeof e.step === 'number' ? e.step : run.phases.length ? run.phases[run.phases.length - 1].i : -1, at: e.ts, end: null, outcome: null, retry: /\(retry\)$/.test(String(e.label || '')) };
+          run.agents.push(b);
+        }
+        b.end = e.ts; b.outcome = String(e.outcome || 'ok');
+        if (e.run_id) delete open[e.run_id];
+      } else if (e.event === 'workflow_end') {
+        run.ended_at = e.ts; run.status = e.outcome === 'ok' ? 'done' : 'failed'; run.result = e.status || null; run.error = e.error ? String(e.error).slice(0, 200) : null;
+      }
+    });
+    // a run with no end: still running while its `factory run` holds the lock, else it was cut off
+    runs.forEach(function (r) {
+      if (r.status !== 'running') return;
+      if (opts.alive && opts.alive(r)) return;
+      var last = r.started_at;
+      r.phases.forEach(function (p) { if (p.at > last) last = p.at; });
+      r.agents.forEach(function (a) { if (a.at > last) last = a.at; if (a.end && a.end > last) last = a.end; });
+      r.ended_at = last; r.status = 'failed'; r.error = 'interrupted: the run stopped without finishing';
+    });
+    return runs;
+  }
+
+  // ------------------------------------------------------------ one run at time t (both sides)
+  // Steps in order: the phases that had started by t, plus the template steps the run did not
+  // take (skipped once a later step started, or the run ended) or has yet to take (pending).
+  function view(run, t) {
+    if (!run) return null;
+    var t0 = ms(run.started_at);
+    if (t === undefined || t === null) t = Infinity;
+    if (t0 !== null && t < t0) return null;
+    var end = ms(run.ended_at), ended = end !== null && end <= t;
+    var tpl = templateOf(run), keys = tpl ? tpl.steps.map(function (s) { return s.key; }) : [];
+    var phases = (run.phases || []).filter(function (p) { var a = ms(p.at); return a === null || a <= t; });
+    var agents = (run.agents || []).filter(function (a) { var x = ms(a.at); return x === null || x <= t; });
+    var steps = [];
+    // agents that started before any phase (none in today's workflows): their own first step
+    if (agents.some(function (a) { return a.step === -1 || a.step === null; })) steps.push({ i: -1, key: null, label: 'starting', text: 'starting', started_at: run.started_at, ended_at: phases.length ? phases[0].at : null });
+    phases.forEach(function (p, n) {
+      var tk = p.key ? keys.indexOf(p.key) : -1;
+      steps.push({ i: p.i, key: p.key, tk: tk, label: cleanText(p.text), text: p.text, started_at: p.at, ended_at: phases[n + 1] ? phases[n + 1].at : ended ? run.ended_at : null });
+    });
+    // a step is done once the next one started; the last one ends with the run (failed with it), or is at work
+    var current = null;
+    steps.forEach(function (s, n) {
+      s.state = n < steps.length - 1 ? 'done' : ended ? (run.status === 'failed' ? 'failed' : 'done') : 'running';
+      if (s.state === 'running') current = s;
+    });
+    // the template steps the run has not taken: each goes before the first step that comes later in the template
+    if (tpl) {
+      var hit = {};
+      phases.forEach(function (p) { if (p.key) hit[p.key] = 1; });
+      tpl.steps.forEach(function (ts, k) {
+        if (hit[ts.key]) return;
+        var at = steps.length;
+        for (var q = 0; q < steps.length; q++) if (steps[q].tk > k) { at = q; break; }
+        var later = at < steps.length;
+        var state = later || ended ? 'skipped' : 'pending';
+        if (state === 'skipped' && ts.optional) return;   // an optional step that did not run is not news
+        steps.splice(at, 0, { i: null, key: ts.key, tk: k, label: ts.label, text: null, started_at: null, ended_at: null, state: state, roles_planned: ts.roles.slice() });
+      });
+      // a series (realize's waves): the numbers it jumped are skipped, the ones still ahead pending
+      tpl.steps.forEach(function (ts) {
+        if (!ts.series) return;
+        var mine = steps.filter(function (s) { return s.key === ts.key && s.text; }), last = null;
+        mine.forEach(function (s) {
+          var m = ts.series.exec(s.text); if (!m) return;
+          var n = +m[1], N = +m[2];
+          if (last !== null) for (var k = last + 1; k < n; k++) steps.splice(steps.indexOf(s), 0, { i: null, key: ts.key, label: ts.label + ' ' + k + ' of ' + N, text: null, started_at: null, ended_at: null, state: 'skipped', roles_planned: ts.roles.slice() });
+          last = n; s.series_of = N;
+        });
+        var tail = mine[mine.length - 1];
+        if (tail && last !== null && tail.series_of > last) {
+          var pos = steps.indexOf(tail) + 1;
+          for (var k2 = tail.series_of; k2 > last; k2--) steps.splice(pos, 0, { i: null, key: ts.key, label: ts.label + ' ' + k2 + ' of ' + tail.series_of, text: null, started_at: null, ended_at: null, state: ended ? 'skipped' : 'pending', roles_planned: ts.roles.slice() });
+        }
+      });
+    }
+    // who ran in each step, per role: total, at work, came back ok, failed, retries
+    steps.forEach(function (s) {
+      var order = (s.roles_planned || (tpl && s.tk >= 0 && tpl.steps[s.tk] ? tpl.steps[s.tk].roles : [])).slice(), by = {};
+      agents.forEach(function (a) {
+        var mine = s.i === -1 ? (a.step === -1 || a.step === null) : s.i !== null && a.step === s.i;
+        if (!mine) return;
+        var r = by[a.role] = by[a.role] || { role: a.role, total: 0, running: 0, ok: 0, failed: 0, retries: 0 };
+        var e = ms(a.end), done = a.end && (e === null || e <= t);
+        r.total += 1;
+        if (a.retry) r.retries += 1;
+        if (!done) r.running += 1; else if (BAD[a.outcome]) r.failed += 1; else r.ok += 1;
+      });
+      Object.keys(by).forEach(function (k) { if (order.indexOf(k) < 0) order.push(k); });
+      s.roles = order.filter(function (k) { return by[k]; }).map(function (k) { return by[k]; });
+      if (!s.roles.length && s.state !== 'done' && s.state !== 'running' && s.state !== 'failed') s.planned = (s.roles_planned || []).slice(0, 2);
+      delete s.roles_planned; delete s.tk;
+    });
+    var counted = steps.filter(function (s) { return s.state !== 'skipped'; });
+    return {
+      id: run.id, workflow: run.workflow, config: run.config, mode: run.mode, step: run.step, round: run.round, visit: run.visit,
+      started_at: run.started_at, ended_at: ended ? run.ended_at : null,
+      status: ended ? run.status : 'running', result: ended ? run.result : null, error: ended ? run.error : null,
+      steps: steps, at: current ? counted.indexOf(current) + 1 : null, of: counted.length,
+      next: tpl ? tpl.next : null,
+    };
+  }
+
+  return { TEMPLATES: TEMPLATES, BAD: BAD, templateKey: templateKey, matchStep: matchStep, cleanText: cleanText, fromEvents: fromEvents, view: view };
+})();
+if (typeof module === 'object' && module && module.exports) module.exports = RUN_STEPS;
 // ===================================================================== blueprint: the display document
 // The Blueprint draws a job as a walk through states (received → intent → … → closed) on nine
 // stations: Copilot's eight stages, with "Prove & challenge" drawn as two stations (Prove, a CLI
@@ -5789,6 +6039,24 @@ function bpQuestionIds(job) {
   return ask && Array.isArray(ask.question_ids) ? ask.question_ids.map(String) : [];
 }
 
+// Workflow runs (cli/core/run-steps.js, in the page as RUN_STEPS): each run as the console recorded it,
+// tagged with the station whose bank it belongs to, for the step list in that bank and the section view.
+// The steps are folded again at the replay time by RUN_STEPS.view(run, t); older data has no runs.
+const BP_RUN_STATION = { 'fanout-judge:clarify': 'intent', 'fanout-judge:decide': 'design', ground: 'design', decompose: 'plan', realize: 'build', reconcile: 'build', 'fanout-judge:challenge': 'review', distill: 'done' };
+function bpRunStation(run) {
+  const st = BP_STEP_STATE[run.step];
+  const stage = st ? BP_STAGES.find((s) => s.states.includes(st)) : null;
+  if (stage) return stage.key;
+  return BP_RUN_STATION[`${run.workflow}:${run.config}`] || BP_RUN_STATION[run.workflow] || null;
+}
+function bpRuns(job) {
+  return (job.runs || []).filter((r) => r && r.id && r.started_at).map((r) => ({
+    id: r.id, workflow: r.workflow, config: r.config || null, mode: r.mode || null, template: r.template || null, step: r.step || null, station: bpRunStation(r),
+    round: r.round == null ? null : r.round, visit: r.visit || 1, started_at: r.started_at, ended_at: r.ended_at || null, status: r.status || 'running', result: r.result || null, error: r.error || null,
+    phases: Array.isArray(r.phases) ? r.phases : [], agents: Array.isArray(r.agents) ? r.agents : [],
+  }));
+}
+
 function bpWaiting(job, state) {
   const g = BP_GATE_OF[state];
   if (job.status !== 'active' && job.status !== 'parked') return { who: 'nobody', what: BP_MEANING[state] || state };
@@ -5834,6 +6102,7 @@ function toDisplay(data) {
       status: j.status,
       amendment: amend ? { reason: amend.text, from: 'you' } : null,
       evidence_count: (j.tasks || []).filter((t) => t.pass !== null && t.pass !== undefined).length,
+      runs: bpRuns(j),
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {
@@ -6418,7 +6687,7 @@ function toDisplay(data) {
         for (var i = rw.a; i <= rw.b; i++) {
           var key = STAGES[i].key;
           mx = Math.max(mx, o.st[key].h);
-          rows = Math.max(rows, bankRows(key) + (key === "done" && S.lessonsWaiting.length ? 1 : 0));
+          rows = Math.max(rows, bankRows(key, o.cell[i].w) + (key === "done" && S.lessonsWaiting.length ? 1 : 0));
         }
         rw.SY = y; rw.SH = mx ? 62 + mx + 12 : 72; rw.PY = y + 38;
         rw.BY = y + rw.SH + 32; rw.BH = 30 + rows * 21 + 4;
@@ -6620,9 +6889,127 @@ function toDisplay(data) {
       bankMembers(key).forEach(function (m) { if (by[m[0]]) { by[m[0]].n++; return; } by[m[0]] = { role: m[0], n: 1, name: roleName(m[0], key) }; out.push(by[m[0]]); });
       return out;
     }
-    function bankRows(key) {
+    function bankRows(key, w) {
+      var lr = bankRun(key);
+      if (lr.live) return Math.max(2, runRows(lr, w).length);
       var work = {}; (S.byStage[key] || []).forEach(function (r) { r.ag.forEach(function (a) { work[a.agent] = 1; }); });
       return Math.max(2, bankGroups(key).reduce(function (n, gr) { return n + (work[gr.role] ? 2 : 1); }, 0));
+    }
+    // ------------- the workflow run in a bank: its steps, as they stood at the replay time (RUN_STEPS.view, cli/core/run-steps.js)
+    var HAS_RUNS = typeof RUN_STEPS !== "undefined";
+    function runView(run, t) { if (!HAS_RUNS) return null; try { return RUN_STEPS.view(run, t); } catch (e) { return null; } }
+    // the run at work at this station at S.t (the most urgent: one with a failed agent, else the latest started), how many
+    // other jobs run here too, and the last run that finished here (for an idle bank's footnote)
+    function bankRun(key) {
+      S.runAt = S.runAt || {};
+      if (S.runAt[key]) return S.runAt[key];
+      var live = [], last = null;
+      JOBS.forEach(function (j) {
+        arr(j.runs).forEach(function (run) {
+          if (run.station !== key) return;
+          var v = runView(run, S.t); if (!v) return;
+          if (v.status === "running") { if ((S.byStage[key] || []).some(function (r) { return r.j === j; })) live.push({ j: j, v: v }); }
+          else if (!last || P(v.ended_at) > P(last.v.ended_at)) last = { j: j, v: v };
+        });
+      });
+      var bad = function (x) { return x.v.steps.some(function (st) { return st.roles.some(function (r) { return r.failed; }); }) ? 1 : 0; };
+      live.sort(function (a, b) { return bad(b) - bad(a) || P(b.v.started_at) - P(a.v.started_at); });
+      return (S.runAt[key] = { key: key, live: live[0] || null, more: live.slice(1), last: last });
+    }
+    var STEP_ROLE = { "intent-mapper": ["mapper", "mappers"], researcher: ["researcher", "researchers"], verifier: ["verifier", "verifiers"], "intent-analyst": ["analyst", "analysts"], judge: ["judge", "judges"],
+      "god-eye": ["God Eye", "God Eye"], "option-generator": ["option", "options"], "threat-modeler": ["threat model", "threat models"], architect: ["architect", "architect"], planner: ["planner", "planner"],
+      slicer: ["slicer", "slicer"], builder: ["builder", "builders"], tester: ["tester", "testers"], integrator: ["integrator", "integrator"], "finding-verifier": ["verifier", "verifiers"], "lesson-writer": ["lesson writer", "lesson writer"] };
+    function stepRole(role, n, key) {
+      if (role === "researcher" && key === "intent") return n === 1 ? "scout" : "scouts";
+      if (ROLE_LANE[role]) return ROLE_LANE[role] + " lane";
+      var w = STEP_ROLE[role]; return w ? w[n === 1 ? 0 : 1] : agentLabel(role);
+    }
+    // who ran in a step: "analysts ×4 · 1 failed" (the bank), "analysts ×4 · 1 at work · 1 failed · 1 retry" (the section view),
+    // "×4 ✕1" when even the short form does not fit a bank
+    function rolesText(st, key, mode) {
+      if (!st.roles.length) return st.planned && st.planned.length && st.state === "pending" ? st.planned.map(function (r) { return stepRole(r, 1, key); }).join(", ") : "";
+      return st.roles.map(function (r) {
+        if (mode === "terse") return "×" + r.total + (r.failed ? " ✕" + r.failed : "");
+        var bits = [stepRole(r.role, r.total, key) + (r.total > 1 ? " ×" + r.total : "")];
+        if (mode === "full" && r.running && r.total > 1) bits.push(r.running + " at work");
+        if (r.failed) bits.push(r.failed + " failed");
+        if (mode === "full" && r.retries) bits.push(plural(r.retries, "retry").replace("retrys", "retries"));
+        return bits.join(" · ");
+      }).join(mode === "terse" ? " " : ", ");
+    }
+    function stepLabel(st) { return st.label + (st.state === "running" ? " · " + fD(S.t - P(st.started_at)) : ""); }
+    var STEP_GLYPH = { done: "✓", running: "●", pending: "○", skipped: "–", failed: "✕" };
+    function runHead(v, j) {
+      var bits = [];
+      if (v.round) bits.push("round " + v.round); else if (v.visit > 1) bits.push("run " + v.visit);
+      if (v.at) bits.push("step " + v.at + " of " + v.of);
+      bits.push(fD(S.t - P(v.started_at)));
+      return bits.join(" · ");
+    }
+    // the rows a bank draws for its run: the job line, the steps (the earliest done ones folded when there are many), what comes next
+    var MAX_STEP_ROWS = 8;
+    function runRows(lr, SW) {
+      var v = lr.live.v, steps = v.steps.slice(), out = [], key = lr.key;
+      out.push({ kind: "job" });
+      var fold = 0;
+      while (steps.length > MAX_STEP_ROWS && (steps[0].state === "done" || steps[0].state === "skipped")) { steps.shift(); fold++; }
+      if (fold) out.push({ kind: "fold", n: fold });
+      steps.forEach(function (st) {
+        out.push({ kind: "step", st: st });
+        // the step at work names who is at work on a line of its own when the two do not fit on one
+        if (st.state === "running" && st.roles.length && measure(stepLabel(st), "t-agent", 13, 700) + measure(rolesText(st, key, "bank"), "t2", 13) + 40 > SW) out.push({ kind: "who", st: st });
+      });
+      out.push({ kind: lr.more.length ? "more" : "next" });
+      return out;
+    }
+    function drawRun(g, s, x, SW, BY, lr) {
+      var v = lr.live.v, j = lr.live.j, rows = runRows(lr, SW), key = s.key, split = {};
+      rows.forEach(function (row) { if (row.kind === "who") split[row.st.i] = 1; });
+      rows.forEach(function (row, k) {
+        var y = BY + 40 + k * 21 + 4.5;
+        if (row.kind === "job") {
+          var head = runHead(v, j), hw = Math.min(measure(head, "t-agent", 13, 600), SW * .62);
+          kids(g, [Z("g", { "class": "mk", "data-open": j.id, tabindex: 0, role: "button", "aria-label": "Open " + j.slug + ": " + head },
+            Z("title", null, j.slug + " — " + (v.workflow || "") + (v.config ? " " + v.config : "") + " · " + head),
+            tx(x + 8, y, "▸ " + j.slug, { "font-size": 13, "class": "t-agent", "font-weight": 700, "data-fit": SW - 24 - hw }),
+            tx(x + SW - 8, y, head, { "text-anchor": "end", "font-size": 13, "class": "t-agent", "font-weight": 600, "data-fit": SW * .62 }))]);
+          return;
+        }
+        if (row.kind === "who") {
+          var who = row.st.roles.map(function (r) { return stepRole(r.role, r.total, key) + ": " + [r.running ? r.running + " at work" : "", r.ok ? r.ok + " done" : "", r.failed ? r.failed + " failed" : ""].filter(Boolean).join(" · "); }).join(" · ");
+          kids(g, [tx(x + 24, y, "▸ " + who, { "font-size": 13, "class": row.st.roles.some(function (r) { return r.failed; }) ? "t-fail" : "t-agent", "font-weight": 600, "data-fit": SW - 32 })]);
+          return;
+        }
+        if (row.kind === "fold") { kids(g, [tx(x + 8, y, "✓ " + plural(row.n, "earlier step"), { "font-size": 13, "class": "t3" })]); return; }
+        if (row.kind === "next") {
+          var nx = v.next ? "○ → " + v.next : "";
+          if (nx) kids(g, [tx(x + 8, y, nx, { "font-size": 13, "class": "t3", "data-fit": SW - 16 })]);
+          return;
+        }
+        if (row.kind === "more") {
+          var others = lr.more.map(function (m) { return m.j.slug + (m.v.at ? " (step " + m.v.at + "/" + m.v.of + ")" : ""); }).join(", ");
+          kids(g, [Z("g", { "class": "mk", "data-more": key, tabindex: 0, role: "button", "aria-label": plural(lr.more.length, "more job") + " at work here: " + others },
+            Z("title", null, "also at work here: " + others), tx(x + 8, y, "+" + plural(lr.more.length, "more job") + " at work · " + others, { "font-size": 13, "class": "t-agent", "font-weight": 600, "data-fit": SW - 16 }))]);
+          return;
+        }
+        var st = row.st, gl = STEP_GLYPH[st.state] || "·", failed = st.roles.some(function (r) { return r.failed; });
+        var cls = st.state === "running" ? "t-agent" : st.state === "failed" ? "t-fail" : st.state === "done" ? "t2" : "t3";
+        var label = stepLabel(st);
+        var rt = split[st.i] && st.state === "running" ? "" : rolesText(st, key, "bank"), rw = rt ? measure(rt, "t2", 13) : 0;
+        if (rt && rw > SW * .55) { rt = rolesText(st, key, "terse"); rw = measure(rt, "t2", 13); }
+        var tip = gl + " " + st.label + " — " + (st.state === "running" ? "at work for " + fD(S.t - P(st.started_at)) : st.state === "pending" ? "not yet" : st.state) + (st.roles.length ? " · " + st.roles.map(function (r) { return stepRole(r.role, r.total, key) + ": " + r.total + " run" + (r.total === 1 ? "" : "s") + (r.running ? ", " + r.running + " at work" : "") + (r.ok ? ", " + r.ok + " ok" : "") + (r.failed ? ", " + r.failed + " failed" : "") + (r.retries ? ", " + r.retries + " retr" + (r.retries === 1 ? "y" : "ies") : ""); }).join("; ") : "") + (st.text ? " · “" + st.text + "”" : "");
+        var rowG = Z("g", { "class": "steprow st-" + st.state }, Z("title", null, tip),
+          st.state === "running" ? Z("circle", { cx: x + 12.5, cy: y - 4.5, r: 5.5, "class": "lamp-ring pulse" }) : null,
+          tx(x + 8, y, gl, { "font-size": 13, "class": failed && st.state === "done" ? "t-fail" : st.state === "done" ? "t-ok" : cls, "font-weight": 700 }),
+          tx(x + 24, y, label, { "font-size": 13, "class": cls, "font-weight": st.state === "running" ? 700 : 400, "data-fit": SW - 24 - 8 - (rt ? rw + 10 : 0) }),
+          rt ? tx(x + SW - 8, y, rt, { "text-anchor": "end", "font-size": 13, "class": failed ? "t-fail" : st.state === "running" ? "t-agent" : st.state === "pending" || st.state === "skipped" ? "t3" : "t2", "font-weight": failed || st.state === "running" ? 600 : 400 }) : null);
+        kids(g, [rowG]);
+      });
+    }
+    // an idle bank's footnote, only where its row already leaves a line free: how the last run here ended, and when
+    function lastRunLine(lr) {
+      var v = lr.last.v, ok = v.status === "done", bad = v.steps.reduce(function (n, st) { return n + st.roles.reduce(function (m, r) { return m + r.failed; }, 0); }, 0);
+      return "last run " + (ok ? "✓" : "✕ " + (v.error ? "stopped" : "failed")) + (bad ? " (" + plural(bad, "agent") + " failed)" : "") + " · " + fD(S.t - P(v.ended_at)) + " ago · " + lr.last.j.slug;
     }
     // what one agent is doing, in plain words: job, task (builders and testers), how long
     function doing(role, j, since) {
@@ -6636,6 +7023,9 @@ function toDisplay(data) {
     }
     function bankNode(s, i, recs, ag) {
       var c = L.cell[i], rw = L.row[c.r], x = c.x, SW = c.w, BY = rw.BY, BH = rw.BH;
+      // a run at work here counts its own agents too (a replay between the agent lines still reads "at work")
+      var lr = bankRun(s.key);
+      if (lr.live) ag = Math.max(ag, lr.live.v.steps.reduce(function (n, st) { return n + st.roles.reduce(function (m, r) { return m + r.running; }, 0); }, 0));
       var bk0 = BANKS[s.key] || { name: s.label, members: [] }, g = Z("g", { "class": "bank" + (ag ? " active" : "") });
       var bk = { name: s.key === "ship" && bankMembers("ship").length ? "Post-merge review" : bk0.name, members: bankMembers(s.key) };
       var groups = bankGroups(s.key), work = {};
@@ -6645,10 +7035,11 @@ function toDisplay(data) {
       // the bank's name, and how many of its agents are at work
       // idle, but not forgotten: a job here waits on your answers (Q), so the bank waits on you
       var waitsOnYou = !ag && recs.some(function (r) { return r.g === "Q"; });
-      var cnt = bk.members.length ? (ag ? Math.min(ag, bk.members.length) + " of " + bk.members.length + " at work" : waitsOnYou ? "waiting on you" : "idle") : "", cw = cnt ? measure(cnt, "t2", 13, 600) + 18 : 0;
+      var cnt = bk.members.length ? (ag ? Math.min(ag, bk.members.length) + " of " + bk.members.length + " at work" : waitsOnYou ? "waiting on you" : "idle") : lr.live ? (ag ? ag + " at work" : "running") : "", cw = cnt ? measure(cnt, "t2", 13, 600) + 18 : 0;
       if (ag && measure(bk.name, "t-disp tight", 13, 700) + cw + 16 > SW) { cnt = Math.min(ag, bk.members.length) + " of " + bk.members.length; cw = measure(cnt, "t2", 13, 600) + 18; }
       kids(g, [tx(x + 8, BY + 19, bk.name, { "font-size": 13, "class": "t-disp tight", "font-weight": 700, "data-fit": SW - 14 - cw })]);
       if (cnt) kids(g, [tx(x + SW - 8, BY + 19, cnt, { "text-anchor": "end", "font-size": 13, "class": ag ? "t-agent" : waitsOnYou ? "t-hl" : "t3", "font-weight": 600 })]);
+      if (lr.live) { drawRun(g, s, x, SW, BY, lr); groups = []; }
       var ry = 0;
       groups.forEach(function (gr) {
         var cy = BY + 40 + ry * 21, jobs = work[gr.role] || [], lit = Math.min(gr.n, jobs.length), lx = x + 13;
@@ -6663,9 +7054,14 @@ function toDisplay(data) {
         kids(g, [row]);
         ry++;
       });
-      if (!bk.members.length) {
+      if (!bk.members.length && !lr.live) {
         var bl = s.key === "ship" ? ["CI re-verifies the merge;", "only you merge it (H4)"] : s.key === "review" ? ["No review lanes", "in these recipes"] : ["A CLI check:", "no agent is needed"];
         kids(g, [tx(x + 8, BY + 42, bl[0], { "font-size": 13, "class": "t2", "data-fit": SW - 14 }), tx(x + 8, BY + 61, bl[1], { "font-size": 13, "class": "t2", "data-fit": SW - 14 })]);
+      }
+      if (!lr.live && lr.last && bk.members.length && BY + 40 + ry * 21 + 4.5 <= BY + BH - 8 - (s.key === "done" && S.lessonsWaiting.length ? 24 : 0)) {
+        var ll = lastRunLine(lr);
+        kids(g, [Z("g", { "class": "mk lastrun", "data-open": lr.last.j.id, tabindex: 0, role: "button", "aria-label": ll + ": open the job" }, Z("title", null, ll + " — open the job for its steps"),
+          tx(x + 8, BY + 40 + ry * 21 + 4.5, ll, { "font-size": 13, "class": lr.last.v.status === "done" ? "t3" : "t-fail", "data-fit": SW - 16 }))]);
       }
       var lw = s.key === "done" ? S.lessonsWaiting.length : 0;
       if (lw) kids(g, [Z("g", { "class": "mk lesson-tag", "data-notes": "lessons", tabindex: 0, role: "button", "aria-label": plural(lw, "lesson") + " wait on you: open the notes" },
@@ -7204,6 +7600,8 @@ function toDisplay(data) {
       if (api.conversation) out.push(H("section", { "class": "sec-blk cvblk", "aria-label": "Latest exchange about this job, as of " + fT(t) }, api.conversation(j.id, t)));
       // 2. path
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Path", H("em", { text: "each stop is a stay at a station · amber stripe = waiting on you · ↺ = " + wd("revise") })), pathHTML(j, t)));
+      // 2b. workflow runs: each run's steps, as they stood at the replay time, the latest first
+      out.push(runsBlock(j, t));
       // 3. tasks by wave
       var waves = wavesOf(j.tasks), npass = j.tasks.filter(function (tk) { return taskStatusAt(j, tk, t) === "passing"; }).length;
       out.push(H("section", { "class": "sec-blk" }, H("h3", null, "Tasks", H("em", { text: npass + " / " + j.tasks.length + " passing" + (waves.length > 1 ? " · " + plural(waves.length, "wave") : "") })),
@@ -7254,6 +7652,32 @@ function toDisplay(data) {
       // 7. history
       out.push(H("section", { "class": "sec-blk hist" }, H("h3", null, "History by station", H("em", { text: plural(j.history.filter(function (h) { return P(h.at) <= t; }).length, "move") })), historyNodes(j, t)));
       fill(secBody, H("div", { "class": "sec-wrap" }, out));
+    }
+    var RUN_NAME = { "fanout-judge:clarify": "Clarify", "fanout-judge:decide": "Decide", "fanout-judge:challenge": "Challenge", ground: "Ground", decompose: "Decompose", realize: "Realize", reconcile: "Reconcile", distill: "Distill" };
+    function runName(v) { return RUN_NAME[v.workflow + ":" + v.config] || RUN_NAME[v.workflow] || (v.workflow + (v.config ? " " + v.config : "")); }
+    function runsBlock(j, t) {
+      var vs = arr(j.runs).map(function (r) { var v = runView(r, t); return v ? { r: r, v: v } : null; }).filter(Boolean).reverse();
+      var em = vs.length ? plural(vs.length, "run") + (vs[0].v.status === "running" ? " · one at work" : "") : "";
+      if (!HAS_RUNS || !vs.length) return H("section", { "class": "sec-blk wfruns" }, H("h3", null, "Workflow runs", H("em", { text: em })),
+        H("p", { "class": "meta", text: arr(j.runs).length ? "No run had started by " + fT(t) + "." : "No step-by-step record: this job's runs were logged before workflow steps were." }));
+      return H("section", { "class": "sec-blk wfruns" }, H("h3", null, "Workflow runs", H("em", { text: em + " · latest first" })),
+        vs.map(function (x) {
+          var v = x.v, run = v.status === "running", end = run ? t : P(v.ended_at);
+          var chip = run ? ["ag", "● at work"] : v.status === "failed" ? ["fail", "✕ failed"] : ["ok", "✓ " + (v.result || "done")];
+          var head = [v.round ? "round " + v.round : v.visit > 1 ? "run " + v.visit : null, v.mode, run && v.at ? "step " + v.at + " of " + v.of : plural(v.of, "step"), fT(P(v.started_at)) + " · " + fD(end - P(v.started_at))].filter(Boolean).join(" · ");
+          return H("article", { "class": "wfrun" + (run ? " live" : "") },
+            H("header", null, H("b", { "class": "disp", text: runName(v) }), H("span", { "class": "chip " + chip[0], text: chip[1] }), H("span", { "class": "meta", text: head })),
+            v.error ? H("div", { "class": "meta now-block", text: "✕ " + v.error }) : null,
+            H("ol", { "class": "wfsteps" }, v.steps.map(function (st) {
+              var dur = st.started_at ? fD((st.ended_at ? Math.min(P(st.ended_at), t) : t) - P(st.started_at)) : "";
+              var failed = st.roles.some(function (r) { return r.failed; });
+              return H("li", { "class": "wfs st-" + st.state + (failed ? " bad" : "") },
+                H("span", { "class": "g", "aria-hidden": "true", text: STEP_GLYPH[st.state] || "·" }),
+                H("span", { "class": "lbl", text: st.label, title: st.text || st.label }),
+                H("span", { "class": "who", text: rolesText(st, x.r.station, "full") || (st.state === "skipped" ? "skipped" : "") }),
+                H("span", { "class": "meta tm", text: st.state === "pending" ? "not yet" : st.state === "skipped" ? "" : (st.started_at ? fHM(P(st.started_at)) + " · " + dur : "") }));
+            }), run && v.next ? H("li", { "class": "wfs st-pending" }, H("span", { "class": "g", "aria-hidden": "true", text: "○" }), H("span", { "class": "lbl", text: "→ " + v.next }), H("span", { "class": "who" }), H("span", { "class": "meta tm", text: "then" })) : null));
+        }));
     }
     function docBody(d) {
       var key = "d:" + sel + ":" + (d.name || ""), txt = d.excerpt || "", long = txt.split("\n").length > 16 || txt.length > 1400, open = !!secOpen[key];

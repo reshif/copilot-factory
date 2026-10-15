@@ -173,6 +173,24 @@ function bpQuestionIds(job) {
   return ask && Array.isArray(ask.question_ids) ? ask.question_ids.map(String) : [];
 }
 
+// Workflow runs (cli/core/run-steps.js, in the page as RUN_STEPS): each run as the console recorded it,
+// tagged with the station whose bank it belongs to, for the step list in that bank and the section view.
+// The steps are folded again at the replay time by RUN_STEPS.view(run, t); older data has no runs.
+const BP_RUN_STATION = { 'fanout-judge:clarify': 'intent', 'fanout-judge:decide': 'design', ground: 'design', decompose: 'plan', realize: 'build', reconcile: 'build', 'fanout-judge:challenge': 'review', distill: 'done' };
+function bpRunStation(run) {
+  const st = BP_STEP_STATE[run.step];
+  const stage = st ? BP_STAGES.find((s) => s.states.includes(st)) : null;
+  if (stage) return stage.key;
+  return BP_RUN_STATION[`${run.workflow}:${run.config}`] || BP_RUN_STATION[run.workflow] || null;
+}
+function bpRuns(job) {
+  return (job.runs || []).filter((r) => r && r.id && r.started_at).map((r) => ({
+    id: r.id, workflow: r.workflow, config: r.config || null, mode: r.mode || null, template: r.template || null, step: r.step || null, station: bpRunStation(r),
+    round: r.round == null ? null : r.round, visit: r.visit || 1, started_at: r.started_at, ended_at: r.ended_at || null, status: r.status || 'running', result: r.result || null, error: r.error || null,
+    phases: Array.isArray(r.phases) ? r.phases : [], agents: Array.isArray(r.agents) ? r.agents : [],
+  }));
+}
+
 function bpWaiting(job, state) {
   const g = BP_GATE_OF[state];
   if (job.status !== 'active' && job.status !== 'parked') return { who: 'nobody', what: BP_MEANING[state] || state };
@@ -218,6 +236,7 @@ function toDisplay(data) {
       status: j.status,
       amendment: amend ? { reason: amend.text, from: 'you' } : null,
       evidence_count: (j.tasks || []).filter((t) => t.pass !== null && t.pass !== undefined).length,
+      runs: bpRuns(j),
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {

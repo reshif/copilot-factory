@@ -203,6 +203,139 @@ test('console: a factory run agent is at work from agent_start until its agent_r
   assert.deepEqual(running(), [], 'once factory run is gone, its unfinished agents are not at work');
 });
 
+test('console: workflow runs step by step — steps in order, agents per step, pending and skipped template steps, replay at a time', () => {
+  const root = F.makeRepo();
+  const A = F.cli(root, ['job', 'new', '--title', 'Clarify me', '--type', 'bug', '--risk', 'low']).job;
+  const { build } = require('../cli/core/console');
+  const RS = require('../cli/core/run-steps');
+  const { jobPaths } = require('../cli/lib/paths');
+  const t0 = Date.parse('2030-01-01T12:00:00.000Z');
+  const at = (s) => new Date(t0 + s * 1000).toISOString();
+  const base = { job: A, decision_id: null, workflow: 'fanout-judge', config: 'clarify', wf_run: 'W1' };
+  const lines = [];
+  const ev = (s, rec) => lines.push(JSON.stringify({ ts: at(s), ...base, ...rec }));
+  const phase = (s, index, text) => ev(s, { event: 'workflow_phase', text, index });
+  const start = (s, id, role, label, step) => ev(s, { event: 'agent_start', run_id: id, role, agent_type: `factory:${role}`, label, step });
+  const end = (s, id, role, label, step, outcome = 'ok') => ev(s, { event: 'agent_run', run_id: id, role, agent_type: `factory:${role}`, label, step, outcome, ms: 1000 });
+  ev(0, { event: 'workflow_start', mode: null, round: 2, pid: process.pid });
+  phase(1, 0, 'clarify: scout · map the unknowns');
+  start(1, 'm', 'intent-mapper', 'intent map', 0); end(60, 'm', 'intent-mapper', 'intent map', 0);
+  phase(61, 1, 'clarify: scout · research 5 unknown(s) with 3 scout(s)');
+  for (const k of [1, 2, 3]) start(62, `s${k}`, 'researcher', `scout · repo #${k}`, 1);
+  end(120, 's1', 'researcher', 'scout · repo #1', 1); end(121, 's2', 'researcher', 'scout · repo #2', 1, 'timeout'); end(122, 's3', 'researcher', 'scout · repo #3', 1);
+  // no verify phase: the verifier had nothing to re-check; then the intent gate is skipped too (no gate angle)
+  phase(130, 2, 'clarify: fan-out (4)');
+  for (const k of [1, 2, 3, 4]) start(131, `a${k}`, 'intent-analyst', `analyst #${k}`, 2);
+  end(200, 'a1', 'intent-analyst', 'analyst #1', 2); end(201, 'a2', 'intent-analyst', 'analyst #2', 2, 'invalid');
+  start(202, 'a2r', 'intent-analyst', 'analyst #2 (retry)', 2);
+  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), lines.join('\n') + '\n');
+  const lock = path.join(jobPaths(root, A).dir, 'run.lock');
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: require('os').hostname(), started_at: at(0), workflow: 'fanout-judge', config: 'clarify' }));
+  const now = new Date(t0 + 300 * 1000).toISOString();
+  const get = () => build(root, { now }).jobs.find((j) => j.id === A);
+
+  let j = get();
+  assert.equal(j.runs.length, 1);
+  let r = j.runs[0];
+  assert.equal(j.runs_live.running, 'W1', 'the run in progress');
+  assert.equal(r.status, 'running');
+  assert.equal(r.round, 2);
+  assert.equal(r.stage, null, 'no routing decision in this log: no step, no stage');
+  const row = (st) => [st.state, st.label, st.roles.map((x) => `${x.role} ${x.total}/${x.running}/${x.ok}/${x.failed}/${x.retries}`).join(', ')];
+  assert.deepEqual(r.steps.map(row), [
+    ['done', 'map the unknowns', 'intent-mapper 1/0/1/0/0'],
+    ['done', 'research 5 unknowns', 'researcher 3/0/2/1/0'],
+    ['skipped', 'verify findings', ''],
+    ['skipped', 'intent gate', ''],
+    ['running', 'fan-out (4)', 'intent-analyst 5/3/1/1/1'],
+    ['pending', 'judge', ''],
+    ['pending', 'God Eye (intent)', ''],
+  ]);
+  assert.deepEqual([r.at, r.of], [3, 5], 'step 3 of 5: skipped steps are not counted');
+  assert.equal(r.next, 'your answers or H1');
+  assert.deepEqual(r.steps[5].planned, ['judge'], 'a pending step names who will run it');
+  assert.deepEqual(r.steps.slice(0, 2).map((x) => [x.started_at, x.ended_at]), [[at(1), at(61)], [at(61), at(130)]], 'a step runs from its phase to the next one');
+
+  // replay: the same run as it stood during the research
+  const v = RS.view(r, t0 + 90 * 1000);
+  assert.deepEqual(v.steps.map(row), [
+    ['done', 'map the unknowns', 'intent-mapper 1/0/1/0/0'],
+    ['running', 'research 5 unknowns', 'researcher 3/3/0/0/0'],
+    ['pending', 'verify findings', ''],
+    ['pending', 'intent gate', ''],
+    ['pending', 'fan-out', ''],
+    ['pending', 'judge', ''],
+    ['pending', 'God Eye (intent)', ''],
+  ]);
+  assert.equal(v.status, 'running');
+  assert.equal(RS.view(r, t0 - 1000), null, 'before the run started there is nothing');
+
+  // the run ends: the steps it never took are skipped, and the station remembers its last run
+  lines.length = 0;
+  end(240, 'a2r', 'intent-analyst', 'analyst #2 (retry)', 2); end(241, 'a3', 'intent-analyst', 'analyst #3', 2); end(242, 'a4', 'intent-analyst', 'analyst #4', 2);
+  phase(250, 3, 'clarify: judge');
+  start(251, 'j', 'judge', 'judge', 3); end(280, 'j', 'judge', 'judge', 3);
+  ev(281, { event: 'workflow_end', outcome: 'ok', status: 'needs_user', ms: 281000 });
+  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), lines.join('\n') + '\n');
+  j = get();
+  r = j.runs[0];
+  assert.equal(r.status, 'done');
+  assert.equal(r.result, 'needs_user');
+  assert.equal(j.runs_live.running, null);
+  assert.deepEqual(r.steps.map((x) => x.state), ['done', 'done', 'skipped', 'skipped', 'done', 'done', 'skipped']);
+  assert.deepEqual(r.steps[4].roles, [{ role: 'intent-analyst', total: 5, running: 0, ok: 4, failed: 1, retries: 1 }]);
+  assert.equal(r.at, null);
+
+  // a run with no end whose factory run is gone was cut off
+  lines.length = 0;
+  ev(400, { event: 'workflow_start', wf_run: 'W2', mode: null, round: 3, pid: process.pid });
+  ev(401, { event: 'workflow_phase', wf_run: 'W2', text: 'clarify: intent gate (1)', index: 0 });
+  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), lines.join('\n') + '\n');
+  assert.equal(get().runs[1].status, 'running');
+  assert.equal(get().runs[1].visit, 2, 'the second clarify run of this job');
+  fs.writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, host: require('os').hostname() }));
+  const cut = get().runs[1];
+  assert.equal(cut.status, 'failed');
+  assert.match(cut.error, /interrupted/);
+  assert.deepEqual(cut.steps.filter((x) => x.text).map((x) => x.state), ['failed']);
+});
+
+test('console: workflow run templates follow the workflow sources; realize waves; older logs without steps keep today\'s view', () => {
+  const RS = require('../cli/core/run-steps');
+  // every phase(...) text in the workflow sources matches a template step of its workflow
+  const src = (f) => fs.readFileSync(path.join(F.PLUGIN, 'workflows', f), 'utf8');
+  const texts = (f) => [...src(f).matchAll(/phase\((['`])(.*?)\1\)/g)].map((m) => m[2].replace(/\$\{brief\.config\}/g, 'CFG').replace(/\$\{[^}]*\}/g, '1'));
+  const fj = texts('fanout-judge.js');
+  assert.ok(fj.length >= 10, fj.join(' | '));
+  for (const t of fj) {
+    const cfgs = t.startsWith('CFG') ? ['clarify', 'decide', 'challenge'] : [t.split(':')[0]];
+    for (const c of cfgs) {
+      const tpl = RS.TEMPLATES[`fanout-judge:${c}`];
+      assert.ok(tpl && RS.matchStep(tpl, t.replace('CFG', c)) >= 0, `fanout-judge ${c}: "${t}" has a template step`);
+    }
+  }
+  for (const w of ['ground', 'decompose', 'realize', 'reconcile']) for (const t of texts(`${w}.js`)) assert.ok(RS.matchStep(RS.TEMPLATES[w], t) >= 0, `${w}: "${t}"`);
+  assert.ok(RS.matchStep(RS.TEMPLATES.decompose, 'decompose: God Eye (plan) round 1') === 1 && RS.matchStep(RS.TEMPLATES.decompose, 'decompose: plan round 2') === 0);
+  // realize: the waves still ahead are pending, a wave the run jumped (all its tasks skipped) is skipped
+  const T = (s) => new Date(Date.UTC(2030, 0, 1, 12, 0, s)).toISOString();
+  const run = { id: 'R', workflow: 'realize', config: null, started_at: T(0), ended_at: null, status: 'running', phases: [{ i: 0, text: 'realize: wave 1/4 (T1, T2)', at: T(1), key: 'wave' }], agents: [{ role: 'builder', step: 0, at: T(2), end: null, outcome: null, retry: false }] };
+  assert.deepEqual(RS.view(run).steps.map((s) => [s.state, s.label]), [['running', 'wave 1 of 4: T1, T2'], ['pending', 'wave 2 of 4'], ['pending', 'wave 3 of 4'], ['pending', 'wave 4 of 4']]);
+  run.phases.push({ i: 1, text: 'realize: wave 3/4 (T4)', at: T(30), key: 'wave' });
+  assert.deepEqual(RS.view(run).steps.map((s) => [s.state, s.label]), [['done', 'wave 1 of 4: T1, T2'], ['skipped', 'wave 2 of 4'], ['running', 'wave 3 of 4: T4'], ['pending', 'wave 4 of 4']]);
+  // a log from before workflow_* lines: no runs, and the agents show as before
+  const root = F.makeRepo();
+  const A = F.cli(root, ['job', 'new', '--title', 'Old log', '--type', 'bug', '--risk', 'low']).job;
+  const now = Date.parse('2030-01-01T12:00:00.000Z');
+  fs.appendFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), [
+    JSON.stringify({ ts: new Date(now - 60000).toISOString(), event: 'agent_start', run_id: 'x', job: A, agent_type: 'factory:intent-analyst', label: 'analyst', workflow: 'fanout-judge' }),
+  ].join('\n') + '\n');
+  fs.writeFileSync(path.join(require('../cli/lib/paths').jobPaths(root, A).dir, 'run.lock'), JSON.stringify({ pid: process.pid, host: require('os').hostname() }));
+  const j = require('../cli/core/console').build(root, { now: new Date(now).toISOString() }).jobs.find((x) => x.id === A);
+  assert.deepEqual(j.runs, []);
+  assert.deepEqual(j.runs_live, { running: null, last_by_stage: {} });
+  assert.deepEqual(j.running_agents.map((x) => x.agent_type), ['factory:intent-analyst']);
+});
+
 test('console page: one data slot, self-contained, and a static file says it is a snapshot', () => {
   const tpl = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
   assert.equal(tpl.split('/*__FACTORY_DATA__*/null').length, 2, 'exactly one data slot');
@@ -301,6 +434,27 @@ const blueprintAdapter = () => {
 const at = (m) => new Date(Date.UTC(2030, 0, 1, 9, m)).toISOString();
 const route = (m, step) => ({ t: at(m), type: 'route', step, raw_step: step, rule: 'r' });
 const job = (id, extra) => ({ id, title: `job ${id}`, work_type: 'feature', risk: 'low', status: 'active', created_at: at(0), updated_at: at(50), tasks: [], lessons: [], steps: [], timeline: [], ...extra });
+
+test('console blueprint: each workflow run goes to its station\'s bank, folded by the same run-steps.js the page carries', () => {
+  const toDisplay = blueprintAdapter();
+  const run = (id, workflow, config, step, extra) => ({ id, workflow, config, step, started_at: at(10), ended_at: null, status: 'running', phases: [], agents: [], ...extra });
+  const d = toDisplay({ generated_at: at(60), project: 'p', jobs: [job('J-0001', { runs: [
+    run('a', 'fanout-judge', 'clarify', 'clarify'), run('b', 'ground', null, 'ground'), run('c', 'fanout-judge', 'decide', 'decide'), run('d', 'decompose', null, 'decompose'),
+    run('e', 'realize', null, 'realize'), run('f', 'reconcile', null, 'reconcile'), run('g', 'fanout-judge', 'challenge', 'challenge'), run('h', 'fanout-judge', 'challenge', 'post_merge_challenge', { mode: 'post_merge' }),
+    run('i', 'distill', null, 'distill'), run('k', 'fanout-judge', 'challenge', null), run('x', 'fanout-judge', 'clarify', 'clarify', { started_at: null }),
+  ] }), job('J-0002', {})] });
+  assert.deepEqual(d.jobs[0].runs.map((r) => [r.id, r.station]), [['a', 'intent'], ['b', 'design'], ['c', 'design'], ['d', 'plan'], ['e', 'build'], ['f', 'build'], ['g', 'review'], ['h', 'ship'], ['i', 'done'], ['k', 'review']], 'by the recipe step it ran for, else by workflow; a run with no start is dropped');
+  assert.deepEqual(d.jobs[1].runs, [], 'older data: no runs, the bank keeps its lamps');
+  // the page carries the CLI's run-steps.js verbatim, before the Blueprint that reads it
+  const html = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
+  const rs = fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'run-steps.js'), 'utf8');
+  assert.ok(html.includes(rs), 'run-steps.js is in the page');
+  assert.ok(html.indexOf(rs) < html.indexOf('APP.displays.register({'), 'before the Blueprint');
+  const vm = require('vm');
+  const ctx = {};
+  vm.runInNewContext(`${rs}\nthis.R = RUN_STEPS;`, ctx);
+  assert.deepEqual(Object.keys(ctx.R.TEMPLATES), Object.keys(require('../cli/core/run-steps').TEMPLATES), 'as a classic script it defines RUN_STEPS');
+});
 
 test('console blueprint: gates wait on you with the reply the CLI parses', () => {
   const toDisplay = blueprintAdapter();

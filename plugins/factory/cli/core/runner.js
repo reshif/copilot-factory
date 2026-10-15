@@ -479,6 +479,8 @@ async function runAgent(ctx, prompt, opts) {
   }
   const S = ctx.settings;
   const model = modelId(S.modelIds, o.model);
+  // the workflow run and the step (phase) in force when agent() was called, for the console's step list
+  const wf = ctx.wfRun ? { wf_run: ctx.wfRun, step: typeof ctx.phaseIndex === 'number' ? ctx.phaseIndex : -1 } : {};
   // A time cap from the workflow (opts.timeoutSec: clarify's scout budget) counts from the
   // call, not from the spawn: time spent waiting for a free slot is part of the budget, and
   // an agent whose budget ran out while it waited is not started at all (outcome timeout).
@@ -490,14 +492,14 @@ async function runAgent(ctx, prompt, opts) {
     if (cwd && cwd.error) {
       const rec = { label: o.label || role, role, agent_type: agentType, model: o.model || null, model_id: model, cwd: null, ms: 0, exit: null, retry: false, spawns: 0, outcome: 'error', code: 'no_worktree', errors: [`${cwd.error}; not started (a task agent never runs at the project root)`] };
       ctx.runs.push(rec);
-      events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...rec });
+      events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, ...rec });
       ctx.note(`${rec.label} (${agentType}) not started: ${cwd.error}`);
       return null;
     }
     if (deadline && left() < 5) {
       const rec = { label: o.label || role, role, agent_type: agentType, model: o.model || null, model_id: model, cwd, ms: 0, exit: null, retry: false, spawns: 0, outcome: 'timeout', time_cap_sec: capSec, errors: [`its ${capSec}s time budget ran out before a slot was free; not started`] };
       ctx.runs.push(rec);
-      events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...rec });
+      events.append(ctx.root, { event: 'agent_run', job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, ...rec });
       ctx.say(`${rec.label} (${agentType}) not started: time budget spent while queued`);
       return null;
     }
@@ -508,13 +510,13 @@ async function runAgent(ctx, prompt, opts) {
     // subagent, so SubagentStart/SubagentStop never fire for it.
     const runId = crypto.randomUUID();
     const env = { ...process.env, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
-    const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail] });
+    const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail] });
     const spawnOnce = async (text, retryTurn = false) => {
       if (ctx.unavailable) {
         if (retryTurn) closeUnavailable(ctx.unavailable.detail); // its first turn already started it
         throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
       }
-      if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, pid: process.pid });
+      if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, pid: process.pid });
       const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? ' (format)' : ''}`, retryTurn), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm }), { cwd, env, timeoutSec: Math.max(1, left()) });
       const u = unavailable(r);
       if (u) {
@@ -572,6 +574,7 @@ async function runAgent(ctx, prompt, opts) {
       decision_id: ctx.decisionId,
       workflow: ctx.brief.workflow,
       config: ctx.brief.config || null,
+      ...wf,
       agent_type: agentType,
       ...rec,
     });
@@ -757,6 +760,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     const decision = preflight(root, state, workflow, config);
     const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
     const S = settings(root, state);
+    const t0 = Date.now();
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
     const ctx = {
       root,
@@ -782,10 +786,19 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     for (const [k, v] of Object.entries({ config, mode, scope, lanes, 'threat-model': threatModel, 'plan-critique': planCritique, 'accept-degraded': acceptDegraded || undefined })) if (v !== undefined && v !== null) args[k] = v;
     logCli(root, { cmd: 'wfargs', sub: workflow, args, job: state.id, workflow, config: brief.config || config || null, mode: brief.mode || null, brief_hash: brief.input_hash || null });
 
+    // The run's boundaries and each step as it starts, in the event log while the run is live, so
+    // the console can show where the workflow is (run-steps.js). Observation only: append never throws.
+    ctx.wfRun = crypto.randomUUID();
+    ctx.phaseIndex = -1;
+    const wfBase = { wf_run: ctx.wfRun, job: state.id, decision_id: decision.id, workflow, config: brief.config || null };
+    events.append(root, { event: 'workflow_start', ...wfBase, mode: brief.mode || null, round: typeof brief.round === 'number' ? brief.round : null, pid: process.pid });
+    const wfEnd = (rec) => events.append(root, { event: 'workflow_end', ...wfBase, ms: Date.now() - t0, phases: ctx.phases.length, agents: ctx.runs.length, ...rec });
     const api = {
       agent: (prompt, opts) => runAgent(ctx, prompt, opts),
       phase: (m) => {
         ctx.phases.push(String(m));
+        ctx.phaseIndex = ctx.phases.length - 1;
+        events.append(root, { event: 'workflow_phase', ...wfBase, text: String(m), index: ctx.phaseIndex });
         say(`phase: ${m}`);
       },
       log: (m) => {
@@ -793,15 +806,19 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
         say(String(m));
       },
     };
-    const t0 = Date.now();
     let envelope;
     try {
       envelope = await execute(pluginPath('workflows', `${workflow}.js`), JSON.stringify(brief), api);
     } catch (e) {
+      wfEnd({ outcome: 'failed', status: null, error: ctx.unavailable ? `copilot unavailable: ${ctx.unavailable.detail}` : String(e.message).slice(0, 300) });
       if (ctx.unavailable) copilotUnavailable(ctx);
       fail(`The ${workflow} workflow failed: ${e.message}`, 'workflow_failed', { agents: ctx.runs });
     }
-    if (ctx.unavailable) copilotUnavailable(ctx);
+    if (ctx.unavailable) {
+      wfEnd({ outcome: 'failed', status: null, error: `copilot unavailable: ${ctx.unavailable.detail}` });
+      copilotUnavailable(ctx);
+    }
+    wfEnd({ outcome: 'ok', status: (envelope && envelope.status) || null });
     const file = path.join(root, '.factory', 'scratch', 'runs', `${state.id}-${workflow}${brief.config ? `-${brief.config}` : ''}-${Date.now()}.json`);
     writeJson(file, envelope);
 
@@ -905,14 +922,27 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
       JSON.stringify(context, null, 2),
       '```',
     ].join('\n');
+    // one step, logged like a workflow run's, so the console's Learn bank shows it while it runs
+    const t0 = Date.now();
+    ctx.wfRun = crypto.randomUUID();
+    const wfBase = { wf_run: ctx.wfRun, job: state.id, decision_id: d.id, workflow: 'distill', config: null };
+    events.append(root, { event: 'workflow_start', ...wfBase, mode: null, round: null, pid: process.pid });
+    events.append(root, { event: 'workflow_phase', ...wfBase, text: 'distill: write lessons', index: 0 });
+    ctx.phaseIndex = 0;
+    const wfEnd = (rec) => events.append(root, { event: 'workflow_end', ...wfBase, ms: Date.now() - t0, phases: 1, agents: ctx.runs.length, ...rec });
     let reply;
     try {
       reply = await runAgent(ctx, prompt, { agentType: `factory:${role}`, label: 'lesson-writer', schema: LESSON_REPLY, ...(model ? { model } : {}) });
     } catch (e) {
+      wfEnd({ outcome: 'failed', status: null, error: ctx.unavailable ? `copilot unavailable: ${ctx.unavailable.detail}` : String(e.message).slice(0, 300) });
       if (ctx.unavailable) copilotUnavailable(ctx);
       throw e;
     }
-    if (ctx.unavailable) copilotUnavailable(ctx);
+    if (ctx.unavailable) {
+      wfEnd({ outcome: 'failed', status: null, error: `copilot unavailable: ${ctx.unavailable.detail}` });
+      copilotUnavailable(ctx);
+    }
+    wfEnd({ outcome: 'ok', status: reply ? 'ok' : 'no_result' });
     const added = lessons.load(root).lessons.filter((l) => !before.has(l.id) && l.source_job === state.id);
     const claimed = reply && Array.isArray(reply.lessons) ? reply.lessons.map((l) => String(l.id || '').toUpperCase()) : [];
     const unrecorded = claimed.filter((id) => !added.some((l) => l.id === id));

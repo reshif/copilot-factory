@@ -383,6 +383,8 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint .bp-ln-agent{stroke:var(--agent);fill:none;stroke-width:1.3}
 .dx-blueprint .bp-trail{fill:none;stroke:var(--agent);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;opacity:0;animation:bp-trail 2.4s ease-out forwards}
 .dx-blueprint .bp-lamprow.bp-on text{letter-spacing:.02em}
+.dx-blueprint .bp-steprow.bp-st-running text{letter-spacing:.02em}
+.dx-blueprint .bp-lastrun{cursor:pointer}
 @keyframes bp-trail{0%{opacity:.85;stroke-dasharray:4 6}60%{opacity:.6}100%{opacity:0}}
 .dx-blueprint.bp-snapshot .bp-trail{display:none}
 
@@ -544,6 +546,30 @@ html[data-theme="light"] .dx-blueprint{
 .dx-blueprint ol.bp-finds .bp-fh .bp-fref{margin:0}
 .dx-blueprint .bp-chip.bp-sev-blocker,.dx-blueprint .bp-chip.bp-sev-major{border-color:var(--fail);color:var(--fail)}
 .dx-blueprint .bp-chip.bp-sev-minor,.dx-blueprint .bp-chip.bp-sev-nit{border-color:var(--rule);color:var(--ink-2)}
+/* workflow runs: each run's steps (the same list a bank shows while it runs) */
+.dx-blueprint .bp-wfrun + .bp-wfrun{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule)}
+.dx-blueprint .bp-wfrun header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px}
+.dx-blueprint .bp-wfrun header .bp-disp{font-size:15px;min-width:70px}
+.dx-blueprint .bp-wfrun.bp-live{border-left:3px solid var(--agent);padding-left:10px}
+.dx-blueprint ol.bp-wfsteps{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:18px minmax(0,max-content) minmax(0,max-content) auto;justify-content:start;gap:3px 24px;align-items:baseline;max-width:110ch}
+.dx-blueprint ol.bp-wfsteps li{display:contents}
+.dx-blueprint .bp-wfs .bp-g{font:700 13px var(--f-mono);color:var(--ink-3);text-align:center}
+.dx-blueprint .bp-wfs .bp-lbl{overflow-wrap:anywhere}
+.dx-blueprint .bp-wfs .bp-who{color:var(--ink-2);overflow-wrap:anywhere}
+.dx-blueprint .bp-wfs .bp-tm{white-space:nowrap}
+.dx-blueprint .bp-wfs.bp-st-done .bp-g{color:var(--ok)}
+.dx-blueprint .bp-wfs.bp-st-running .bp-g,.dx-blueprint .bp-wfs.bp-st-running .bp-lbl,.dx-blueprint .bp-wfs.bp-st-running .bp-who{color:var(--agent);font-weight:700}
+.dx-blueprint .bp-wfs.bp-st-pending .bp-lbl,.dx-blueprint .bp-wfs.bp-st-skipped .bp-lbl,.dx-blueprint .bp-wfs.bp-st-pending .bp-who,.dx-blueprint .bp-wfs.bp-st-skipped .bp-who{color:var(--ink-3)}
+.dx-blueprint .bp-wfs.bp-st-skipped .bp-lbl{text-decoration:line-through;text-decoration-color:var(--ink-3)}
+.dx-blueprint .bp-wfs.bp-st-failed .bp-g,.dx-blueprint .bp-wfs.bp-st-failed .bp-lbl,.dx-blueprint .bp-wfs.bp-bad .bp-who,.dx-blueprint .bp-wfs.bp-bad .bp-g{color:var(--fail)}
+@media (max-width: 860px){
+  .dx-blueprint ol.bp-wfsteps{display:flex;flex-direction:column;align-items:stretch;gap:6px}
+  .dx-blueprint ol.bp-wfsteps li{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:0 10px;align-items:baseline}
+  .dx-blueprint .bp-wfs .bp-g{grid-column:1;grid-row:1}
+  .dx-blueprint .bp-wfs .bp-lbl{grid-column:2;grid-row:1}
+  .dx-blueprint .bp-wfs .bp-tm{grid-column:3;grid-row:1}
+  .dx-blueprint .bp-wfs .bp-who{grid-column:2 / 4;grid-row:2;font-size:12.5px}
+}
 /* documents */
 .dx-blueprint .bp-sec-wrap pre.bp-doc{max-height:none;max-width:100ch;font-size:13px;line-height:1.6;padding:12px 14px}
 .dx-blueprint .bp-sec-wrap pre.bp-doc.bp-clamped{max-height:22em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 80%,transparent)}
