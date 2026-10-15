@@ -79,6 +79,20 @@ test('numbered replies: ordinary messages are left alone; nothing already settle
   assert.match(JSON.parse(say(root, '2 yes, 2 no').stdout).additionalContext, /NOT recorded/);
 });
 
+test('numbered replies: "defaults" accepts the defaults there are and names the questions without one; nothing is half-recorded', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  round(root, { scout: scoutData([user('U-1', 'Should the sync prune VLANs not in Nautobot?', { default: 'yes' }), user('U-2', 'Who approves the first production run?')]) });
+  // an item that accepts a default that does not exist refuses the whole reply, before anything is written
+  assert.match(JSON.parse(say(root, '1 yes, 2 default').stdout).additionalContext, /NOT recorded.*Q-2 has no proposed default/);
+  assert.ok(ledgerOf(root, J).unknowns.every((u) => u.status === 'proposed'), 'Q-1 was not recorded either');
+  const out = JSON.parse(say(root, 'defaults').stdout).additionalContext;
+  assert.match(out, /Recorded 1 answer\(s\): Q-1 → yes\. Still open \(no default, answer in words\): Q-2/);
+  const d = ledgerOf(root, J);
+  assert.deepEqual(d.unknowns.map((u) => [u.question_id, u.status]), [['Q-1', 'settled'], ['Q-2', 'proposed']]);
+});
+
 // ---------------------------------------------------------------- the contract editor
 const editorEnv = (text, extra = {}) => ({ contract: { text, edits: [{ label: 'apply what was settled', ok: true, applied: [], skipped: [], removed: [], ...extra }] } });
 

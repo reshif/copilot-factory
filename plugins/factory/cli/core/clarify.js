@@ -528,8 +528,11 @@ function applyNumbered(root, parsed, { jobId, via = 'chat' } = {}) {
   if (!open.length) return null;
   const log = state.question_log || [];
   const listed = () => set.map((q, i) => `${i + 1} = ${q.id}`).join(', ');
+  // "defaults": every open question that has one; the others are named, still open
+  const noDefault = parsed.all_defaults ? open.filter((q) => isNone(issueOf(q).default)) : [];
+  if (parsed.all_defaults && noDefault.length === open.length) fail(`No open question has a proposed default (${open.map((q) => q.id).join(', ')}): answer them in words. Nothing was recorded.`, 'no_default');
   const items = parsed.all_defaults
-    ? open.map((q) => ({ q, text: 'default' }))
+    ? open.filter((q) => !noDefault.includes(q)).map((q) => ({ q, text: 'default' }))
     : parsed.items.map((it) => ({ q: it.q ? log.find((x) => x.id === it.q) : set[it.n - 1], text: it.text, n: it.n, label: it.q || String(it.n) }));
   if (!parsed.all_defaults) {
     // nothing in it names a question of this set: not an answer set at all
@@ -541,12 +544,14 @@ function applyNumbered(root, parsed, { jobId, via = 'chat' } = {}) {
       seen.add(it.q.id);
       const u = issueOf(it.q);
       if (!u) fail(`${it.q.id} is not a clarify question of ${state.id}. Nothing was recorded.`, 'bad_input');
+      if (ACCEPT.test(String(it.text).trim()) && isNone(u.default)) fail(`${it.q.id} has no proposed default to accept: answer it in words. Nothing was recorded.`, 'no_default');
       if (u.status !== 'proposed') fail(`${it.q.id} (${it.label}) is already settled (${u.status}${u.answer ? `: ${clip(u.answer, 60)}` : ''}), so this reply was not read as answers. To change an answer, say so and run factory answer ${it.q.id} "…". Nothing was recorded.`, 'already_settled');
     }
   }
   const rows = [];
   for (const it of items) rows.push(answer(root, { jobId: state.id, ref: it.q.id, text: it.text, via }));
-  return { job: state.id, answered: rows.map((r) => ({ id: r.id, issue: r.issue, answer: r.answer, settled_by: r.settled_by })), message: `Recorded ${rows.length} answer(s): ${rows.map((r) => `${r.id || r.issue} → ${clip(r.answer, 60)}`).join('; ')}.` };
+  const still = noDefault.length ? ` Still open (no default, answer in words): ${noDefault.map((q) => q.id).join(', ')}.` : '';
+  return { job: state.id, answered: rows.map((r) => ({ id: r.id, issue: r.issue, answer: r.answer, settled_by: r.settled_by })), message: `Recorded ${rows.length} answer(s): ${rows.map((r) => `${r.id || r.issue} → ${clip(r.answer, 60)}`).join('; ')}.${still}` };
 }
 
 // `factory clarify note U-n "…"`: context for the next round (the editor and the analysts read it).
