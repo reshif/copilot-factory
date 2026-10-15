@@ -393,3 +393,22 @@ The problems are in output shapes and payload fields:
 5. What is the PascalCase `SubagentStart` payload, and what tool name form appears in PascalCase `PostToolUse` payloads and matchers?
 6. Does `userPromptSubmitted` fire for prompts sent to subagents? Our `prompt.js` assumes "Subagent prompts never pass through here".
 7. Are hook command strings expanded for `${...}` placeholders, or only through the shell environment? This matters on Windows.
+
+## 10. Agent-terminal environment markers (for the human-only check)
+
+Researched 2026-10-15 for `cli/core/human.js` (`AGENT_ENV`). A marker only proves an agent's shell when present; its absence proves nothing.
+
+| Variable | Set by | Since | Source |
+|---|---|---|---|
+| `COPILOT_AGENT=1` | VS Code, every terminal its agent tool creates (`run_in_terminal`) | 1.121 | `src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/toolTerminalCreator.ts` at tag 1.121.0 (absent at 1.118.0); kept for back-compat later |
+| `AI_AGENT=github_copilot_vscode_agent` | VS Code agent terminals (and, per its comment, every process an agent session spawns) | 1.124 (Insiders June 2026) | same file on `main`; `src/vs/platform/chat/common/aiAgentEnv.ts`; microsoft/vscode#320127, PR #320129 ("Set AI_AGENT env var for agent terminals") |
+| `VSCODE_AGENT_ZSH_FIXUPS=1` | VS Code agent terminals running zsh | 1.121 | toolTerminalCreator.ts |
+| `VSCODE_PREVENT_SHELL_HISTORY=1` | VS Code agent terminals, when `chat.tools.terminal.preventShellHistory` is on | ≤ 1.118 | toolTerminalCreator.ts |
+| `GIT_PAGER=cat`, `GIT_EDITOR=:`, `DEBIAN_FRONTEND=noninteractive` | VS Code agent terminals | ≤ 1.118 | toolTerminalCreator.ts. **Not used**: users set these too |
+| `TERM_PROGRAM=vscode`, `VSCODE_INJECTION` | every VS Code integrated terminal, yours included | — | **Not used**: they don't tell an agent's terminal from yours (microsoft/vscode#311734, #311382) |
+| `COPILOT_CLI=1` | Copilot CLI, for the commands it runs | 0.0.421 | §2 above (`CL` 0.0.421) |
+| `AI_AGENT=<vendor value>` | the cross-vendor convention: Claude Code sets it too (observed `claude-code_…_agent`) | — | aiAgentEnv.ts comment; observation |
+| `CLAUDECODE`, `CODEX_SANDBOX`, `GEMINI_CLI`, `COPILOT_AGENT_PROMPT` | Claude Code, Codex, Gemini CLI, Copilot cloud agent | — | earlier research (§2) |
+
+VS Code's agent terminals are created with `hideFromUser: true` (same file): a human never types in them, so refusing them costs nothing. Before 1.121 an agent terminal carries nothing an agent couldn't also find in your own terminal; there the random confirmation code (shown on the terminal device only) is the remaining bar, and an agent that reads the terminal screen and types into it (VS Code ≥ 1.115 can let it) can pass it. That limit is stated in the README.
+

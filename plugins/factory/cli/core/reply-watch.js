@@ -45,7 +45,7 @@ function message(w, never) {
     '(2) Run "Chat: Configure Hooks" from the Command Palette: the factory plugin\'s hooks.json should be listed.',
     '(3) Open the Output panel, channel "GitHub Copilot Chat Hooks", for hook runs and errors.',
     '(4) In the Copilot CLI, /plugin list should show factory enabled.',
-    `Meanwhile, act from your own terminal: ${w.command}${w.alt ? ` (or ${w.alt})` : ''} — it asks you to type the job id to confirm.`,
+    `Meanwhile, act from your own terminal: ${w.command}${w.alt ? ` (or ${w.alt})` : ''} — it shows a short code on that terminal for you to type back.`,
   ].join(' ');
 }
 

@@ -437,3 +437,19 @@ test('P1.5: a run killed with SIGKILL (no handler runs) leaves a lock naming its
     for (const pid of orphans) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
   }
 });
+
+// ------------------------------------------------------------------------------- P1.6
+
+test('P1.6: the guard refuses any agent command that sets the test-only human seam or the secret override', () => {
+  const G = require('../hooks/guard-rules');
+  for (const cmd of [
+    'FACTORY_TEST_HUMAN=abc NODE_ENV=test factory approve',
+    'env FACTORY_TEST_HUMAN_INPUT={code} node bin/factory approve',
+    'export FACTORY_SECRET_FILE=/tmp/s; factory approve',
+    '$env:FACTORY_TEST_HUMAN="x"; factory approve',
+  ]) {
+    assert.match(G.checkBash('/tmp', cmd, null, { agent: true }) || '', /test suite's seam/, cmd);
+    assert.match(G.checkUnknownCommand('/tmp', cmd, null, {}) || '', /test suite's seam/, cmd);
+  }
+  assert.equal(G.checkBash('/tmp', 'npm test', null, {}), null);
+});

@@ -2,22 +2,29 @@
 // Human-only actions. They are reachable two ways and no other:
 //   1. your own chat reply, applied by the UserPromptSubmit hook before the model sees it
 //   2. the `factory` CLI from a real terminal (stdin and stdout are TTYs), confirmed by
-//      typing the job (or lesson) id on the terminal itself (/dev/tty; CONIN$ on Windows)
+//      typing a short random code shown on the terminal itself (/dev/tty; CONOUT$/CONIN$ on
+//      Windows)
 // The PreToolUse guard also blocks agents from running these subcommands.
 //
-// A TTY is not proof of a human: VS Code's Local harness runs agent commands in the
-// integrated terminal, and tool approvals there can be automatic (Allow all, Autopilot,
-// auto-approve settings). So the terminal path also refuses:
+// A TTY is not proof of a human: VS Code's Local harness runs agent commands in a terminal,
+// and tool approvals there can be automatic (Allow all, Autopilot, auto-approve settings). So
+// the terminal path also refuses:
 //   - an agent `factory run` started (FACTORY_RUNNER=1);
-//   - an environment that shows an agent's shell (best effort, see AGENT_ENV: variables
-//     some agent harnesses set for the commands they run; absence proves nothing);
-// and asks for the typed confirmation, which an agent's one-shot command can't give (it
-// raises the bar; it is not proof either). There is no --yes.
+//   - an environment that shows an agent's shell (AGENT_ENV: variables agent harnesses set
+//     for the commands they run, e.g. VS Code's agent terminals; absence proves nothing);
+// and asks for a confirmation code that is random per command, never derivable from the repo
+// or the job (it used to be the job id, which every agent knows) and written only to the
+// terminal device: not to stdout or stderr, not to any file or event. An agent that only runs
+// a command and reads its output never sees it. The limit, honestly: an agent that drives an
+// interactive terminal (VS Code can show an agent a terminal waiting for input and let it
+// type into it) can read the code off that terminal's screen; the env markers are what stop
+// those terminals, and a harness that sets none is not detected. There is no --yes.
 //
 // Tests run without a terminal through one seam: FACTORY_TEST_HUMAN set to an HMAC of a
 // fixed label under the seal secret (which the guard keeps agents from reading), honoured
-// only when stdin or stdout is NOT a terminal and never in a factory agent; the "typed"
-// text then comes from FACTORY_TEST_HUMAN_INPUT.
+// only with NODE_ENV=test, when stdin or stdout is NOT a terminal and never in a factory
+// agent. The guard refuses any shell command that sets it. The "typed" text then comes from
+// FACTORY_TEST_HUMAN_INPUT, where {code} stands for the code the terminal would show.
 
 const { nowIso, fail, sha256, readJson } = require('../lib/util');
 const { pluginPath } = require('../lib/paths');
@@ -32,8 +39,20 @@ const GATE_IDS = ['H1', 'H2', 'H3', 'HF', 'HS', 'EH1', 'EH2', 'EH3', 'A'];
 
 // Variables agent harnesses set in the shells they run commands in (best effort: a harness
 // that sets none is not detected; the user's own terminal sets none of these).
+// Sources: VS Code's agent terminal tool (src/vs/workbench/contrib/terminalContrib/chatAgentTools/
+// browser/toolTerminalCreator.ts: COPILOT_AGENT=1 from 1.121, AI_AGENT=github_copilot_vscode_agent
+// from 1.124, VSCODE_AGENT_ZSH_FIXUPS and VSCODE_PREVENT_SHELL_HISTORY only in agent terminals;
+// microsoft/vscode#311734, #320127, PR #320129); Copilot CLI sets COPILOT_CLI=1 for the commands
+// it runs (docs/research/hooks.md); AI_AGENT is the cross-vendor convention (Claude Code sets it
+// too). VS Code before 1.121 marks its agent terminals with nothing an agent can't also have in
+// your own terminal (GIT_PAGER=cat): those are not detected.
 const AGENT_ENV = [
   ['FACTORY_RUNNER', '1'], // an agent `factory run` started
+  ['AI_AGENT', null], // cross-vendor: VS Code agent terminals (≥ 1.124), Claude Code, others
+  ['COPILOT_AGENT', null], // VS Code agent terminals (≥ 1.121)
+  ['VSCODE_AGENT_ZSH_FIXUPS', null], // VS Code agent terminals running zsh
+  ['VSCODE_PREVENT_SHELL_HISTORY', null], // VS Code agent terminals (chat.tools.terminal.preventShellHistory)
+  ['COPILOT_CLI', '1'], // commands the Copilot CLI runs
   ['CLAUDECODE', null], // Claude Code's Bash tool
   ['COPILOT_AGENT_PROMPT', null], // Copilot cloud agent
   ['CODEX_SANDBOX', null], // Codex
@@ -55,10 +74,11 @@ function testToken() {
   return crypto.createHmac('sha256', key).update(TEST_LABEL).digest('hex');
 }
 
-// The test seam: never in a terminal, never in a factory agent, only with the right token.
+// The test seam: only under NODE_ENV=test, never in a terminal, never in a factory agent,
+// only with the right token.
 function testSeam() {
   const t = process.env.FACTORY_TEST_HUMAN;
-  if (!t || (process.stdin.isTTY && process.stdout.isTTY) || process.env.FACTORY_RUNNER === '1') return false;
+  if (!t || process.env.NODE_ENV !== 'test' || (process.stdin.isTTY && process.stdout.isTTY) || process.env.FACTORY_RUNNER === '1') return false;
   try {
     const want = testToken();
     return want.length === t.length && require('crypto').timingSafeEqual(Buffer.from(want), Buffer.from(t));
@@ -123,13 +143,28 @@ function readTty(question) {
   }
 }
 
-// The terminal path's typed confirmation: the user types `expected` (a job or lesson id).
-// Chat replies need none: the reply itself is the human's words.
-function confirmTyped(channel, expected, action) {
+// A short confirmation code: 4 characters from an alphabet without look-alikes (0/O, 1/I/L),
+// random per command (crypto), so nothing in the repo, the job or an earlier run predicts it.
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function confirmationCode(n = 4) {
+  const crypto = require('crypto');
+  let c = '';
+  for (let i = 0; i < n; i++) c += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
+  return c;
+}
+
+// The terminal path's typed confirmation: a fresh code is shown on the terminal device only
+// (never stdout/stderr, a file or an event) and the user types it back. `subject` (the job or
+// lesson id) and `action` only label the prompt. Chat replies need none: the reply itself is
+// the human's words.
+function confirmTyped(channel, subject, action) {
   if (channel !== 'tty') return;
-  const typed = testSeam() ? String(process.env.FACTORY_TEST_HUMAN_INPUT || '') : readTty(`Type ${expected} to ${action}: `);
-  if (typed.trim().toUpperCase() !== String(expected).toUpperCase()) {
-    fail(`Not confirmed: you typed "${typed.trim().slice(0, 40)}", not ${expected}. Nothing was done.`, 'not_confirmed');
+  const code = confirmationCode();
+  const typed = testSeam()
+    ? String(process.env.FACTORY_TEST_HUMAN_INPUT || '').replace(/\{code\}/gi, code)
+    : readTty(`To ${action} (${subject}), type the code ${code}: `);
+  if (typed.trim().replace(/\s+/g, '').toUpperCase() !== code) {
+    fail(`Not confirmed: that was not the code shown on your terminal. Nothing was done; run the command again (each run shows a new code).`, 'not_confirmed');
   }
 }
 
@@ -397,4 +432,4 @@ function applyReply(root, parsed, channel = 'chat') {
   }
 }
 
-module.exports = { snapshot, GATE_IDS, requireHumanChannel, confirmTyped, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };

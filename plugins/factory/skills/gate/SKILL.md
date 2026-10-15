@@ -22,7 +22,7 @@ Gate ids, hashes and God Eye are defined in the start skill's [glossary](../star
 Read the files in `docs` yourself and summarise faithfully — don't hide open critique items.
 
 ## Then
-If `factory next` gave a `notice` (chat replies aren't reaching the factory), show it once, above the line below: a chat `approve` would not be applied, and the notice says how to check the hooks and which command the user can run in their own terminal instead (it asks them to type the job id).
+If `factory next` gave a `notice` (chat replies aren't reaching the factory), show it once, above the line below: a chat `approve` would not be applied, and the notice says how to check the hooks and which command the user can run in their own terminal instead (it shows a short code on their terminal for them to type back; never run it for them).
 
 Example, gate H3 for a two-task plan:
 

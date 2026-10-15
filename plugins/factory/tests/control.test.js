@@ -229,7 +229,7 @@ test('human-only actions refuse the agent path', () => {
   for (const t of ['please continue', 'approve', 'what does the approve gate check in this repo for us today', 'hello']) assert.equal(human.nearMiss(t), null, t);
 });
 
-test('terminal human actions: a typed confirmation, no bypass, agent shells refused, one test-only seam', () => {
+test('terminal human actions: a random code shown on the terminal only, no bypass, agent shells refused, one test-only seam', () => {
   const root = F.makeRepo();
   const { spawnSync } = require('child_process');
   const human = require('../cli/core/human');
@@ -240,38 +240,87 @@ test('terminal human actions: a typed confirmation, no bypass, agent shells refu
     return JSON.parse(r.stdout);
   };
   const token = human.testToken();
+  const seam = (input) => ({ NODE_ENV: 'test', FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: input });
   const status = () => F.cli(root, ['job', 'show']).status;
   // without a terminal and without the seam: refused, as before
   assert.equal(cli(['cancel']).code, 'human_only');
-  assert.equal(cli(['cancel'], { FACTORY_TEST_HUMAN: 'guess', FACTORY_TEST_HUMAN_INPUT: J }).code, 'human_only', 'the seam needs the token');
-  assert.equal(cli(['cancel'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: J, FACTORY_RUNNER: '1' }).code, 'agent_not_allowed', 'never in a factory agent');
+  assert.equal(cli(['cancel'], { ...seam('{code}'), FACTORY_TEST_HUMAN: 'guess' }).code, 'human_only', 'the seam needs the token');
+  assert.equal(cli(['cancel'], { ...seam('{code}'), NODE_ENV: 'production' }).code, 'human_only', 'the seam needs NODE_ENV=test');
+  assert.equal(cli(['cancel'], { ...seam('{code}'), FACTORY_RUNNER: '1' }).code, 'agent_not_allowed', 'never in a factory agent');
   assert.equal(human.agentContext({ CLAUDECODE: '1' }), 'CLAUDECODE');
   assert.equal(human.agentContext({ FACTORY_RUNNER: '0' }), null);
-  assert.match(cli(['cancel'], { CLAUDECODE: '1' }).message, /belongs to an agent \(CLAUDECODE is set\)/);
-  // the wrong id typed: nothing happens; --yes is no bypass
-  const wrong = cli(['cancel', '--yes'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: 'y' });
+  // VS Code's agent terminals (AI_AGENT ≥ 1.124, COPILOT_AGENT ≥ 1.121), Copilot CLI's shell
+  for (const [k, v] of [['AI_AGENT', 'github_copilot_vscode_agent'], ['COPILOT_AGENT', '1'], ['VSCODE_AGENT_ZSH_FIXUPS', '1'], ['COPILOT_CLI', '1']]) {
+    assert.equal(human.agentContext({ [k]: v }), k);
+    assert.match(cli(['cancel'], { [k]: v }).message, new RegExp(`belongs to an agent \\(${k} is set\\)`));
+  }
+  assert.equal(human.agentContext({ TERM_PROGRAM: 'vscode', VSCODE_INJECTION: '1' }), null, 'your own VS Code terminal is not an agent');
+  // the job id is no confirmation any more (every agent knows it); --yes is no bypass
+  assert.equal(cli(['cancel'], seam(J)).code, 'not_confirmed');
+  const wrong = cli(['cancel', '--yes'], seam('y'));
   assert.equal(wrong.code, 'not_confirmed');
+  assert.match(wrong.message, /^Not confirmed: that was not the code shown on your terminal\. Nothing was done/, 'the refusal never shows the code');
   assert.equal(status(), 'active');
-  assert.equal(cli(['cancel'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: ` ${J.toLowerCase()} ` }).job, J, 'the id, case and spaces aside');
+  assert.equal(cli(['cancel'], seam(' {code} ')).job, J, 'the code shown, spaces aside');
   assert.equal(status(), 'cancelled');
-  // lessons are confirmed by their own id
+  // lessons too: the code, not the lesson id
   F.cli(root, ['lessons', 'add', '--text', 'Run the linter before review', '--scope', 'review']);
-  assert.equal(cli(['lessons', 'accept', 'L1'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: J }).code, 'not_confirmed');
-  assert.equal(cli(['lessons', 'accept', 'L1'], { FACTORY_TEST_HUMAN: token, FACTORY_TEST_HUMAN_INPUT: 'L1' }).lesson.status, 'accepted');
+  assert.equal(cli(['lessons', 'accept', 'L1'], seam('L1')).code, 'not_confirmed');
+  assert.equal(cli(['lessons', 'accept', 'L1'], seam('{code}')).lesson.status, 'accepted');
+  // codes are random: short, from the unambiguous alphabet, not repeating
+  const codes = new Set(Array.from({ length: 50 }, () => human.confirmationCode()));
+  assert.ok(codes.size > 45);
+  for (const c of codes) assert.match(c, /^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{4}$/);
   // chat replies need no confirmation: the reply is the human's own words
   const J2 = F.cli(root, ['job', 'new', '--title', 'y', '--type', 'bug', '--risk', 'low']).job;
   assert.match(F.reply(root, `abandon job ${J2}`).message, /abandoned/);
-  // a real terminal (util-linux script gives the command a pty and types our stdin into it)
-  const hasScript = spawnSync('script', ['--version'], { encoding: 'utf8' }).status === 0;
-  if (hasScript && process.platform === 'linux') {
+  // a real terminal: a pty (python's pty module) reads the code off the screen and types it
+  const py = spawnSync('python3', ['-c', 'import pty'], { encoding: 'utf8' }).status === 0;
+  if (py && process.platform !== 'win32') {
     const J3 = F.cli(root, ['job', 'new', '--title', 'z', '--type', 'bug', '--risk', 'low']).job;
-    const pty = (typed) => spawnSync('script', ['-qec', `node "${F.BIN}" cancel`, '/dev/null'], { cwd: root, input: `${typed}\n`, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '' }, timeout: 20000 });
-    const no = pty('J-9999');
-    assert.match(no.stdout, new RegExp(`Type ${J3} to cancel it: `));
-    assert.match(no.stdout, /not_confirmed/);
-    assert.equal(F.cli(root, ['job', 'show', '--job', J3]).status, 'active');
-    assert.match(pty(J3).stdout, new RegExp(`${J3} cancelled`));
+    const drive = path.join(root, '..', `pty-${J3}.py`);
+    fs.writeFileSync(drive, [
+      'import os, pty, re, sys, json',
+      'mode = sys.argv[1]',
+      'pid, fd = pty.fork()',
+      'if pid == 0:',
+      '    os.execvp(sys.argv[2], sys.argv[2:])',
+      'buf = b""',
+      'while True:',
+      '    try: chunk = os.read(fd, 1024)',
+      '    except OSError: break',
+      '    if not chunk: break',
+      '    buf += chunk',
+      '    m = re.search(rb"type the code ([A-Z0-9]{4}): ", buf)',
+      '    if m and b"\\x00sent" not in buf:',
+      '        reply = m.group(1) if mode == "right" else (b"J-0001" if mode == "jobid" else b"ZZZZ")',
+      '        os.write(fd, reply + b"\\n")',
+      '        buf += b"\\x00sent"',
+      'os.waitpid(pid, 0)',
+      'print(json.dumps(buf.decode("utf8", "replace")))',
+    ].join('\n'));
+    const term = (mode) => JSON.parse(spawnSync('python3', [drive, mode, 'node', F.BIN, 'cancel'], { cwd: root, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '' }, timeout: 20000 }).stdout);
+    for (const mode of ['wrong', 'jobid']) {
+      const out = term(mode);
+      assert.match(out, new RegExp(`To cancel it \\(${J3}\\), type the code [A-Z2-9]{4}: `));
+      assert.match(out, /not_confirmed/);
+      assert.equal(F.cli(root, ['job', 'show', '--job', J3]).status, 'active');
+    }
+    const ok = term('right');
+    const code = /type the code ([A-Z2-9]{4}): /.exec(ok)[1];
+    assert.match(ok, new RegExp(`${J3} cancelled`));
     assert.equal(F.cli(root, ['job', 'show', '--job', J3]).status, 'cancelled');
+    // the code went to the terminal only: no factory file or log holds it
+    const hits = spawnSync('grep', ['-rl', code, path.join(root, '.factory')], { encoding: 'utf8' }).stdout.trim();
+    assert.equal(hits, '', `the code is in ${hits}`);
+    // stderr never holds it (stdout must be the terminal itself, or the command is refused)
+    const J4 = F.cli(root, ['job', 'new', '--title', 'w', '--type', 'bug', '--risk', 'low']).job;
+    const out = path.join(root, '..', `out-${J4}.txt`);
+    const err = path.join(root, '..', `err-${J4}.txt`);
+    const shown = JSON.parse(spawnSync('python3', [drive, 'right', 'bash', '-c', `node "${F.BIN}" cancel --job ${J4} 2>"${err}"; echo done >"${out}"`], { cwd: root, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '' }, timeout: 20000 }).stdout);
+    const code4 = /type the code ([A-Z2-9]{4}): /.exec(shown)[1];
+    assert.equal(F.cli(root, ['job', 'show', '--job', J4]).status, 'cancelled');
+    for (const f of [out, err]) assert.ok(!fs.readFileSync(f, 'utf8').includes(code4), `${path.basename(f)} does not hold the code`);
   }
 });
 

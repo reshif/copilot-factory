@@ -752,7 +752,12 @@ function ownJobDir(jobId) {
   return new RegExp(`\\.factory[\\\\/]jobs[\\\\/]${jobId}(?![\\w-])(?![^\\s'"\`;|&)]*\\.\\.)`, 'g');
 }
 
+// The CLI's test-only human seam and the seal-secret override are for the test suite: a shell
+// command that sets them (bash, env, export, PowerShell $env:) is never an agent's business.
+const TEST_SEAM = /\bFACTORY_(TEST_HUMAN\w*|SECRET_FILE)\b/;
+
 function checkBash(root, cmd, policy, opts = {}) {
+  if (TEST_SEAM.test(String(cmd || ''))) return 'FACTORY_TEST_HUMAN and FACTORY_SECRET_FILE are the test suite\'s seam into human-only actions, never set from here. Human-only actions are the user\'s: their chat reply, or their own terminal.';
   const ctx = { root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [] };
   try {
     return walk(String(cmd || ''), ctx, 0);
@@ -767,7 +772,7 @@ function checkBash(root, cmd, policy, opts = {}) {
 // such a tool is its own harness's business.
 function checkUnknownCommand(root, cmd, policy, opts = {}) {
   const why = checkBash(root, cmd, policy, opts);
-  return why && /is a human-only action|is not for a factory agent|never through xargs/.test(why) ? why : null;
+  return why && /is a human-only action|is not for a factory agent|never through xargs|test suite's seam/.test(why) ? why : null;
 }
 
 // Files an agent writes may not carry code that reaches into factory internals: a string

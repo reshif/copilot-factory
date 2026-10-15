@@ -217,7 +217,7 @@ test('factory clarify split U-n <alias>: a wrong fold is undone (human-only), an
   const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !human.AGENT_ENV.some(([a]) => a === k)));
   const term = (args, env = {}) => JSON.parse(spawnSync('node', [F.BIN, ...args], { cwd: root, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '', ...env } }).stdout);
   assert.equal(term(['clarify', 'split', 'U-1', 'U-2']).code, 'human_only');
-  const r = term(['clarify', 'split', 'U-1', 'U-2'], { FACTORY_TEST_HUMAN: human.testToken() });
+  const r = term(['clarify', 'split', 'U-1', 'U-2'], { NODE_ENV: 'test', FACTORY_TEST_HUMAN: human.testToken() });
   assert.equal(r.issue, 'U-2', JSON.stringify(r));
   d = ledgerOf(root, J);
   const u2 = d.unknowns.find((u) => u.id === 'U-2');
