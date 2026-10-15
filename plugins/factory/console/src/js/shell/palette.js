@@ -2,7 +2,7 @@ const PAL = { items: [], sel: 0 };
 function palItems() {
   const items = [];
   const v = (label, view) => items.push({ k: 'view', label, sub: '', run: () => setView(view) });
-  v('Board', 'board'); v('Line map', 'lines'); v('Recipe map', 'plan'); v('The crew', 'crew');
+  v('Board', 'board'); v('Line map', 'lines'); v('Recipe map', 'plan'); v('The crew', 'crew'); v('Blueprint', 'blueprint');
   for (const m of [...MODELS.values()].sort(urgencyCmp)) items.push({ k: 'job', label: `${m.id} · ${m.job.title}`, sub: m.sum[1], run: () => openJob(m.id, { user: true }), m });
   BUCKETS.forEach(([b, name], i) => items.push({ k: 'filter', label: `${facetSet('status').has(b) ? 'Hide' : 'Show only'} ${name.toLowerCase()}`, sub: `${i + 1}`, run: () => toggleFacet('status', b) }));
   for (const g of Object.keys(GROUPS)) items.push({ k: 'group', label: `Group by ${g}`, sub: UI.group === g ? 'current' : '', run: () => { UI.group = g; store.set('fc-group', g); $('#groupby').value = g; refreshFloor(); setView('board'); } });
@@ -78,8 +78,10 @@ function bindKeys() {
       if (e.key === 'l') { e.preventDefault(); setView('lines'); return; }
       if (e.key === 'm') { e.preventDefault(); setView('plan'); return; }
       if (e.key === 'c') { e.preventDefault(); setView('crew'); return; }
+      if (e.key === 'p') { e.preventDefault(); setView('blueprint'); return; }
     }
     if (e.key === 'g') { gPending = Date.now(); return; }
+    if (UI.view === 'blueprint' && e.key !== '?') return; // the drawing has its own keys: / find, Esc closes, arrows switch sheets
     const inCanvas = e.target && e.target.closest && e.target.closest('#street, #s-range, #canvas, #lm-scroll');
     if (e.key === '/') { e.preventDefault(); $('#q').focus(); $('#q').select(); return; }
     if (e.key === '?') { e.preventDefault(); $('#keys').showModal(); return; }

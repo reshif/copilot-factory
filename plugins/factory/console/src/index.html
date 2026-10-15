@@ -21,6 +21,7 @@
       <button type="button" role="tab" id="nav-lines" data-view="lines" aria-selected="false">Line map</button>
       <button type="button" role="tab" id="nav-plan" data-view="plan" aria-selected="false">Recipe map</button>
       <button type="button" role="tab" id="nav-crew" data-view="crew" aria-selected="false">Crew</button>
+      <button type="button" role="tab" id="nav-blueprint" data-view="blueprint" aria-selected="false" title="The factory as an engineering drawing set: the line, a projection, the matrix, the schedule, the parts list and the notes">Blueprint</button>
     </nav>
     <span class="grow"></span>
     <div class="omni">
@@ -182,6 +183,11 @@
         <p class="lede">Nineteen agents, each with one role and its own tool limits. Workflows start them by agent type, so a reviewer can't write and a builder can only touch its task's paths. The guard hook enforces the rest.</p>
         <div class="crew" id="crew"></div>
       </section>
+
+      <!-- BLUEPRINT: the drawing set (js/blueprint/), mounted the first time it is opened -->
+      <section id="view-blueprint" class="bpview" aria-label="Blueprint" hidden>
+        <div class="dx-root dx-blueprint" id="bp-root"></div>
+      </section>
     </main>
 
     <aside class="pane wire" id="wire" aria-label="The wire: every event, newest first">
@@ -214,7 +220,8 @@
       <dt><kbd>⌘</kbd><kbd>K</kbd></dt><dd>command palette: jump to a job, switch view, toggle filters</dd>
       <dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>toggle the tiles: your turn · running · parked · stopped · done</dd>
       <dt><kbd>g</kbd> <kbd>w</kbd></dt><dd>next job waiting for you</dd>
-      <dt><kbd>g</kbd> <kbd>b</kbd> / <kbd>l</kbd></dt><dd>board / line map</dd>
+      <dt><kbd>g</kbd> <kbd>b</kbd> / <kbd>l</kbd> / <kbd>m</kbd> / <kbd>c</kbd> / <kbd>p</kbd></dt><dd>board / line map / recipe map / crew / blueprint</dd>
+      <dt><kbd>/</kbd> <kbd>esc</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>on the blueprint: find a job, close a section, switch sheets (on a sheet tab)</dd>
       <dt><kbd>space</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>on a job's line: play, previous and next event</dd>
       <dt><kbd>?</kbd></dt><dd>this sheet</dd>
     </dl>

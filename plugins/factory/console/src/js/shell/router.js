@@ -10,6 +10,7 @@ function setView(v, { push = true } = {}) {
   $('#view-job').hidden = v !== 'job';
   $('#view-plan').hidden = v !== 'plan';
   $('#view-crew').hidden = v !== 'crew';
+  $('#view-blueprint').hidden = v !== 'blueprint';
   if (v !== 'plan') stopRun();
   if (v !== 'job') stopPlay();
   if (v === 'plan') {
@@ -20,6 +21,7 @@ function setView(v, { push = true } = {}) {
   if (v === 'lines') { LM.fitted = false; renderLines(); }
   if (v === 'board') { renderBoard(); if (UI.cursor) { const r = ROWS.get(UI.cursor); if (r) r.el.scrollIntoView({ block: 'nearest' }); } }
   if (v === 'job') renderJList();
+  if (v === 'blueprint') showBlueprint();
   if (UI.wireJob) renderWire();
   if (push) saveHash();
 }
@@ -52,13 +54,14 @@ function readHash() {
   if (/^J-\d+$/.test(raw)) return { view: 'job', job: raw };
   if (raw === 'map' || raw === 'plan') return { view: 'plan' };
   if (raw === 'crew') return { view: 'crew' };
+  if (raw === 'blueprint') return { view: 'blueprint' };
   const [pathPart, qs] = raw.split('?');
   const seg = pathPart.split('/').filter(Boolean);
   const p = new URLSearchParams(qs || '');
   const out = { q: p.get('q') || '', g: p.get('g'), s: p.get('s'), c: p.get('c'), f: p.get('f') };
   if (seg[0] === 'job' && seg[1]) { out.view = 'job'; out.job = seg[1]; out.tab = seg[2] || 'line'; }
   else if (seg[0] === 'map' || seg[0] === 'plan') out.view = 'plan';
-  else if (['board', 'lines', 'crew'].includes(seg[0])) out.view = seg[0];
+  else if (['board', 'lines', 'crew', 'blueprint'].includes(seg[0])) out.view = seg[0];
   return out;
 }
 function applyHash(h) {

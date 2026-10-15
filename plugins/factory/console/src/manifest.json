@@ -10,6 +10,8 @@
     "styles/job.css",
     "styles/line-map.css",
     "styles/overlays.css",
+    "styles/blueprint.css",
+    "styles/blueprint-host.css",
     "styles/narrow.css"
   ],
   "scripts": [
@@ -52,6 +54,11 @@
     "js/shell/ingest.js",
     "js/shell/live.js",
     "js/views/crew.js",
+    "js/blueprint/host.js",
+    "js/blueprint/words.js",
+    "js/blueprint/epicpick.js",
+    "js/blueprint/adapter.js",
+    "js/blueprint/blueprint.js",
     "js/boot.js"
   ]
 }

@@ -20,6 +20,7 @@ function ingest(next, { live = false } = {}) {
   renderCrew();
   refreshFloor({ live });
   renderWire({ live });
+  updateBlueprint();
   if (UI.view === 'job' && LV.job) {
     const job = DATA.jobs.find((j) => j.id === LV.job.id);
     if (!job) { setView('board'); return; }
