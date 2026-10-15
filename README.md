@@ -6,10 +6,10 @@ This is a port of [claude-factory](https://github.com/reshif/claude-factory) (th
 
 | Plugin | Version | What it is |
 |---|---|---|
-| `factory` | 0.3.1 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, the custom agents (one per role), recipes, templates and the console |
-| `factory-inspector` | 0.3.1 | An independent auditor: checks each job against the rulebook it declared and the factory's health (its rule table is in the inspector README) |
+| `factory` | 0.4.0 | The orchestrator: skills, hooks, the `factory` CLI with `factory run`, workflows, the custom agents (one per role), recipes, templates and the console |
+| `factory-inspector` | 0.4.0 | An independent auditor: checks each job against the rulebook it declared and the factory's health (its rule table is in the inspector README) |
 
-0.3.0 adds **grounded intent**: clarify researches the repo and the web before it asks you anything (see [How a job runs](#grounded-intent-research-before-questions)). 0.3.1 makes the hooks work in VS Code's Local harness as well as the Copilot one, says when chat replies aren't reaching the factory, asks you to type the job id when you approve from a terminal, and runs the distill lesson-writer through `factory distill write` (see [Use it in VS Code](#use-it-in-vs-code)).
+0.3.0 adds **grounded intent**: clarify researches the repo and the web before it asks you anything (see [How a job runs](#grounded-intent-research-before-questions)). 0.3.1 makes the hooks work in VS Code's Local harness as well as the Copilot one, says when chat replies aren't reaching the factory, asks you to type the job id when you approve from a terminal, and runs the distill lesson-writer through `factory distill write` (see [Use it in VS Code](#use-it-in-vs-code)). 0.4.0 raises the quality bar of every skill and agent: least-privilege per-role tool approval in `factory run`, an untrusted-content rule, role- and tool-aware briefs, a final-message recipe and golden example per agent, a finding-verifier `unverifiable` verdict, trigger-first skill descriptions, and an evaluation pipeline (see [Quality and evals](#quality-and-evals)).
 
 The version line started again at 0.1.0 for Copilot. It is separate from claude-factory's (0.10.0 / 0.2.0 at the time of the port).
 
