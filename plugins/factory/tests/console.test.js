@@ -242,3 +242,75 @@ test('console: clarify research (findings with source and verdict, assumptions, 
   const table = html.slice(html.indexOf('const AGENTS = {'), html.indexOf('const RECIPES'));
   for (const a of agents) assert.ok(table.includes(`'${a}':`), `Crew lists ${a}`);
 });
+
+test('console page: console.html is built from console/src (node console/build.js) and is current', () => {
+  const { build } = require('../console/build');
+  const built = build();
+  const shipped = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
+  assert.ok(built === shipped, 'console.html is stale: run node console/build.js');
+  const manifest = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'console', 'src', 'manifest.json'), 'utf8'));
+  const listed = new Set([...manifest.styles, ...manifest.scripts]);
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const src = path.join(F.PLUGIN, 'console', 'src');
+  for (const f of walk(src).map((x) => path.relative(src, x).split(path.sep).join('/'))) {
+    if (/\.(css|js)$/.test(f)) assert.ok(listed.has(f), `${f} is in src/manifest.json`);
+  }
+});
+
+test('console page: the one script parses, and the Blueprint view is in it', () => {
+  const vm = require('vm');
+  const html = fs.readFileSync(path.join(F.PLUGIN, 'console', 'console.html'), 'utf8');
+  const js = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
+  assert.doesNotThrow(() => new vm.Script(js), 'console.html has a syntax error');
+  assert.match(html, /id="nav-blueprint" data-view="blueprint"/);
+  assert.match(html, /<section id="view-blueprint"/);
+  assert.match(html, /APP\.displays\.register\(\{\s*id: "blueprint"/);
+});
+
+// the Blueprint reads a walk through states; toDisplay folds Copilot's timeline into one
+const blueprintAdapter = () => {
+  const vm = require('vm');
+  const src = fs.readFileSync(path.join(F.PLUGIN, 'console', 'src', 'js', 'blueprint', 'adapter.js'), 'utf8');
+  const ctx = {};
+  vm.runInNewContext(`${src}\nthis.toDisplay = toDisplay;`, ctx);
+  return (data) => JSON.parse(JSON.stringify(ctx.toDisplay(data))); // plain objects of this realm, for deepEqual
+};
+const at = (m) => new Date(Date.UTC(2030, 0, 1, 9, m)).toISOString();
+const route = (m, step) => ({ t: at(m), type: 'route', step, raw_step: step, rule: 'r' });
+const job = (id, extra) => ({ id, title: `job ${id}`, work_type: 'feature', risk: 'low', status: 'active', created_at: at(0), updated_at: at(50), tasks: [], lessons: [], steps: [], timeline: [], ...extra });
+
+test('console blueprint: gates wait on you with the reply the CLI parses', () => {
+  const toDisplay = blueprintAdapter();
+  const d = toDisplay({ generated_at: at(60), project: 'p', jobs: [
+    job('J-0001', { pending_gate: { id: 'H1', at: at(5) }, timeline: [route(1, 'clarify'), route(5, 'H1')] }),
+    job('J-0002', { pending_gate: { id: 'HS', at: at(9) }, timeline: [route(1, 'clarify'), route(3, 'realize'), route(5, 'prove'), route(7, 'challenge'), route(8, 'ship'), route(9, 'HS')] }),
+  ] });
+  const [a, b] = d.jobs;
+  assert.equal(a.state, 'awaiting_intent_approval');
+  assert.deepEqual(a.history.map((h) => h.to), ['intent', 'awaiting_intent_approval']);
+  assert.equal(a.waiting_on.who, 'you');
+  assert.equal(a.waiting_on.reply.split(' · ')[0], 'approve J-0001 H1');
+  assert.equal(b.state, 'awaiting_ship_approval');
+  assert.equal(b.waiting_on.gate, 'HS');
+  for (const s of d.stages.concat(d.side_lanes)) for (const x of s.states) assert.ok(d.meaning[x], `${x} has a meaning`);
+});
+
+test('console blueprint: park and resume, a failed proof sent back to Build, stops and closes', () => {
+  const toDisplay = blueprintAdapter();
+  const d = toDisplay({ generated_at: at(60), project: 'p', jobs: [
+    job('J-0001', { timeline: [route(1, 'decide'), { t: at(2), type: 'park', text: 'waiting on infra', from: 'manual' }, { t: at(9), type: 'human', action: 'resume' }, route(10, 'H2')], pending_gate: { id: 'H2', at: at(10) } }),
+    job('J-0002', { timeline: [route(1, 'realize'), route(2, 'prove'), { t: at(3), type: 'result', raw_step: 'prove', ok: false, acs: { 'AC-1': 'failed' } }, route(4, 'realize'), route(5, 'prove')] }),
+    job('J-0003', { status: 'cancelled', timeline: [route(1, 'clarify'), { t: at(4), type: 'stopped', text: 'not needed' }] }),
+    job('J-0004', { status: 'closed', closed_at: at(30), timeline: [route(1, 'clarify'), route(20, 'distill')], tasks: [{ id: 'T1', objective: 'o', depends_on: [], attempts: 1, outcome: 'done', pass: true }] }),
+    job('J-0005', { epic: true, timeline: [route(1, 'clarify')] }),
+  ] });
+  const by = Object.fromEntries(d.jobs.map((j) => [j.id, j]));
+  assert.deepEqual(by['J-0001'].history.map((h) => h.to), ['designing', 'parked', 'designing', 'awaiting_design_approval'], 'resume goes back where it parked');
+  assert.equal(by['J-0002'].rework_loops, 1, 'verifying → building is one trip back');
+  assert.deepEqual(by['J-0002'].criteria, [{ id: 'AC-1', text: '', status: 'failed', tasks: [] }]);
+  assert.equal(by['J-0003'].state, 'cancelled');
+  assert.equal(by['J-0003'].waiting_on.who, 'nobody');
+  assert.equal(by['J-0004'].state, 'closed');
+  assert.equal(by['J-0004'].tasks[0].status, 'passing');
+  assert.ok(!by['J-0005'], 'an epic is not a job on the line');
+});

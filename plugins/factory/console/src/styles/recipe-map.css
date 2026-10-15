@@ -1,0 +1,95 @@
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 18px; margin: 16px 0 10px; }
+.picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.picker button { border: 1px solid var(--rule); background: var(--sheet); padding: 5px 11px; border-radius: 999px; cursor: pointer; font: 500 12.5px/1.3 var(--mono); }
+.picker button[aria-pressed="true"] { border-color: var(--track); background: var(--track); color: var(--sheet); }
+.tools-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.tools-row button { border: 1px solid var(--rule); background: var(--sheet); padding: 6px 11px; border-radius: 2px; cursor: pointer; font-weight: 500; min-width: 38px; }
+.tools-row button.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.recipe-note { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+.plant { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: stretch; }
+@media (max-width: 1000px) { .plant { grid-template-columns: minmax(0, 1fr); } }
+.canvas { position: relative; height: clamp(460px, 74vh, 860px); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; background: var(--paper);
+  background-image: radial-gradient(var(--rule) 1px, transparent 1px); background-size: 22px 22px; touch-action: pan-y; cursor: grab; }
+.canvas.dragging { cursor: grabbing; }
+.canvas svg { display: block; width: 100%; height: 100%; }
+.hint { position: absolute; left: 10px; top: 8px; font: 500 11px var(--mono); color: var(--muted); background: var(--sheet); padding: 3px 7px; border-radius: 2px; border: 1px solid var(--rule); pointer-events: none; }
+.nowcap { position: absolute; right: 10px; top: 8px; font: 600 12.5px var(--body); color: var(--paper); background: var(--ink); padding: 5px 10px; border-radius: 3px; pointer-events: none; max-width: calc(100% - 20px); }
+.side { padding: 16px; display: grid; gap: 12px; align-content: start; max-height: clamp(460px, 74vh, 860px); overflow-y: auto; }
+.side h3 { font: 600 18px/1.3 var(--body); }
+.side p { margin: 0; font-size: 14px; color: var(--muted); }
+.kindtag { display: inline-block; font: 500 10.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 6px; border-radius: 2px; border: 1px solid currentColor; }
+.k-workflow { color: var(--track); } .k-gate, .k-you { color: var(--signal); } .k-cli { color: var(--live); } .k-skill { color: var(--skill); } .k-artifact, .k-stage { color: var(--muted); } .k-agent { color: var(--track); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule); background: var(--paper); padding: 2px 8px; border-radius: 999px; font: 500 12px/1.6 var(--mono); }
+.chip.agent { border-color: var(--track); color: var(--track); background: var(--track-soft); }
+.chip.agent.read { border-style: dashed; }
+.chip.cli { border-color: var(--live); color: var(--live); background: var(--live-soft); }
+.chip.you { border-color: var(--signal); color: var(--signal); background: var(--signal-soft); }
+.chip.skill { border-color: var(--skill); color: var(--skill); background: var(--skill-soft); }
+.chip.off { opacity: 0.45; }
+.agentrow { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 3px; background: var(--paper); }
+.agentrow b { font: 500 13px var(--mono); }
+.agentrow span { font-size: 12.5px; color: var(--muted); }
+.agentrow .t { font: 500 11px var(--mono); color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12.5px; color: var(--muted); margin-top: 10px; align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 10px; border-radius: 2px; border: 1.5px solid; display: inline-block; }
+svg text { font-family: var(--body); }
+.zone rect.bay { fill: var(--bay); stroke: var(--rule); }
+.zone.dim rect.bay { opacity: 0.45; }
+.zone.dim text { opacity: 0.5; }
+.zone .num { font: 800 30px var(--display); fill: var(--muted); opacity: .55; }
+.zone .zname { font: 800 22px var(--display); fill: var(--ink); text-transform: uppercase; letter-spacing: 0.02em; }
+.zone .zsub { font: 500 10.5px var(--mono); fill: var(--muted); }
+.zone .hit { fill: transparent; cursor: pointer; }
+.node { cursor: pointer; }
+.node .box { fill: var(--sheet); stroke-width: 1.5; }
+.node.workflow .box { stroke: var(--track); }
+.node.cli .box { stroke: var(--live); }
+.node.skill .box { stroke: var(--skill); }
+.node.you .box { stroke: var(--signal); fill: var(--signal-soft); }
+.node.artifact .box { stroke: var(--muted); stroke-dasharray: 4 3; fill: var(--paper); }
+.node.agentnode .box { stroke: var(--track); }
+.node.gate .box { fill: transparent; stroke: transparent; }
+.node .type { font: 500 9.5px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+.node.workflow .type, .node.agentnode .type { fill: var(--track); } .node.cli .type { fill: var(--live); } .node.skill .type { fill: var(--skill); }
+.node.you .type, .node.gate .type { fill: var(--signal); } .node.artifact .type { fill: var(--muted); }
+.node .title { font: 600 13px var(--body); fill: var(--ink); }
+.node .sub { font: 400 11.5px var(--body); fill: var(--muted); }
+.node .diamond { fill: var(--signal-soft); stroke: var(--signal); stroke-width: 2; }
+.node:hover .box, .node:focus-visible .box { stroke-width: 2.5; }
+.node.gate:hover .box, .node.gate:focus-visible .box { stroke: var(--signal); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.node:focus { outline: none; }
+.node.sel .box, .node.sel .diamond { stroke: var(--live); stroke-width: 3; stroke-dasharray: none; }
+.node.dim { opacity: 0.25; }
+.node.token-here .box, .node.token-here .diamond { stroke: var(--live); stroke-width: 3; stroke-dasharray: none; }
+.pill rect { stroke-width: 1.2; }
+.pill.agent rect { fill: var(--track-soft); stroke: var(--track); }
+.pill.agent.read rect { stroke-dasharray: 3 2; }
+.pill.cli rect { fill: var(--live-soft); stroke: var(--live); }
+.pill.you rect { fill: var(--signal-soft); stroke: var(--signal); }
+.pill text { font: 500 10.5px var(--mono); }
+.pill.agent text { fill: var(--track); } .pill.cli text { fill: var(--live); } .pill.you text { fill: var(--signal); }
+.pill.off { opacity: 0.4; }
+.pill.off text { text-decoration: line-through; }
+.bus { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+.edge { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.edge.loop { stroke: var(--stop); stroke-dasharray: 6 4; }
+.edge.human { stroke: var(--signal); stroke-dasharray: 5 4; }
+.edge.flow { stroke: var(--ink); stroke-width: 2.4; }
+.edge.dim, .wire.dim { opacity: 0.18; }
+.edge-g.dim { opacity: 0.18; }
+.elabel { font: 500 10.5px var(--mono); }
+.elabel.loop { fill: var(--stop); } .elabel.human { fill: var(--signal); } .elabel.plain { fill: var(--muted); }
+.elabel-bg { fill: var(--paper); }
+.rail rect.band { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.5; }
+.rail .rname { font: 800 20px var(--display); fill: var(--ink); text-transform: uppercase; }
+.rail .rsub { font: 400 12px var(--body); fill: var(--muted); }
+.rail .tag rect { fill: var(--paper); stroke: var(--rule); }
+.rail .tag text { font: 500 11px var(--mono); fill: var(--ink); }
+.rail.enf rect.band { stroke: var(--stop); }
+.wire { stroke: var(--ink); stroke-dasharray: 2 4; stroke-width: 1.2; }
+.token circle.core { fill: var(--live); stroke: var(--sheet); stroke-width: 2; }
+.token circle.halo { fill: var(--live); opacity: 0.22; }
+
+/* ---------- crew */

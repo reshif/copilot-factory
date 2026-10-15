@@ -1,0 +1,6 @@
+/* ---------- blueprint view: the drawing set fills the page under the header; it has its own title block, so
+   the KPI housings, rails and the footer step aside. Everything inside is styled by blueprint.css (.dx-blueprint). */
+.app[data-view="blueprint"] .kpis, .app[data-view="blueprint"] .facets, .app[data-view="blueprint"] .wire, .app[data-view="blueprint"] .foot2, .app[data-view="blueprint"] .mtabs { display: none; }
+.app[data-view="blueprint"] .floor { grid-template-columns: minmax(0, 1fr); }
+.app[data-view="blueprint"] .mainp { padding: 0; overflow: visible; }
+.bpview .dx-root { min-height: 0; }
