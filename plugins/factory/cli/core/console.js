@@ -271,6 +271,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       }
       if (e.step === 'prove') item.acs = d.acs || {};
       if (e.step === 'clarify' && (d.categories || d.held)) Object.assign(item, { categories: d.categories || [], held: num(d.held), question_ids: d.question_ids || [] });
+      if (outcome === 'ask') item.questions = num(d.questions);
       if (e.step === 'clarify' && d.research) item.research = researchView(d.research, intentRounds[d.round], idata);
       push(item);
     } else if (e.kind === 'agents') {

@@ -318,6 +318,52 @@ test('console blueprint: gates wait on you with the reply the CLI parses', () =>
   for (const s of d.stages.concat(d.side_lanes)) for (const x of s.states) assert.ok(d.meaning[x], `${x} has a meaning`);
 });
 
+// clarify asked questions (a result with outcome 'ask'): the job waits on your answers, as the Board's "Your turn · Clarify"
+const ask = (m, ids) => ({ t: at(m), type: 'result', step: 'clarify', raw_step: 'clarify', ok: false, outcome: 'ask', questions: ids.length, question_ids: ids, text: `${ids.length} question(s) for you (scope)` });
+test('console blueprint: clarify waiting on your answers is your turn (Q), and your answers move it back to clarify', () => {
+  const toDisplay = blueprintAdapter();
+  const d = toDisplay({ generated_at: at(60), project: 'p', jobs: [
+    job('J-0001', { timeline: [route(1, 'clarify'), ask(4, ['Q-1', 'Q-2', 'Q-3'])] }),
+    job('J-0002', { timeline: [route(1, 'clarify'), ask(4, ['Q-1', 'Q-2', 'Q-3']), route(9, 'clarify'), ask(12, ['Q-4']), route(20, 'clarify')] }),
+    job('J-0003', { timeline: [route(1, 'clarify'), { t: at(4), type: 'result', step: 'clarify', raw_step: 'clarify', ok: false, outcome: 'ask', text: '2 question(s) for you (intent)' }] }),
+  ] });
+  const [a, b, c] = d.jobs;
+  assert.equal(a.state, 'awaiting_answers');
+  assert.ok(d.stages.find((s) => s.key === 'intent').states.includes('awaiting_answers'), 'at the Contract station');
+  assert.deepEqual(a.history.map((h) => [h.to, h.by, h.reason]), [['intent', 'router', 'rule r'], ['awaiting_answers', 'router', 'clarify asked 3 question(s)']]);
+  assert.equal(a.waiting_on.who, 'you');
+  assert.equal(a.waiting_on.gate, 'Q');
+  assert.equal(a.waiting_on.reply, 'answer Q-1, Q-2, Q-3 in chat · change A-n <value> · drop A-n');
+  assert.ok(a.waiting_on.plain, 'the answers are your own words, not a command to copy');
+  assert.equal(b.state, 'intent', 'the next clarify route takes it back to clarify');
+  assert.deepEqual(b.history.slice(1).map((h) => [h.from, h.to, h.by, h.reason]), [
+    ['intent', 'awaiting_answers', 'router', 'clarify asked 3 question(s)'], ['awaiting_answers', 'intent', 'you', 'you answered'],
+    ['intent', 'awaiting_answers', 'router', 'clarify asked 1 question(s)'], ['awaiting_answers', 'intent', 'you', 'you answered']]);
+  assert.equal(b.waiting_on.who, 'agent');
+  assert.equal(c.history[1].reason, 'clarify asked 2 question(s)', 'the count from the result text when the ids are missing');
+  assert.equal(c.waiting_on.reply.split(' · ')[0], 'answer the questions in chat');
+});
+
+test('console blueprint: "Your turn" counts the same jobs as the Board, clarify questions included', () => {
+  const vm = require('vm');
+  const src = (f) => fs.readFileSync(path.join(F.PLUGIN, 'console', 'src', 'js', ...f.split('/')), 'utf8');
+  const ctx = { localStorage: { getItem: () => null }, stepName: (id) => id };
+  const shell = src('shell/state.js');
+  const bucketOf = shell.slice(shell.indexOf('function bucketOf('), shell.indexOf('\n}\n', shell.indexOf('function bucketOf(')) + 3);
+  vm.runInNewContext(`${src('job-line/fold.js')}\n${src('job-line/state.js')}\n${bucketOf}\nthis.turn = (j) => { const S = finalState(j); return bucketOf(j, jobSummary(j, S)) === 'turn'; };`, ctx);
+  const steps = [{ id: 'request', stage: 'request' }, { id: 'clarify', stage: 'intent' }, { id: 'H1', stage: 'intent', human: true }, { id: 'decide', stage: 'design' }];
+  const jobs = [
+    job('J-0001', { steps, timeline: [route(1, 'clarify'), ask(4, ['Q-1'])] }),
+    job('J-0002', { steps, timeline: [route(1, 'clarify'), ask(4, ['Q-1']), route(9, 'clarify')] }),
+    job('J-0003', { steps, pending_gate: { id: 'H1', at: at(5) }, timeline: [route(1, 'clarify'), route(5, 'H1')] }),
+    job('J-0004', { steps, timeline: [route(1, 'clarify'), route(5, 'H1'), { t: at(6), type: 'human', action: 'approve', gate: 'H1', step: 'H1' }, route(7, 'decide')] }),
+  ];
+  const board = jobs.filter((j) => ctx.turn(j)).map((j) => j.id);
+  const bp = blueprintAdapter()({ generated_at: at(60), project: 'p', jobs }).jobs.filter((j) => j.waiting_on.who === 'you').map((j) => j.id);
+  assert.deepEqual(board, ['J-0001', 'J-0003']);
+  assert.deepEqual(bp, board);
+});
+
 test('console blueprint: park and resume, a failed proof sent back to Build, stops and closes', () => {
   const toDisplay = blueprintAdapter();
   const d = toDisplay({ generated_at: at(60), project: 'p', jobs: [

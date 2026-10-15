@@ -21,6 +21,8 @@
 APP.words = (function () {
   // The decisions only a person makes. `short` finishes "Waiting for you: ...".
   var GATES = {
+    // Q is not a recipe gate: clarify asked you questions and waits on your answers (the Board's "Your turn · Clarify").
+    Q: { title: "Answer clarify's questions", short: "questions", tip: "Clarify asked what research could not settle; answer in chat (a question you skip takes its default), or reply change A-n <value> / drop A-n to override an assumption. Then clarify runs its next round." },
     H1: { title: "Approve the contract", short: "contract", tip: "Agree that the contract and its numbered criteria describe what you want (H1 · contract)." },
     H2: { title: "Approve the design", short: "design", tip: "Agree with the approach, written as a design record." },
     H3: { title: "Approve the plan", short: "plan", tip: "Agree with the tasks; approving it starts the build." },
@@ -37,7 +39,7 @@ APP.words = (function () {
 
   // Every job state in schemas/state-machine.json and epic state in schemas/epic-state-machine.json.
   var STATES = {
-    received: "Received", intent: "Writing the contract", awaiting_intent_approval: "Waiting for you: contract",
+    received: "Received", intent: "Writing the contract", awaiting_answers: "Waiting for you: questions", awaiting_intent_approval: "Waiting for you: contract",
     designing: "Designing", awaiting_design_approval: "Waiting for you: design",
     awaiting_findings_approval: "Waiting for you: findings", planning: "Planning",
     awaiting_plan_approval: "Waiting for you: plan", awaiting_ship_approval: "Waiting for you: ship", building: "Building", integrating: "Combining the tasks",

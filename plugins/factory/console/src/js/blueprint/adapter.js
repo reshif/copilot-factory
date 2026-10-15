@@ -6,7 +6,7 @@
 // same DATA every other view reads. Nothing here goes back to the CLI.
 const BP_STAGES = [
   { key: 'intake', label: 'Intake', states: ['received'] },
-  { key: 'intent', label: 'Contract', states: ['intent', 'awaiting_intent_approval'] },
+  { key: 'intent', label: 'Contract', states: ['intent', 'awaiting_answers', 'awaiting_intent_approval'] },
   { key: 'design', label: 'Design', states: ['designing', 'awaiting_design_approval', 'awaiting_findings_approval'] },
   { key: 'plan', label: 'Plan', states: ['planning', 'awaiting_plan_approval'] },
   { key: 'build', label: 'Build', states: ['building', 'integrating'] },
@@ -29,9 +29,12 @@ const BP_STEP_STATE = {
   ship: 'ready_to_ship', HS: 'awaiting_ship_approval', H4: 'pr_open', post_merge_challenge: 'post_merge_review', distill: 'learning', close: 'learning',
   amend: 'amending', A: 'awaiting_amendment_approval',
 };
-const BP_GATE_OF = { awaiting_intent_approval: 'H1', awaiting_design_approval: 'H2', awaiting_findings_approval: 'HF', awaiting_plan_approval: 'H3', awaiting_ship_approval: 'HS', awaiting_amendment_approval: 'A', pr_open: 'H4', parked: 'P' };
+// awaiting_answers: clarify asked you questions (a result with outcome 'ask'). Not a recipe gate, but the job waits on
+// you just the same, so the Blueprint treats it as one, under the pseudo-gate id Q (the Board says "Your turn · Clarify").
+const BP_GATE_OF = { awaiting_answers: 'Q', awaiting_intent_approval: 'H1', awaiting_design_approval: 'H2', awaiting_findings_approval: 'HF', awaiting_plan_approval: 'H3', awaiting_ship_approval: 'HS', awaiting_amendment_approval: 'A', pr_open: 'H4', parked: 'P' };
 const BP_MEANING = {
   received: 'the request is in; the router picks the first step', intent: 'clarify drafts the contract and asks only what the repo cannot answer',
+  awaiting_answers: 'you answer clarify\'s questions in chat; then clarify runs its next round',
   awaiting_intent_approval: 'you approve the contract (H1)', designing: 'ground and decide: sourced facts, then a design record',
   awaiting_design_approval: 'you approve the design (H2)', awaiting_findings_approval: 'you accept the findings (HF)',
   planning: 'decompose writes the task waves', awaiting_plan_approval: 'you approve the plan (H3)', building: 'builders work in their own worktrees, testers verify each task',
@@ -56,15 +59,21 @@ function bpHistory(job) {
       if (cur === 'parked') parkedFrom = null;
       let to = BP_STEP_STATE[step] || cur;
       if (cur === 'merged' && step === 'H4') to = cur; // the CI re-verify of a merge already recorded belongs to the merge
+      // clarify routed again after asking you: your answers are what moved it on
+      if (cur === 'awaiting_answers' && step === 'clarify') { decided = null; go(it.t, 'intent', 'you', 'you answered'); continue; }
       if (decided && BP_GATE_OF[cur] && to !== cur) { go(it.t, to, 'you', decided); decided = null; continue; }
       go(it.t, to, 'router', it.reason || (it.rule ? `rule ${it.rule}` : ''));
     } else if (it.type === 'human' && (it.action === 'approve' || it.action === 'deny') && BP_GATE_OF[cur]) {
       const g = it.gate || BP_GATE_OF[cur];
       decided = it.action === 'approve' ? `you approved ${g}${it.via && it.via !== 'chat' ? ` (${it.via})` : ''}` : `you asked for changes at ${g}${it.reason ? `: ${it.reason}` : ''}`;
+    } else if (it.type === 'result' && it.outcome === 'ask' && (it.step || it.raw_step) === 'clarify' && !BP_GATE_OF[cur] && cur !== 'closed') {
+      const n = it.questions || (it.question_ids || []).length || Number((/^(\d+) question/.exec(it.text || '') || [])[1]) || 0;
+      go(it.t, 'awaiting_answers', 'router', n ? `clarify asked ${n} question(s)` : 'clarify asked you questions');
     } else if (it.type === 'park') {
       parkedFrom = cur; go(it.t, 'parked', it.from === 'manual' ? 'you' : 'router', it.text);
     } else if (it.type === 'human' && it.action === 'resume' && cur === 'parked') {
-      go(it.t, parkedFrom || 'received', 'you', 'you resumed the job'); parkedFrom = null;
+      // resumed while clarify's questions were open: clarify runs again (the Board shows it running too)
+      go(it.t, parkedFrom === 'awaiting_answers' ? 'intent' : parkedFrom || 'received', 'you', 'you resumed the job'); parkedFrom = null;
     } else if (it.type === 'human' && it.action === 'merged') {
       go(it.t, 'merged', 'you', `you merged${it.commit ? ` ${it.commit}` : ''}`);
     } else if (it.type === 'amend' && it.phase === 'start') {
@@ -158,11 +167,22 @@ function bpActivity(job, hist) {
   return out;
 }
 
+// the ids of the questions in clarify's last result that asked (Q-n), when the CLI recorded them
+function bpQuestionIds(job) {
+  const ask = (job.timeline || []).filter((t) => t.type === 'result' && t.outcome === 'ask').pop();
+  return ask && Array.isArray(ask.question_ids) ? ask.question_ids.map(String) : [];
+}
+
 function bpWaiting(job, state) {
   const g = BP_GATE_OF[state];
   if (job.status !== 'active' && job.status !== 'parked') return { who: 'nobody', what: BP_MEANING[state] || state };
   if (!g) return { who: 'agent', what: BP_MEANING[state] || state };
   // the replies the CLI parses (skills/reply, the README): resume / approve / deny / merged
+  // Q: clarify's questions are answered in chat, in your own words (skills/clarify); the assumption overrides are replies
+  if (g === 'Q') {
+    const ids = bpQuestionIds(job);
+    return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply: `answer ${ids.length ? ids.join(', ') : 'the questions'} in chat · change A-n <value> · drop A-n`, questions: ids, plain: true, command: null };
+  }
   const reply = g === 'P' ? `resume ${job.id} · cancel job · abandon job` : g === 'H4' ? `merged ${job.id} <commit>` : `approve ${job.id} ${g} · deny ${job.id} <what must change>`;
   return { who: 'you', gate: g, what: BP_MEANING[state] || '', reply, command: null };
 }

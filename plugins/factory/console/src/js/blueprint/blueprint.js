@@ -40,7 +40,9 @@
   function fill(n) { clear(n); return kids(n, [].slice.call(arguments, 1)); }
 
   // ------------------------------------------------------------------ fixed vocabulary
-  var GATE = { awaiting_intent_approval: "H1", awaiting_design_approval: "H2", awaiting_findings_approval: "HF", awaiting_plan_approval: "H3", awaiting_ship_approval: "HS", awaiting_amendment_approval: "A", parked: "P" };
+  // Q is not a recipe gate: clarify asked you questions and waits on your answers. It is your turn all the same (the Board's
+  // "Your turn · Clarify"), so it counts, calls out and waits like a gate; it has no step ring on the track.
+  var GATE = { awaiting_answers: "Q", awaiting_intent_approval: "H1", awaiting_design_approval: "H2", awaiting_findings_approval: "HF", awaiting_plan_approval: "H3", awaiting_ship_approval: "HS", awaiting_amendment_approval: "A", parked: "P" };
   var DONE_STATES = { closed: 1, findings_delivered: 1, cancelled: 1, abandoned: 1 };
   var STOPPED_STATES = { cancelled: 1, abandoned: 1 };   // finished, but not done: red and ■, as the Board's Stopped
   var TYPE_NAME = { feature: "feature", bug: "bug fix", hotfix: "hotfix", spike: "spike", refactor: "refactor", migration: "migration", upgrade: "upgrade", investigate: "investigation" };
@@ -67,7 +69,7 @@
   var LOOPS = { intent: "questions", design: "revise", plan: "revise" };   // "revise" is said in words: wd("revise")
   // the return rails: work sent back to Build, each on its own level above the row (up = px above the row's top)
   var RAILS = [{ from: "verify", name: "Checks failed: sent back", up: 38, land: 18 }, { from: "review", name: "Changes asked: sent back", up: 68, land: 0 }, { from: "ship", name: "CI failed: sent back", up: 98, land: -18 }];
-  var NEXT = { received: "intake next", intent: "intent loop running", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "you merge: on GitHub, or locally and reply merged <commit>", merged: "the merge result is verified again", post_merge_review: "review after merge due", learning: "distill proposes lessons, then close checks every floor", closed: "closed", findings_delivered: "findings delivered", amending: "changing the contract and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
+  var NEXT = { received: "intake next", intent: "intent loop running", awaiting_answers: "clarify's next round, once you answer", designing: "design in progress", planning: "planner writing the plan", building: "builders at work", integrating: "combining the task branches", verifying: "re-running every check", reviewing: "reviewers at work", ready_to_ship: "pull request next", awaiting_ship_approval: "your ship sign-off", pr_open: "you merge: on GitHub, or locally and reply merged <commit>", merged: "the merge result is verified again", post_merge_review: "review after merge due", learning: "distill proposes lessons, then close checks every floor", closed: "closed", findings_delivered: "findings delivered", amending: "changing the contract and plan", needs_replan: "needs a new plan", cancelled: "cancelled", abandoned: "abandoned" };
   var STAGE_TONE = { intake: .10, intent: .18, design: .26, plan: .34, build: .48, verify: .56, review: .64, ship: .74, done: .10, change: .3, parked: .2, stopped: .1 };
   var VIEWS = ["line", "globe", "board", "sched", "agents", "learn"];
   var VIEW_NAME = { line: "The line", globe: "Projection", board: "Matrix", sched: "Schedule", agents: "Parts list", learn: "General notes", epics: "Epic register", eflow: "Epic assembly", ebreak: "Epic breakdown" };
@@ -196,12 +198,12 @@
   // The console's shared glossary (core/words.js, given to displays as api.words) when it exists; until then, and for
   // any word it lacks, this local copy with the same mapping. Internal ids (H1, AC-2, states) stay as small tags.
   var LOCAL_WORDS = {
-    gate: { H1: "Approve the contract", H2: "Approve the design", H3: "Approve the plan", H4: "Merge", HF: "Approve the findings",
+    gate: { Q: "Answer clarify's questions", H1: "Approve the contract", H2: "Approve the design", H3: "Approve the plan", H4: "Merge", HF: "Approve the findings",
             HS: "Sign off the ship", A: "Approve a change to the criteria", P: "Parked: your call",
             EH1: "Approve the epic's goal", EH2: "Approve the epic's architecture", EH3: "Approve the slices", EA: "Approve a change to the epic" },
     lane: { code: "Code review", tests: "Test review", security: "Security review", ux: "Usability review", conformance: "Conformance review" },
     state: {
-      received: "Just in", intent: "Writing the contract", awaiting_intent_approval: "Waiting for you: contract", designing: "Designing",
+      received: "Just in", intent: "Writing the contract", awaiting_answers: "Waiting for you: questions", awaiting_intent_approval: "Waiting for you: contract", designing: "Designing",
       awaiting_design_approval: "Waiting for you: design", awaiting_findings_approval: "Waiting for you: findings", planning: "Planning",
       awaiting_plan_approval: "Waiting for you: plan", building: "Building", integrating: "Combining the work", verifying: "Checking",
       reviewing: "Reviewing", ready_to_ship: "Ready to ship", awaiting_ship_approval: "Waiting for you: ship", pr_open: "Waiting for you: merge", merged: "Merged",
@@ -305,11 +307,14 @@
     function gateOf(j, t) { var s = stateAt(j, t); if (!s) return null; if (GATE[s]) return GATE[s]; if (s === "pr_open") return "H4"; return null; }
     function chatReply(j, g) {
       var wo = j.waiting_on;   // Copilot Factory: the reply the CLI parses, from the data ("approve J-0004 H3 · deny J-0004 …")
-      if (wo && wo.reply && wo.gate === g) { var parts = String(wo.reply).split(/\s+·\s+/); return { main: parts[0], alt: parts.length > 1 ? "or: " + parts.slice(1).join(" · ") : "" }; }
+      if (wo && wo.reply && wo.gate === g) { var parts = String(wo.reply).split(/\s+·\s+/); return { main: parts[0], alt: parts.length > 1 ? (wo.plain ? QALT : "or: ") + parts.slice(1).join(" · ") : "", plain: !!wo.plain }; }
+      // clarify's questions are answered in your own words, not a command: nothing to copy for the main reply
+      if (g === "Q") return { main: "answer the questions in chat", alt: QALT + "change A-n <value> · drop A-n", plain: true };
       if (g === "P") return { main: "resume " + j.id, alt: "or: cancel job · abandon job" };
       if (g === "H4") return { main: "merged " + j.id + " <commit>", alt: "after you merge it on GitHub or locally" };
       return { main: "approve", alt: "or: deny <what must change>" };
     }
+    var QALT = "a question you skip takes its default · to override an assumption: ";
     function termCmd(j, g, t) {
       if (j.waiting_on && j.waiting_on.command && stateAt(j, t) === j.state) return j.waiting_on.command;
       return null;   // Copilot Factory: terminal approvals need a typed confirmation, so the drawing only offers the chat reply
@@ -345,7 +350,7 @@
       R.den24 = den24.length;
       R.sentBack7 = JOBS.reduce(function (n, j) { return n + reworksIn(j, t - 7 * DAY, t).length; }, 0);
       R.open = R.jobs.filter(function (r) { return !r.done; }).length;
-      // jobs that wait on your reply (a gate, a merge), as the Board's "Your turn" counts them: parked jobs and lessons apart
+      // jobs that wait on your reply (a gate, clarify's questions, a merge), as the Board's "Your turn" counts them: parked jobs and lessons apart
       R.yourTurn = R.jobs.filter(function (r) { return !r.done && r.g && r.g !== "P"; }).length;
       R.parked = R.jobs.filter(function (r) { return r.g === "P"; }).length;
       R.rev = EVENTS.filter(function (e) { return e.at <= t; }).length;
@@ -782,10 +787,12 @@
       kids(g, [Z("line", { x1: x + SW / 2, y1: rw.SY + rw.SH, x2: x + SW / 2, y2: BY, "class": ag ? "ln-agent" : "ln2", "stroke-dasharray": "2 2" }), Z("circle", { cx: x + SW / 2, cy: rw.SY + rw.SH, r: 2.5, fill: ag ? "var(--agent)" : "var(--ink)" }),
         boxText(x, BY, SW, BH, { "class": "paper2", stroke: ag ? "var(--agent)" : "var(--ink-2)", "stroke-width": ag ? 1.6 : 1.1 })]);
       // the bank's name, and how many of its agents are at work
-      var cnt = bk.members.length ? (ag ? Math.min(ag, bk.members.length) + " of " + bk.members.length + " at work" : "idle") : "", cw = cnt ? measure(cnt, "t2", 13, 600) + 18 : 0;
+      // idle, but not forgotten: a job here waits on your answers (Q), so the bank waits on you
+      var waitsOnYou = !ag && recs.some(function (r) { return r.g === "Q"; });
+      var cnt = bk.members.length ? (ag ? Math.min(ag, bk.members.length) + " of " + bk.members.length + " at work" : waitsOnYou ? "waiting on you" : "idle") : "", cw = cnt ? measure(cnt, "t2", 13, 600) + 18 : 0;
       if (ag && measure(bk.name, "t-disp tight", 13, 700) + cw + 16 > SW) { cnt = Math.min(ag, bk.members.length) + " of " + bk.members.length; cw = measure(cnt, "t2", 13, 600) + 18; }
       kids(g, [tx(x + 8, BY + 19, bk.name, { "font-size": 13, "class": "t-disp tight", "font-weight": 700, "data-fit": SW - 14 - cw })]);
-      if (cnt) kids(g, [tx(x + SW - 8, BY + 19, cnt, { "text-anchor": "end", "font-size": 13, "class": ag ? "t-agent" : "t3", "font-weight": 600 })]);
+      if (cnt) kids(g, [tx(x + SW - 8, BY + 19, cnt, { "text-anchor": "end", "font-size": 13, "class": ag ? "t-agent" : waitsOnYou ? "t-hl" : "t3", "font-weight": 600 })]);
       var ry = 0;
       groups.forEach(function (gr) {
         var cy = BY + 40 + ry * 21, jobs = work[gr.role] || [], lit = Math.min(gr.n, jobs.length), lx = x + 13;
@@ -1134,7 +1141,7 @@
     function copyBtn(text) { return H("button", { type: "button", "class": "copy", "data-copy": text, "aria-label": "Copy: " + text }, "Copy"); }
     function openBtn(j, label, sm) { return H("button", { type: "button", "class": "linkbtn" + (sm ? " sm" : ""), "data-open": j.id }, label || j.slug); }
     function replyBox(rep, cmd, flush) {
-      return H("div", { "class": "reply" + (flush ? " flush" : "") }, H("div", { "class": "lbl", text: "Reply in chat" }), H("div", { "class": "row" }, H("code", { text: rep.main }), copyBtn(rep.main)), H("div", { "class": "alt", text: rep.alt }),
+      return H("div", { "class": "reply" + (flush ? " flush" : "") }, H("div", { "class": "lbl", text: "Reply in chat" }), H("div", { "class": "row" }, rep.plain ? H("span", { "class": "plain", text: cap(rep.main) }) : [H("code", { text: rep.main }), copyBtn(rep.main)]), H("div", { "class": "alt", text: rep.alt }),
         cmd ? H("div", { "class": "term" }, H("div", { "class": "lbl", text: "Or from your terminal" }), H("div", { "class": "row" }, H("code", { text: cmd }), copyBtn(cmd))) : null);
     }
     function renderNotes() {
@@ -1146,12 +1153,12 @@
       if (!nd && !nl) kids(sec, [H("p", { "class": "meta", text: "Nothing waits on you at this revision. The line runs on its own." })]);
       S.gates.forEach(function (r) {
         var j = r.j, rep = chatReply(j, r.g), cmd = termCmd(j, r.g, t);
-        var why = r.g === "P" ? (j.history.filter(function (h) { return h.to === "parked" && P(h.at) <= t; }).pop() || {}).reason : r.g === "A" ? (j.amendment && j.amendment.reason) : D.meaning[r.s];
+        var why = r.g === "P" || r.g === "Q" ? (j.history.filter(function (h) { return h.to === r.s && P(h.at) <= t; }).pop() || {}).reason || D.meaning[r.s] : r.g === "A" ? (j.amendment && j.amendment.reason) : D.meaning[r.s];
         kids(sec, [H("div", { "class": "note" }, H("span", { "class": "num", text: String(r.n) }),
           H("div", { "class": "what" }, gv(r.g), " ", H("span", { "class": "chip tag", text: r.g })),
           H("div", { "class": "head" }, openBtn(j), H("span", { "class": "chip mute", text: (TYPE_NAME[j.type] || j.type) + " · " + j.risk + " risk" })),
           H("div", { "class": "meta", text: "waiting " + fD(t - r.since) + " · since " + fT(r.since) }),
-          H("div", { "class": "meta", text: (r.g === "P" || r.g === "A" ? "Why it stopped: " : "") + (why || "") }),
+          H("div", { "class": "meta", text: (r.g === "P" || r.g === "A" ? "Why it stopped: " : r.g === "Q" ? "Why: " : "") + (why || "") }),
           replyBox(rep, cmd))]);
       });
       // epic gates: an epic waiting on you (EH1 · EH2 · EH3 · EA · P), with the exact reply
@@ -1251,10 +1258,10 @@
       tbAsof.textContent = fT(t); tbRev.textContent = S.rev + " / " + EVENTS.length; tbProj.textContent = REPO;
       modeTag.textContent = snapshotOn ? "Issued" : live ? "Live" : "Replay"; modeTag.setAttribute("class", cx("mode " + (live && !snapshotOn ? "live" : "replay")));
       if (document.activeElement !== scrub) scrub.value = Math.round((t - T0) / (TN - T0) * 1000);
-      // "Your turn" counts jobs as the Board does (a gate or a merge waiting on your reply); lessons and parked jobs apart
+      // "Your turn" counts jobs as the Board does (a gate, clarify's questions or a merge waiting on your reply); lessons and parked jobs apart
       var neg = epGates().length, nw = S.yourTurn + neg, nl = S.lessonsWaiting.length;
       var nf = S.jobs.filter(function (r) { return r.gf; }).length;
-      var q = [[nw ? "hl" : "", "Your turn", nw, "jobs waiting on your reply at a gate or a merge, as the Board's Your turn" + (neg ? " (" + plural(neg, "epic decision") + ")" : "") + (S.parked ? "; " + plural(S.parked, "parked job") + " not counted" : "")],
+      var q = [[nw ? "hl" : "", "Your turn", nw, "jobs waiting on your reply at a gate, clarify's questions or a merge, as the Board's Your turn" + (neg ? " (" + plural(neg, "epic decision") + ")" : "") + (S.parked ? "; " + plural(S.parked, "parked job") + " not counted" : "")],
         [nl ? "hl" : "", "Lessons to decide", nl, "proposed lessons waiting for accept lesson Ln or reject lesson Ln <why>; not jobs, so not in Your turn"], ["", "In flight", S.open, "jobs not finished"],
         [S.agents.length ? "ag" : "", "Agents at work", S.agents.length, "agents at work now"],
         [nf ? "fail" : "", "Failing checks", nf, "jobs whose gate check is failing"],
@@ -1547,7 +1554,7 @@
     }
     function gateWaitChart(jobs, t) {
       var per = {}; jobs.forEach(function (j) { intervals(j, t).forEach(function (iv) { var g = GATE[iv.state] || (iv.state === "pr_open" ? "H4" : null); if (!g) return; (per[g] = per[g] || []).push(iv.b - iv.a); }); });
-      var rows = ["H1", "H2", "HF", "H3", "A", "P", "H4"].filter(function (g) { return per[g]; }).map(function (g) { return { label: g + " · " + per[g].length + "×", work: 0, wait: per[g].reduce(function (a, b) { return a + b; }, 0) / per[g].length }; });
+      var rows = ["Q", "H1", "H2", "HF", "H3", "HS", "A", "P", "H4"].filter(function (g) { return per[g]; }).map(function (g) { return { label: g + " · " + per[g].length + "×", work: 0, wait: per[g].reduce(function (a, b) { return a + b; }, 0) / per[g].length }; });
       return dimChart("Human wait per gate · mean", rows, "d4");
     }
 
