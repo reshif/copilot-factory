@@ -214,7 +214,7 @@ The hook also writes the outcome to `.factory/last-reply.json`. The next `factor
 | `accept lesson L4` · `reject lesson L4 <why>` | Decide on a proposed lesson. |
 | `change A-3 <value>` (also `change A-3: …`, `change A-3 to …`) | Override an evidence-backed assumption from clarify's research: the contract's line becomes your value, marked "overridden by user". Before H1, clarify re-checks the contract and H1 is presented again; after H1 the approved contract changed, so `factory next` opens an amendment for your approval. |
 | `drop A-3` | Remove an evidence-backed assumption (same effect on H1 / amendment). |
-| `1 yes, 2 trunk ports too` (one per line, or comma-separated) · `defaults` | While clarify waits on your answers: the answers to its current questions, by their number in the list (`defaults` accepts every proposed default). Recorded like `factory answer`; a number that isn't in the list is refused and nothing is recorded. |
+| `1 yes, 2 trunk ports too` (one per line, or comma-separated) · `Q-4 no` · `defaults` | While clarify waits on your answers: the answers to its current questions, by their number in the list or by their id (`defaults` accepts every proposed default). Recorded like `factory answer`, all or nothing: a number that isn't in the list, the same question twice, or a question already answered refuses the whole reply. A numbered message whose numbers are none of the questions', or whose items end in `?`, is read as an ordinary message. |
 | `ack finding F3` · `fixed finding F3` · `wontfix finding F3 <why>` | Settle an inspector finding. |
 | `inspect mode <recipe\|all> on\|off\|sample <N>` | How often the inspector runs. |
 

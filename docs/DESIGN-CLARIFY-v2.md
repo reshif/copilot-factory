@@ -110,8 +110,11 @@ and the decide inputs, and `groundedProblems` / `intent_grounded` ignore them.
   overlap. No match during clarify: the command fails with `no_match` and lists the open ids;
   nothing is silently dropped. (After H1, ground's blocking questions keep the v1 behaviour.)
 - Chat: the prompt hook reads a numbered reply ("1 yes, 2 trunk ports too", one per line or
-  comma-separated) as answers to the current question set (the last clarify round's Q-ids),
-  through the same function.
+  comma-separated; "Q-4 no" names the question by id) as answers to the questions the last
+  clarify round showed, in the order shown (`state.clarify_shown`), through the same function.
+  All or nothing: a number outside the set, a question twice or one already settled refuses
+  the reply. A reply none of whose numbers is in the set, or with an item ending in "?", is an
+  ordinary message and is left alone.
 - `factory clarify note U-n "…"` adds context for the next round.
 - `factory clarify split U-n <alias>` (human-only, the user's terminal) undoes a wrong fold: the
   alias becomes its own issue again (asked, researched or deferred next round as a new raise).
@@ -144,10 +147,14 @@ So a round never ends `needs_user` with zero questions.
 During clarify the contract changes only through the workflow and `factory record`:
 
 - the new **contract-editor** agent (read-only tools) returns the revised contract text; the
-  CLI validates it (it must parse, keep the Intent section and not add contract problems) and
-  writes it when it records the round. It runs at the start of a round when settled issues
-  are not reflected yet, notes or a denial reason are new, or the contract has problems; and
-  once after God Eye's actionable items;
+  CLI validates it (it must parse, keep the Intent section, add no contract problems, and
+  lose no acceptance criterion, constraint or non-goal unless the editor lists it under
+  `removed` with a reason that holds up: a settled or dropped issue, or the God Eye item, user
+  note or gate denial it was given) and writes it when it records the round. When the CLI
+  refuses a revision, the round is not `ok` even if God Eye approved the revision. The editor
+  runs at the start of a round when settled issues are not reflected yet, notes or a denial
+  reason are new (a denial goes to it once), or the contract has problems; and once after God
+  Eye's actionable items;
 - the CLI writes `## Clarifications (settled)` (user answers and accepted defaults) and
   `## Deferred to design` from the ledger, beside `## Assumptions (evidence-backed)`.
 
@@ -160,7 +167,10 @@ deny names `factory answer`, `factory clarify note`, `factory clarify status` an
 ## Convergence: progress, not rounds
 
 - A round makes **progress** when something was settled, deferred or dropped since the last
-  round, or the round asked the user new questions, or opened new research-owned issues.
+  round, or the round asked the user new questions, or opened new research-owned issues, or
+  the contract editor's revision changed the text and applied what it was given (a settled
+  issue, a note, a denial) or fixed a contract problem. A rewrite that applies nothing is not
+  progress.
 - Clarify parks ("not converging") after `limits.clarify_no_progress_rounds` (default 2)
   rounds in a row without progress, or at the hard ceiling `limits.max_intent_rounds`
   (now default 10).
