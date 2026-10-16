@@ -1341,6 +1341,15 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     } catch (e) {
       wfEnd({ outcome: 'failed', status: null, error: ctx.unavailable ? `copilot unavailable: ${ctx.unavailable.detail}` : String(e.message).slice(0, 300) });
       if (ctx.unavailable) copilotUnavailable(ctx);
+      // a loop's diagnosis that failed (not a Copilot outage, which is retried): the loop records a
+      // fallback diagnosis that asks the human, so the router does not ask for it forever
+      else if (brief.config === 'diagnose' && brief.mode) {
+        try {
+          require('./loop').fallbackDiagnosis(root, brief.job, brief.mode, `the diagnosis workflow failed: ${String(e.message).slice(0, 200)}`);
+        } catch {
+          /* the repeat guard still ends it */
+        }
+      }
       fail(`The ${workflow} workflow failed: ${e.message}`, 'workflow_failed', { agents: ctx.runs });
     }
     if (ctx.unavailable) {

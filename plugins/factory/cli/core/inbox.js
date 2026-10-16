@@ -67,7 +67,7 @@ function itemFor(root, state, driveStop, plain = false) {
     try {
       const steps = require('./steps');
       const list = steps.combinedOf(steps.context(root, state, job.load), pg.id);
-      if (list) what = `${list.map((x) => ({ design: 'the design', plan: 'the plan', environment: 'the build environment' })[x]).join(', ').replace(/, ([^,]*)$/, ' and $1')} (one approval)`;
+      if (list) what = `${list.map((x) => ({ design: 'the design', plan: 'the plan', environment: 'the build environment' })[x]).join(', ').replace(/, ([^,]*)$/, ' and $1')} (one approval${list.includes('environment') ? '; the build environment is set for this repository: other jobs build in it too' : ''})`;
     } catch {
       /* the plain label */
     }

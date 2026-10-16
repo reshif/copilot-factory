@@ -67,6 +67,17 @@ function policyFor(pol = {}, overrides = {}) {
   };
 }
 
+// The diagnosis workflow failed before it recorded anything: record a diagnosis that asks the
+// human (needs_user), so the loop stops with a question instead of asking for a diagnosis forever.
+function fallbackDiagnosis(root, jobId, name, cause) {
+  const job = require('./job');
+  job.mutate(root, jobId, (state) => {
+    const l = state.loops && state.loops[name];
+    if (!l || !l.pending || l.pending.kind !== 'diagnosis' || l.diagnosis) return;
+    state.loops[name] = { ...recordDiagnosis(l, { cause, needs_user: true, question: null }), segments: l.segments || 0 };
+  });
+}
+
 function fresh() {
   return { rounds: 0, best: null, stalls: 0, level: 0, last: null, history: [], diagnosis: null, pending: null, stopped: null };
 }
@@ -84,10 +95,9 @@ function shouldContinue(loopState, blockers, policy) {
   const out = (action, rule, extra = {}) => ({ action, rule, round: s.rounds, open, closed, added, escalation: null, model, ...extra, state: s });
 
   if (!open.length) {
-    s.last = [];
-    s.stopped = null;
-    s.pending = null;
-    return out('done', 'resolved');
+    // resolved: the next time this loop has blockers it starts from the beginning (a loop that
+    // once stopped or escalated does not stay stopped)
+    return { ...out('done', 'resolved'), state: { ...fresh(), ...(s.segments ? { segments: s.segments } : {}) } };
   }
   // a diagnosis is pending: the same observation again is not a new round
   if (s.pending) {
@@ -112,6 +122,8 @@ function shouldContinue(loopState, blockers, policy) {
   if (s.level >= 3) return out('stop', (s.stopped && s.stopped.rule) || 'no_progress');
 
   const first = s.best === null;
+  // progress is by count: fewer open blockers than the best so far, even if they are new ones
+  // (a smaller, different set counts). The ceiling bounds the rounds either way, so every loop ends.
   const progress = first || open.length < s.best;
   const stop = (rule) => {
     if (P.diagnose && !s.diagnosis) {
@@ -199,4 +211,4 @@ function question(loopState, { what, blockers = [], fallbackOptions = [], fallba
   return { rule, question: q, options, recommendation, cause: d ? d.cause : null, text: lines.join('\n'), diagnosed: Boolean(d) };
 }
 
-module.exports = { shouldContinue, recordDiagnosis, question, keyOf, keys, policyFor, fresh, DEFAULTS };
+module.exports = { shouldContinue, recordDiagnosis, question, keyOf, keys, policyFor, fresh, DEFAULTS, fallbackDiagnosis };

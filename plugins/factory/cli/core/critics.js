@@ -98,7 +98,7 @@ function gateView(ctx, gate) {
     if (pr) out.probe = pr;
     if (parts && parts.environment) {
       const e = parts.environment;
-      out.environment = { status: e.status, name: (e.env && e.env.name) || null, setup: (e.env && e.env.setup) || [], source: e.source || null, hash: e.short || null, ...(e.status === 'proposed' ? { note: 'Approving this gate also confirms this build environment (its setup commands run in every worktree on this machine).' } : {}) };
+      out.environment = { status: e.status, name: (e.env && e.env.name) || null, setup: (e.env && e.env.setup) || [], source: e.source || null, hash: e.short || null, ...(e.status === 'proposed' ? { note: 'Approving this gate also sets this build environment for this repository (.factory/environment.json): other jobs build in it too, and its setup commands run in every worktree on this machine.' } : {}) };
     }
   }
   const open = [...((out.design_critique || {}).open || []), ...((out.plan_critique || {}).open || [])];

@@ -412,6 +412,8 @@ test('M6: a chat message while parked resumes only when it answers the park; oth
   assert.equal(H.replyToPark(root, { text: 'b: use the helper in src/y.js', channel: 'chat' }).option, 'b');
   after = stateOf(root, J);
   assert.equal(after.human_notes.at(-1).text, 'Keep them out: reply with how — use the helper in src/y.js');
+  // m2: the agents read which option the human chose, labelled as the factory's text, and the human's own words apart
+  assert.match(core('wfargs').humanNotes(after), /the human chose option b: "Keep them out: reply with how" \(the option's text was written by the factory's diagnosis, not by the human\); the human's own words: use the helper in src\/y\.js/);
   // words about the question resume at once; "a task creates it" is not option a
   core('decision-table').park(root, after, 'again', 'verify', { logged: true, question: { question: 'Who creates POLICY_OK?', options: [{ key: 'a', text: 'A task creates it' }, { key: 'b', text: 'You create it yourself' }] } });
   const a = H.parkAnswer(stateOf(root, J), 'a task should write POLICY_OK first');
@@ -647,4 +649,53 @@ test('a router loop\'s diagnosis runs as fanout-judge --config diagnose: God Eye
   const v = r2.calls.find((c) => c.opts.agentType === 'factory:finding-verifier');
   assert.equal(v.opts.model, 'opus');
   assert.match(v.prompt, /You are the second verifier/);
+});
+
+test('m3: a reply with a placeholder reason ("<why>") is not a reply, alone or in a batch (nothing applies)', () => {
+  const H = core('human');
+  assert.equal(H.parseBatch('confirm AC-2; dismiss finding code-1 <why>; approve ship'), null);
+  assert.equal(H.parseReply('dismiss finding code-1 <why>'), null);
+  assert.equal(H.parseReply('deny <what must change>'), null);
+  assert.equal(H.parseReply('waive ci_reverify <reason>'), null);
+  assert.ok(H.nearMiss('dismiss finding code-1 <why>'), 'shown as a near miss: not applied');
+  assert.equal(H.parseReply('dismiss finding code-1 the test covers it').cmd, 'settle_finding');
+  assert.equal(H.parseBatch('confirm AC-2; dismiss finding code-1 not reachable from input; approve ship').parts.length, 3);
+});
+
+test('m4: a resolved loop starts afresh; a diagnosis workflow that fails records a fallback that asks the human; a resume clears a loop left waiting for a diagnosis', () => {
+  const L = core('loop');
+  const P = L.policyFor({}, { ceiling: 3, stall_rounds: 1, escalate_model: null, diagnose: true });
+  const B = [{ key: 'x|1' }];
+  let s = L.fresh();
+  for (let i = 0; i < 6; i++) s = L.shouldContinue(s, B, P).state;
+  s = L.recordDiagnosis(s, { cause: 'stuck', needs_user: true, question: 'which?' });
+  const stopped = L.shouldContinue(s, B, P);
+  assert.equal(stopped.action, 'stop');
+  const done = L.shouldContinue(stopped.state, [], P);
+  assert.equal(done.action, 'done');
+  assert.deepEqual([done.state.level, done.state.stopped, done.state.rounds], [0, null, 0]);
+  assert.equal(L.shouldContinue(done.state, B, P).action, 'continue', 'new blockers later: rounds again, not an instant stop');
+  // a failed diagnosis workflow: the fallback asks the human
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
+  const st = core('job').load(root, J);
+  let v = L.fresh();
+  while (L.shouldContinue(v, B, P).action !== 'diagnose') v = L.shouldContinue(v, B, P).state;
+  v = L.shouldContinue(v, B, P).state;
+  st.loops = { verify: v };
+  core('job').save(root, st);
+  assert.equal(L.shouldContinue(v, B, P).action, 'diagnose');
+  L.fallbackDiagnosis(root, J, 'verify', 'the diagnosis workflow failed: boom');
+  const after = core('job').load(root, J).loops.verify;
+  assert.equal(after.diagnosis.needs_user, true);
+  assert.equal(L.shouldContinue(after, B, P).action, 'stop', 'stops with a question, not diagnose forever');
+  // a repeat park over a loop still waiting for its diagnosis: resume starts that loop afresh
+  const s2 = core('job').load(root, J);
+  s2.loops = { review: v };
+  core('job').save(root, s2);
+  core('decision-table').park(root, core('job').load(root, J), 'No progress: "diagnose" chosen 4 times from the same state.', 'repeat', { logged: true });
+  F.reply(root, 'resume');
+  const r = core('job').load(root, J).loops.review;
+  assert.deepEqual([r.pending, r.level, r.segments], [null, 0, 1]);
+  assert.match(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'runner.js'), 'utf8'), /brief\.config === 'diagnose' && brief\.mode[\s\S]*fallbackDiagnosis/);
 });

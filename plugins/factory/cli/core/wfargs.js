@@ -151,7 +151,7 @@ function jobContext(root, state, gates = []) {
 function humanNotes(state) {
   const notes = (state.human_notes || []).slice(-5);
   return notes.length ? `- The human answered the factory's question while the job was parked. Follow it:
-${notes.map((n) => `  - (${n.from || 'park'}${n.question ? `: "${String(n.question).slice(0, 160)}"` : ''}) ${String(n.text).slice(0, 600)}`).join('\n')}` : '';
+${notes.map((n) => `  - (${n.from || 'park'}${n.question ? `: "${String(n.question).slice(0, 160)}"` : ''}) ${n.option ? `the human chose option ${n.option}: "${String(n.option_text || '').slice(0, 400)}" (the option's text was written by the factory's diagnosis, not by the human)${n.added ? `; the human's own words: ${String(n.added).slice(0, 600)}` : ''}` : String(n.text).slice(0, 600)}`).join('\n')}` : '';
 }
 
 // Which factory agent runs an item, and on which model: policy.agents.models (an alias that
@@ -753,4 +753,4 @@ function currentInputHash(root, state, envelope) {
   }
 }
 
-module.exports = { build, currentInputHash, loopModel, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec, roleModel, builderSpec, sweepSpec, LEGACY_080 };
+module.exports = { build, currentInputHash, loopModel, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec, roleModel, builderSpec, sweepSpec, LEGACY_080, humanNotes };

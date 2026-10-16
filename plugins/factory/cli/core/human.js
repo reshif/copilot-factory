@@ -324,14 +324,14 @@ function parkAnswer(state, text) {
     const key = String(m[1] || m[2] || m[3] || '').toLowerCase();
     const rest = String((m.length > 4 ? m[4] : m[2]) || '').trim();
     const i = /^\d+$/.test(key) ? Number(key) - 1 : opts.findIndex((o) => o.key === key);
-    if (opts[i]) return { words: rest ? `${opts[i].text} — ${rest}` : opts[i].text, option: opts[i].key, via: 'option' };
+    if (opts[i]) return { words: rest ? `${opts[i].text} — ${rest}` : opts[i].text, option: opts[i].key, optionText: opts[i].text, extra: rest || null, via: 'option' };
   }
   const low = t.toLowerCase();
   const byText = opts.find((o) => {
     const head = o.text.toLowerCase().split(/[\s:,(]+/).filter(Boolean).slice(0, 2).join(' ');
     return head.length >= 4 && low.startsWith(head);
   });
-  if (byText) return { words: t, option: byText.key, via: 'option' };
+  if (byText) return { words: t, option: byText.key, optionText: byText.text, extra: t, via: 'option' };
   const about = sigWords([park.question, ...opts.map((o) => o.text), park.question ? '' : park.reason].join(' '));
   const mine = sigWords(t);
   if ([...mine].some((w) => about.has(w))) return { words: t, via: 'reply' };
@@ -358,7 +358,7 @@ function replyToPark(root, { jobId, text, channel }) {
     return { job: state.id, resumed: false, pending: true, question, message: `Nothing was resumed. Use this as your answer to "${question}"? Reply "yes" to resume ${state.id} with it (or answer the question).` };
   }
   confirmTyped(channel, state.id, 'resume it with your words');
-  applyResume(root, state, { words, via: ans.via === 'option' ? `option ${ans.option}` : 'reply' });
+  applyResume(root, state, { words, via: ans.via === 'option' ? `option ${ans.option}` : 'reply', option: ans.option ? { key: ans.option, text: ans.optionText, extra: ans.extra } : null });
   job.save(root, state);
   log(root, state, 'resume', { channel, from: state.resumed.from, via: ans.via, ...(ans.option ? { option: ans.option } : {}), words: words.slice(0, 500), ...(state.resumed.grant ? { grant: state.resumed.grant } : {}) });
   return { job: state.id, resumed: true, ...(ans.option ? { option: ans.option } : {}), message: `Resumed ${state.id} with ${ans.option ? `option ${ans.option} (${words.slice(0, 160)})` : 'your words'}${state.resumed.grant ? ` and ${Math.round((state.resumed.grant - 1) * 100)}% more agent runs` : ''}: they go to the next round. Copilot continues with factory next.` };
@@ -368,7 +368,7 @@ function replyToPark(root, { jobId, text, channel }) {
 // job): the loop that stopped starts a new segment with the human's words (it never just buys one
 // more identical round), the repeat guard is cleared, the job is active again. The budget grows
 // only by the grant the human's words name. Mutates state; the caller saves and logs.
-function applyResume(root, state, { step = null, via = null, words = null } = {}) {
+function applyResume(root, state, { step = null, via = null, words = null, option = null } = {}) {
   const park = state.park || {};
   const from = park.from;
   const L = state.policy.limits;
@@ -383,6 +383,11 @@ function applyResume(root, state, { step = null, via = null, words = null } = {}
     const old = state.loops[loopName] || {};
     state.loops[loopName] = { ...require('./loop').fresh(), segments: (old.segments || 0) + 1, last_question: old.diagnosis ? old.diagnosis.question : null };
   }
+  // a loop left waiting for a diagnosis that never came (the repeat guard parked it, m4): the
+  // resume starts it afresh too, with the human's words
+  for (const [n, l] of Object.entries(state.loops || {})) {
+    if (n !== loopName && l && l.pending && l.pending.kind === 'diagnosis' && !l.diagnosis) state.loops[n] = { ...require('./loop').fresh(), segments: (l.segments || 0) + 1, last_question: null };
+  }
   if (from === 'review') oneMore('review_rounds', L.max_review_rounds);
   if (from === 'verify') oneMore('verify_fix_rounds', L.max_verify_fix_rounds);
   // Clarify v3: clarify's own park (an agent that failed twice), and words given while parked
@@ -394,7 +399,7 @@ function applyResume(root, state, { step = null, via = null, words = null } = {}
     grant = budgetGrant(words, L.max_agent_runs_per_job);
     if (grant) state.policy.limits.max_agent_runs_per_job = Math.ceil(state.policy.limits.max_agent_runs_per_job * grant);
   }
-  if (words) state.human_notes = [...(state.human_notes || []), { at: nowIso(), text: String(words).slice(0, 2000), from: park.kind || from || null, ...(park.question ? { question: park.question } : {}) }].slice(-10);
+  if (words) state.human_notes = [...(state.human_notes || []), { at: nowIso(), text: String(words).slice(0, 2000), from: park.kind || from || null, ...(park.question ? { question: park.question } : {}), ...(option ? { option: option.key, option_text: String(option.text || '').slice(0, 600), ...(option.extra ? { added: String(option.extra).slice(0, 1400) } : {}) } : {}) }].slice(-10);
   state.repeat = { key: null, count: 0 };
   delete state.transient_aborts; // the human says Copilot works again: count transient runs afresh
   state.status = 'active';
@@ -550,7 +555,16 @@ function setEnvironment(root, { file, none = false, expectHash = null, channel }
 const TRAILING = /[\s.!,;:…\p{Extended_Pictographic}\p{Emoji_Modifier}‍️]+$/u;
 
 // Parse a chat reply. Only a whole message that is exactly a factory command counts.
+// A reason copied from a reply form ("<why>", "<reason>") or too short to say anything is no reason.
+const PLACEHOLDER = (r) => /^<[^>]*>$|^\[[^\]]*\]$/.test(String(r || '').trim()) || /<(why|reason|what[^>]*)>/i.test(String(r || ''));
 function parseReply(text) {
+  const p = parseReplyRaw(text);
+  if (p && ['settle_finding', 'waive', 'deny', 'cancel', 'abandon', 'reject_lesson', 'reject_brief'].includes(p.cmd) && p.reason && PLACEHOLDER(p.reason)) return null;
+  if (p && ['settle_finding', 'waive'].includes(p.cmd) && String(p.reason || '').trim().length < 3) return null;
+  return p;
+}
+
+function parseReplyRaw(text) {
   const t = String(text || '').trim().replace(TRAILING, '');
   if (!t || t.includes('\n')) return null;
   let m;

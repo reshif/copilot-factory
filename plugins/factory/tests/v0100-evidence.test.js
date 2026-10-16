@@ -547,13 +547,13 @@ test('combined gate: medium H3 binds design + plan + environment; approving it s
   assert.equal(n.step, 'H3');
   assert.deepEqual(n.review.approves, ['design', 'plan', 'environment']);
   assert.equal(n.review.environment.status, 'proposed');
-  assert.match(n.review.environment.note, /Approving this gate also confirms this build environment/);
+  assert.match(n.review.environment.note, /Approving this gate also sets this build environment for this repository[\s\S]*other jobs build in it too/);
   assert.ok(n.gate.docs.some((d) => d.endsWith('environment.proposed.json')));
   assert.equal(core('environment').load(root), null, 'nothing confirmed before the gate');
   // the inbox and the drive's stop say what the one approval covers
   const item = core('inbox').list(root).items.find((x) => x.job === J);
-  assert.equal(item.what, 'approve the design, the plan and the build environment (one approval)');
-  assert.match(core('drive').stopDetail('gate', n).summary, /one approval for design \+ plan \+ environment \(it also confirms the build environment\)/);
+  assert.equal(item.what, 'approve the design, the plan and the build environment (one approval; the build environment is set for this repository: other jobs build in it too)');
+  assert.match(core('drive').stopDetail('gate', n).summary, /one approval for design \+ plan \+ environment \(it also sets the build environment for this repository: other jobs build in it too\)/);
   // an agent may not approve, and a changed environment makes the shown gate stale
   assert.equal(F.cli(root, ['approve'], { env: { FACTORY_RUNNER: '1' } }).code, 'agent_not_allowed');
   F.reply(root, 'approve');
