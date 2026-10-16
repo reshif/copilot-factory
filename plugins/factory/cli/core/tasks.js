@@ -89,6 +89,14 @@ function restartReason(t) {
     const key = `outcome:${t.outcome}@${t.outcome_at || ''}`;
     return t.restarted_for === key ? null : { reason: t.outcome, key };
   }
+  // The last start could not merge the job branch or a dependency into the task's branch
+  // (dependency_conflict): rebuild it on the integrated job branch instead of retrying the
+  // same merge (P3.3; realize gives it this one rebuild before the task counts as blocked).
+  const se = t.start_error;
+  if (se && se.code === 'dependency_conflict') {
+    const key = `conflict:${se.at || ''}`;
+    if (t.restarted_for !== key) return { reason: 'dependency_conflict', key };
+  }
   const ev = t.evidence ? readJson(t.evidence.file, null) : null;
   if (ev && (ev.scope_violations || []).length) {
     const key = `scope:${ev.id}`;

@@ -138,14 +138,27 @@ function followup(root, { jobId, findings, workType }) {
 function why(root, { jobId }) {
   const state = job.resolve(root, jobId);
   const rows = decisions.forJob(root, state.id);
-  return { job: state.id, title: state.title, recipe: `${state.recipe.id} v${state.recipe.version}`, risk: state.risk, status: state.status, decisions: rows };
+  // every park with its typed reason and the suggested next step (park rows, and parks the
+  // router recorded with its own decision)
+  const parks = rows.filter((d) => d.action === 'park' || d.action === 'parked').map((d) => ({ ts: d.ts, kind: (d.park && d.park.kind) || String(d.rule || '').replace(/^park\./, ''), rule: d.rule || null, reason: d.reason || null, next: (d.park && d.park.next) || null }));
+  return { job: state.id, title: state.title, recipe: `${state.recipe.id} v${state.recipe.version}`, risk: state.risk, status: state.status, ...(state.status === 'parked' && state.park ? { park: state.park } : {}), parks, decisions: rows };
 }
 
 function whyMarkdown(w) {
   const L = [`# Why ${w.job} took this path`, '', `${w.title} · ${w.recipe} · risk ${w.risk} · ${w.status}`, '', '| # | Time | Chosen | Rule | First failing check | Reason |', '|---|---|---|---|---|---|'];
+  const reasonOf = (d) => {
+    if (d.action === 'park' || d.action === 'parked') return `${d.park && d.park.kind ? `[${d.park.kind}] ` : ''}${d.reason || ''}${d.park && d.park.next ? ` → next: ${d.park.next}` : ''}`;
+    if (d.reason) return d.reason;
+    if (d.action === 'workflow') return `factory run ${d.workflow || d.step}${d.config ? ` --config ${d.config}` : ''}${d.scope && d.scope !== 'all' ? ` --scope ${d.scope}` : ''}`;
+    if (d.action === 'cli') return d.command || '';
+    if (d.action === 'skill') return `${d.skill || d.step}${d.clarify && d.clarify.stage ? ` (${d.clarify.stage}${d.clarify.waiting_for_user ? ', waits on you' : ''})` : ''}`;
+    if (String(d.action || '').startsWith('human.')) return `${d.channel ? `${d.channel}: ` : ''}${d.gate || d.reason || d.from || ''}`;
+    return '';
+  };
   w.decisions.forEach((d, i) => {
-    L.push(`| ${i + 1} | ${String(d.ts).replace('T', ' ').slice(0, 19)} | ${d.chosen || d.action} | ${d.rule || ''} | ${d.first_failing || '—'} | ${String(d.reason || '').replace(/\|/g, '\\|').slice(0, 140)} |`);
+    L.push(`| ${i + 1} | ${String(d.ts).replace('T', ' ').slice(0, 19)} | ${d.action === 'park' ? `park${d.park && d.park.kind ? ` (${d.park.kind})` : ''}` : d.chosen || d.action} | ${d.rule || ''} | ${d.first_failing || '—'} | ${String(reasonOf(d)).replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 240)} |`);
   });
+  if (w.park) L.push('', `**Parked now** (${w.park.kind || 'other'}): ${String(w.park.reason || '').replace(/\n/g, ' ')}`, '', `Next: ${w.park.next || 'reply "resume", "cancel job" or "abandon job".'}`);
   return L.join('\n');
 }
 

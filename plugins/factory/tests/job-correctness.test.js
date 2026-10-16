@@ -199,10 +199,18 @@ test('2 lost fix: reconcile refuses a conflict resolution that drops an already-
   const last = core('ledger').lastStep(root, J, 'reconcile');
   assert.equal(last.ok, false);
   assert.deepEqual(last.detail.regression.files, ['src/b.py']);
+  // P3.3 (intentional change: this used to park at once): the task whose merge dropped the
+  // lines is rebuilt on the merged code once, automatically; the same regression again parks.
+  const first = F.record(root, F.envelope(brief, 'park', { integrator: { status: 'regression', summary: c.message } }));
+  assert.equal(first.status, 'retry', JSON.stringify(first));
+  assert.deepEqual(first.recovery.tasks, ['T4']);
+  assert.equal(state(root, J).tasks.T4.needs_work, 'integration');
+  assert.match(state(root, J).tasks.T4.integration_failure.failures[0].output, /SECURITY FIX/);
   const rec = F.record(root, F.envelope(brief, 'park', { integrator: { status: 'regression', summary: c.message } }));
   assert.equal(rec.status, 'park');
   assert.equal(state(root, J).status, 'parked');
   assert.match(state(root, J).park.reason, /^Reconcile regression: .*SECURITY FIX/);
+  assert.equal(state(root, J).park.kind, 'regression');
 });
 
 test('2 lost fix: one owner per finding (blame + Factory-Task); a fix round merges the job branch first; a fix-round line another task drops is a regression', () => {

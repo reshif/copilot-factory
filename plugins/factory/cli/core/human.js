@@ -196,7 +196,13 @@ function snapshot(root, state, gate, hash) {
 function approve(root, { jobId, gate, channel, via }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
-  const pending = state.pending_gate;
+  let pending = state.pending_gate;
+  // A parked job with a submitted amendment waits on gate A (factory next presents it); an
+  // approval that arrives before that routing is for the same amendment hash.
+  if ((!pending || pending.id === 'P') && state.amendment && state.amendment.status === 'submitted') {
+    pending = { id: 'A', hash: state.amendment.hash, docs: [state.amendment.file], at: nowIso() };
+    state.pending_gate = pending;
+  }
   if (!pending || pending.id === 'P') fail(`${state.id} has no gate waiting for approval${pending && pending.id === 'P' ? ' (it is parked: reply "resume", "cancel job" or "abandon job")' : ''}.`, 'no_gate');
   if (gate && gate !== pending.id) fail(`${state.id} is waiting at ${pending.id}, not ${gate}.`, 'wrong_gate');
   const now = currentGateHash(root, state, pending.id);
@@ -214,15 +220,26 @@ function approve(root, { jobId, gate, channel, via }) {
   state.approvals[pending.id] = { hash: now, at: nowIso(), via: via || channel, snapshot: snapshot(root, state, pending.id, now) };
   state.pending_gate = null;
   if (pending.id === 'A') require('./amend').applyApproved(root, state);
+  // An amendment submitted while the job was parked pre-empts the park: approving it is the
+  // human's decision to move on, so it resumes the job too (no separate "resume").
+  const resumed = pending.id === 'A' && state.status === 'parked' ? (state.park && state.park.from) || 'park' : null;
+  if (resumed) {
+    state.repeat = { key: null, count: 0 };
+    state.status = 'active';
+    state.resumed = { at: nowIso(), from: state.park ? state.park.from : null, step: null, via: 'amendment' };
+    state.park = null;
+  }
   job.save(root, state);
   log(root, state, 'approve', { channel, gate: pending.id, hash: now });
-  return { job: state.id, gate: pending.id, hash: now, message: `Approved ${pending.id} for ${state.id} (hash ${now.slice(0, 12)}).` };
+  if (resumed) log(root, state, 'resume', { channel, from: state.resumed.from, step: null, via: 'amendment' });
+  return { job: state.id, gate: pending.id, hash: now, ...(resumed ? { resumed: true } : {}), message: `Approved ${pending.id} for ${state.id} (hash ${now.slice(0, 12)}).${resumed ? ' The job was parked: approving the amendment resumed it.' : ''}` };
 }
 
 function deny(root, { jobId, reason, channel }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
-  const pending = state.pending_gate;
+  let pending = state.pending_gate;
+  if ((!pending || pending.id === 'P') && state.amendment && state.amendment.status === 'submitted') pending = { id: 'A', hash: state.amendment.hash, docs: [state.amendment.file], at: nowIso() };
   if (!pending || pending.id === 'P') fail(`${state.id} has no gate waiting.`, 'no_gate');
   if (!String(reason || '').trim()) fail(`Say what must change: reply "deny <what must change>" (for example "deny cover negative numbers too"). Nothing was denied; ${pending.id} is still waiting.`, 'needs_reason');
   confirmTyped(channel, state.id, `deny ${pending.id}`);

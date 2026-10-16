@@ -65,7 +65,9 @@ function notice(root, r) {
   let out = null;
   if (!watch.shown) {
     const never = !turn;
-    const stale = !fresh && !(turnAt > Date.parse(watch.since));
+    // A park is not evidence of a dead hook: the job stops there and `factory next` (or drive)
+    // may be asked again before the human has said anything, so only "no prompt ever" counts.
+    const stale = !fresh && r.action !== 'parked' && !(turnAt > Date.parse(watch.since));
     if (never || stale) {
       out = message(w, never);
       watch.shown = true;

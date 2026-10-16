@@ -14,11 +14,78 @@ const ledger = require('./ledger');
 const { matchesAny } = require('../lib/glob');
 const git = require('../lib/git');
 
-function park(root, state, reason, from) {
+// Every park is typed: `kind` names the cause and `next` the step that moves it on (the reply,
+// or the change that fixes it), so the human gets a route, not only a stop. The park is logged
+// as its own decision row (action "park", rule park.<kind>) unless the router records it with
+// its routing decision (`logged`), so `factory why` shows every park with its reason.
+const PARK_NEXT = {
+  budget: 'Reply "resume" for 50% more agent runs, or "cancel job".',
+  scope_violation: 'Files outside the allowed paths changed: revert them and reply "resume", or ask for an amendment that allows them.',
+  review_rounds: 'Reply "resume" for one more review-fix round, or say what to change (an amendment).',
+  verify_fix_rounds: 'Reply "resume" for one more verify-fix round, or say what to change (an amendment).',
+  no_progress: 'The same step kept coming back unchanged: read factory why, fix the cause (often the environment or a plan change), then reply "resume".',
+  plan_invalid: 'The plan still fails validation: reply "resume" for one more planning round, or say how to split the work.',
+  environment_broken: 'Fix the build environment (factory env check shows the failing command; factory env set changes it), then reply "resume".',
+  unverified_finding: 'Reply "resume" to re-verify once more, or settle it: "dismiss finding <id> <why>" or "accept finding <id> <why>".',
+  clarify: 'Reply "resume" for one more try, or "proceed" to go on with the gaps shown (at a research, contract or readiness cap).',
+  dependency_conflict: 'A task\'s dependencies do not merge even on a branch rebuilt from the integrated job branch: amend the plan (make one task depend on the other, or give the shared file to one task), then reply "resume".',
+  needs_paths: 'A builder needs files outside its allowed paths: amend the plan to give them to it (the amend skill), then approve the amendment.',
+  task_exhausted: 'A task used its attempts: reply "resume" for another round of attempts (they continue from the last one), or amend the task.',
+  tasks_not_done: 'Reply "resume" to build the remaining tasks again, or amend the plan.',
+  regression: 'Integrating would drop work already merged; the task was already rebuilt on the merged code once. Decide: amend the task, or reply "resume" to try again.',
+  conflict: 'A conflict outside the tasks\' paths: amend the plan (paths or dependencies), then reply "resume".',
+  design: 'The design critique did not approve and no human gate reviews it: reply "resume" for another round, or say what must change.',
+  transient: 'Copilot kept failing with rate limits or network errors: wait a few minutes, then reply "resume".',
+  epic_gate: 'Decide: a new slice (amend the epic) or a fix job for a merged slice.',
+  manual: 'Parked by hand: reply "resume" when ready, or "cancel job".',
+  other: 'Read factory why --format md, then reply "resume", "cancel job" or "abandon job".',
+};
+const FROM_KIND = { budget: 'budget', drift: 'scope_violation', review: 'review_rounds', verify: 'verify_fix_rounds', repeat: 'no_progress', decompose: 'plan_invalid', environment: 'environment_broken', reverify: 'unverified_finding', clarify: 'clarify', manual: 'manual', epic_gate: 'epic_gate', transient: 'transient', 'fanout-judge': 'design', decide: 'design' };
+
+function parkKind(reason, from, extra = {}) {
+  if (extra.kind && PARK_NEXT[extra.kind]) return extra.kind;
+  if (FROM_KIND[from]) return FROM_KIND[from];
+  const r = String(reason || '');
+  if (from === 'realize') {
+    const tasks = extra.tasks || [];
+    if (tasks.some((t) => /dependency_conflict/.test(t.summary || '')) || /dependency_conflict/.test(r)) return 'dependency_conflict';
+    if (tasks.some((t) => t.outcome === 'blocked' && /needs /.test(t.summary || '')) || /\(blocked\)/.test(r)) return 'needs_paths';
+    if (tasks.some((t) => t.outcome === 'exhausted') || /\(exhausted\)/.test(r)) return 'task_exhausted';
+    return 'tasks_not_done';
+  }
+  if (from === 'reconcile') return /regression|drop/i.test(r) ? 'regression' : 'conflict';
+  return 'other';
+}
+
+// The suggested next step: the kind's, made concrete where the tasks say what they need.
+function parkNext(kind, extra = {}) {
+  const tasks = extra.tasks || [];
+  if (kind === 'needs_paths') {
+    const need = tasks.filter((t) => t.outcome === 'blocked').map((t) => `${t.id}${(t.needs_paths || []).length ? ` needs ${t.needs_paths.join(', ')}` : ''}`);
+    if (need.length) return `${need.join('; ')}: amend the plan to give it those paths (the amend skill), then approve the amendment.`;
+  }
+  if (kind === 'dependency_conflict') {
+    const ids = tasks.filter((t) => /dependency_conflict/.test(t.summary || '')).map((t) => t.id);
+    if (ids.length) return `${ids.join(', ')}: ${PARK_NEXT.dependency_conflict}`;
+  }
+  return extra.next || PARK_NEXT[kind] || PARK_NEXT.other;
+}
+
+function park(root, state, reason, from, extra = {}) {
+  const kind = parkKind(reason, from, extra);
+  const next = parkNext(kind, extra);
   state.status = 'parked';
-  state.park = { reason, at: nowIso(), from: from || null };
+  state.park = { reason, at: nowIso(), from: from || null, kind, next };
   state.pending_gate = { id: 'P', hash: null, docs: [], at: nowIso() };
   job.save(root, state);
+  if (!extra.logged) {
+    try {
+      decisions.write(root, { job: state.id, action: 'park', chosen: 'park', rule: `park.${kind}`, reason: String(reason || '').slice(0, 1000), park: { kind, from: from || null, next }, during: state.last_decision_id || null, node: state.parent ? `${state.parent}/${state.id}` : state.id, recipe: state.recipe.id, recipe_version: state.recipe.version });
+    } catch {
+      /* the park itself is in the state; the row is for factory why */
+    }
+  }
+  return state.park;
 }
 
 // One owner per finding: the task whose commit last wrote the finding's line (git blame on
@@ -300,16 +367,26 @@ function route(root, jobId) {
 
   if (state.status === 'closed') return out({ action: 'done', reason: 'Job is closed.' });
   if (state.status === 'cancelled' || state.status === 'abandoned') return out({ action: 'done', reason: `Job was ${state.status}.` });
-  if (state.status === 'parked') {
-    return out({ action: 'parked', reason: state.park.reason, instructions: 'Wait for the human: resume <step> · cancel job · abandon job.' });
+  // A submitted amendment pre-empts a park: gate A is shown, and approving it also resumes
+  // the job (the human approving is the one who decides it moves on).
+  if (state.status === 'parked' && !(state.amendment && state.amendment.status === 'submitted')) {
+    if (!state.pending_gate || state.pending_gate.id !== 'P') {
+      state.pending_gate = { id: 'P', hash: null, docs: [], at: nowIso() };
+      job.save(root, state);
+    }
+    const p = state.park || {};
+    return out({ action: 'parked', reason: p.reason, park: { kind: p.kind || parkKind(p.reason, p.from), next: p.next || parkNext(p.kind || parkKind(p.reason, p.from)), from: p.from || null, at: p.at || null }, instructions: 'Wait for the human: resume <step> · cancel job · abandon job.' });
   }
   if (state.amendment && state.amendment.status === 'open') {
     return out({ action: 'skill', skill: 'amend', step: 'amend', reason: 'An amendment is open: finish editing, then `factory amend submit`.' });
   }
   if (state.amendment && state.amendment.status === 'submitted') {
-    state.pending_gate = { id: 'A', hash: state.amendment.hash, docs: [state.amendment.file], at: nowIso() };
-    job.save(root, state);
-    return out({ action: 'gate', gate: state.pending_gate, step: 'A', reason: 'Amendment waits for your approval.' });
+    if (!state.pending_gate || state.pending_gate.id !== 'A' || state.pending_gate.hash !== state.amendment.hash) {
+      state.pending_gate = { id: 'A', hash: state.amendment.hash, docs: [state.amendment.file], at: nowIso() };
+      job.save(root, state);
+    }
+    const parked = state.status === 'parked';
+    return out({ action: 'gate', gate: state.pending_gate, step: 'A', reason: parked ? `Amendment waits for your approval. The job is parked (${(state.park && state.park.reason) || 'see factory why'}); approving the amendment also resumes it.` : 'Amendment waits for your approval.', ...(parked ? { resumes_park: true } : {}) });
   }
 
   if (state.needs_replan && !(state.amendment && ['open', 'submitted'].includes(state.amendment.status))) {
@@ -318,8 +395,8 @@ function route(root, jobId) {
 
   const over = budgets.exceeded(root, state);
   if (over) {
-    park(root, state, over, 'budget');
-    return record(root, state, null, out({ action: 'parked', reason: over, rule: 'cap.budget' }));
+    park(root, state, over, 'budget', { logged: true });
+    return record(root, state, null, out({ action: 'parked', reason: over, park: state.park, rule: 'cap.budget' }));
   }
 
   const ctx = steps.context(root, state, job.load);
@@ -345,8 +422,8 @@ function route(root, jobId) {
     }
     case 'no_drift':
       if (al.detail.drift === 'scope') {
-        park(root, state, `Files outside the allowed or into protected paths: ${(al.detail.outside || []).join(', ')}`, 'drift');
-        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'row2.drift_scope' }));
+        park(root, state, `Files outside the allowed or into protected paths: ${(al.detail.outside || []).join(', ')}`, 'drift', { logged: true });
+        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'row2.drift_scope' }));
       }
       action = { action: 'skill', skill: 'amend', step: 'amend', reason: `The approved ${al.detail.drift} changed; it needs an amendment and your approval.` };
       rule = `row2.drift_${al.detail.drift}`;
@@ -360,8 +437,8 @@ function route(root, jobId) {
     case 'no_confirmed_serious': {
       state.counters.review_rounds += 1;
       if (state.counters.review_rounds > L.max_review_rounds) {
-        park(root, state, `Review rounds used up (${L.max_review_rounds}) with confirmed serious findings still open.`, 'review');
-        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'cap.review_rounds' }));
+        park(root, state, `Review rounds used up (${L.max_review_rounds}) with confirmed serious findings still open.`, 'review', { logged: true });
+        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'cap.review_rounds' }));
       }
       const { owners, byFinding } = ownersOfFindings(ctx, al.detail.serious);
       reopenTasks(state, owners, 'review');
@@ -383,8 +460,8 @@ function route(root, jobId) {
       }
       state.counters.verify_fix_rounds += 1;
       if (state.counters.verify_fix_rounds > L.max_verify_fix_rounds) {
-        park(root, state, `Verify-fix rounds used up (${L.max_verify_fix_rounds}); criteria still unproven.`, 'verify');
-        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'cap.verify_fix_rounds' }));
+        park(root, state, `Verify-fix rounds used up (${L.max_verify_fix_rounds}); criteria still unproven.`, 'verify', { logged: true });
+        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'cap.verify_fix_rounds' }));
       }
       reopenTasks(state, owners, 'verify');
       state.fix = { kind: 'verifyFix', source: al.detail.prove_record, fingerprint: ctx.b.fingerprint, tasks: owners };
@@ -422,8 +499,8 @@ function route(root, jobId) {
   }
   // Caps on loops that live inside a step.
   if (action.step === 'decompose' && state.counters.decompose_rounds >= L.max_plan_validate_rounds) {
-    park(root, state, `The plan still fails validation after ${state.counters.decompose_rounds} rounds.`, 'decompose');
-    return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'cap.decompose_rounds' }));
+    park(root, state, `The plan still fails validation after ${state.counters.decompose_rounds} rounds.`, 'decompose', { logged: true });
+    return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'cap.decompose_rounds' }));
   }
 
   // Gates and merge waits.
@@ -477,8 +554,8 @@ function route(root, jobId) {
     if (state.repeat && state.repeat.key === key) state.repeat.count += 1;
     else state.repeat = { key, count: 1 };
     if (state.repeat.count > L.repeat_guard) {
-      park(root, state, `No progress: "${action.step}" chosen ${state.repeat.count} times from the same state.`, 'repeat');
-      return record(root, state, al, out({ action: 'parked', reason: state.park.reason, rule: 'cap.repeat_guard' }));
+      park(root, state, `No progress: "${action.step}" chosen ${state.repeat.count} times from the same state.`, 'repeat', { logged: true });
+      return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'cap.repeat_guard' }));
     }
     job.save(root, state);
   }
@@ -534,4 +611,4 @@ function record(root, state, al, result) {
   return result;
 }
 
-module.exports = { decide, park, ownersOfFindings, ownersOfFailures, proveGaps };
+module.exports = { decide, park, parkKind, parkNext, PARK_NEXT, ownersOfFindings, ownersOfFailures, proveGaps };
