@@ -369,6 +369,12 @@ function stop(root, { jobId, kind, channel, reason }) {
   state.stopped = { at: nowIso(), reason: reason || '' };
   job.save(root, state);
   log(root, state, kind, { channel, reason });
+  // the fetched dependency source is a cache: an ended job does not keep it
+  try {
+    require('./deps').cleanup(root, state.id);
+  } catch {
+    /* a convenience */
+  }
   return { job: state.id, message: `${state.id} ${kind}. Its files are kept under .factory/jobs/${state.id}.` };
 }
 

@@ -98,6 +98,7 @@
     "enabled": true,
     "max_packages": 20,
     "max_unpacked_mb": 200,
+    "max_archive_mb": 100,
     "timeout_seconds": 180
   },
   "lessons_max_per_job": 3,
