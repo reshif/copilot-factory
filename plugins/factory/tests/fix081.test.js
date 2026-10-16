@@ -442,6 +442,8 @@ test('hooks: the launcher finds the plugin without any root variable (VS Code to
     const r = runIn(tok === '${CLAUDE_PLUGIN_ROOT}' ? b.split('${PLUGIN_ROOT}').join('') : b, {});
     assert.ok(deny(r), `${tok}: ${r.stderr}`);
   }
+  // 3b. VS Code on WSL sets PLUGIN_ROOT with backslashes (\\home\\you\\.copilot\\…): normalised, no recorded root needed
+  assert.ok(deny(runIn(H.hooks.preToolUse[0].bash, { PLUGIN_ROOT: F.PLUGIN.split('/').join('\\') })), 'backslash PLUGIN_ROOT');
   // 4. the env var (the Copilot CLI) still works, and wins over a recorded root
   fs.writeFileSync(path.join(userDir, 'plugin-root'), '/nonexistent\n');
   assert.ok(deny(runIn(H.hooks.preToolUse[0].bash, { COPILOT_PLUGIN_ROOT: F.PLUGIN })));
