@@ -5224,7 +5224,7 @@ function gateReviewHtml(r) {
   if (pc && (pc.open || []).length) parts.push(list(`Plan critique: ${pc.verdict}`, pc.open.map(item), null, 'bad'));
   if (L) parts.push(list(`API ledger: ${L.entries} verified quote(s) from the pinned source${L.rejected ? `, ${L.rejected} rejected` : ''}`, [...(L.symbols || []).map(esc), ...(L.gaps || []).map((g) => `<span class="bad">gap: ${esc(g)}</span>`)]));
   if (P) parts.push(list(`Plan probe: ${P.ok ? 'every verify command can run' : `${(P.problems || []).length} problem(s)`}${P.current ? '' : ' (for an earlier plan)'}`, [...(P.problems || []).map((x) => `<span class="bad">${esc(x)}</span>`), ...(P.commands || []).map(esc)]));
-  if (E) parts.push(`<p class="meta">Build environment: <b>${esc(E.name || 'none')}</b> (${esc(E.status)})${(E.setup || []).length ? ` — setup: <code>${esc(E.setup.join(' && '))}</code>` : ''}${E.note ? `. ${esc(E.note)}` : ''}</p>`);
+  if (E) parts.push(`<p class="meta">Build environment: <b>${esc(E.name || 'none')}</b> (${esc(E.status)})${(E.deps || E.project) && E.runs ? `${E.tool ? ` — built with <b>${esc(E.tool)}</b>${E.reason ? ` (${esc(E.reason)})` : ''}` : ''} — <code>${esc(E.runs)}</code>` : (E.setup || []).length ? ` — setup: <code>${esc(E.setup.join(' && '))}</code>` : ''}${E.note ? `. ${esc(E.note)}` : ''}</p>`);
   return parts.join('');
 }
 function agentsProse(agents) {

@@ -374,7 +374,8 @@ function runBounded(cmd, cwd, capSec, env) {
 // Is this a greenfield plan: the environment sets things up from manifests the base commit does
 // not have yet?
 function greenfield(root, base, e) {
-  if (!e || !(e.setup || []).length) return false;
+  const cmds = require('./environment').commandsOf(e);
+  if (!e || !cmds.length) return false;
   let tracked = [];
   try {
     tracked = git.out(root, ['ls-tree', '-r', '--name-only', base]).split('\n').filter(Boolean);
@@ -383,8 +384,8 @@ function greenfield(root, base, e) {
   }
   const { matchesAny } = require('../lib/glob');
   // only a setup that installs from a manifest needs one: `pip install -e .`, `npm ci`, …
-  if (!/pip3? install|poetry install|uv sync|npm (ci|install)|pnpm install|yarn( install)?\b|go mod|cargo (build|fetch)|bundle install|invoke build/.test((e.setup || []).join('\n'))) return false;
-  const keys = e.cache_key || [];
+  if (!/pip3? install|poetry install|uv sync|npm (ci|install)|pnpm install|yarn( install)?\b|go mod|cargo (build|fetch)|bundle install|invoke build/.test(cmds.join('\n'))) return false;
+  const keys = e.deps_key || e.cache_key || [];
   if (keys.length) return !tracked.some((f) => matchesAny(f, keys));
   return !tracked.some((f) => /^(pyproject\.toml|setup\.py|setup\.cfg|requirements[\w.-]*\.txt|package\.json|go\.mod|Cargo\.toml|Gemfile|pom\.xml|build\.gradle)$/.test(f));
 }
@@ -416,7 +417,7 @@ function mode(root, state, ctx = null) {
   if (state && state.probe_override === 'lint') return 'lint';
   if (flag === 'lint' || flag === 'full') return flag;
   const g = require('./environment').gateProposal(root, state.id);
-  return g.status === 'proposed' && NETWORK_SETUP.test(((g.env || {}).setup || []).join('\n')) ? 'lint' : 'full';
+  return g.status === 'proposed' && NETWORK_SETUP.test(require('./environment').commandsOf(g.env || {}).join('\n')) ? 'lint' : 'full';
 }
 
 function enabled(root, state, ctx = null) {
@@ -488,7 +489,7 @@ function run(root, { jobId } = {}) {
   const green = greenfield(root, base, e);
   const boot = plan.tasks.filter((t) => t.bootstrap === true);
   if (green) {
-    if (!boot.length) problems.push(`Greenfield: the build environment's setup (${(e.setup || []).join(' && ')}) needs files no commit has yet (${(e.cache_key || []).join(', ') || 'a manifest'}). Add a bootstrap task first ("bootstrap": true) that creates them, and make every other task depend on it.`);
+    if (!boot.length) problems.push(`Greenfield: the build environment's setup (${require('./environment').commandsOf(e).join(' && ')}) needs files no commit has yet (${(e.deps_key || e.cache_key || []).join(', ') || 'a manifest'}). Add a bootstrap task first ("bootstrap": true) that creates them, and make every other task depend on it.`);
     else {
       const b = boot[0];
       const late = plan.tasks.filter((t) => t.id !== b.id && !planMod.effectiveDeps(plan.tasks, t.id, plan.interfaces).includes(b.id) && !dependsOn(plan.tasks, t.id, b.id));
@@ -531,8 +532,8 @@ function run(root, { jobId } = {}) {
           E = envMod.withBaseEnv(base, () => envMod.ensure(root, null, { taskId: 'probe', wt, env: { ...runEnv, timeout_seconds: Math.min(runEnv.timeout_seconds || 1200, S.budget) } }));
           if (!E.ok) {
             setup = { status: 'broken', cmd: E.broken.cmd, code: E.broken.code, tail: redact(String(E.broken.tail || '').slice(-800)) };
-            problems.push(`The build environment does not set up: ${redact(E.broken.reason.slice(0, 600))}. Fix environment.proposed.json (setup, env, services) so every worktree can build.`);
-          } else setup = { status: 'ok', ran: (E.ran || []).map((x) => ({ cmd: x.cmd, code: x.code })), cached: Boolean(E.cached) };
+            problems.push(`The build environment does not set up: ${redact(E.broken.reason.slice(0, 600))}. Fix environment.proposed.json (deps, project, env, services) so every worktree can build.`);
+          } else setup = { status: 'ok', ran: (E.ran || []).map((x) => ({ cmd: x.cmd, code: x.code })), cached: Boolean(E.cached), ...(E.shared ? { shared: { key: E.shared.key, reused: Boolean(E.shared.reused), private: Boolean(E.shared.private) } } : {}) };
         }
         if (!e || (E && E.ok)) {
           const penv = probeEnv(root, probeId, E && E.env ? envMod.processEnv(E.env, E.vars) : {}, homeEnv);

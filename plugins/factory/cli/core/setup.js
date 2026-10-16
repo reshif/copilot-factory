@@ -151,26 +151,25 @@ function doctor(cwd, opts = {}) {
     add('ci', ci, ci ? 'factory-gate workflow present' : 'no CI re-verify workflow: run factory ci install (or re-verify locally with factory ci verify)', 'warning');
     const cur = job.current(root);
     add('current job', true, cur || '(none)');
-    // the build environment every worktree is set up with (factory env show / check)
-    const envMod = require('./environment');
-    const { env: e, error } = envMod.loadSafe(root);
-    if (error) add('build environment', false, error);
-    else if (e) {
-      const pr = envMod.problems((({ seal: _s, confirmed: _c, ...rest }) => rest)(e));
-      add('build environment', pr.length === 0, pr.length ? pr.join('; ') : `${e.name || 'set'} (${envMod.short(e)}): ${(e.setup || []).join(' && ') || 'no setup'}; factory env check runs it in a scratch worktree`);
-    } else {
-      const p = envMod.proposal(root);
-      add('build environment', p.name === 'none', p.name === 'none' ? 'none needed (no dependency manifest)' : `none confirmed; proposed ${p.name}: ${(p.setup || []).join(' && ')}. Reply "confirm environment ${envMod.short(p)}" or run factory env set; until then worktrees are bare`, 'warning');
-    }
   }
-  // this machine's tools (cli/core/machine.js, cached for a day; factory doctor --machine scans
-  // again): what a build environment can use here, with the remedy where something is missing
+  // The build environment (0.12): one section that says what WILL be used and why, where the
+  // shared environments live, that your own .venv is never touched, and the last check. The full
+  // machine inventory (every tool found) is under factory doctor --machine.
+  let build = null;
   try {
-    const M = require('./machine');
-    const inv = M.inventory({ refresh: Boolean(opts.refreshMachine) });
-    for (const l of M.lines(inv)) add(`machine: ${l.name}`, l.ok, l.ok || !l.remedy ? l.detail : `${l.detail}. Remedy: ${l.remedy}`, 'warning');
+    build = buildSection(root, { refresh: Boolean(opts.refreshMachine) });
+    for (const c of build.checks) add(c.name, c.ok, c.detail, c.level || 'warning');
   } catch (e) {
-    add('machine', false, `could not take the tool inventory: ${String(e.message).slice(0, 200)}`, 'warning');
+    add('build environment', false, `could not read it: ${String(e.message).slice(0, 200)}`, 'warning');
+  }
+  if (opts.refreshMachine) {
+    try {
+      const M = require('./machine');
+      const inv = M.inventory();
+      for (const l of M.lines(inv)) add(`machine: ${l.name}`, l.ok, l.ok || !l.remedy ? l.detail : `${l.detail}. Remedy: ${l.remedy}`, 'warning');
+    } catch (e) {
+      add('machine', false, `could not take the tool inventory: ${String(e.message).slice(0, 200)}`, 'warning');
+    }
   }
   copilotChecks(add, root);
   for (const c of hookNodeChecks()) add(c.name, c.ok, c.detail, 'warning');
@@ -179,7 +178,89 @@ function doctor(cwd, opts = {}) {
   const rc = recipes.checkAll();
   for (const [id, errs] of Object.entries(rc)) add(`recipe ${id}`, errs.length === 0, errs.length ? errs.join('; ') : 'valid');
   const ready = checks.every((c) => c.ok || c.level !== 'error');
-  return { ready, checks };
+  return { ready, checks, ...(build ? { build_environment: build.summary } : {}) };
+}
+
+// factory doctor's "Build environment" section: checks named "build environment: …" and a summary.
+function buildSection(root, { refresh = false } = {}) {
+  const M = require('./machine');
+  const checks = [];
+  const add = (name, ok, detail, level = 'warning') => checks.push({ name, ok, detail, level });
+  let inv = null;
+  try {
+    inv = M.inventory({ refresh });
+  } catch {
+    inv = null;
+  }
+  const guide = require('path').join(__dirname, '..', '..', 'docs', 'ENVIRONMENT.md');
+  const E = root ? require('./environment') : null;
+  const choice = root ? E.toolChoice(root, { machine: inv }) : { kind: 'python', ...M.pythonTool(inv) };
+  const summary = { guide };
+  // 1. the environment the build runs in
+  let conf = null;
+  if (root) {
+    const { env: e, error } = E.loadSafe(root);
+    conf = e;
+    if (error) add('build environment', false, `${error} (factory env status explains; guide: ${guide})`, 'error');
+    else if (e) {
+      const pr = E.problems((({ seal: _s, confirmed: _c, ...rest }) => rest)(e));
+      const v1 = E.schemaOf(e) === 1;
+      const up = v1 ? E.notice(root) : null;
+      add('build environment', pr.length === 0, pr.length ? pr.join('; ') : `${e.name || 'set'} (${E.short(e)}), ${v1 ? 'sealed under 0.11: its setup runs in every worktree' : 'shared model'}: ${E.describe(e)}.${up && up.status === 'upgrade' ? ` ${up.message}` : ''} factory env status shows what happened.`, 'error');
+      summary.environment = { name: e.name || null, hash: E.short(e), schema: v1 ? 1 : 2, runs: E.describe(e) };
+    } else {
+      const p = E.proposal(root);
+      const none = E.isNone(p);
+      add('build environment', none, none ? 'none needed (no dependency manifest)' : `none confirmed; proposed ${p.name}: ${E.describe(p)}. Reply "confirm environment ${E.short(p)}" or run factory env set; until then worktrees are bare`, 'warning');
+      summary.environment = { name: null, proposed: p.name, hash: E.short(p), runs: E.describe(p) };
+    }
+  }
+  // 2. the tool that WILL be used, and why
+  const sealedTool = conf && E.schemaOf(conf) === 2 && conf.tool ? conf.tool : null;
+  if (choice.kind !== 'none') {
+    const now = `${choice.tool || 'none available'}: ${choice.reason}`;
+    add('build environment: tool', Boolean(choice.tool), sealedTool && sealedTool !== choice.tool ? `the sealed environment uses ${sealedTool} (${conf.reason || 'as sealed'}); on this machine now the factory would choose ${now}` : sealedTool ? `${sealedTool} (sealed): ${conf.reason || choice.reason}` : now);
+  } else add('build environment: tool', true, `none: ${choice.reason}`);
+  summary.tool = { chosen: sealedTool || choice.tool || null, reason: sealedTool ? conf.reason || null : choice.reason, machine_choice: choice.tool || null };
+  // 3. python3 -m venv: works or not, from the cached scan, with its age
+  if (inv) {
+    const works = Boolean(inv.venv && inv.venv.works);
+    add('build environment: python3 -m venv', true, `${works ? 'works' : `does not work${inv.venv && inv.venv.why ? ` (${inv.venv.why})` : ''}`} (scanned ${M.ageText(inv)}; factory doctor --machine scans again)${!works && choice.tool && choice.tool !== 'venv' ? `; not needed: ${choice.tool} is used` : ''}`);
+    summary.python3_venv = { works, scanned: inv.at || null };
+  } else add('build environment: python3 -m venv', true, 'not scanned yet (factory doctor --machine scans)');
+  if (root) {
+    // 4. the shared environments
+    const S = require('./envstore');
+    const envs = S.list(root);
+    const total = envs.reduce((n, x) => n + (x.size_bytes || 0), 0);
+    if (conf && E.schemaOf(conf) === 1) add('build environment: shared', true, `not used: the sealed environment is 0.11's per-worktree setup${envs.length ? ` (${envs.length} shared environment(s) from earlier, ${S.human(total)}, in ${S.STORE(root)})` : ''}`);
+    else if (!envs.length) add('build environment: shared', true, `none built yet: the first env check or task builds one in ${S.STORE(root)} (once per lockfile)`);
+    else {
+      const top = envs[0];
+      add('build environment: shared', envs.some((x) => x.ok), `${envs.length} in ${S.STORE(root)} (${S.human(total)}); newest ${top.key}: ${top.ok ? `built ${top.built_at} with ${top.tool || '?'} in ${Math.round((top.build_ms || 0) / 1000)} s` : `FAILED at ${(top.failure || {}).cmd || '?'}`}, used by ${top.used_by.length} worktree(s). factory env gc removes old ones (kept: newest ${S.KEEP()} and any in use)`);
+    }
+    summary.shared = { store: S.STORE(root), count: envs.length, size: S.human(total), envs: envs.map((x) => ({ key: x.key, ok: x.ok, size: x.size, built_at: x.built_at, used_by: x.used_by.length })) };
+    // 5. your own .venv
+    const uv = require('path').join(root, '.venv');
+    const ex = E.excludeReport(root);
+    add('build environment: your .venv', true, `${exists(uv) ? `${uv} exists` : 'no .venv in the repository root'}: the factory never creates, changes or deletes it and never sets up the root checkout; each worktree gets its own .factory-venv.${ex.legacy_venv ? ` Note: ${ex.file} has a ".venv/" line (a 0.11 environment added it): it also hides your root .venv from git status; remove that line if you want to see it.` : ''}`);
+    summary.your_venv = { path: uv, exists: exists(uv), touched_by_factory: false, exclude_hides_it: ex.legacy_venv };
+    // 6. the last check
+    let check = null;
+    try {
+      const ER = require('./env-repair');
+      for (const id of job.listJobIds(root)) {
+        const c = ER.readCheck(root, id);
+        if (c && (!check || String(c.at) > String(check.at))) check = { job: id, ...c };
+      }
+    } catch {
+      check = null;
+    }
+    add('build environment: last check', !check || check.ok, check ? `${check.job} ${check.at}: ${check.ok ? 'passed' : `failed at ${(check.broken || {}).cmd || (check.problems || []).join('; ')}`} (factory env status shows the output)` : 'none yet (factory next runs factory env check --job before the first task)');
+    summary.last_check = check ? { job: check.job, at: check.at, ok: check.ok } : null;
+  }
+  add('build environment: guide', true, `how the factory builds your environment: ${guide}`);
+  return { checks, summary };
 }
 
 // The Node the hooks would run under. The hook launchers run `node` from whatever PATH the

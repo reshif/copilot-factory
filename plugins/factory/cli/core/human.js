@@ -609,7 +609,9 @@ function setEnvironment(root, { file, none = false, expectHash = null, channel }
   }
   if (state) log(root, state, 'set_environment', { channel, environment: r.environment.name || null, hash: r.hash });
   require('./events').append(root, { event: 'environment_set', channel, name: r.environment.name || null, hash: r.hash, job: state ? state.id : null });
-  return { ...r, message: `Build environment set: ${r.environment.name || '(unnamed)'} (${r.hash}). ${(r.environment.setup || []).length ? `Each worktree runs: ${r.environment.setup.join(' && ')}.` : 'Worktrees need no setup.'} Copilot continues with factory next.` };
+  const E = r.environment;
+  const runs = envMod.schemaOf(E) === 2 ? (envMod.inert(E) ? 'Worktrees need no setup.' : `Dependencies install once per lockfile into .factory/envs (shared); each worktree gets a cheap overlay: ${envMod.describe(E)}.`) : (E.setup || []).length ? `Each worktree runs: ${E.setup.join(' && ')}.` : 'Worktrees need no setup.';
+  return { ...r, message: `Build environment set: ${E.name || '(unnamed)'} (${r.hash})${E.tool ? `, built with ${E.tool}` : ''}. ${runs} Copilot continues with factory next.` };
 }
 
 // Trailing punctuation, emoji and spaces are tone, not content: "Approve!", "approve 👍".

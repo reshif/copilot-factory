@@ -356,7 +356,8 @@ test('m7: doctor shows the inventory\'s age and never probes sudo; m8: tests run
   assert.ok(process.env.FACTORY_MACHINE_FILE);
   const root = F.makeRepo(t);
   const d = F.cli(root, ['doctor']);
-  assert.match(d.checks.find((c) => c.name === 'machine: inventory').detail, /scanned (just now|\d+ (min|h) ago)[\s\S]*factory doctor --machine scans again/);
+  // 0.12: the doctor's build-environment section carries the scan's age; the inventory is under --machine
+  assert.match(d.checks.find((c) => c.name === 'build environment: python3 -m venv').detail, /scanned (just now|\d+ (min|h) ago)[\s\S]*factory doctor --machine scans again/);
   assert.doesNotMatch(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'machine.js'), 'utf8'), /\['-n', 'true'\]/);
   assert.match(core('environment').lint({ setup: ['python3 -m venv .venv'] }, { machine: MH.inventory({ venv: false }) })[0].message, /factory doctor --machine/);
 });

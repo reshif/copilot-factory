@@ -69,7 +69,8 @@ Workflows  wfargs <clarify|ground|fanout-judge|decompose|realize|reconcile> [--c
                only the workflow factory next asked for, one run per job at a time. Prints the recorded result
                (status first; --json for the full JSON, the workflow's own status under "workflow");
                COPILOT_BIN, policy.copilot.flags, policy.limits.max_parallel_agents, policy.agents.model_ids
-Env        env show · env check [--proposed]   (the build environment each worktree runs in; read-only, agents may run them)
+Env        env show · env status · env check [--proposed]   (the build environment each worktree runs in; read-only, agents may run them)
+           env gc [--keep N]   (remove old shared environments under .factory/envs; the newest N and any a worktree uses stay)
            env propose --file f   (the main session's proposal) · env set [--file f | --none] [hash]   (human-only: confirm it)
 Deps       deps fetch [--add pypi:name==1.2.3,npm:name@1.2.3]   (the job's pinned packages, downloaded without running them,
            unpacked read-only under .factory/deps/<job>/; a failed download is a gap, never a stop) · deps show
@@ -115,7 +116,7 @@ const AGENT_ALLOWED = {
   contract: ['show', 'check'],
   intent: ['show'],
   clarify: ['status'],
-  env: ['show', 'check'],
+  env: ['show', 'check', 'status'],
   deps: ['show', 'check'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
@@ -520,6 +521,9 @@ function run(argv) {
     case 'env': {
       const E = C('environment');
       if (sub === 'show') return E.show(R());
+      // read-only: the tool and why, the shared environments, which worktrees use them, the last check and failure
+      if (sub === 'status') return E.status(R(), { jobId: J || null });
+      if (sub === 'gc') return C('envstore').gc(R(), { keep: opt.keep !== undefined ? Math.max(1, parseInt(opt.keep, 10) || 1) : undefined });
       if (sub === 'check') {
         // --job: the sealed environment's check before any task (the router's env.check step):
         // recorded for the job; a failure is a result the repair loop takes up, not an error
@@ -537,13 +541,13 @@ function run(argv) {
         const id = pos[2];
         if (!id) fail('env prepare <T1|job>', 'bad_input');
         const conf = E.load(root);
-        if (!conf || conf.name === 'none' || (!(conf.setup || []).length && !conf.services && !Object.keys(conf.env || {}).length && !conf.prefix)) return { job: state.id, task: id, ok: true, none: true };
+        if (!conf || E.inert(conf)) return { job: state.id, task: id, ok: true, none: true };
         const wt = id === 'job' ? C('tasks').ensureJobWorktree(root, state) : C('tasks').prepareWorktree(root, state, id);
         const r = E.ensure(root, state, { taskId: id === 'job' ? null : id, wt });
         if (!r.ok) process.exitCode = 1;
-        return { job: state.id, task: id, ok: r.ok, ...(r.ok ? { cached: r.cached, ran: r.ran, name: r.env ? r.env.name || null : null, env: E.processEnv(r.env, r.vars) } : { broken: r.broken, message: r.broken.reason }) };
+        return { job: state.id, task: id, ok: r.ok, ...(r.shared ? { shared: r.shared } : {}), ...(r.ok ? { cached: r.cached, ran: r.ran, name: r.env ? r.env.name || null : null, env: E.processEnv(r.env, r.vars) } : { broken: r.broken, message: r.broken.reason }) };
       }
-      return fail('env show | check [--proposed] | propose --file f | set [--file f | --none] [hash]', 'bad_input');
+      return fail('env show | status | check [--proposed] | gc [--keep N] | propose --file f | set [--file f | --none] [hash]', 'bad_input');
     }
     case 'deps': {
       const D = C('deps');

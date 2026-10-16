@@ -438,7 +438,7 @@ function loops(job) {
 // ---------------------------------------------------------------- R7 driver fidelity
 // shim (a symlink on PATH) and console (a read-only snapshot / server) change no job state;
 // `intent show` only prints clarify's research.
-const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'clarify:status', 'clarify:split', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console', 'env:show', 'env:check', 'env:propose']);
+const READ_ONLY = new Set(['next', 'doc', 'why', 'job', 'contract', 'intent', 'clarify:status', 'clarify:split', 'help', 'doctor', 'finalize', 'recipe', 'telemetry', 'use', 'lessons:list', 'task:show', 'distill:context', 'plan:validate', 'report', 'init', 'shim', 'console', 'env:show', 'env:status', 'env:check', 'env:propose']);
 // Steps `factory run` runs itself as child commands (via "run"): task verify after a builder,
 // the environment's setup in a worktree, the per-wave integration. Part of the workflow the
 // decision asked for, never the driver's improvisation.

@@ -220,15 +220,26 @@ function ageText(inv) {
 
 const has = (inv, t) => Boolean(inv && inv.tools && inv.tools[t]);
 
-// How a Python environment is made here: uv > poetry (when the repo uses it) > virtualenv >
-// python3 -m venv (only when it works). null when none can.
-function pythonInstaller(inv, { poetryRepo = false } = {}) {
-  if (!inv) return 'venv';
-  if (has(inv, 'uv')) return 'uv';
-  if (poetryRepo && has(inv, 'poetry')) return 'poetry';
-  if (has(inv, 'virtualenv')) return 'virtualenv';
-  if (inv.venv && inv.venv.works) return 'venv';
-  return null;
+// How a Python environment is made here, and why: ONE decision, recorded in the proposal and the
+// sealed environment (tool, reason) and shown by factory doctor and factory env status.
+//   poetry      a poetry repo with a poetry.lock, poetry installed: only poetry installs from
+//               that lock (and its dev group); the venv is made with uv when uv is there
+//   uv          installed: makes the venv itself (no ensurepip), installs fastest, retries
+//   virtualenv  installed: works where python3 -m venv lacks ensurepip
+//   venv        python3 -m venv, only when the scan saw it make a venv with pip
+// null when none can (the reason says what to install). No inventory yet: venv, unverified.
+function pythonTool(inv, { poetryRepo = false, poetryLock = poetryRepo } = {}) {
+  if (!inv) return { tool: 'venv', maker: 'venv', reason: 'no machine scan yet (factory doctor --machine scans): python3 -m venv assumed, not verified' };
+  const maker = has(inv, 'uv') ? 'uv' : has(inv, 'virtualenv') ? 'virtualenv' : inv.venv && inv.venv.works ? 'venv' : null;
+  const makerWhy = { uv: 'uv makes the venv', virtualenv: 'virtualenv makes the venv', venv: 'python3 -m venv makes the venv (it works here)' }[maker];
+  if (poetryRepo && poetryLock && has(inv, 'poetry') && maker) return { tool: 'poetry', maker, reason: `the repo pins its dependencies in poetry.lock and only poetry installs from it (with its dev group); ${makerWhy}` };
+  if (maker === 'uv') return { tool: 'uv', maker, reason: `uv is installed: it makes the venv itself (no ensurepip needed), installs fastest and retries on its own${poetryRepo ? '; poetry is not installed, so poetry.lock is not used (only the dependencies pyproject.toml declares)' : ''}` };
+  if (maker === 'virtualenv') return { tool: 'virtualenv', maker, reason: `virtualenv is installed (uv is not)${inv.venv && !inv.venv.works ? '; python3 -m venv does not work here' : ''}` };
+  if (maker === 'venv') return { tool: 'venv', maker, reason: 'python3 -m venv works here (the machine scan made a venv with pip) and neither uv nor virtualenv is installed' };
+  return { tool: null, maker: null, reason: `no working venv tool: python3 -m venv fails here${inv.venv && inv.venv.why ? ` (${inv.venv.why})` : ''} and neither uv nor virtualenv is installed; install uv without sudo (curl -LsSf https://astral.sh/uv/install.sh | sh), then factory doctor --machine` };
+}
+function pythonInstaller(inv, opts = {}) {
+  return pythonTool(inv, opts).tool;
 }
 
 // What the planner and the doctor are told: one line per fact, with the remedy where one is due.
@@ -265,4 +276,4 @@ function summary(inv) {
   };
 }
 
-module.exports = { invalidate, ageText, searchDirs, SCAN_VERSION, inventory, scan, which, pythonInstaller, lines, summary, has, venvWorks, cacheFile, cacheKey, TOOLS };
+module.exports = { pythonTool, invalidate, ageText, searchDirs, SCAN_VERSION, inventory, scan, which, pythonInstaller, lines, summary, has, venvWorks, cacheFile, cacheKey, TOOLS };

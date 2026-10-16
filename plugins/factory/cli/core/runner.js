@@ -719,8 +719,9 @@ async function prepareTask(ctx, taskId) {
   const j = r.json || {};
   const out = j.error ? { task: taskId, ok: false, broken: { reason: `could not prepare the worktree and build environment for ${taskId}: ${j.message || j.code}`, code: j.code } } : { task: taskId, ok: Boolean(j.ok), ...(j.ok ? { cached: Boolean(j.cached), name: j.name || null } : { broken: j.broken }) };
   if (j.ok && j.env && Object.keys(j.env).length) ctx.taskEnv[taskId] = j.env;
-  ctx.checks.push({ step: 'environment', task: taskId, ok: out.ok, cached: out.cached || false, ms: r.ms });
-  if (!out.ok || (j.ran || []).length) ctx.say(`environment ${taskId}: ${out.ok ? `ready (${(j.ran || []).length} setup step(s))` : out.broken.reason}`);
+  const sh = j.shared || null;
+  ctx.checks.push({ step: 'environment', task: taskId, ok: out.ok, cached: out.cached || false, ms: r.ms, ...(sh ? { shared: { key: sh.key, built: Boolean(sh.built), reused: Boolean(sh.reused), waited_ms: sh.waited_ms || 0 } } : {}) });
+  if (!out.ok || (j.ran || []).length) ctx.say(`environment ${taskId}: ${out.ok ? `ready (${sh ? `shared ${sh.key} ${sh.built ? 'built' : `reused${sh.waited_ms > 1000 ? ` after waiting ${Math.round(sh.waited_ms / 1000)} s for its build` : ''}`}, ` : ''}${(j.ran || []).length} step(s))` : out.broken.reason}`);
   return out;
 }
 

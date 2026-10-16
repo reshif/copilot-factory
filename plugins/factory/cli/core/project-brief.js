@@ -107,7 +107,7 @@ function environment(root) {
     e = null;
   }
   const conf = e && !e.error && e.env !== undefined ? e.env : null;
-  if (conf && conf.name) return [`- \`${conf.name}\` (confirmed in .factory/environment.json)${conf.notes ? `: ${String(conf.notes).slice(0, 300)}` : ''}`];
+  if (conf && conf.name) return [`- \`${conf.name}\` (confirmed in .factory/environment.json${conf.tool ? `; ${conf.tool}: ${String(conf.reason || '').slice(0, 160)}` : ''})${conf.notes ? `: ${String(conf.notes).slice(0, 300)}` : ''}`];
   try {
     const d = env.detect(root);
     return [`- \`${d.name}\` (detected from ${(d.evidence || []).join(', ') || 'the repo files'}, not confirmed: \`factory env show\`)${d.notes ? `: ${String(d.notes).slice(0, 300)}` : ''}`];

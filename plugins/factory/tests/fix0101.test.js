@@ -475,13 +475,13 @@ test('environment proposals use the machine: uv first, poetry for a poetry repo,
   const d = (inv) => E.detect(root, { machine: inv });
   const uv = d(MH.inventory({ venv: false, tools: { uv: true, virtualenv: true } }));
   assert.equal(uv.name, 'python-uv');
-  assert.deepEqual(uv.setup, ['uv venv -q --allow-existing .venv', 'uv pip install -q --python .venv/bin/python -e .', 'uv pip install -q --python .venv/bin/python -r requirements-dev.txt']);
+  assert.deepEqual(uv.deps, ['uv venv -q --allow-existing {env}/venv', 'uv pip install -q --python {env}/venv/bin/python -r pyproject.toml', "uv pip install -q --python {env}/venv/bin/python 'setuptools>=61' 'wheel'", 'uv pip install -q --python {env}/venv/bin/python -r requirements-dev.txt']);
   assert.equal(uv.env.UV_HTTP_TIMEOUT, '60');
   const ve = d(MH.inventory({ venv: false, tools: { virtualenv: true } }));
-  assert.equal(ve.setup[0], 'virtualenv -q .venv');
-  assert.ok(ve.setup.slice(1).every((s) => /--retries 5 --timeout 60/.test(s)), JSON.stringify(ve.setup));
+  assert.equal(ve.deps[0], 'virtualenv -q {env}/venv');
+  assert.ok(ve.deps.slice(1).filter((s) => / install /.test(s)).every((s) => /--retries 5 --timeout 60/.test(s)), JSON.stringify(ve.deps));
   assert.deepEqual(E.lint(ve, { root, machine: MH.inventory({ venv: false, tools: { virtualenv: true } }) }), [], 'what the factory proposes passes its own lint');
-  assert.equal(d(MH.inventory({ venv: true })).setup[0], 'python3 -m venv .venv');
+  assert.equal(d(MH.inventory({ venv: true })).deps[0], 'python3 -m venv {env}/venv');
   const none = d(MH.inventory({ venv: false }));
   assert.match(none.notes, /install uv \(no sudo\)/);
   assert.equal(E.lint(none, { root, machine: MH.inventory({ venv: false }) })[0].rule, 'venv_no_ensurepip');
@@ -489,8 +489,8 @@ test('environment proposals use the machine: uv first, poetry for a poetry repo,
   F.write(root, 'poetry.lock', '\n');
   const po = d(MH.inventory({ venv: true, tools: { poetry: true, virtualenv: true } }));
   assert.equal(po.name, 'python-poetry');
-  assert.deepEqual(po.setup, ['poetry install --no-interaction']);
-  assert.equal(po.env.POETRY_VIRTUALENVS_IN_PROJECT, 'true');
+  assert.deepEqual(po.deps.slice(0, 2), ['virtualenv -q {env}/venv', 'VIRTUAL_ENV={env}/venv poetry install --no-root --no-interaction']);
+  assert.equal(po.tool, 'poetry');
   // the planner is told the machine and the rules
   assert.match(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'wfargs.js'), 'utf8'), /This machine \(its tool inventory/);
 });
@@ -528,7 +528,7 @@ test('lint (J-0001 reproduced): venv without ensurepip, a missing tool, sudo, se
   assert.deepEqual([...new Set(rules)], ['missing_tool', 'needs_sudo', 'pip_no_retries', 'setup_reads_plan_file', 'single_health_check', 'venv_no_ensurepip']);
   const p = r.problems.join('\n');
   assert.match(p, /reads requirements\.txt, which T1 creates \(not a bootstrap task\)[\s\S]*Install from pins directly/);
-  assert.match(p, /`python3 -m venv` does not work on this machine[\s\S]*use `virtualenv \.venv`/);
+  assert.match(p, /`python3 -m venv` does not work on this machine[\s\S]*use `virtualenv`/);
   assert.match(p, /health check runs once/);
   assert.match(p, /`uv` is not installed on this machine/);
   assert.equal(r.machine.python3_venv_works, false, 'the record carries the machine it was linted for');

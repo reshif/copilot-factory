@@ -364,7 +364,7 @@ function verify(root, jobId, taskId) {
     pass,
     builder_at: b.at,
     ...(legacy ? { legacy: true } : {}),
-    ...(E.env && !E.none ? { environment: { name: E.env.name || null, key: E.key, cached: E.cached } } : {}),
+    ...(E.env && !E.none ? { environment: { name: E.env.name || null, key: E.key, cached: E.cached, ...(E.shared ? { shared: E.shared.key } : {}) } } : {}),
   };
   writeJson(file, ev);
   const tail = (x, n) => (String(x || '').length > n ? `…${String(x).slice(-n)}` : String(x || ''));

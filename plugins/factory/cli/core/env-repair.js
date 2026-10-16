@@ -118,7 +118,7 @@ function brief(root, state, { agentSpec, prompt, schema, jobContext }) {
     plan_tasks: (plan.tasks || []).map((t) => ({ id: t.id, bootstrap: Boolean(t.bootstrap), allowed_paths: t.allowed_paths })),
   };
   const out = REPAIR(root, state.id);
-  const text = `${jobContext}\n- Mode: **environment repair**. The build environment the human sealed does not set up on this machine (the CLI ran it in a scratch worktree). Write a repaired environment to ${out} (the fields of .factory/environment.json: name, setup, cache_key, env, prefix, services {up, health, down}, teardown, ignore, timeout_seconds, notes) and return its path. Fix the cause the failure shows; change nothing else. Rules: use only tools the machine has (uv > poetry for a poetry repo > virtualenv > python3 -m venv only when it works), never sudo; every pip install gets --retries 5 --timeout 60 (uv retries itself); setup reads only files the base commit has or the bootstrap task creates (install from pins directly otherwise); a service health check waits with a deadline (a retry loop, docker compose up --wait), never runs once. The CLI checks your file in a scratch worktree; the human seals it. Never edit .factory/environment.json.\n\nREPAIR INPUT (JSON):\n${JSON.stringify(input, null, 1)}`;
+  const text = `${jobContext}\n- Mode: **environment repair**. The build environment the human sealed does not set up on this machine (the CLI ran it in a scratch worktree). Write a repaired environment to ${out} (the fields of .factory/environment.json, in the schema version the failing one uses: version 2 — name, tool, reason, deps (installed once into the shared {env}, a venv at {env}/venv), deps_key, overlay (python, node or none), project (cheap, per worktree) — or version 1 — name, setup, cache_key; and env, prefix, services {up, health, down}, teardown, ignore, timeout_seconds, notes) and return its path. Fix the cause the failure shows; change nothing else, and say in reason why the tool is the right one. Rules: use only tools the machine has (poetry for a poetry repo with poetry.lock when installed, else uv, else virtualenv, else python3 -m venv only when it works), never sudo, never the repository's own .venv; every pip install from the index gets --retries 5 --timeout 60 (uv retries itself); deps and project read only files the base commit has or the bootstrap task creates (install from pins directly otherwise); a service health check waits with a deadline (a retry loop, docker compose up --wait), never runs once. The CLI checks your file in a scratch worktree; the human seals it. Never edit .factory/environment.json.\n\nREPAIR INPUT (JSON):\n${JSON.stringify(input, null, 1)}`;
   return {
     config: 'env_repair',
     mode: null,
@@ -139,6 +139,9 @@ const SENSITIVE = {
   prefix: 'prefix runs in front of EVERY verify command, with your full environment',
   ignore: 'ignore is appended to the repository\'s .git/info/exclude: matching files disappear from git status and the drift check',
   cache_key: 'cache_key decides when setup runs again',
+  deps_key: 'deps_key decides when the shared dependencies are installed again',
+  deps: 'deps install the shared dependencies once per key on this machine',
+  project: 'project runs in every worktree',
   env: 'env is set for every setup, build and verify command',
 };
 function fullDiff(a, b) {

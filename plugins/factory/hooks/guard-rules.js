@@ -201,7 +201,7 @@ const AGENT_ALLOWED = {
   contract: ['show', 'check'],
   intent: ['show'],
   clarify: ['status'],
-  env: ['show', 'check'],
+  env: ['show', 'check', 'status'],
   deps: ['show', 'check'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],

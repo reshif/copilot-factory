@@ -82,8 +82,11 @@ test('P2.1 detection: a likely environment from the repo files (venv, Nautobot a
   F.write(root, 'pyproject.toml', '[project]\nname = "x"\n[project.optional-dependencies]\ndev = ["pytest"]\n');
   let d = env.detect(root);
   assert.equal(d.name, 'python-venv');
-  assert.ok(d.setup.includes("'.venv/bin/pip install -q -e '.[dev]'".slice(1)) || d.setup.some((s) => /pip install -q --retries 5 --timeout 60 -e '\.\[dev\]'/.test(s)), JSON.stringify(d.setup));
-  assert.equal(d.env.PATH, '{worktree}/.venv/bin:$PATH');
+  // 0.12: the shared model — dependencies once into {env}/venv, the project editable per worktree
+  assert.equal(d.version, 2);
+  assert.ok(d.deps.some((s) => /pip install -q --retries 5 --timeout 60 '\.\[dev\]'$/.test(s)), JSON.stringify(d.deps));
+  assert.ok(d.project.some((s) => /pip install -q --no-deps --no-build-isolation --no-index -e \.$/.test(s)), JSON.stringify(d.project));
+  assert.equal(d.env.PATH, '{worktree}/.factory-venv/bin:$PATH');
   // fix 0.10.1: the machine it was proposed for is part of the evidence
   assert.deepEqual(d.evidence, ['pyproject.toml', 'this machine: venv (python3 -m venv works)']);
   F.write(root, 'pyproject.toml', '[tool.poetry]\nname = "nautobot-app-golden"\n[tool.poetry.dependencies]\nnautobot = "^2.0"\n');
@@ -97,7 +100,7 @@ test('P2.1 detection: a likely environment from the repo files (venv, Nautobot a
   const nroot = F.makeRepo();
   F.write(nroot, 'package.json', '{"devDependencies":{"mocha":"1"}}');
   F.write(nroot, 'package-lock.json', '{}');
-  assert.deepEqual(env.detect(nroot).setup, ['npm ci']);
+  assert.deepEqual(env.detect(nroot).deps, ['npm ci --no-audit --no-fund']);
   // the schema: the smallest set, strict about fields
   assert.deepEqual(env.problems(P.ENV), []);
   assert.match(env.problems({ setup: 'pip install' })[0], /setup must be a list/);

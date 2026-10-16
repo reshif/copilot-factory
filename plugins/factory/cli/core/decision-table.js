@@ -494,7 +494,7 @@ function orderAction(ctx, al, { humanAcs = null } = {}) {
   // this machine); an approved combined gate has sealed it already
   if (!ci && s.step === 'realize' && require('./environment').needsConfirmation(ctx.root, state.id)) {
     const g = require('./environment').gateProposal(ctx.root, state.id);
-    return { step: 'realize', run: 'human:confirm environment', action: 'wait', environment: g, reason: g.status === 'tampered' ? `${g.message} The build waits until it is set again from your terminal (factory env set).` : `The build environment is not confirmed, so no task is built: ${g.env.name || 'proposed'} (${g.source || 'proposed'}) — setup: ${(g.env.setup || []).join(' && ') || '(none)'}. Reply "confirm environment ${g.short}" to accept it (or "confirm environment none" for bare worktrees).`, rule: 'env.unconfirmed' };
+    return { step: 'realize', run: 'human:confirm environment', action: 'wait', environment: g, reason: g.status === 'tampered' ? `${g.message} The build waits until it is set again from your terminal (factory env set).` : `The build environment is not confirmed, so no task is built: ${g.env.name || 'proposed'} (${g.source || 'proposed'})${g.env.tool ? `, built with ${g.env.tool} (${g.env.reason || 'the machine\'s choice'})` : ''} — ${require('./environment').describe(g.env)}. Reply "confirm environment ${g.short}" to accept it (or "confirm environment none" for bare worktrees); ${require('./environment').DOC_PATH} explains what runs where.`, rule: 'env.unconfirmed' };
   }
   // fix 0.10.1: the sealed environment sets up once in a scratch worktree before any task; a
   // failure is repaired (an agent proposes, the CLI checks, the human seals), never built on
