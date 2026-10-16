@@ -5793,8 +5793,18 @@ var RUN_STEPS = (function () {
         { key: 'god-eye', label: 'God Eye (plan)', match: /^decompose: God Eye/, roles: ['god-eye', 'planner'], optional: true },
       ],
     },
-    // realize.js: wave by wave, builders then testers per task (a wave whose tasks were all skipped has no phase)
-    realize: { next: 'reconcile', steps: [{ key: 'wave', label: 'wave', match: /^realize: wave/, roles: ['builder', 'tester'], series: /wave (\d+)\/(\d+)/ }] },
+    // realize.js (0.8): by dependency — each task's build as it starts, each integration of the
+    // done tasks as it runs. Logs from before it ran wave by wave (a wave whose tasks were all
+    // skipped has no phase). Only the steps a run took are shown.
+    realize: {
+      next: 'reconcile',
+      steps: [
+        { key: 'wave', label: 'wave', match: /^realize: wave/, roles: ['builder', 'tester'], series: /wave (\d+)\/(\d+)/, optional: true, only_when_run: true },
+        { key: 'schedule', label: 'build by dependency', match: /^realize: \d+ task/, roles: ['builder'], optional: true, only_when_run: true },
+        { key: 'build', label: 'build', match: /^realize: build /, roles: ['builder'], optional: true, only_when_run: true },
+        { key: 'integrate', label: 'integrate', match: /^realize: (integrating|rebuilding)/, roles: ['builder'], optional: true, only_when_run: true },
+      ],
+    },
     // reconcile.js: the integrator
     reconcile: { next: 'prove', steps: [{ key: 'integrate', label: 'integrate task branches', match: /^reconcile:/, roles: ['integrator'] }] },
     // runner.js distillWrite: the lesson-writer

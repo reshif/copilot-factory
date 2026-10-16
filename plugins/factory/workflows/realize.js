@@ -1,6 +1,6 @@
 export const meta = {
   name: 'realize',
-  description: 'Software Factory: build tasks wave by wave, each in its own git worktree — builder, then `task verify` run by the CLI (its exit code decides), retried up to each task\'s limit; a blocked or exhausted task skips only its dependents. Pass the JSON brief from `factory wfargs realize` as args.',
+  description: 'Software Factory: build tasks by dependency, each in its own git worktree — a task starts as soon as its dependencies are integrated (up to max_parallel_tasks at a time); builder, then `task verify` run by the CLI (its exit code decides), retried up to each task\'s limit; done tasks are integrated into the job branch as they finish; a blocked or exhausted task skips only its dependents. Pass the JSON brief from `factory wfargs realize` as args.',
 }
 
 const brief = (() => {
@@ -58,6 +58,7 @@ function verifyFailures(v) {
 
 let runs = 0
 const checks = []
+const rebuilds = []
 const T = brief.tasks
 const st = {}
 // attempts counts this run's attempts (the retry limit applies per run); attempt_base is what
@@ -67,26 +68,12 @@ const attemptNo = (id) => (T[id].attempt_base || 0) + st[id].attempts + 1
 const BAD = ['blocked', 'exhausted', 'skipped_dependency']
 const cap = Math.max(1, brief.max_parallel_tasks || 4)
 
-function chunks(list, n) {
-  const out = []
-  for (let i = 0; i < list.length; i += n) out.push(list.slice(i, i + n))
-  return out
-}
-async function runAll(ids, make) {
-  const results = {}
-  for (const group of chunks(ids, cap)) {
-    runs += group.length
-    const res = await pipeline(group, (id) => make(id))
-    group.forEach((id, i) => { results[id] = res[i] || null })
-  }
-  return results
-}
 function skipDependents() {
   let changed = true
   while (changed) {
     changed = false
     for (const id of Object.keys(T)) {
-      if (st[id].outcome !== 'pending') continue
+      if (st[id].outcome !== 'pending' || running.has(id)) continue // a running task settles itself
       const badDep = (T[id].depends_on || []).find((d) => st[d] && BAD.includes(st[d].outcome))
       if (badDep) {
         st[id].outcome = 'skipped_dependency'
@@ -102,170 +89,212 @@ function skipDependents() {
 // with the reason.
 let envBroken = null
 
-// Build, then verify, until every task in `ids` is settled (done, blocked or exhausted).
-async function settle(ids) {
-  let active = ids.filter((id) => st[id].outcome === 'pending')
-  while (active.length && !envBroken) {
-    const built = await runAll(active, (id) => {
-      const s = st[id]
-      const prompt = T[id].builder_prompt
-        .replace('{{attempt}}', () => String(attemptNo(id)))
-        .replace('{{failures}}', () => (s.failures.length ? s.failures.map((f) => `  - ${f}`).join('\n') : '  - (none)'))
-      // After a failed attempt the builder continues its previous Copilot session (the runner
-      // resumes it when it has one), with the raw failure as this turn's input.
-      const o = opts({ ...T[id].builder, schema: brief.builder_schema }, `build ${id} #${attemptNo(id)}`, builderModel(T[id].builder, s.attempts + 1))
-      if (s.failures.length) o.resume = true
-      return call(prompt, o)
-    })
-    const toVerify = []
-    for (const id of active) {
-      const b = built[id]
-      const s = st[id]
-      if (b && b.status === 'blocked') {
-        s.outcome = 'blocked'
-        // dependency_conflict is typed: the task's dependencies don't merge, a plan change
-        // fixes it, and retrying the same merge would only fail again.
-        s.summary = b.blocked_reason === 'dependency_conflict'
-          ? `Blocked (dependency_conflict): ${b.summary || 'its dependencies do not merge'}`
-          : `Blocked: needs ${(b.needs_paths || []).join(', ') || 'paths outside its scope'}. ${b.summary || ''}`
-        continue
-      }
-      // A builder that returned nothing (crashed, timed out, no valid reply) built nothing this
-      // attempt: verifying the branch would only re-check an older state. The attempt is spent.
-      if (!b) {
-        s.attempts += 1
-        s.failures = [`Attempt ${attemptNo(id) - 1}: the builder returned no result (crashed, timed out or replied without the JSON); nothing was verified. Its uncommitted work, if any, was saved as a \`wip:\` commit on the task branch: continue from it.`]
-        if (s.attempts >= (T[id].retry_limit || 3)) {
-          s.outcome = 'exhausted'
-          s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures[0]}`
-        }
-        continue
-      }
-      s.swept = b.swept || []
-      s.summary = b.summary || ''
-      toVerify.push(id)
+// One attempt of one task: its builder, then `task verify` (the CLI's exit code decides), then
+// the optional sweep check. Settles the task (done, blocked, exhausted) or leaves it pending
+// for its next attempt.
+async function attempt(id) {
+  const s = st[id]
+  runs += 1
+  const prompt = T[id].builder_prompt
+    .replace('{{attempt}}', () => String(attemptNo(id)))
+    .replace('{{failures}}', () => (s.failures.length ? s.failures.map((f) => `  - ${f}`).join('\n') : '  - (none)'))
+  // After a failed attempt the builder continues its previous Copilot session (the runner
+  // resumes it when it has one), with the raw failure as this turn's input.
+  const o = opts({ ...T[id].builder, schema: brief.builder_schema }, `build ${id} #${attemptNo(id)}`, builderModel(T[id].builder, s.attempts + 1))
+  if (s.failures.length) o.resume = true
+  const b = await call(prompt, o)
+  // dependency_conflict, the first time: task start could not merge into the task's
+  // branch. Its next start restarts the branch from the integrated job branch (which holds
+  // every integrated dependency), so it is rebuilt there once, without spending an attempt,
+  // before it counts as blocked.
+  if (b && b.status === 'blocked' && b.blocked_reason === 'dependency_conflict' && !s.conflictRebuilt) {
+    s.conflictRebuilt = true
+    s.failures = [`Attempt ${attemptNo(id)}: task start could not merge into this task's branch (${b.summary || 'dependency_conflict'}). The branch is restarted from the integrated job branch: build the task there.`]
+    rebuilds.push({ task: id, kind: 'dependency_conflict' })
+    return
+  }
+  if (b && b.status === 'blocked') {
+    s.outcome = 'blocked'
+    // dependency_conflict is typed: the task's dependencies don't merge even on a branch
+    // rebuilt from the job branch, a plan change fixes it, and retrying would only fail again.
+    s.summary = b.blocked_reason === 'dependency_conflict'
+      ? `Blocked (dependency_conflict): ${b.summary || 'its dependencies do not merge'}`
+      : `Blocked: needs ${(b.needs_paths || []).join(', ') || 'paths outside its scope'}. ${b.summary || ''}`
+    return
+  }
+  // A builder that returned nothing (crashed, timed out, no valid reply) built nothing this
+  // attempt: verifying the branch would only re-check an older state. The attempt is spent.
+  if (!b) {
+    s.attempts += 1
+    s.failures = [`Attempt ${attemptNo(id) - 1}: the builder returned no result (crashed, timed out or replied without the JSON); nothing was verified. Its uncommitted work, if any, was saved as a \`wip:\` commit on the task branch: continue from it.`]
+    if (s.attempts >= (T[id].retry_limit || 3)) {
+      s.outcome = 'exhausted'
+      s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures[0]}`
     }
-    // The CLI's `task verify` decides, by its exit code: no agent reads the result back.
-    const verified = {}
-    for (const group of chunks(toVerify, cap)) {
-      const res = await pipeline(group, (id) => factory.verify(id))
-      group.forEach((id, i) => { verified[id] = res[i] || null })
-    }
-    for (const id of toVerify) {
-      const s = st[id]
-      s.attempts += 1
-      const v = verified[id]
-      checks.push({ task: id, attempt: s.attempts, pass: Boolean(v && v.pass), ...(v && v.error ? { refused: v.error.code } : {}) })
-      if (v && v.error && v.error.code === 'environment_broken') {
-        // not the builder's failure: the attempt is given back and the run stops
-        s.attempts -= 1
-        if (!envBroken) envBroken = { task: id, reason: v.error.message.split('\n')[0] }
-        continue
-      }
-      if (v && v.pass) {
-        s.outcome = 'done'
-        continue
-      }
-      s.failures = verifyFailures(v).map((f) => `Attempt ${attemptNo(id) - 1}: ${f}`)
-      if (s.attempts >= (T[id].retry_limit || 3)) {
-        s.outcome = 'exhausted'
-        s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures.slice(0, 2).join('; ')}`
-      }
-    }
+    return
+  }
+  s.swept = b.swept || []
+  s.summary = b.summary || ''
+  // The CLI's `task verify` decides, by its exit code: no agent reads the result back.
+  const v = await factory.verify(id)
+  s.attempts += 1
+  checks.push({ task: id, attempt: s.attempts, pass: Boolean(v && v.pass), ...(v && v.error ? { refused: v.error.code } : {}) })
+  if (v && v.error && v.error.code === 'environment_broken') {
+    // not the builder's failure: the attempt is given back and the run stops
+    s.attempts -= 1
+    if (!envBroken) envBroken = { task: id, reason: v.error.message.split('\n')[0] }
+    return
+  }
+  if (v && v.pass) {
+    s.outcome = 'done'
     // Optional, never deciding: a cheap agent looks at the places the builder says it swept
     // for the same bug class (policy agents.sweep_check). Its notes go to the summary only.
-    const swept = toVerify.filter((id) => st[id].outcome === 'done' && T[id].sweep && st[id].swept.length)
-    if (swept.length) {
-      const notes = await runAll(swept, (id) => call(T[id].sweep_prompt.replace('{{swept}}', st[id].swept.join(', ')), opts({ ...T[id].sweep, schema: brief.sweep_schema }, `sweep ${id}`)))
-      for (const id of swept) {
-        const n = notes[id]
-        if (n && (n.concerns || []).length) st[id].summary = `${st[id].summary} Sweep check concerns (not deciding): ${n.concerns.join('; ')}`.trim()
-      }
+    if (T[id].sweep && s.swept.length) {
+      runs += 1
+      const n = await call(T[id].sweep_prompt.replace('{{swept}}', s.swept.join(', ')), opts({ ...T[id].sweep, schema: brief.sweep_schema }, `sweep ${id}`))
+      if (n && (n.concerns || []).length) s.summary = `${s.summary} Sweep check concerns (not deciding): ${n.concerns.join('; ')}`.trim()
     }
-    active = active.filter((id) => st[id].outcome === 'pending')
+    return
+  }
+  s.failures = verifyFailures(v).map((f) => `Attempt ${attemptNo(id) - 1}: ${f}`)
+  if (s.attempts >= (T[id].retry_limit || 3)) {
+    s.outcome = 'exhausted'
+    s.summary = `Exhausted after ${s.attempts} attempt(s): ${s.failures.slice(0, 2).join('; ')}`
   }
 }
 
-// After a wave: merge its finished tasks into the job branch and run the job's checks on the
-// integrated tree (`factory reconcile wave`, run by the CLI). A failure goes back, with its
-// raw output, to the task(s) whose files it names; they are rebuilt on the integrated branch
-// (within their retry limit) and the wave is integrated again. Returns null when the wave is
-// integrated (or had nothing to integrate), else why the integrated build is still broken.
+// One task from start to settled: its build environment, then attempts until done, blocked or
+// exhausted. Each task runs its own build → verify → retry loop: nothing waits for a sibling.
+async function runTask(id) {
+  if (factory.prepare && !st[id].prepared) {
+    const r = await factory.prepare(id)
+    st[id].prepared = true
+    if (r && !r.ok && !envBroken) envBroken = { task: r.task || id, ...(r.broken || { reason: 'environment broken' }) }
+  }
+  while (st[id].outcome === 'pending' && !envBroken) await attempt(id)
+}
+
+// ---------------------------------------------------------------- scheduling (P3.4)
+// By dependency, not by wave: a task starts as soon as its own dependencies are integrated
+// (merged into the job branch with the job's checks passing; without per-wave integration, as
+// soon as they are done), at most max_parallel_tasks at a time. Done tasks are integrated as
+// they finish (`factory reconcile wave`), one integration at a time, each batch being the done
+// tasks not yet integrated. A failure goes back, with its raw output, to the task(s) whose
+// files it names; they are rebuilt on the integrated branch (within their retry limit) and
+// integrated again. While an integration runs, no new task starts (it would start from a job
+// branch whose checks have not run). If the integrated build stays broken, no further task
+// starts: it would start from broken code (the 0.6.0 guarantee, per dependency instead of per
+// wave).
+const integrateOn = Boolean(brief.integrate_each_wave && factory.integrate)
+// Tasks outside this run (done and integrated by an earlier one) count as integrated.
+const integrated = new Set()
+const waveOf = {}
+brief.waves.forEach((w, i) => w.forEach((id) => { waveOf[id] = i + 1 }))
+const order = brief.waves.flat().concat(Object.keys(T).filter((id) => !brief.waves.flat().includes(id)))
+const depsOf = (id) => (T[id].depends_on || [])
+const depReady = (d) => !st[d] || (integrateOn ? integrated.has(d) : st[d].outcome === 'done')
+let brokenIntegration = null
+// Tasks reopened by a failed integration: their broken merge is in the job branch, so until
+// they are rebuilt and the batch is integrated again, nothing new starts and nothing else is
+// integrated on top of it.
+const repairing = new Set()
 const integrations = []
-async function integrate(w) {
-  for (;;) {
-    const done = brief.waves[w].concat(Object.keys(st).filter((id) => st[id].reopened && !brief.waves[w].includes(id))).filter((id) => st[id] && st[id].outcome === 'done')
-    if (!done.length) return null
-    const ig = await factory.integrate(done, w + 1)
-    integrations.push({ wave: w + 1, tasks: done, ok: Boolean(ig && ig.ok), kind: (ig && ig.kind) || null, route: Object.keys((ig && ig.route) || {}), ...(ig && ig.reconciled ? { reconciled: true } : {}) })
-    if (ig && ig.ok) return null
-    if (ig && ig.kind === 'environment') {
-      envBroken = { reason: (ig.broken && ig.broken.reason) || ig.message || 'environment broken' }
-      return envBroken.reason
-    }
-    const why = !ig ? 'the integration step returned nothing' : ig.kind === 'commands' ? `${(ig.failures || []).map((f) => `\`${f.cmd}\` exited ${f.code}`).join(', ') || 'its checks failed'}` : `${ig.kind || 'error'}${ig.message ? `: ${String(ig.message).slice(0, 200)}` : ''}`
-    const again = []
-    for (const [id, lines] of Object.entries(ig.route || {})) {
-      const s = st[id]
-      if (!s) continue // built before this run: its next realize rebuilds it (needs_work: integration)
-      if (s.outcome !== 'done') continue // only work that was integrated goes back
-      s.failures = (lines || []).map((l) => `Attempt ${attemptNo(id) - 1}: the integrated build failed after wave ${w + 1}: \`${l.cmd}\` exited ${l.code}. Output (tail):\n${tail(l.output, 1500).split('\n').map((x) => '      ' + x).join('\n')}`)
-      if (s.attempts >= (T[id].retry_limit || 3)) {
-        s.outcome = 'exhausted'
-        s.summary = `Exhausted after ${s.attempts} attempt(s): the integrated build failed: ${(lines || []).map((l) => l.cmd).join(', ')}`
-        continue
-      }
-      s.outcome = 'pending'
-      s.reopened = true
-      again.push(id)
-    }
-    if (!again.length) return why
-    phase(`realize: wave ${w + 1}: rebuilding ${again.join(', ')} on the integrated branch`)
-    await settle(again)
-    if (envBroken) return envBroken.reason
-    // A task rebuilt for the integration that still failed leaves its broken merge in the job
-    // branch: the wave is not integrated, whatever the remaining tasks' checks say.
-    const unfixed = again.filter((id) => st[id].outcome !== 'done')
-    if (unfixed.length) return `${why}; ${unfixed.join(', ')} could not fix it`
+let integrationNo = 0
+
+function skipAfterBrokenIntegration(why) {
+  for (const id of order) {
+    if (!st[id] || st[id].outcome !== 'pending' || running.has(id)) continue
+    st[id].outcome = 'skipped_dependency'
+    st[id].summary = `Skipped: the integrated build is broken (${why}); it would start from broken code.`
   }
 }
 
-// The integrated build after a wave stayed broken (its failing tasks are exhausted, blocked or
-// were built before this run): later waves would start from broken code, so they don't start.
-function skipAfterBrokenIntegration(w, why) {
-  for (let v = w + 1; v < brief.waves.length; v++) {
-    for (const id of brief.waves[v]) {
-      if (!st[id] || st[id].outcome !== 'pending') continue
-      st[id].outcome = 'skipped_dependency'
-      st[id].summary = `Skipped: the integrated build after wave ${w + 1} is broken (${why}); it would start from broken code.`
-    }
+// Integrate the done, not yet integrated tasks. Returns when the batch is integrated, or the
+// integrated build is known broken (brokenIntegration), or tasks were reopened to fix it.
+async function integrateDone() {
+  const batch = order.filter((id) => st[id] && st[id].outcome === 'done' && !integrated.has(id))
+  if (!batch.length) return
+  // the batch's frontier: the deepest plan wave among its tasks (the label `reconcile wave` records)
+  const frontier = Math.max(...batch.map((id) => waveOf[id] || 1))
+  integrationNo += 1
+  phase(`realize: integrating ${batch.join(', ')}`)
+  const ig = await factory.integrate(batch, frontier)
+  integrations.push({ wave: frontier, n: integrationNo, tasks: batch, ok: Boolean(ig && ig.ok), kind: (ig && ig.kind) || null, route: Object.keys((ig && ig.route) || {}), ...(ig && ig.reconciled ? { reconciled: true } : {}) })
+  if (ig && ig.ok) {
+    batch.forEach((id) => integrated.add(id))
+    repairing.clear()
+    return
   }
+  if (ig && ig.kind === 'environment') {
+    envBroken = { reason: (ig.broken && ig.broken.reason) || ig.message || 'environment broken' }
+    return
+  }
+  const why = !ig ? 'the integration step returned nothing' : ig.kind === 'commands' ? `${(ig.failures || []).map((f) => `\`${f.cmd}\` exited ${f.code}`).join(', ') || 'its checks failed'}` : `${ig.kind || 'error'}${ig.message ? `: ${String(ig.message).slice(0, 200)}` : ''}`
+  const again = []
+  for (const [id, lines] of Object.entries(ig.route || {})) {
+    const s = st[id]
+    if (!s) continue // built before this run: its next realize rebuilds it (needs_work: integration)
+    if (s.outcome !== 'done') continue // only work that was integrated goes back
+    s.failures = (lines || []).map((l) => `Attempt ${attemptNo(id) - 1}: the integrated build failed after wave ${frontier}: \`${l.cmd}\` exited ${l.code}. Output (tail):\n${tail(l.output, 1500).split('\n').map((x) => '      ' + x).join('\n')}`)
+    integrated.delete(id)
+    if (s.attempts >= (T[id].retry_limit || 3)) {
+      s.outcome = 'exhausted'
+      s.summary = `Exhausted after ${s.attempts} attempt(s): the integrated build failed: ${(lines || []).map((l) => l.cmd).join(', ')}`
+      continue
+    }
+    s.outcome = 'pending'
+    s.reopened = (s.reopened || 0) + 1
+    repairing.add(id)
+    again.push(id)
+  }
+  if (!again.length) {
+    brokenIntegration = why
+    return
+  }
+  phase(`realize: rebuilding ${again.join(', ')} on the integrated branch`)
+  for (const id of again) launch(id)
 }
 
-for (let w = 0; w < brief.waves.length && !envBroken; w++) {
+const running = new Map()
+function launch(id) {
+  if (running.has(id)) return
+  phase(`realize: build ${id}${st[id].reopened ? ' (rebuild on the integrated branch)' : ''}`)
+  const p = runTask(id).then(() => {
+    running.delete(id)
+    // A task rebuilt for an integration that still failed leaves its broken merge in the job
+    // branch: the integrated build stays broken, whatever the other tasks' checks say.
+    if (st[id].reopened && st[id].outcome !== 'done' && integrateOn && !brokenIntegration) brokenIntegration = `${id} could not fix the integrated build`
+  })
+  running.set(id, p)
+}
+
+phase(`realize: ${order.filter((id) => st[id] && st[id].outcome === 'pending').length} task(s), by dependency${integrateOn ? ', each integrated when done' : ''} (up to ${cap} at a time)`)
+let integrating = null
+for (;;) {
   skipDependents()
-  let active = brief.waves[w].filter((id) => st[id] && st[id].outcome === 'pending')
-  if (!active.length) continue
-  phase(`realize: wave ${w + 1}/${brief.waves.length} (${active.join(', ')})`)
-  if (factory.prepare) {
-    for (const group of chunks(active, cap)) {
-      const res = await pipeline(group, (id) => factory.prepare(id))
-      const bad = res.find((r) => r && !r.ok)
-      if (bad && !envBroken) envBroken = { task: bad.task, ...(bad.broken || { reason: 'environment broken' }) }
-    }
-    if (envBroken) break
-  }
-  await settle(active)
-  if (envBroken) break
-  if (brief.integrate_each_wave && factory.integrate) {
-    const broken = await integrate(w)
-    if (broken && !envBroken) {
-      skipAfterBrokenIntegration(w, broken)
-      break
+  if (brokenIntegration) skipAfterBrokenIntegration(brokenIntegration)
+  const repairOpen = [...repairing].some((id) => st[id].outcome === 'pending')
+  if (!envBroken && !brokenIntegration && !integrating && !repairing.size) {
+    for (const id of order) {
+      if (running.size >= cap) break
+      if (!st[id] || st[id].outcome !== 'pending' || running.has(id)) continue
+      if (depsOf(id).every(depReady)) launch(id)
     }
   }
+  if (!integrating && !repairOpen && integrateOn && !envBroken && !brokenIntegration && order.some((id) => st[id] && st[id].outcome === 'done' && !integrated.has(id))) {
+    integrating = integrateDone().then(() => { integrating = null })
+  }
+  const waiting = [...running.values()].concat(integrating ? [integrating] : [])
+  if (!waiting.length) break
+  await Promise.race(waiting)
 }
-skipDependents()
+// Tasks never started (their dependencies never integrated) and not otherwise settled.
+for (const id of order) {
+  if (!st[id] || st[id].outcome !== 'pending') continue
+  const bad = depsOf(id).find((d) => st[d] && st[d].outcome !== 'done')
+  st[id].outcome = 'skipped_dependency'
+  st[id].summary = envBroken ? 'Not started: the build environment is broken.' : bad ? `Skipped: depends on ${bad} (${st[bad].outcome})` : `Skipped: its dependencies were not integrated${brokenIntegration ? ` (${brokenIntegration})` : ''}.`
+}
 
 const tasks = Object.keys(T).map((id) => ({ id, outcome: st[id].outcome, attempts: st[id].attempts, summary: st[id].summary }))
 if (envBroken) {
@@ -283,7 +312,7 @@ if (envBroken) {
     questions: [],
     park_reason: envBroken.reason,
     summary: `Stopped: ${envBroken.reason}`,
-    data: { tasks, verifications: checks, integrations, environment_broken: envBroken },
+    data: { tasks, verifications: checks, integrations, rebuilds, environment_broken: envBroken },
   }
 }
 const notDone = tasks.filter((t) => t.outcome !== 'done')
@@ -301,5 +330,5 @@ return {
   questions: [],
   park_reason: notDone.length ? `Tasks not done: ${notDone.map((t) => `${t.id} (${t.outcome})`).join(', ')}` : null,
   summary: `${tasks.length - notDone.length}/${tasks.length} task(s) done.`,
-  data: { tasks, verifications: checks, integrations },
+  data: { tasks, verifications: checks, integrations, rebuilds },
 }

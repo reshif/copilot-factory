@@ -183,11 +183,17 @@ test('P1.2: a failed task restarts from the job branch plus its dependencies; a 
   assert.equal(stateOf(root, J).tasks.T2.builder.outcome, 'blocked');
 });
 
-test('P1.2: realize reports a dependency_conflict builder as blocked at once, never retried', async () => {
+// P3.3 changed this (it was "blocked at once, never retried", calls.length 1): the first
+// dependency_conflict rebuilds the task once on the integrated job branch (task start restarts
+// its branch), without spending an attempt; only a second one is the typed blocked result.
+test('P1.2/P3.3: realize rebuilds a dependency_conflict task once on the job branch, then reports it blocked, never retried again', async () => {
   const { result, calls } = await H.run(REALIZE, realizeBrief(), () => ({ status: 'blocked', blocked_reason: 'dependency_conflict', summary: 'Merging T1 into T2 conflicts' }), PASS);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].prompt, /restarted from the integrated job branch/);
   assert.equal(result.data.tasks[0].outcome, 'blocked');
+  assert.equal(result.data.tasks[0].attempts, 0, 'no attempt was spent on the conflict');
   assert.match(result.data.tasks[0].summary, /dependency_conflict/);
+  assert.deepEqual(result.data.rebuilds, [{ task: 'T1', kind: 'dependency_conflict' }]);
 });
 
 // ------------------------------------------------------------------------------- P1.1
