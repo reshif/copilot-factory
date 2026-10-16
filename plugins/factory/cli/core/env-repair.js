@@ -18,8 +18,9 @@
 //                  (sandboxed: it is not confirmed). Fewer problems is progress; no progress
 //                  escalates to the stronger model, then stops with a specific question.
 //   3. the seal    a repair that passes parks the job with ONE question (kind
-//                  environment_repair): the diff of the commands, "approve environment" (or yes,
-//                  or a) seals it, through the human-only channel. Agents never seal. The sealed
+//                  environment_repair): the full diff; only "approve environment <its short
+//                  hash>" or the option letter "a" seals it, through the human-only channel (a
+//                  bare "approve environment", ok, yes or sure seal nothing). Agents never seal. The sealed
 //                  fix replaces the job's environment proposal and the combined gate's approval
 //                  of the environment moves with it (the human just approved it), so the gate is
 //                  not asked again; the check then runs on the sealed environment, as in 1.

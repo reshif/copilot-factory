@@ -168,7 +168,7 @@ function checkReadTool(root, tool, ti, absFile, cwd, policy) {
 // ---- factory CLI recognition -------------------------------------------------------------
 
 // the human-only verbs, shared with factory drive (cli/lib/human-verbs.js)
-const { HUMAN_ONLY, isHumanOnly } = require('../cli/lib/human-verbs');
+const { HUMAN_ONLY, isHumanOnly, agentFlagRefusal } = require('../cli/lib/human-verbs');
 // Mirrors cli/main.js parseArgs: --k=v, --k v (unless the flag is boolean or v starts with --), and --.
 // the CLI's own boolean-flag list (cli/lib/args.js): the guard reads a command exactly as the CLI parses it
 const CLI_BOOL = require('../cli/lib/args').BOOL;
@@ -755,6 +755,14 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
         }
       }
       if (a && isHumanOnly(a, b)) return humanMessage(a, b);
+      if (agent && a) {
+        const flags = call.args.map((x) => {
+          const v = varName(x.text);
+          return v && ctx.vars.has(v) ? ctx.vars.get(v) : x.text;
+        });
+        const byFlag = agentFlagRefusal(a, b, (name) => flags.some((x) => x === `--${name}` || String(x).startsWith(`--${name}=`)));
+        if (byFlag) return byFlag.message;
+      }
       if (agent && a && !agentAllowed(a, b)) return agentMessage(a, b);
       // The subcommand built at run time ("$(echo drive)", $(printf approve), `…`, an unknown
       // variable): what it runs can't be read here. A factory agent names its commands literally;

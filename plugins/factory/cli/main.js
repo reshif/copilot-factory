@@ -145,6 +145,9 @@ function run(argv) {
   // A factory agent: FACTORY_RUNNER=1 (or the role variables runner.js sets beside it), or, when
   // a script unset them, the agent process in this process's ancestry (cli/lib/agent-ancestry.js).
   // Looked up only for a command an agent may not run, so an agent's own commands cost nothing.
+  // By flag (the guard's rule, cli/lib/human-verbs.js): the machine scan and the sealed environment's check for a job (the guard's rule)
+  const byFlag = require('./lib/human-verbs').agentFlagRefusal(cmd, sub, (name) => opt[name] !== undefined && opt[name] !== false);
+  if (byFlag && (process.env.FACTORY_RUNNER === '1' || process.env.FACTORY_AGENT_ROLE || process.env.FACTORY_AGENT_LABEL || require('./lib/agent-ancestry').factoryAgentAncestor())) fail(byFlag.message, byFlag.code);
   if (!agentAllowed(cmd, sub) && (process.env.FACTORY_RUNNER === '1' || process.env.FACTORY_AGENT_ROLE || process.env.FACTORY_AGENT_LABEL || require('./lib/agent-ancestry').factoryAgentAncestor())) {
     fail(`"factory ${[cmd, sub].filter(Boolean).join(' ')}" is not for a factory agent: driving the job (next, run, record, ship, close …) is the main session's work and approvals are the human's. Do your role's task and reply with your JSON.`, 'agent_not_allowed');
   }

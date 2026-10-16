@@ -58,6 +58,12 @@ function itemFor(root, state, driveStop, plain = false) {
       kind = dt.parkKind(p.reason, p.from);
       next = dt.parkNext(kind);
     }
+    // a repaired build environment waits for the user's seal, in chat only: its exact replies
+    // (only "approve environment <hash>" or "a" seals; ok / yes / a bare "approve environment" do not)
+    if (kind === 'environment_repair') {
+      const short = (state.env_repair || {}).short || '<hash>';
+      return { ...base, kind: 'park', park_kind: kind, reason: p.reason || null, next: next || null, since: p.at || null, what: `seal the repaired build environment ${short} (its full diff is in the question)`, seal: short, reply: [`approve environment ${short}`, 'a', 'b (repair it again, with your words)', 'c (I fixed it on my machine: re-check)'], command: null, human_only: true };
+    }
     return { ...base, kind: 'park', park_kind: kind, reason: p.reason || null, next: next || null, since: p.at || null, what: `parked (${kind})`, reply: ['resume', 'cancel job', 'abandon job', 'or say what to change'], command: `factory resume --job ${J}`, human_only: true };
   }
   if (state.status !== 'active') return null;

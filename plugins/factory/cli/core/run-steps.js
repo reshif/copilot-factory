@@ -63,7 +63,7 @@ var RUN_STEPS = (function () {
     },
     // fanout-judge.js, env_repair (fix 0.10.1): the planner repairs a sealed build environment that failed its check
     'fanout-judge:env_repair': {
-      next: 'the CLI checks the repair, then your seal (approve environment)',
+      next: 'the CLI checks the repair, then your seal (approve environment <hash>, or "a")',
       steps: [{ key: 'repair', label: 'repair the build environment', match: /^env_repair: planner/, roles: ['planner'] }],
     },
     // ground.js: the probes in parallel

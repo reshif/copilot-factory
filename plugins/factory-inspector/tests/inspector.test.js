@@ -830,3 +830,29 @@ test('0.9.0 loops: R6 checks the caps a clarify line names (writer_rounds), and 
   assert.deepEqual(bare.evidence, ['J-0009-D0010'], 'the diagnosed park with its question is fine');
   assert.match(h.find((x) => x.rule === 'R19.proceeded_past_objections').summary, /2 God Eye objection\(s\) still open \(the readiness loop ended: no_progress, after a diagnosis\)/);
 });
+
+test('factory 0.11: the router\'s env_check and env_repair (between the seal and realize) are router steps, not steps outside the recipe; an unknown step still is', () => {
+  const M = require('../inspector/model');
+  assert.ok(M.SPECIAL_STEPS.has('env_check') && M.SPECIAL_STEPS.has('env_repair'));
+  const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
+  const recipe = { id: 'standard@medium', steps: [{ step: 'decompose', run: 'workflow:decompose' }, { step: 'H3', run: 'gate' }, { step: 'realize', run: 'workflow:realize' }] };
+  const job = {
+    id: 'J-0003', state: { status: 'active' }, lock: { recipe }, events: [],
+    ledger: [{ kind: 'step', step: 'decompose', ok: true, at: at(1.5) }],
+    decisions: [
+      { id: 'D1', ts: at(1), action: 'workflow', workflow: 'decompose', step: 'decompose', rule: 'recipe.next' },
+      { id: 'D2', ts: at(2), action: 'gate', step: 'H3' },
+      { ts: at(2.5), action: 'human.approve', gate: 'H3' },
+      { id: 'D3', ts: at(3), action: 'cli', step: 'env_check', command: 'factory env check --job J-0003', rule: 'env.check' },
+      { id: 'D4', ts: at(4), action: 'workflow', workflow: 'fanout-judge', config: 'env_repair', step: 'env_repair', rule: 'env.repair' },
+      { id: 'D5', ts: at(5), action: 'parked', park: { kind: 'environment_repair' } },
+      { ts: at(5.5), action: 'human.resume' },
+      { id: 'D6', ts: at(6), action: 'cli', step: 'env_check', command: 'factory env check --job J-0003', rule: 'env.check' },
+      { id: 'D7', ts: at(7), action: 'workflow', workflow: 'realize', step: 'realize', rule: 'recipe.next' },
+    ],
+  };
+  const found = rules.conformance(job).filter((x) => x.rule.startsWith('R3.'));
+  assert.deepEqual(found.map((x) => `${x.rule} ${x.subject}`), []);
+  job.decisions.push({ id: 'D8', ts: at(8), action: 'cli', step: 'env_probe', command: 'factory env probe' });
+  assert.deepEqual(rules.conformance(job).filter((x) => x.rule === 'R3.step_not_in_recipe').map((x) => x.subject), ['J-0003:env_probe']);
+});

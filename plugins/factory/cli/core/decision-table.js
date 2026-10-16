@@ -43,7 +43,7 @@ const PARK_NEXT = {
   integration: 'Answer the question above in your own words (it resumes the job with them), or amend the plan.',
   epic_gate: 'Decide: a new slice (amend the epic) or a fix job for a merged slice.',
   plan_probe: 'The plan probe was interrupted twice before it finished: answer the question (a: lint only, b: run factory plan probe in your own terminal, then resume, c: no probe for this job).',
-  environment_repair: 'A repaired build environment passed its check in a scratch worktree: reply "approve environment" (or yes) to seal it, or say what is wrong with it.',
+  environment_repair: 'A repaired build environment passed its check in a scratch worktree: reply "approve environment <hash>" (the hash the question names) or "a" to seal it, "b" (or your words) to repair it again, or "c" to re-check after a fix on your machine. A bare "approve environment", "ok" or "yes" seals nothing.',
   manual: 'Parked by hand: reply "resume" when ready, or "cancel job".',
   other: 'Read factory why --format md, then reply "resume", "cancel job" or "abandon job".',
 };
@@ -76,6 +76,11 @@ function parkNext(kind, extra = {}) {
   if (kind === 'dependency_conflict') {
     const ids = tasks.filter((t) => /dependency_conflict/.test(t.summary || '')).map((t) => t.id);
     if (ids.length) return `${ids.join(', ')}: ${PARK_NEXT.dependency_conflict}`;
+  }
+  // the seal names its hash: the one reply that seals it, written out
+  if (kind === 'environment_repair' && !extra.next) {
+    const seal = extra.seal || (extra.question && extra.question.seal);
+    if (seal) return PARK_NEXT.environment_repair.replace('"approve environment <hash>" (the hash the question names)', `"approve environment ${seal}"`);
   }
   return extra.next || PARK_NEXT[kind] || PARK_NEXT.other;
 }
@@ -611,8 +616,10 @@ function route(root, jobId) {
         advice = null;
       }
     }
-    const next = (advice && advice.upgraded && advice.next) || p.next || parkNext(p.kind || parkKind(p.reason, p.from));
-    return out({ action: 'parked', reason: p.reason, park: { kind: p.kind || parkKind(p.reason, p.from), next, from: p.from || null, at: p.at || null, ...(advice ? { clarify: { upgraded: advice.upgraded, findings: advice.findings } } : {}) }, instructions: 'Wait for the human: resume <step> · cancel job · abandon job.' });
+    const kind = p.kind || parkKind(p.reason, p.from);
+    const seal = kind === 'environment_repair' ? (state.env_repair || {}).short || null : null;
+    const next = (advice && advice.upgraded && advice.next) || p.next || parkNext(kind, seal ? { seal } : {});
+    return out({ action: 'parked', reason: p.reason, park: { kind, next, from: p.from || null, at: p.at || null, ...(seal ? { seal } : {}), ...(advice ? { clarify: { upgraded: advice.upgraded, findings: advice.findings } } : {}) }, instructions: seal ? `Wait for the human: only "approve environment ${seal}" (or "a") seals the repaired environment; "b" or their words repair it again; "c" re-checks after a fix on their machine.` : 'Wait for the human: resume <step> · cancel job · abandon job.' });
   }
   if (state.amendment && state.amendment.status === 'open') {
     return out({ action: 'skill', skill: 'amend', step: 'amend', reason: 'An amendment is open: finish editing, then `factory amend submit`.' });

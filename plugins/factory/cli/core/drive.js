@@ -304,6 +304,11 @@ function stopDetail(kind, n, extra = {}) {
       return { degraded: extra.degraded || [], summary: `${J}: ${n.workflow || 'a workflow'} ran without ${(extra.degraded || []).join(', ') || 'an angle'}: re-run it, or go on without it (recorded under Assumptions, then run with --accept-degraded).`, reply: 're-run | go on without it' };
     case 'parked': {
       const p = n.park || {};
+      // a repaired build environment waits for its seal: the exact replies, never "resume" or "yes"
+      if (p.kind === 'environment_repair') {
+        const short = p.seal || '<hash>';
+        return { park: { kind: p.kind, next: p.next || null, seal: short }, summary: `${J} parked (environment_repair): a repaired build environment ${short} waits for your seal (its full diff is in the question: factory why --format md). Reply "approve environment ${short}" (or "a") to seal it, "b" or your words to repair it again, "c" to re-check after a fix on your machine. A bare "approve environment", "ok" or "yes" seals nothing.`, reply: `approve environment ${short} | a | b (or your words) | c`, command: null };
+      }
       return { park: { kind: p.kind || null, next: p.next || null }, summary: `${J} parked${p.kind ? ` (${p.kind})` : ''}: ${String(n.reason || '').split('\n')[0].slice(0, 300)}${p.next ? ` Next: ${p.next}` : ''}`, reply: 'resume | cancel job | abandon job | what to change', command: `factory resume --job ${J}`, alt_command: `factory cancel --job ${J}` };
     }
     case 'wait': {
