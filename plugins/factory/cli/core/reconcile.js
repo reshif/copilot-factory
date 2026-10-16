@@ -105,6 +105,7 @@ function finish(root, state) {
   for (const t of steps.planTasks(ctx)) heads[t.id] = git.revParse(root, steps.taskBranch(state, t.id));
   const fresh = job.load(root, state.id);
   fresh.integration = { fingerprint: ctx.b.fingerprint, commit: git.revParse(root, state.branch), at: nowIso(), task_heads: heads };
+  fresh.integration_green = fresh.integration.commit;
   job.save(root, fresh);
   ledger.append(root, state.id, { kind: 'step', step: 'reconcile', ok: true, bound: { fingerprint: ctx.b.fingerprint }, detail: { commit: fresh.integration.commit, task_heads: heads } });
   return { job: state.id, status: 'merged', fingerprint: ctx.b.fingerprint, commit: fresh.integration.commit };
@@ -258,6 +259,8 @@ function integrateWave(root, jobId, ids, { wave = null } = {}) {
   }
   job.mutate(root, state.id, (fresh) => {
     for (const id of ids) if (fresh.tasks[id] && fresh.tasks[id].integration_failure) delete fresh.tasks[id].integration_failure;
+    // the job branch as integrated and checked: where the next task starts (tasks.startBase)
+    fresh.integration_green = head;
   });
   record(true, { commit: head, merged, commands: results.map((r) => ({ cmd: r.cmd, pass: r.pass, from: r.from })) });
   // Every task is built and integrated: this is the reconcile step's result too (no

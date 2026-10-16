@@ -209,11 +209,24 @@ test('P3.2: notifications: notify-send on Linux, wsl-notify-send or a PowerShell
   const has = (names) => (n) => n.find((x) => names.includes(x)) || null;
   assert.equal(N.plan('t', 'b', { platform: 'linux', wsl: false, find: has(['notify-send']) }).method, 'notify-send');
   assert.equal(N.plan('t', 'b', { platform: 'linux', wsl: true, find: has(['wsl-notify-send.exe', 'notify-send']) }).method, 'wsl-notify-send');
-  const toast = N.plan('t', "it's", { platform: 'linux', wsl: true, find: has(['powershell.exe']) });
+  // B1 (review): agent-written text never becomes script text. A park reason with a curly quote
+  // (PowerShell closes a '…' string on ’ too) travels as an environment variable, passed to the
+  // Windows side through WSLENV; osascript gets it as argv; control characters are stripped.
+  const evil = "x’; Start-Process calc; ’ \u001b[31m\r\nsecond line";
+  const toast = N.plan('t’', evil, { platform: 'linux', wsl: true, env: { WSLENV: 'PATH/l' }, find: has(['powershell.exe']) });
   assert.equal(toast.method, 'powershell');
-  assert.match(toast.args.join(' '), /ToastNotificationManager[\s\S]*'it''s'/);
+  assert.equal(toast.args[toast.args.length - 1], N.TOAST_SCRIPT, 'the script is a constant');
+  assert.ok(!/Start-Process|’/.test(toast.args.join(' ')), 'nothing of the text is in the command line');
+  assert.match(N.TOAST_SCRIPT, /\$env:FACTORY_NOTE_TITLE[\s\S]*\$env:FACTORY_NOTE_BODY/);
+  assert.equal(toast.env.FACTORY_NOTE_BODY, "x’; Start-Process calc; ’ [31m second line");
+  assert.equal(toast.env.WSLENV, 'PATH/l:FACTORY_NOTE_TITLE:FACTORY_NOTE_BODY');
+  const win = N.plan('t', evil, { platform: 'win32' });
+  assert.ok(!/Start-Process/.test(win.args.join(' ')) && win.env.FACTORY_NOTE_BODY && !win.env.WSLENV);
   assert.equal(N.plan('t', 'b', { platform: 'darwin', find: has(['osascript']) }).method, 'osascript');
-  assert.match(N.plan('a "t"', 'b', { platform: 'darwin', find: has(['osascript']) }).args[1], /display notification "b" with title "a \\"t\\""/);
+  const osa = N.plan('a "t"', 'b" & do shell script "touch /tmp/x', { platform: 'darwin', find: has(['osascript']) });
+  assert.deepEqual(osa.args.slice(0, 6), ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run'], 'the AppleScript is a constant');
+  assert.deepEqual(osa.args.slice(6), ['a "t"', 'b" & do shell script "touch /tmp/x'], 'the text is argv, never code');
+  assert.deepEqual(N.plan('-t', '--b', { platform: 'linux', wsl: false, find: has(['notify-send']) }).args, ['--app-name=Software Factory', '--', '-t', '--b'], 'no text is read as an option');
   assert.equal(N.plan('t', 'b', { platform: 'win32' }).method, 'powershell');
   assert.equal(N.plan('t', 'b', { platform: 'linux', wsl: false, find: () => null }).method, 'bell');
   assert.equal(N.isWsl({ WSL_DISTRO_NAME: 'Ubuntu' }, () => ''), true);
@@ -362,7 +375,7 @@ test('P3.3: amend submit while parked: gate A pre-empts the park, and the human 
   fs.writeFileSync(pf, JSON.stringify(plan, null, 2));
   const sub = F.cli(root, ['amend', 'submit']);
   assert.equal(sub.parked, true);
-  assert.match(sub.next, /approving the amendment also resumes it, no separate "resume"/);
+  assert.match(sub.next, /it presents gate A[\s\S]*approving the amendment also resumes it, as "resume" would/);
   const n = F.cli(root, ['next']);
   assert.deepEqual([n.action, n.step, n.resumes_park], ['gate', 'A', true], JSON.stringify(n));
   const r = F.reply(root, 'approve');
@@ -382,6 +395,9 @@ test('P3.3: amend submit while parked: gate A pre-empts the park, and the human 
   pl2.tasks[0].allowed_paths.push('README.md');
   fs.writeFileSync(p2, JSON.stringify(pl2, null, 2));
   F.cli(root2, ['amend', 'submit']);
+  // M2 (review): not approvable or deniable before the router presented gate A
+  assert.throws(() => F.reply(root2, 'deny keep the paths as they are'), /no gate waiting/);
+  assert.equal(F.cli(root2, ['next']).step, 'A');
   F.reply(root2, 'deny keep the paths as they are');
   const n2 = F.cli(root2, ['next']);
   assert.equal(n2.action, 'parked');
@@ -390,7 +406,7 @@ test('P3.3: amend submit while parked: gate A pre-empts the park, and the human 
 
 test('P3.3: a transient Copilot failure (HTTP 429) is retried with backoff in the same agent call and spends no attempt; one that never clears stops the run (copilot_transient) and the drive (transient)', () => {
   const root = F.makeRepo();
-  const FAST = { copilot: { transient_backoff_seconds: 0.01, transient_retries: 2 } };
+  const FAST = { copilot: { transient_backoff_seconds: 0.01, transient_retries: 2, transient_park_after: 2 } };
   const J = toBuild(root, FAST);
   const flaky = `const crew = require(${JSON.stringify(CREW)});\nconst fs = require('fs');\nmodule.exports = (c) => {\n  const f = process.env.RATE_FILE;\n  const n = fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0;\n  if (c.role === 'builder' && n < Number(process.env.RATE_LIMITS || 0)) { fs.writeFileSync(f, String(n + 1)); return { exit: 1, stderr: 'Error: Request failed with status code 429 (Too Many Requests): rate limit exceeded' }; }\n  return crew(c);\n};\n`;
   const h = harness({ script: flaky });
@@ -404,7 +420,7 @@ test('P3.3: a transient Copilot failure (HTTP 429) is retried with backoff in th
   assert.equal(h.log().filter((c) => c.agent === 'factory:builder').length, 2, 'two spawns: the 429 and its retry');
   assert.equal(stateOf(root, J).tasks.T1.attempts, 1, 'no attempt spent on the 429');
   assert.ok(events(root).some((e) => e.event === 'agent_transient' && e.retry === 1 && /429/.test(e.match)));
-  assert.match(r.__stderr, /transient failure \(429\); retry 1 in/);
+  assert.match(r.__stderr, /transient failure \(status code 429\); retry 1 in/);
   // never clears: after transient_retries the run stops with nothing recorded, and the drive stops typed
   const root2 = F.makeRepo();
   const J2 = toBuild(root2, FAST);
@@ -417,7 +433,7 @@ test('P3.3: a transient Copilot failure (HTTP 429) is retried with backoff in th
   assert.equal(stateOf(root2, J2).tasks.T1 ? stateOf(root2, J2).tasks.T1.attempts || 0 : 0, 0, 'no attempt spent');
   assert.ok(events(root2).some((e) => e.event === 'drive_stop' && e.kind === 'transient'));
   assert.equal(core('runner').transient({ code: 1, stderr: '', stdout: '{"type":"tool.result","data":{"content":"ECONNREFUSED 127.0.0.1:5432"}}' }), null, 'an agent\'s own tool output is never a transient failure');
-  assert.equal(core('runner').transient({ code: 1, stderr: 'fetch failed: ECONNRESET', stdout: '' }), 'fetch failed');
+  assert.equal(core('runner').transient({ code: 1, stderr: 'TypeError: fetch failed', stdout: '' }), 'fetch failed');
   assert.equal(core('runner').transient({ code: 0, stderr: '429', stdout: '' }), null);
 });
 

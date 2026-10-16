@@ -80,6 +80,9 @@ function settings(root, state) {
     transientRetries: typeof cp.transient_retries === 'number' && cp.transient_retries >= 0 ? Math.floor(cp.transient_retries) : 4,
     transientBackoffSec: typeof cp.transient_backoff_seconds === 'number' && cp.transient_backoff_seconds >= 0 ? cp.transient_backoff_seconds : 10,
     transcripts: transcripts.limits(cp),
+    // runs in a row that stopped on transient failures before the job parks (kind transient):
+    // a failure that persists across reruns is not transient any more
+    transientParkAfter: typeof cp.transient_park_after === 'number' && cp.transient_park_after >= 1 ? Math.floor(cp.transient_park_after) : 3,
     copilot: cp,
     flags: (Array.isArray(cp.flags) ? cp.flags : []).map((f) => String(f).replace(/\{plugin_root\}/g, PLUGIN_ROOT).replace(/\{root\}/g, root)),
   };
@@ -574,16 +577,30 @@ function unavailable(r) {
   return null;
 }
 
-// A transient failure: Copilot (or the service behind it) said rate limit, a 5xx, or the network
-// dropped. Read from stderr and plain (non-JSONL) stdout lines only: an agent's own tool output
-// (a test that prints ECONNREFUSED) is inside the JSONL records and never counts. Returns the
-// matching text, or null.
-const TRANSIENT_TEXT = /\b429\b|too many requests|rate[ -]?limit(?:ed|ing)?\b|\b(?:HTTP|status(?: code)?)[ :/]*5\d\d\b|\b50[0234] (?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)\b|\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ENETUNREACH)\b|socket hang up|fetch failed|network (?:error|is unreachable)/i;
+// A transient failure: the Copilot CLI itself reported a rate limit, a 5xx or a dropped network
+// connection. Only its own error lines on stderr count (a line that starts "Error:", "TypeError:",
+// "CAPIError …", "✗ …"), and a number counts only as an HTTP status in context ("status code
+// 429", "HTTP 503", "502 Bad Gateway"). Never stdout (the agent's reply and tool output), never a
+// bare number ("Tokens used: 1,429"), never ECONNREFUSED (a local service the agent's own tests
+// needed). Returns the matching text, or null.
+const ERROR_LINE = /^(?:[✗×!]\s*)?(?:error\b|[A-Za-z]*Error\b|request failed\b)/i;
+const TRANSIENT_SIGNALS = [
+  /\b(?:status(?: code)?|HTTP(?:\/\d(?:\.\d)?)?)\s*[:=]?\s*(?:429|5\d\d)\b/i,
+  /\b(?:429|5\d\d) (?:Too Many Requests|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)\b/i,
+  /\brate limit(?:ed| exceeded)\b|\btoo many requests\b/i,
+  /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH)\b|\bsocket hang up\b|\bfetch failed\b/i,
+];
 function transient(r) {
   if (!r || r.code === 0 || r.timedOut) return null;
-  const plain = String(r.stdout || '').split('\n').filter((l) => l.trim() && l.trim()[0] !== '{').join('\n');
-  const m = TRANSIENT_TEXT.exec(`${r.stderr || ''}\n${plain}`);
-  return m ? m[0] : null;
+  for (const raw of String(r.stderr || '').split('\n')) {
+    const l = raw.trim();
+    if (!ERROR_LINE.test(l)) continue;
+    for (const re of TRANSIENT_SIGNALS) {
+      const m = re.exec(l);
+      if (m) return m[0];
+    }
+  }
+  return null;
 }
 // The wait before transient retry n (0-based): exponential from the base, capped at 2 min,
 // with ±50% jitter so parallel agents don't retry in step.
@@ -786,7 +803,7 @@ async function runAgent(ctx, prompt, opts) {
     // factory.prepare before the wave.
     const tm = /^(?:build|sweep) (\S+)/.exec(o.label || '');
     const buildEnv = ctx.brief.workflow === 'realize' && tm && ctx.taskEnv ? ctx.taskEnv[tm[1]] || {} : {};
-    const env = { ...process.env, ...buildEnv, FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
+    const env = { ...process.env, ...buildEnv, FACTORY_DRIVE: '', FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
     const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail] });
     const spawnOnce = async (text, retryTurn = false, capSecOverride = null) => {
       if (ctx.unavailable) {
@@ -1109,7 +1126,25 @@ function acquireLock(root, state, info) {
 function copilotUnavailable(ctx) {
   const u = ctx.unavailable;
   if (u.why === 'transient') {
-    fail(`Copilot kept failing with a rate limit, a server error or a network error (${u.detail}), so the run stopped after its retries. Nothing was recorded and no attempt was spent. Wait a few minutes, then run factory next (or factory drive) again.`, 'copilot_transient', { why: u.why, detail: u.detail, copilot: ctx.settings.bin, agents: ctx.runs });
+    // count it; after transient_park_after such runs in a row the job parks (kind transient)
+    let n = 0;
+    let parked = false;
+    try {
+      const job = require('./job');
+      const st = job.mutate(ctx.root, ctx.state.id, (s) => {
+        s.transient_aborts = (s.transient_aborts || 0) + 1;
+      });
+      n = st.transient_aborts;
+      if (n >= ctx.settings.transientParkAfter && st.status === 'active') {
+        require('./decision-table').park(ctx.root, job.load(ctx.root, ctx.state.id), `Copilot failed with rate limits, server or network errors in ${n} runs in a row (last: ${u.detail}).`, 'transient');
+        parked = true;
+      }
+    } catch {
+      /* the count is advice; the run stops either way */
+    }
+    fail(parked
+      ? `Copilot kept failing with a rate limit, a server error or a network error (${u.detail}) in ${n} runs in a row, so the job is parked (transient). Nothing was recorded and no attempt was spent. Reply "resume" once Copilot works again.`
+      : `Copilot kept failing with a rate limit, a server error or a network error (${u.detail}), so the run stopped after its retries (${n} such run(s) in a row; the job parks after ${ctx.settings.transientParkAfter}). Nothing was recorded and no attempt was spent. Wait a few minutes, then run factory next (or factory drive) again.`, 'copilot_transient', { why: u.why, detail: u.detail, copilot: ctx.settings.bin, agents: ctx.runs, transient_runs: n, parked });
   }
   const how = u.why === 'not_signed_in'
     ? 'The Copilot CLI is not signed in. Run `copilot` in a terminal and use /login (or set COPILOT_GITHUB_TOKEN), then run factory next.'
@@ -1225,6 +1260,12 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
       throw e;
     }
     logCli(root, { cmd: 'record', sub: null, args: { file }, job: state.id, workflow: envelope.workflow, config: envelope.config || null, status: rec.status || null });
+    // a run that got through: transient failures before it were transient after all
+    try {
+      if (job.load(root, state.id).transient_aborts) job.mutate(root, state.id, (s) => { delete s.transient_aborts; });
+    } catch {
+      /* advice only */
+    }
     // The recorded result is what to act on (its status, questions, critique, problems…);
     // the workflow's own envelope status and summary are nested under `workflow`.
     const { job: _j, workflow: _w, config: _c, ...result } = rec;

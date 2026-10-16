@@ -8,7 +8,7 @@ const path = require('path');
 const { FactoryError, fail, readText, writeJson } = require('./lib/util');
 const { requireRoot, findRoot, PLUGIN_ROOT } = require('./lib/paths');
 
-const BOOL = new Set(['h1', 'epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default', 'none', 'proposed', 'detach', 'detached-child']);
+const { BOOL } = require('./lib/args'); // shared with the guard hook's command reader
 
 function parseArgs(argv) {
   const pos = [];
@@ -213,7 +213,11 @@ function run(argv) {
       if (sub === 'stop') return D.stopDrive(R());
       if (sub !== undefined) return fail('drive [--detach] | drive status [--wait <sec>] | drive stop', 'bad_input');
       if (opt.detach) return D.detach(R(), { jobId: J });
-      return D.drive(R(), { jobId: J, detached: Boolean(opt['detached-child']), maxSteps: opt['max-steps'] ? Number(opt['max-steps']) : undefined }); // async
+      // a stop that is a failure (not a wait on the human, not done) exits 1; the JSON says which
+      return D.drive(R(), { jobId: J, detached: Boolean(opt['detached-child']), maxSteps: opt['max-steps'] ? Number(opt['max-steps']) : undefined }).then((r) => {
+        if (r && ['error', 'copilot_unavailable', 'transient', 'limit', 'interrupted', 'superseded'].includes(r.kind)) process.exitCode = 1;
+        return r;
+      }); // async
     }
     case 'inbox': {
       const r = C('inbox').list(R());
@@ -567,4 +571,4 @@ function main(argv) {
   return finish(res, null);
 }
 
-module.exports = { main, run, parseArgs, findRoot, AGENT_ALLOWED, agentAllowed };
+module.exports = { main, run, parseArgs, findRoot, AGENT_ALLOWED, agentAllowed, BOOL };

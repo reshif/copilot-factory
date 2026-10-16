@@ -134,9 +134,13 @@
     "transient_retries": 4,
     "transient_backoff_seconds": 10,
     "transcript_max_bytes": 8388608,
-    "transcript_keep_runs": 30
+    "transcript_keep_runs": 30,
+    "transient_park_after": 3
   },
   "notify": true,
+  "drive": {
+    "stop_before_ship": false
+  },
   "intent_research": {
     "web": true,
     "search_mcp": null
