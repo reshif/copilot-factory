@@ -161,7 +161,8 @@ function checkReadTool(root, tool, ti, absFile, cwd, policy) {
 
 const HUMAN_ONLY = new Set(['approve', 'deny', 'resume', 'proceed', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding']);
 // Mirrors cli/main.js parseArgs: --k=v, --k v (unless the flag is boolean or v starts with --), and --.
-const CLI_BOOL = new Set(['h1', 'epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force']);
+// the CLI's own boolean-flag list (cli/lib/args.js): the guard reads a command exactly as the CLI parses it
+const CLI_BOOL = require('../cli/lib/args').BOOL;
 const TTY_FAKERS = /^(script|unbuffer|expect|socat|faketty|ptyexec|zpty|empty)$/;
 const SHELLS = /^(bash|sh|zsh|dash|ksh|mksh|fish|csh|tcsh|ash|busybox)$/;
 const PWSH = /^(pwsh|powershell|powershell\.exe|pwsh\.exe)$/i;
@@ -783,4 +784,4 @@ function normalise(cmd) {
   return parse(cmd).map((c) => c.words.map((w) => w.text).join(' ')).join('; ');
 }
 
-module.exports = { checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
+module.exports = { CLI_BOOL, checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
