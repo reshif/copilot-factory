@@ -139,3 +139,13 @@ test('health summary: Parks counts every park (as R16 does) and failing checks a
   assert.equal(h.cli.verdicts, 3);
   assert.equal(h.cli.by_code.filter((x) => /task verify/.test(x.key)).length, 0, 'a failing task verify is not a CLI failure');
 });
+
+test('Phase 3 shapes: typed park rows (action park, park.kind) count as parks; a drive_stop whose notification was sent is surfaced', () => {
+  const parks = rules.parksOf(job0({ decisions: [{ ts: at(1), action: 'park', rule: 'park.dependency_conflict', park: { kind: 'dependency_conflict' }, reason: 'T2 does not merge' }] }));
+  assert.deepEqual(parks.map((p) => p.rule), ['dependency_conflict']);
+  const stop = { event: 'drive_stop', ts: at(1), kind: 'gate', notified: 'notify-send' };
+  const j = (events) => job0({ state: { status: 'closed', updated_at: at(1) }, events });
+  const fired = (events) => rules.jobHealth(j(events), LIMITS, at(3)).some((x) => x.rule === 'R25.drive_stop_unsurfaced');
+  assert.ok(!fired([stop, { event: 'notify', ts: at(1), kind: 'gate', method: 'notify-send', sent: true }]), 'the notifier sent it');
+  assert.ok(fired([{ ...stop, notified: 'off' }, { event: 'notify', ts: at(1), kind: 'gate', method: 'off', sent: false }]), 'notifications off and no reply: never surfaced');
+});

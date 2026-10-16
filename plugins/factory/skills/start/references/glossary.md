@@ -20,3 +20,4 @@ Read this when a factory output or skill uses a term you don't know. Each term i
 - **Research gap**: something research could not settle (no source for the confirmed version, the web down, a timeout). It is listed on the sheet, in the contract's `## Research gaps` and at H1; never hidden.
 - **Redirect**: the user's change of direction (a denial at H1, or `factory clarify redirect`), read back as tracked items and reported done or not done at the next H1.
 - **Lesson** (`L-n`): a scoped rule distilled from a merged job; it applies to later jobs only after the user replies `accept lesson Ln`.
+- **Project brief** (`.factory/project.md`): the repository's shared memory across jobs (conventions, module map, test and lint commands, environment, earlier ADRs, accepted lessons). Every agent brief carries it; the user may edit it; distill proposes edits the CLI applies. Never edit it yourself.

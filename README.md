@@ -521,7 +521,7 @@ plugins/factory/
   tests/                            end-to-end, unit and packaging tests
 plugins/factory-inspector/
   plugin.json                       plugin manifest
-  inspector/                        observe · rules · register · config · io
+  inspector/                        observe · rules · register · config · io · git (read-only, for the outcome rules)
   hooks/ · skills/inspect/ · bin/factory-inspect · tests/
 evals/                              triggers/ (Tier 2 prompts) · dispatch/ (stub factory next cases) · fixtures/ (Tier 3 planted defects)
 scripts/                            eval-triggers.js · eval-outcomes.js (see Quality and evals) · verify-copilot.sh

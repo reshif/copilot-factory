@@ -117,6 +117,24 @@ function costMetrics(root, state) {
   };
 }
 
+// Every park, from every record that says so (P4.5): the router's parked decisions and typed park
+// rows (action "park", park.kind), a workflow result that parked the job, a park by hand, and any
+// event whose name says park, read by its kind / type / rule and reason. One park written by two
+// records at once counts once. The inspector counts parks the same way (rules.parksOf).
+function parkRecords(root) {
+  const out = [];
+  for (const d of decisions.all(root)) {
+    if (d.action === 'parked' || d.action === 'park') out.push({ job: d.job, ts: d.ts, rule: (d.park && d.park.kind) || d.rule || 'parked', reason: d.reason || null });
+  }
+  for (const e of readEventLog(root)) {
+    if (!e.job) continue;
+    if (e.event === 'cli' && e.ok !== false && ((e.cmd === 'record' && e.status === 'park') || e.cmd === 'park')) out.push({ job: e.job, ts: e.ts, rule: e.cmd === 'park' ? 'park.by_hand' : `${e.workflow || 'workflow'}.park`, reason: null });
+    else if (e.event !== 'cli' && typeof e.event === 'string' && /park/i.test(e.event) && !/unpark|resume/i.test(e.event)) out.push({ job: e.job, ts: e.ts, rule: e.kind || e.park_kind || e.type || e.rule || e.event, reason: e.reason || null });
+  }
+  out.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+  return out.filter((p, i) => !out.slice(0, i).some((q) => q.job === p.job && q.ts && p.ts && Math.abs(Date.parse(p.ts) - Date.parse(q.ts)) < 5000));
+}
+
 function reverts(root, state) {
   if (!state.pr || !state.pr.merge_commit) return 0;
   try {
@@ -161,7 +179,7 @@ function jobMetrics(root, state, all) {
     clarify_rounds: state.counters.clarify_rounds,
     gate_denials: (state.denials || []).length,
     amendments: state.amendments_count || 0,
-    parked: decs.filter((d) => d.action === 'parked').length,
+    parked: parkRecords(root).filter((p) => p.job === state.id).length,
     decisions: decs.length,
     lanes: byLane,
     intent: intentMetrics(root, state),
@@ -244,8 +262,8 @@ function quality(root, { cutoff, jobIds, perJob }) {
     l.unverified_rate = rate(l.unverified, l.verified);
   }
   const parks = {};
-  for (const d of decisions.all(root)) {
-    if (d.action !== 'parked' || !inWindow(d.ts) || (jobIds && !jobIds.has(d.job))) continue;
+  for (const d of parkRecords(root)) {
+    if (!inWindow(d.ts) || (jobIds && !jobIds.has(d.job))) continue;
     const rule = d.rule || 'parked';
     const p = (parks[rule] = parks[rule] || { parks: 0, jobs: [], example: null });
     p.parks += 1;

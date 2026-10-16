@@ -616,7 +616,8 @@ const cliVerdict = (e) => e.event === 'cli' && e.ok === false && !e.code;
 function parksOf(job) {
   const cli = job.events.filter((e) => e.event === 'cli');
   return [
-    ...job.decisions.filter((d) => d.action === 'parked').map((d) => ({ ts: d.ts, id: d.id, rule: d.rule, reason: d.reason })),
+    // the router's parked decisions, and typed park rows (action "park", rule park.<kind>, park: {kind})
+    ...job.decisions.filter((d) => d.action === 'parked' || d.action === 'park').map((d) => ({ ts: d.ts, id: d.id, rule: (d.park && d.park.kind) || d.rule || d.kind || null, reason: d.reason })),
     ...cli.filter((e) => (e.cmd === 'park' && e.ok) || (e.cmd === 'record' && e.status === 'park')).map((e) => ({ ts: e.ts, reason: e.cmd === 'park' ? 'parked by hand' : `${e.workflow || 'workflow'} parked it` })),
     ...job.events.filter((e) => typeof e.event === 'string' && e.event !== 'cli' && /park/i.test(e.event) && !/unpark|resume/i.test(e.event)).map((e) => ({ ts: e.ts, rule: e.type || e.park_type || e.rule || null, reason: e.reason || e.event })),
   ]
@@ -777,17 +778,19 @@ function jobHealth(job, L, now) {
 function driveStops(job, L, now) {
   const stops = job.events.filter((e) => e.event === 'drive_stop');
   if (!stops.length) return [];
-  const notified = job.events.filter((e) => e.event === 'drive_notified');
+  // what reached the user: a drive_notified line (inbox or notification), or a notification the
+  // notifier says it sent (notify, sent: true) for this job at or after the stop
+  const notified = job.events.filter((e) => e.event === 'drive_notified' || (e.event === 'notify' && e.sent === true));
   const replies = [...job.decisions.filter((d) => /^human\./.test(String(d.action || ''))).map((d) => d.ts), ...job.events.filter((e) => ['reply_applied', 'reply_refused', 'reply_unparsed'].includes(e.event) || (e.event === 'cli' && e.channel === 'tty')).map((e) => e.ts)];
   const active = job.state && job.state.status === 'active';
   const quiet = stops.filter((s) => {
     const sid = s.stop_id || s.id || null;
-    if (notified.some((n) => n.ts >= s.ts && (!sid || !(n.stop_id || n.id) || (n.stop_id || n.id) === sid))) return false;
+    if (notified.some((n) => n.ts >= s.ts && (n.event === 'notify' ? hours(s.ts, n.ts) * 60 < 5 : !sid || !(n.stop_id || n.id) || (n.stop_id || n.id) === sid))) return false;
     if (replies.some((t) => t && t >= s.ts)) return false;
     return !(active && hours(s.ts, now) * 60 < (L.drive_notify_minutes || 10));
   });
   if (!quiet.length) return [];
-  return [f({ rule: 'R25.drive_stop_unsurfaced', class: 'gap', severity: 'medium', subject: `${job.id}:drive`, job: job.id, latest: latest(quiet), summary: `factory drive stopped ${quiet.length} time(s) in ${job.id} and nothing reached you after: ${quiet.slice(0, 3).map((s) => `${s.type || s.reason || 'stop'} at ${s.ts}`).join('; ')} (no drive_notified, no reply of yours).`, evidence: quiet.slice(0, 6).map((s) => s.ts), question: 'Did the inbox entry or the notification fail, or is nobody watching this job?' })];
+  return [f({ rule: 'R25.drive_stop_unsurfaced', class: 'gap', severity: 'medium', subject: `${job.id}:drive`, job: job.id, latest: latest(quiet), summary: `factory drive stopped ${quiet.length} time(s) in ${job.id} and nothing reached you after: ${quiet.slice(0, 3).map((s) => `${s.kind || s.type || s.reason || 'stop'} at ${s.ts}${s.notified ? ` (notifier: ${s.notified})` : ''}`).join('; ')} (no notification sent, no drive_notified, no reply of yours).`, evidence: quiet.slice(0, 6).map((s) => s.ts), question: 'Did the inbox entry or the notification fail, or is nobody watching this job?' })];
 }
 
 

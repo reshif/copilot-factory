@@ -1174,3 +1174,19 @@ test('P4.3 distill write: the lesson-writer sees the project brief and proposes 
   assert.match(fs.readFileSync(path.join(root, '.factory', 'project.md'), 'utf8'), /## Test and lint commands\n<!-- factory:auto commands -->\n[\s\S]*?<!-- \/factory:auto -->\n- node tests\/add\.test\.js runs the arithmetic tests\n/);
   assert.equal(events(root).filter((e) => e.event === 'distill_write').pop().project_brief.applied, 1);
 });
+
+test('P4.5 telemetry counts every park: router decisions, typed park rows, workflow parks and park events, once each', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const ev = require('../cli/core/events');
+  const decisions = require('../cli/core/decisions');
+  decisions.write(root, { id: `${J}-D2`, job: J, action: 'parked', rule: 'cap.review_rounds', reason: 'Review rounds exhausted' });
+  ev.append(root, { event: 'cli', job: J, cmd: 'record', ok: true, status: 'park', workflow: 'realize' });
+  const later = (ms) => new Date(Date.now() + ms).toISOString();
+  decisions.write(root, { job: J, action: 'park', rule: 'park.dependency_conflict', park: { kind: 'dependency_conflict' }, reason: 'T2 does not merge', ts: later(60000) });
+  const rep = require('../cli/core/telemetry').report(root);
+  const m = rep.per_job.find((x) => x.job === J);
+  assert.ok(m.parked >= 2, JSON.stringify(rep.quality.parks));
+  assert.ok(rep.quality.parks['cap.review_rounds']);
+  assert.ok(rep.quality.parks.dependency_conflict || rep.quality.parks['realize.park'], JSON.stringify(rep.quality.parks));
+});

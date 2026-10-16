@@ -75,9 +75,9 @@ function troubleOf(root, state) {
   const evs = readJsonl(project(root).eventsFile).filter((e) => e && e.job === state.id);
   const decs = decisions.forJob(root, state.id);
   const led = ledger.all(root, state.id);
-  const typed = (e) => clip(e.type || e.park_type || e.kind || e.code || e.rule || e.from || null, 80);
+  const typed = (e) => clip(e.kind || e.park_kind || e.type || e.park_type || e.code || e.rule || e.from || null, 80);
   const parks = [
-    ...decs.filter((d) => d.action === 'parked').map((d) => ({ at: d.ts, source: 'router', type: clip(d.rule || d.type || null, 80), reason: clip(d.reason) })),
+    ...decs.filter((d) => d.action === 'parked' || d.action === 'park').map((d) => ({ at: d.ts, source: 'router', type: clip((d.park && d.park.kind) || d.rule || d.type || null, 80), reason: clip(d.reason) })),
     ...evs.filter((e) => e.event === 'cli' && e.ok !== false && ((e.cmd === 'record' && e.status === 'park') || e.cmd === 'park')).map((e) => ({ at: e.ts, source: e.cmd === 'park' ? 'by hand' : `${e.workflow || 'workflow'} result`, type: clip(e.park_from || e.park_type || null, 80), reason: clip(e.park_reason || e.reason || null) })),
     ...led.filter((e) => e.kind === 'clarify' && e.outcome === 'park').map((e) => ({ at: e.at, source: 'clarify', type: 'clarify', reason: clip((e.detail || {}).reason) })),
     // typed park and drive-stop events (any name with "park", or drive_stop): read by their type and reason
