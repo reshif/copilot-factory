@@ -379,8 +379,46 @@ test('the budget is absolute: no automatic +50%; resume +100% doubles it; a repl
   require('../cli/core/human').replyToPark(root, { text: 'b', channel: 'chat' });
   assert.equal(stateOf(root, J).policy.limits.max_agent_runs_per_job, 16);
   assert.equal(core('human').budgetGrant('+50%'), 1.5);
-  assert.equal(core('human').budgetGrant('double it'), 2);
+  // m1: only an explicit grant counts
+  assert.equal(core('human').budgetGrant('double it'), null);
   assert.equal(core('human').budgetGrant('go on'), null);
+  assert.equal(core('human').budgetGrant('b'), null, 'a bare letter grants nothing by itself (replyToPark maps it to its option first)');
+  assert.equal(core('human').budgetGrant('make it 50% faster'), null);
+  assert.equal(core('human').budgetGrant('budget 40', 16), 2.5);
+  assert.equal(core('human').budgetGrant('budget 10', 16), null, 'never lower');
+  assert.equal(stateOf(root, J).human_notes.at(-1).text, '+100% more (resume +100%)', 'an option letter gives the agents the option text');
+});
+
+test('M6: a chat message while parked resumes only when it answers the park; otherwise it is stored and the user is asked once ("yes" resumes with it)', () => {
+  const { root, J } = job();
+  assert.equal(run(root, J).step, 'H1');
+  F.reply(root, 'approve');
+  next(root);
+  const st = stateOf(root, J);
+  core('decision-table').park(root, st, 'The build needs src/x.js, outside its allowed paths.', 'drift', { logged: true, question: { question: 'The build needs src/x.js, outside its allowed paths. Allow it?', options: [{ key: 'a', text: 'Allow them: an amendment that adds the paths (you approve it)' }, { key: 'b', text: 'Keep them out: reply with how the builders should do without them' }], recommendation: 'b' } });
+  const H = core('human');
+  const hook = (prompt) => spawnSync('node', [path.join(F.PLUGIN, 'hooks', 'prompt.js'), 'userPromptSubmitted'], { input: JSON.stringify({ prompt, cwd: root, sessionId: 's', timestamp: 1 }), encoding: 'utf8' });
+  // an unrelated message: stored, a one-line question, nothing resumed
+  const r = hook('lunch at noon, then the release notes');
+  assert.match(r.stdout, /NOT applied[\s\S]*Use this as your answer to \\"The build needs src\/x\.js[\s\S]*reply yes/);
+  assert.equal(stateOf(root, J).status, 'parked');
+  assert.equal(stateOf(root, J).park.pending_answer.words, 'lunch at noon, then the release notes');
+  hook('yes');
+  let after = stateOf(root, J);
+  assert.equal(after.status, 'active', '"yes" resumes with the stored words');
+  assert.equal(after.human_notes.at(-1).text, 'lunch at noon, then the release notes');
+  // an option letter: the agents get the option's text
+  core('decision-table').park(root, after, 'again', 'drift', { logged: true, question: { question: 'Allow src/x.js?', options: [{ key: 'a', text: 'Allow them: an amendment' }, { key: 'b', text: 'Keep them out: reply with how' }], recommendation: 'b' } });
+  assert.equal(H.replyToPark(root, { text: 'b: use the helper in src/y.js', channel: 'chat' }).option, 'b');
+  after = stateOf(root, J);
+  assert.equal(after.human_notes.at(-1).text, 'Keep them out: reply with how — use the helper in src/y.js');
+  // words about the question resume at once; "a task creates it" is not option a
+  core('decision-table').park(root, after, 'again', 'verify', { logged: true, question: { question: 'Who creates POLICY_OK?', options: [{ key: 'a', text: 'A task creates it' }, { key: 'b', text: 'You create it yourself' }] } });
+  const a = H.parkAnswer(stateOf(root, J), 'a task should write POLICY_OK first');
+  assert.deepEqual([a.via, a.option, a.words], ['option', 'a', 'a task should write POLICY_OK first'], 'starts with option a\'s words: the user\'s own words are kept');
+  assert.equal(H.parkAnswer(stateOf(root, J), 'POLICY_OK is made by the fixture').via, 'reply');
+  assert.equal(H.parkAnswer(stateOf(root, J), 'what about lunch'), null);
+  assert.equal(H.replyToPark(root, { text: 'I created POLICY_OK myself; try again', channel: 'chat' }).resumed, true);
 });
 
 test('several exact replies in one message are applied in order ("confirm AC-1; approve"); one that fails stops the rest and says what was applied', () => {

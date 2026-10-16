@@ -337,7 +337,11 @@ test('words sent while clarify is parked are stored, never refused; the user\'s 
   assert.equal(record(root, J).redirects.length, 0, 'nothing runs behind the park');
   assert.equal(F.cli(root, ['proceed']).code, 'human_only');
   // the user's own reply in chat is resume + content
-  const r = require('../cli/core/human').replyToPark(root, { text: 'please also check overflow', channel: 'chat' });
+  // M6: words that do not answer the park's question are stored and asked about once; "yes" resumes with them
+  const p0 = require('../cli/core/human').replyToPark(root, { text: 'please also check overflow', channel: 'chat' });
+  assert.equal(p0.pending, true);
+  assert.equal(F.cli(root, ['job', 'show']).status, 'parked');
+  const r = require('../cli/core/human').replyToPark(root, { text: 'yes', channel: 'chat' });
   assert.match(r.message, /Resumed/);
   const d = record(root, J);
   assert.equal(d.redirects.length, 1);

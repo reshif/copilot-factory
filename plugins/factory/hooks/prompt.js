@@ -71,8 +71,9 @@ function clarifyReply(root, input) {
   return true;
 }
 
-// A reply to a park: any message of yours while the current job is parked is your answer to the
-// park's question, so it resumes the job with your words (human.replyToPark). Not a question to
+// A reply to a park: a message of yours while the current job is parked that answers the park's
+// question (an option, a reply about it, "yes" to a stored answer) resumes the job with your words
+// (human.replyToPark); any other is stored and you are asked once whether it is your answer. Not a question to
 // the assistant (ends with "?"), not a factory command or slash command, not a multi-paragraph text.
 function parkReply(root, input) {
   const t = String(input.prompt || '').trim();
@@ -89,6 +90,13 @@ function parkReply(root, input) {
   const text = t.slice(0, 200);
   try {
     const r = require('../cli/core/human').replyToPark(root, { jobId: state.id, text: t, channel: 'chat' });
+    if (r.pending) {
+      // not an answer to the park: stored, and the user is asked once (never a silent resume)
+      events.append(root, { event: 'reply_pending', reply: 'park', ...ctx });
+      writeLastReply(root, { at: new Date().toISOString(), text, status: 'pending', reply: 'park', job: r.job, decision_id: ctx.decision_id, message: r.message });
+      context(`[factory] ${state.id} is parked and this message was NOT applied: it does not answer the park's question. Ask the user exactly, in one line: Use this as your answer to "${r.question}"? reply yes. Do not resume the job yourself.`, `[factory] ${r.message}`);
+      return true;
+    }
     events.append(root, { event: 'reply_applied', reply: 'park', ...ctx });
     writeLastReply(root, { at: new Date().toISOString(), text, status: 'applied', reply: 'park', job: r.job, decision_id: ctx.decision_id, message: r.message });
     context(`[factory] Applied your reply to the park: ${r.message} Continue with \`factory next\` (skill factory:start).`, `[factory] Applied your reply: ${String(r.message).slice(0, 200)}`);

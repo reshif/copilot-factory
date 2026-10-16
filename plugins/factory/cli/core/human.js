@@ -270,21 +270,22 @@ function splitResume(state, step) {
   return steps.includes(t.toLowerCase()) ? { step: t, words: null } : { step: null, words: t };
 }
 
-// The budget is absolute: resume grants more agent runs only when the human's words say how much
-// ("resume +50%", "+100%", "double it", or the budget question's option a/b). Returns the factor, or null.
-function budgetGrant(words) {
+// The budget is absolute: resume grants more agent runs only when the human's words say how much.
+// Returns the factor, or null.
+// Only an explicit grant counts: "+N%" or "budget N" (N agent runs in all, more than now). Words
+// that merely mention a number ("try 50% faster"? no "+") or "double" grant nothing; an option
+// letter of the budget question is mapped to its text ("+100% …") by replyToPark first.
+function budgetGrant(words, current = null) {
   const t = String(words || '').toLowerCase().trim();
   if (!t) return null;
   let m;
-  if ((m = /\+?\s*(\d{1,3})\s*%/.exec(t))) return Number(m[1]) > 0 ? 1 + Math.min(300, Number(m[1])) / 100 : null;
-  if (/\b(double|twice|2x|x2)\b/.test(t)) return 2;
-  if (/^\(?a\)?\b/.test(t)) return 1.5;
-  if (/^\(?b\)?\b/.test(t)) return 2;
+  if ((m = /(?:^|[\s(])\+\s*(\d{1,3})\s*%/.exec(t))) return Number(m[1]) > 0 ? 1 + Math.min(300, Number(m[1])) / 100 : null;
+  if ((m = /(?:^|\s)budget\s+(\d{1,5})\b/.exec(t)) && current) return Number(m[1]) > current ? Number(m[1]) / current : null;
   return null;
 }
 
 function needsGrant(state, words) {
-  return Boolean(state.park && (state.park.kind === 'budget' || state.park.from === 'budget') && !budgetGrant(words));
+  return Boolean(state.park && (state.park.kind === 'budget' || state.park.from === 'budget') && !budgetGrant(words, state.policy && state.policy.limits && state.policy.limits.max_agent_runs_per_job));
 }
 
 const GRANT_MSG = (state) => `${state.id} parked because its agent-run budget is spent (${(state.park && state.park.reason) || ''}). The budget is absolute: say how much more to allow — reply "resume +50%" or "resume +100%" — or "cancel job". Nothing was resumed.`;
@@ -305,18 +306,62 @@ function resume(root, { jobId, step, words: given = null, channel }) {
 
 // Any reply of the human's to a park is resume + content: their words are stored with the job
 // (and with clarify's record before H1) and every agent that works on it next gets them.
+// Is this message an answer to the park? An option of its question (its letter or number, "option
+// b", "b: …", or starting with the option's words), "yes" to a stored answer the factory asked
+// about, or words about the question itself (they share its significant words). Returns the
+// words the agents get (an option's text, with anything added after it) or null.
+const PARK_STOP = new Set('this that with from your have will them they what when where which would could should about into only also just then than were been their there here more some such very much does make like want need please okay sure think maybe test tests build builds job jobs factory file files code thing things good fine looks look check work works done'.split(' '));
+function sigWords(text) {
+  return new Set((String(text || '').toLowerCase().match(/[a-z0-9_][a-z0-9_.-]{3,}/g) || []).map((w) => w.replace(/[.-]+$/, '')).filter((w) => w.length >= 4 && !PARK_STOP.has(w)));
+}
+function parkAnswer(state, text) {
+  const park = state.park || {};
+  const t = String(text || '').trim();
+  const opts = (park.options || []).map((o, i) => ({ key: String(o.key || String.fromCharCode(97 + i)).toLowerCase(), text: String(o.text || '') }));
+  if (park.pending_answer && /^(y|yes|yep|yes please|ok|okay|sure|confirm|use it|do it)[.!]?$/i.test(t)) return { words: park.pending_answer.words, via: 'confirmed' };
+  const m = /^(?:option\s+([a-z]|\d{1,2})|\(([a-z]|\d{1,2})\)|([a-z]|\d{1,2})\))(?:\s*[:.,\u2014\u2013-]?\s*(.*))?$/is.exec(t) || /^([a-z]|\d{1,2})(?:\s*[:.,\u2014\u2013-]\s*(.*))?$/is.exec(t);
+  if (m && opts.length) {
+    const key = String(m[1] || m[2] || m[3] || '').toLowerCase();
+    const rest = String((m.length > 4 ? m[4] : m[2]) || '').trim();
+    const i = /^\d+$/.test(key) ? Number(key) - 1 : opts.findIndex((o) => o.key === key);
+    if (opts[i]) return { words: rest ? `${opts[i].text} — ${rest}` : opts[i].text, option: opts[i].key, via: 'option' };
+  }
+  const low = t.toLowerCase();
+  const byText = opts.find((o) => {
+    const head = o.text.toLowerCase().split(/[\s:,(]+/).filter(Boolean).slice(0, 2).join(' ');
+    return head.length >= 4 && low.startsWith(head);
+  });
+  if (byText) return { words: t, option: byText.key, via: 'option' };
+  const about = sigWords([park.question, ...opts.map((o) => o.text), park.question ? '' : park.reason].join(' '));
+  const mine = sigWords(t);
+  if ([...mine].some((w) => about.has(w))) return { words: t, via: 'reply' };
+  return null;
+}
+
+// A chat message while the job is parked: resumes it only when it answers the park (parkAnswer).
+// Anything else is stored and the user is asked once whether it is their answer ("yes" resumes
+// with it); it never resumes silently.
 function replyToPark(root, { jobId, text, channel }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
   if (state.status !== 'parked') fail(`${state.id} is not parked (status: ${state.status}).`, 'not_parked');
-  const words = String(text || '').trim();
-  if (!words) fail('Say your answer.', 'bad_input');
+  const raw = String(text || '').trim();
+  if (!raw) fail('Say your answer.', 'bad_input');
+  const ans = parkAnswer(state, raw);
+  const words = ans ? ans.words : raw;
   if (needsGrant(state, words)) fail(GRANT_MSG(state), 'needs_grant');
+  const question = (state.park && state.park.question) || String((state.park && state.park.reason) || 'why the job parked').split('\n')[0].slice(0, 300);
+  if (!ans) {
+    state.park = { ...state.park, pending_answer: { words: raw.slice(0, 2000), at: nowIso() } };
+    job.save(root, state);
+    log(root, state, 'park_answer_pending', { channel, words: raw.slice(0, 500) });
+    return { job: state.id, resumed: false, pending: true, question, message: `Nothing was resumed. Use this as your answer to "${question}"? Reply "yes" to resume ${state.id} with it (or answer the question).` };
+  }
   confirmTyped(channel, state.id, 'resume it with your words');
-  applyResume(root, state, { words, via: 'reply' });
+  applyResume(root, state, { words, via: ans.via === 'option' ? `option ${ans.option}` : 'reply' });
   job.save(root, state);
-  log(root, state, 'resume', { channel, from: state.resumed.from, via: 'reply', words: words.slice(0, 500), ...(state.resumed.grant ? { grant: state.resumed.grant } : {}) });
-  return { job: state.id, resumed: true, message: `Resumed ${state.id} with your words${state.resumed.grant ? ` and ${Math.round((state.resumed.grant - 1) * 100)}% more agent runs` : ''}: they go to the next round. Copilot continues with factory next.` };
+  log(root, state, 'resume', { channel, from: state.resumed.from, via: ans.via, ...(ans.option ? { option: ans.option } : {}), words: words.slice(0, 500), ...(state.resumed.grant ? { grant: state.resumed.grant } : {}) });
+  return { job: state.id, resumed: true, ...(ans.option ? { option: ans.option } : {}), message: `Resumed ${state.id} with ${ans.option ? `option ${ans.option} (${words.slice(0, 160)})` : 'your words'}${state.resumed.grant ? ` and ${Math.round((state.resumed.grant - 1) * 100)}% more agent runs` : ''}: they go to the next round. Copilot continues with factory next.` };
 }
 
 // What un-parking does, whoever decides it (resume, a reply, or approving an amendment on a parked
@@ -346,7 +391,7 @@ function applyResume(root, state, { step = null, via = null, words = null } = {}
   if (from === 'reverify') state.counters.reverify_bonus = (state.counters.reverify_bonus || 0) + 1;
   let grant = null;
   if (from === 'budget' || park.kind === 'budget') {
-    grant = budgetGrant(words);
+    grant = budgetGrant(words, L.max_agent_runs_per_job);
     if (grant) state.policy.limits.max_agent_runs_per_job = Math.ceil(state.policy.limits.max_agent_runs_per_job * grant);
   }
   if (words) state.human_notes = [...(state.human_notes || []), { at: nowIso(), text: String(words).slice(0, 2000), from: park.kind || from || null, ...(park.question ? { question: park.question } : {}) }].slice(-10);
@@ -629,4 +674,4 @@ function applyReply(root, parsed, channel = 'chat') {
   }
 }
 
-module.exports = { applyResume, replyToPark, approveShip, parseBatch, budgetGrant, splitResume, snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { applyResume, replyToPark, parkAnswer, approveShip, parseBatch, budgetGrant, splitResume, snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };

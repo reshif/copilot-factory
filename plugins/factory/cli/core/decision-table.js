@@ -20,8 +20,8 @@ const git = require('../lib/git');
 // its routing decision (`logged`), so `factory why` shows every park with its reason.
 // Since 0.9.0 a loop park (review_rounds, verify_fix_rounds, unverified_finding, the integrator)
 // comes only after the loop engine (cli/core/loop.js) escalated and diagnosed, and carries the
-// diagnosis's specific question (park.question, park.options, park.recommendation): any reply of
-// the human's is resume + content. These texts are the fallback for parks from before.
+// diagnosis's specific question (park.question, park.options, park.recommendation): a reply that
+// answers it (an option, words about it) is resume + content; any other is asked about once. These texts are the fallback for parks from before.
 const PARK_NEXT = {
   budget: 'The agent-run budget is spent (the budget is absolute). Grant more? a) +50%: reply "resume +50%"; b) +100%: reply "resume +100%"; c) stop: "cancel job". Recommended: a, if the job was converging.',
   scope_violation: 'Files outside the allowed paths changed and could not be reverted automatically: revert them and reply "resume", or ask for an amendment that allows them.',
