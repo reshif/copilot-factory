@@ -462,6 +462,7 @@ test('hooks: the launcher finds the plugin without any root variable (VS Code to
     const w = spawnSync('bash', ['-c', `command -v ${b}`], { encoding: 'utf8' }).stdout.trim();
     if (w) fs.symlinkSync(w, path.join(noNode, b));
   }
+  fs.rmSync(path.join(userDir, 'node-path'), { force: true }); // no node the CLI recorded either
   spawnSync(path.join(noNode, 'bash'), ['-c', H.hooks.userPromptSubmitted[0].bash], { cwd: root, input: '{}', encoding: 'utf8', env: { PATH: noNode, HOME: userDir, FACTORY_USER_DIR: userDir, PLUGIN_ROOT: F.PLUGIN } });
   const pm = check(doctor(), 'hook prompt');
   assert.equal(pm.ok, false);
@@ -489,4 +490,35 @@ test('hooks: factory next\'s dead-hook notice sends the user to factory doctor f
   const root = F.makeRepo();
   const n = w.notice(root, { job: 'J-0001', action: 'gate', gate: { id: 'H1', hash: 'h' } });
   assert.match(n, /First run factory doctor: its "hook prompt" and "hook guard" lines/);
+});
+
+test('hooks: node only on a login shell PATH (~/.local/bin): the launcher uses the node the CLI recorded, and the guard still enforces', () => {
+  const H = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'hooks.json'), 'utf8'));
+  const root = F.makeRepo();
+  const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-n-'));
+  F.cli(root, ['doctor'], { env: { FACTORY_USER_DIR: userDir } }); // records plugin-root and node-path
+  assert.equal(fs.readFileSync(path.join(userDir, 'node-path'), 'utf8').trim(), process.execPath);
+  // a PATH with bash and coreutils but no node
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-bin-'));
+  for (const t of ['bash', 'cat', 'dirname', 'mkdir', 'date', 'uname', 'wslpath']) {
+    const w = spawnSync('bash', ['-c', `command -v ${t}`], { encoding: 'utf8' }).stdout.trim();
+    if (w) fs.symlinkSync(w, path.join(bin, t));
+  }
+  const input = JSON.stringify({ toolName: 'bash', toolArgs: { command: 'factory approve' }, cwd: root });
+  const run = () => spawnSync(path.join(bin, 'bash'), ['-c', H.hooks.preToolUse[0].bash], { cwd: root, input, encoding: 'utf8', env: { PATH: bin, HOME: userDir, FACTORY_USER_DIR: userDir } });
+  const r = run();
+  assert.ok(r.stdout && JSON.parse(r.stdout).permissionDecision === 'deny', r.stderr);
+  // without the record (and no node in the fallback folders) it says node is missing, never denies everything
+  fs.rmSync(path.join(userDir, 'node-path'));
+  const r2 = run();
+  assert.equal(r2.status, 0);
+  assert.equal(r2.stdout, '');
+  assert.match(r2.stderr, /node is not on PATH/);
+});
+
+test('guard: agents may not write the launchers\' node-path record', () => {
+  const rules = require('../hooks/guard-rules');
+  const src = fs.readFileSync(path.join(F.PLUGIN, 'hooks', 'guard-rules.js'), 'utf8');
+  assert.match(src, /plugin-root\|node-path\|hooks\\\.log\)\$/);
+  assert.ok(rules);
 });

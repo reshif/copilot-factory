@@ -8,6 +8,8 @@
 //     variables were set, platform, node version, where the root came from). Capped.
 //   - <repo>/.factory/log/hooks.json: { <hook>: { last_seen, outcome, error, … } } when the hook
 //     found the repository (throttled: rewritten when the outcome changes or a minute passed).
+//   - ~/.factory/node-path: the node the factory CLI last ran on; the launchers put its folder on
+//     PATH when the hook shell finds no node (node only on a login shell's PATH, e.g. ~/.local/bin).
 //   - ~/.factory/plugin-root: the plugin root the factory CLI last ran from. The launchers fall
 //     back to it when the host set no PLUGIN_ROOT / COPILOT_PLUGIN_ROOT / CLAUDE_PLUGIN_ROOT and
 //     substituted no ${PLUGIN_ROOT} token (VS Code's Local harness on some setups:
@@ -35,6 +37,7 @@ const ROOT_VARS = ['PLUGIN_ROOT', 'COPILOT_PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT'];
 const userDir = () => process.env.FACTORY_USER_DIR || path.join(os.homedir(), '.factory');
 const logFile = () => path.join(userDir(), 'hooks.log');
 const rootFile = () => path.join(userDir(), 'plugin-root');
+const nodeFile = () => path.join(userDir(), 'node-path');
 const stampFile = (root) => path.join(root, '.factory', 'log', 'hooks.json');
 
 function hookName(script, event) {
@@ -105,9 +108,24 @@ function notePluginRoot(pluginRoot) {
     } catch {
       cur = null;
     }
-    if (cur === pluginRoot) return;
-    fs.mkdirSync(path.dirname(f), { recursive: true });
-    fs.writeFileSync(f, `${pluginRoot}\n`);
+    if (cur !== pluginRoot) {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, `${pluginRoot}\n`);
+    }
+  } catch {
+    /* best effort */
+  }
+  // The node this CLI runs on: the launchers add its folder to PATH when a hook shell (no login
+  // profile, so no ~/.local/bin or nvm) finds no node of its own.
+  try {
+    const n = nodeFile();
+    let cur = null;
+    try {
+      cur = fs.readFileSync(n, 'utf8').trim();
+    } catch {
+      cur = null;
+    }
+    if (cur !== process.execPath) fs.writeFileSync(n, `${process.execPath}\n`);
   } catch {
     /* best effort */
   }

@@ -87,7 +87,7 @@ function checkWrite(root, absIn, policy) {
   if (/(^|[\\/])\.git[\\/](hooks|config)([\\/]|$)/.test(abs)) return '.git/hooks and .git/config are off limits.';
   // the hook launchers' plugin-root fallback and their log (cli/lib/hook-health.js): a planted
   // plugin-root would run another "guard" where the host gives no plugin root
-  if (/(^|[\\/])\.factory[\\/](plugin-root|hooks\.log)$/.test(abs)) return '~/.factory/plugin-root and ~/.factory/hooks.log belong to the factory CLI and its hooks.';
+  if (/(^|[\\/])\.factory[\\/](plugin-root|node-path|hooks\.log)$/.test(abs)) return '~/.factory/plugin-root, node-path and hooks.log belong to the factory CLI and its hooks.';
   if (!root) return null;
   const r = rel(root, abs);
   if (r.startsWith('..')) return null;
@@ -174,7 +174,7 @@ const INTERPRETER = /^(node|nodejs|python[0-9.]*|ruby|perl|php|deno|bun|osascrip
 // Factory state and CLI internals. STRICT: code that loads the CLI's internals or the seal
 // secret could forge state, whatever it does. STATE: the job files; reading them is fine.
 const INTERNALS_STRICT = /cli\/core\/|cli\/lib\/(seal|util)|software-factory\/secret|\.config\/software-factory/;
-const STATE = /\.factory\/(jobs|log|lessons|project\.json|project\.md|project-brief\.proposals\.json|cache\/|policy\.json|environment\.json|current|plugin-root|hooks\.log)/;
+const STATE = /\.factory\/(jobs|log|lessons|project\.json|project\.md|project-brief\.proposals\.json|cache\/|policy\.json|environment\.json|current|plugin-root|node-path|hooks\.log)/;
 const INTERNALS = new RegExp(`${INTERNALS_STRICT.source}|${STATE.source}`);
 const WRITE_OPS = /writeFile|appendFile|createWriteStream|\bunlink|\brename|\brmSync|\brmdir|\bcopyFile|truncate|\.write\(|open\([^)]*['"][wax+]|json\.dump\(|os\.remove|os\.replace|shutil\.|Path\([^)]*\)\.write_|File\.write|>>?\s*['"]?\.factory/;
 const SECRET_FILE = /software-factory[\\/]secret|\.config[\\/]software-factory/;
