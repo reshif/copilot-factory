@@ -132,7 +132,7 @@ function gates(job) {
   for (const a of job.decisions.filter((d) => d.action === 'human.approve')) {
     const presented = routing.filter((d) => d.action === 'gate' && d.step === a.gate && d.ts <= a.ts);
     const last = presented[presented.length - 1];
-    if (!last && a.gate === 'A' && amendSubmits.some((t) => t <= a.ts)) continue;
+    if (!last && a.gate === 'A' && amendSubmits.some((t) => t <= a.ts) && amendmentHashOk(job, a.hash)) continue;
     if (!last) {
       out.push(f({ rule: 'R4.unpresented_gate', class: 'deviation', severity: 'high', subject: `${job.id}:${a.gate}@${a.ts}`, job: job.id, summary: `${a.gate} was approved but never presented as a gate.`, evidence: [a.ts], question: 'How was an approval recorded without a presented gate?' }));
     } else if (last.gate_hash && a.hash && last.gate_hash !== a.hash) {
@@ -149,6 +149,27 @@ function gates(job) {
     }
   }
   return out;
+}
+
+// The approved hash is one a submit wrote: an amendment's amendment.json (amendments/A-n/),
+// or the state's current amendment. No hash on the approval (older factory): the submit suffices.
+function amendmentHashOk(job, hash) {
+  if (!hash) return true;
+  if (job.state && job.state.amendment && job.state.amendment.hash === hash) return true;
+  if (!job.dir) return false;
+  const fs = require('fs');
+  const path = require('path');
+  try {
+    return fs.readdirSync(path.join(job.dir, 'amendments')).some((d) => {
+      try {
+        return require('./io').sha256(fs.readFileSync(path.join(job.dir, 'amendments', d, 'amendment.json'), 'utf8')) === hash;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- R5 evidence chain
@@ -301,7 +322,9 @@ function mentions(line, name) {
 // The job's recorded reasons a symbol may go: any line, in the plan, the contract, amendments,
 // the design record, the builders' summaries or a decision's reason, that names it together
 // with a removal word.
-const REMOVAL = /\b(remov|renam|drop|delet|replac|deprecat|inlin|retir|consolidat)/i;
+const REMOVAL = /\b(remov|renam|drop|delet|replac|deprecat|inlin|retir|consolidat|mov|split|extract|refactor|relocat)/i;
+// Test code is not an interface: renamed or removed tests are the test lane's business.
+const TEST_FILE = /(^|\/)(tests?|__tests__|spec|specs)\/|(^|\/)test_[^/]*\.py$|_test\.(py|go)$|\.(test|spec)\.[cm]?[jt]sx?$/;
 function removalReasons(job) {
   const io = require('./io');
   const fs = require('fs');
@@ -333,7 +356,7 @@ function exportsRemoved(job) {
   const ordered = Object.entries(heads).filter(([, h]) => h.start && h.head);
   const gone = [];
   for (const [id, h] of ordered) {
-    const files = (G.changedFiles(job.root, h.start, h.head) || []).filter((x) => CODE.test(x)).slice(0, 60);
+    const files = (G.changedFiles(job.root, h.start, h.head) || []).filter((x) => CODE.test(x) && !TEST_FILE.test(x)).slice(0, 60);
     for (const file of files) {
       const before = exportsOf(G.show(job.root, h.start, file), file);
       const after = exportsOf(G.show(job.root, h.head, file), file);
@@ -342,8 +365,13 @@ function exportsRemoved(job) {
     }
   }
   if (!gone.length) return [];
+  // moved, not removed: the name is still exported by another file the job changed (or added)
+  const base = job.state && job.state.base_commit;
+  const jobFiles = ((base && G.changedFiles(job.root, base, ship.head)) || []).filter((x) => CODE.test(x) && !TEST_FILE.test(x)).slice(0, 200);
+  const shippedExports = new Set();
+  for (const file of jobFiles) for (const n of exportsOf(G.show(job.root, ship.head, file), file)) shippedExports.add(n);
   const reasons = removalReasons(job);
-  const unexplained = gone.filter((g) => !reasons.some((l) => mentions(l, g.name)));
+  const unexplained = gone.filter((g) => !shippedExports.has(g.name) && !reasons.some((l) => mentions(l, g.name)));
   if (!unexplained.length) return [];
   // who removed it: a later task whose own range drops it
   for (const g of unexplained) {
@@ -351,10 +379,15 @@ function exportsRemoved(job) {
       if (id === g.task) continue;
       const had = exportsOf(G.show(job.root, h.start, g.file), g.file);
       const has = exportsOf(G.show(job.root, h.head, g.file), g.file);
-      if (had.has(g.name) && !has.has(g.name)) { g.by = id; break; }
+      // a task removed it only if its own head exports it nowhere among the files it changed (else it moved it)
+      const elsewhere = (G.changedFiles(job.root, h.start, h.head) || []).filter((x) => CODE.test(x) && !TEST_FILE.test(x) && x !== g.file).some((x) => exportsOf(G.show(job.root, h.head, x), x).has(g.name));
+      if (had.has(g.name) && !has.has(g.name) && !elsewhere) { g.by = id; break; }
     }
   }
-  return [f({ rule: 'R24.export_removed', class: 'deviation', severity: 'high', subject: job.id, job: job.id, latest: ship.at, summary: `${unexplained.length} export(s) a task of ${job.id} added are not in what shipped, and nothing the job recorded says why: ${unexplained.slice(0, 5).map((g) => `${g.name} (${g.file}, added by ${g.task}${g.by ? `, removed by ${g.by}` : ''})`).join('; ')}.`, evidence: unexplained.slice(0, 8).map((g) => `${g.file}:${g.name}`), question: 'Did a later task or a conflict resolution drop an interface another task built? Was the removal intended (then the plan or an amendment should say so)?' })];
+  // high when a later task's own range dropped it; medium when no task did (an integration or a
+  // fix commit, or the evidence is incomplete): the cause is less certain
+  const sure = unexplained.some((g) => g.by);
+  return [f({ rule: 'R24.export_removed', class: 'deviation', severity: sure ? 'high' : 'medium', subject: job.id, job: job.id, latest: ship.at, summary: `${unexplained.length} export(s) a task of ${job.id} added are not in what shipped, and nothing the job recorded says why: ${unexplained.slice(0, 5).map((g) => `${g.name} (${g.file}, added by ${g.task}${g.by ? `, removed by ${g.by}` : ''})`).join('; ')}.`, evidence: unexplained.slice(0, 8).map((g) => `${g.file}:${g.name}`), question: 'Did a later task or a conflict resolution drop an interface another task built? Was the removal intended (then the plan or an amendment should say so)?' })];
 }
 
 // ---------------------------------------------------------------- R6 loop accounting
@@ -771,26 +804,35 @@ function jobHealth(job, L, now) {
   return out;
 }
 
-// R25 drive stops never surfaced: `factory drive` stopped (a drive_stop event, any type) and
-// nothing after it reached the user: no drive_notified (inbox or notification) for it and no
-// reply of theirs. A stop younger than drive_notify_minutes on an active job is still in flight.
-// Jobs that never ran under drive have no drive_stop lines and get nothing here.
+// R25 drive stops never surfaced: `factory drive` stopped where the user has to act (a gate, a
+// park, a clarify turn, an error …; not done, interrupted or superseded) and nothing reached them:
+// the stop's own record says no notification was sent (drive_stop.sent / notified), no notify
+// event for the job was sent within a few seconds of it (drive.js logs notify just before the
+// stop), no drive_notified line, nobody ran `factory inbox` or `factory drive status` after it,
+// and no reply of theirs came. A stop younger than drive_notify_minutes on an active job is still
+// in flight; closed, cancelled or abandoned jobs, and jobs never driven, get nothing here.
+const DRIVE_QUIET_KINDS = new Set(['done', 'interrupted', 'superseded']);
 function driveStops(job, L, now) {
-  const stops = job.events.filter((e) => e.event === 'drive_stop');
+  const status = job.state && job.state.status;
+  if (['closed', 'cancelled', 'abandoned'].includes(status)) return [];
+  const stops = job.events.filter((e) => e.event === 'drive_stop' && !DRIVE_QUIET_KINDS.has(e.kind || e.type));
   if (!stops.length) return [];
-  // what reached the user: a drive_notified line (inbox or notification), or a notification the
-  // notifier says it sent (notify, sent: true) for this job at or after the stop
-  const notified = job.events.filter((e) => e.event === 'drive_notified' || (e.event === 'notify' && e.sent === true));
+  const near = (a, b, sec) => Math.abs(Date.parse(a) - Date.parse(b)) <= sec * 1000;
+  const notifies = job.events.filter((e) => e.event === 'notify' && e.sent === true);
+  const notified = job.events.filter((e) => e.event === 'drive_notified');
+  const looked = job.events.filter((e) => e.event === 'cli' && (e.cmd === 'inbox' || (e.cmd === 'drive' && e.sub === 'status'))).map((e) => e.ts);
   const replies = [...job.decisions.filter((d) => /^human\./.test(String(d.action || ''))).map((d) => d.ts), ...job.events.filter((e) => ['reply_applied', 'reply_refused', 'reply_unparsed'].includes(e.event) || (e.event === 'cli' && e.channel === 'tty')).map((e) => e.ts)];
-  const active = job.state && job.state.status === 'active';
+  const active = status === 'active' || status === 'parked';
   const quiet = stops.filter((s) => {
+    if (s.sent === true || s.notified === 'repeat') return false; // told (or told already for this same stop)
+    if (notifies.some((n) => near(n.ts, s.ts, 5) && (!n.kind || !(s.kind || s.type) || n.kind === (s.kind || s.type)))) return false;
     const sid = s.stop_id || s.id || null;
-    if (notified.some((n) => n.ts >= s.ts && (n.event === 'notify' ? hours(s.ts, n.ts) * 60 < 5 : !sid || !(n.stop_id || n.id) || (n.stop_id || n.id) === sid))) return false;
-    if (replies.some((t) => t && t >= s.ts)) return false;
+    if (notified.some((n) => n.ts >= s.ts && (!sid || !(n.stop_id || n.id) || (n.stop_id || n.id) === sid))) return false;
+    if ([...looked, ...replies].some((t) => t && t >= s.ts)) return false;
     return !(active && hours(s.ts, now) * 60 < (L.drive_notify_minutes || 10));
   });
   if (!quiet.length) return [];
-  return [f({ rule: 'R25.drive_stop_unsurfaced', class: 'gap', severity: 'medium', subject: `${job.id}:drive`, job: job.id, latest: latest(quiet), summary: `factory drive stopped ${quiet.length} time(s) in ${job.id} and nothing reached you after: ${quiet.slice(0, 3).map((s) => `${s.kind || s.type || s.reason || 'stop'} at ${s.ts}${s.notified ? ` (notifier: ${s.notified})` : ''}`).join('; ')} (no notification sent, no drive_notified, no reply of yours).`, evidence: quiet.slice(0, 6).map((s) => s.ts), question: 'Did the inbox entry or the notification fail, or is nobody watching this job?' })];
+  return [f({ rule: 'R25.drive_stop_unsurfaced', class: 'gap', severity: 'medium', subject: `${job.id}:drive`, job: job.id, latest: latest(quiet), summary: `factory drive stopped ${quiet.length} time(s) in ${job.id} where you had to act, and nothing reached you after: ${quiet.slice(0, 3).map((s) => `${s.kind || s.type || s.reason || 'stop'} at ${s.ts}${s.notified ? ` (notifier: ${s.notified})` : ''}`).join('; ')} (no notification sent, nobody opened the inbox, no reply of yours).`, evidence: quiet.slice(0, 6).map((s) => s.ts), question: 'Are notifications off or failing here (factory drive notify settings), and is anyone watching the inbox?' })];
 }
 
 

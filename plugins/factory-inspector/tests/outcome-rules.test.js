@@ -83,20 +83,27 @@ test('R23 work lost: a task\'s verified or integrated commits are not in the com
   assert.deepEqual(rules.workLost({ ...job, ledger: h.ledger('0'.repeat(40)) }), []);
 });
 
-test('R25 drive stops never surfaced: a drive_stop with no drive_notified and no reply after it', () => {
-  const stop = { event: 'drive_stop', ts: at(1), type: 'gate', reason: 'H2 waits for you' };
+test('R25 drive stops never surfaced: a stop that needs you with no notification sent, no inbox look and no reply', () => {
+  // drive.js order: the notify line is written a few ms BEFORE its drive_stop
+  const ms = (h, d) => new Date(Date.parse(at(h)) + d).toISOString();
+  const stop = { event: 'drive_stop', ts: at(1), kind: 'gate', gate: 'H2', notified: 'off', sent: false };
   const j = (events, decisions = [], status = 'active') => job0({ state: { status, updated_at: at(1) }, events, decisions });
+  const fires = (job, now = at(3)) => rules.jobHealth(job, LIMITS, now).some((x) => x.rule === 'R25.drive_stop_unsurfaced');
   const fired = rules.jobHealth(j([stop]), LIMITS, at(3)).filter((x) => x.rule === 'R25.drive_stop_unsurfaced');
   assert.equal(fired.length, 1);
   assert.deepEqual([fired[0].class, fired[0].severity], ['gap', 'medium']);
-  assert.match(fired[0].summary, /stopped 1 time\(s\) in J-0001 and nothing reached you after: gate at/);
-  const none = (job, now = at(3)) => !rules.jobHealth(job, LIMITS, now).some((x) => x.rule === 'R25.drive_stop_unsurfaced');
-  assert.ok(none(j([stop, { event: 'drive_notified', ts: at(1.01), via: 'inbox' }])), 'the inbox or a notification surfaced it');
-  assert.ok(none(j([stop], [{ action: 'human.approve', gate: 'H2', ts: at(2) }])), 'your reply shows you saw it');
-  assert.ok(none(j([stop]), at(1.05)), 'a stop a few minutes old on an active job is still in flight');
-  assert.ok(!none(j([stop], [], 'closed'), at(1.05)), 'a closed job is not waiting for it');
-  assert.ok(!none(j([{ event: 'drive_notified', ts: at(0) }, { ...stop, stop_id: 's1' }, { event: 'drive_notified', ts: at(2), stop_id: 's2' }], [], 'closed')), 'a notification before it, or for another stop, does not count');
-  assert.ok(none(j([])), 'no drive events: a job that never ran under drive gets nothing');
+  assert.match(fired[0].summary, /where you had to act, and nothing reached you after: gate at .* \(notifier: off\)/);
+  assert.ok(!fires(j([{ event: 'notify', ts: ms(1, -2), kind: 'gate', method: 'notify-send', sent: true }, { ...stop, notified: 'notify-send' }])), 'a notify logged just before its stop surfaced it');
+  assert.ok(!fires(j([{ ...stop, notified: 'notify-send', sent: true }])), 'the stop itself says it was sent');
+  assert.ok(!fires(j([{ ...stop, notified: 'repeat' }])), 'the same stop was announced before');
+  assert.ok(fires(j([{ event: 'notify', ts: ms(1, -60000), kind: 'gate', method: 'notify-send', sent: true }, stop])), 'a notification a minute earlier was for something else');
+  assert.ok(!fires(j([stop, { event: 'drive_notified', ts: at(1.01), via: 'inbox' }])), 'a drive_notified line');
+  assert.ok(!fires(j([stop, { event: 'cli', cmd: 'inbox', ts: at(1.5), ok: true }])), 'you (or the main session) opened the inbox');
+  assert.ok(!fires(j([stop], [{ action: 'human.approve', gate: 'H2', ts: at(2) }])), 'your reply shows you saw it');
+  assert.ok(!fires(j([stop]), at(1.05)), 'a stop a few minutes old on an active job is still in flight');
+  for (const kind of ['done', 'interrupted', 'superseded']) assert.ok(!fires(j([{ ...stop, kind }])), `${kind}: nothing for you to act on`);
+  assert.ok(!fires(j([stop], [], 'closed')), 'a closed job waits for nothing');
+  assert.ok(!fires(j([])), 'no drive events: a job that never ran under drive gets nothing');
 });
 
 test('inspector noise: gate A presented by amend submit, amend is not a deviation, failing task verify is a verdict, Parks counts every park', () => {
@@ -107,12 +114,14 @@ test('inspector noise: gate A presented by amend submit, amend is not a deviatio
   ];
   const cli = (cmd, sub, ts, extra = {}) => ({ event: 'cli', cmd, sub, ts, decision_id: 'J-0001-D0009', ok: true, ...extra });
   const events = [cli('amend', 'start', at(1.05)), cli('amend', 'submit', at(1.1)), cli('wfargs', 'realize', at(1.01), { workflow: 'realize' }), cli('record', null, at(1.02), { workflow: 'realize', status: 'park' })];
-  const job = job0({ state: { status: 'active', updated_at: at(2), approvals: { A: { via: 'chat' } } }, decisions, events });
+  const job = job0({ state: { status: 'active', updated_at: at(2), approvals: { A: { via: 'chat' } }, amendment: { status: 'approved', hash: 'h' } }, decisions, events });
   const found = [...rules.gates(job), ...rules.driverFidelity(job)].map((x) => x.rule);
   assert.ok(!found.includes('R4.unpresented_gate'), found.join(','));
   assert.ok(!found.includes('R7.unexpected_command'), found.join(','));
   // without the submit, an approval of A was never presented
   assert.ok(rules.gates({ ...job, events: [] }).some((x) => x.rule === 'R4.unpresented_gate'));
+  // a submit of another amendment does not present this one (hash never submitted)
+  assert.ok(rules.gates({ ...job, state: { ...job.state, amendment: { hash: 'other' } } }).some((x) => x.rule === 'R4.unpresented_gate'));
   // failing task verify runs (exit 1, no code) are verdicts; refusals with a code are failures
   const verdicts = Array.from({ length: 5 }, (_, i) => cli('task', 'verify', at(2 + i / 10), { ok: false, code: null }));
   assert.ok(!rules.jobHealth({ ...job, events: verdicts }, LIMITS, at(3)).some((x) => x.rule === 'R13.cli_failures'));
@@ -140,12 +149,36 @@ test('health summary: Parks counts every park (as R16 does) and failing checks a
   assert.equal(h.cli.by_code.filter((x) => /task verify/.test(x.key)).length, 0, 'a failing task verify is not a CLI failure');
 });
 
-test('Phase 3 shapes: typed park rows (action park, park.kind) count as parks; a drive_stop whose notification was sent is surfaced', () => {
+test('Phase 3 shapes: typed park rows (action park, park.kind) count as parks', () => {
   const parks = rules.parksOf(job0({ decisions: [{ ts: at(1), action: 'park', rule: 'park.dependency_conflict', park: { kind: 'dependency_conflict' }, reason: 'T2 does not merge' }] }));
   assert.deepEqual(parks.map((p) => p.rule), ['dependency_conflict']);
-  const stop = { event: 'drive_stop', ts: at(1), kind: 'gate', notified: 'notify-send' };
-  const j = (events) => job0({ state: { status: 'closed', updated_at: at(1) }, events });
-  const fired = (events) => rules.jobHealth(j(events), LIMITS, at(3)).some((x) => x.rule === 'R25.drive_stop_unsurfaced');
-  assert.ok(!fired([stop, { event: 'notify', ts: at(1), kind: 'gate', method: 'notify-send', sent: true }]), 'the notifier sent it');
-  assert.ok(fired([{ ...stop, notified: 'off' }, { event: 'notify', ts: at(1), kind: 'gate', method: 'off', sent: false }]), 'notifications off and no reply: never surfaced');
+});
+
+test('R24 (review M5): an export moved to another file, and renamed tests, are not removals; an unattributed drop is medium', () => {
+  const root = F.makeRepo();
+  const head = () => F.sh(root, 'git rev-parse HEAD').trim();
+  const B = head();
+  F.write(root, 'src/a.js', 'function parseRow(r) { return r.split(","); }\nmodule.exports = { parseRow };\n');
+  F.write(root, 'tests/test_a.py', 'def test_parse_row():\n    pass\n');
+  F.sh(root, 'git add -A && git commit -qm T1');
+  const H1 = head();
+  F.write(root, 'src/a.js', 'module.exports = {};\n');
+  F.write(root, 'src/parse.js', 'function parseRow(r) { return r.split(","); }\nmodule.exports = { parseRow };\n');
+  F.write(root, 'tests/test_a.py', 'def test_parse_rows():\n    pass\n');
+  F.sh(root, 'git add -A && git commit -qm T2');
+  const H2 = head();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'insp-mv-'));
+  const ev = (id, h) => { const p = path.join(dir, `${id}.json`); fs.writeFileSync(p, JSON.stringify({ head: h, pass: true })); return p; };
+  const tasks = { T1: { outcome: 'done', start_commit: B, evidence: { pass: true, file: ev('T1', H1), at: at(2) } }, T2: { outcome: 'done', start_commit: H1, evidence: { pass: true, file: ev('T2', H2), at: at(3) } } };
+  const ledger = (ship) => [{ kind: 'step', step: 'reconcile', ok: true, at: at(4), detail: { task_heads: { T1: H1, T2: H2 } } }, { kind: 'step', step: 'ship', ok: true, at: at(5), detail: { head: ship } }];
+  const job = job0({ root, dir, plan: { tasks: [] }, state: { status: 'closed', base_commit: B, tasks }, ledger: ledger(H2) });
+  assert.deepEqual(rules.exportsRemoved(job), [], 'parseRow moved to src/parse.js; the renamed test is not an interface');
+  // dropped with no task's range removing it (an integration commit): medium, not high
+  F.write(root, 'src/parse.js', 'module.exports = {};\n');
+  F.sh(root, 'git add -A && git commit -qm "integration: oops"');
+  const S = head();
+  const found = rules.exportsRemoved({ ...job, ledger: ledger(S) });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].severity, 'medium');
+  assert.match(found[0].summary, /parseRow \(src\/a\.js, added by T1, removed by T2\)|parseRow \(src\/a\.js, added by T1\)/);
 });
