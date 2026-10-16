@@ -224,7 +224,7 @@ test('P2.2: task show returns the task packet: ADR Decision and diagram, this ta
   const jd = F.jobDir(root, J);
   // a two-criterion contract, an ADR and findings, as decide and ground leave them
   fs.writeFileSync(path.join(jd, 'contract.md'), F.contractText({ ac: '- AC-1: add(2, 3) returns 5 (evidence: test)\n- AC-2: sub(5, 3) returns 2 (evidence: test)' }));
-  fs.writeFileSync(path.join(jd, 'adr-001-fix.md'), F.adrText({ job: J, acs: ['AC-1', 'AC-2'], decision: 'We will fix add in src/add.js and add sub in src/sub.js; src/index.js re-exports both.' }));
+  fs.writeFileSync(path.join(jd, 'adr-001-fix.md'), F.adrText({ job: J, layout: F.layoutLines([['src/add.js', 'changed', 'AC-1'], ['src/sub.js', 'new', 'AC-2'], ['tests/add.test.js', 'existing', ['AC-1', 'AC-2']]]), acs: ['AC-1', 'AC-2'], decision: 'We will fix add in src/add.js and add sub in src/sub.js; src/index.js re-exports both.' }));
   fs.writeFileSync(path.join(jd, 'findings.md'), '# Findings\n\n## Topics\n\n### codebase\n- add subtracts — `src/add.js:1`\n- the CLI calls sub from src/sub.js — `src/cli.js:4`\n- nothing tests the README — **UNVERIFIED**\n');
   const plan = {
     interfaces: [{ name: 'add(a, b)', kind: 'function', file: 'src/add.js', owner: 'T1' }, { name: 'sub(a, b)', kind: 'function', file: 'src/sub.js', owner: 'T2' }],

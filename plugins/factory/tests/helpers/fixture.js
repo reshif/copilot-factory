@@ -100,31 +100,91 @@ ${allowed.map((a) => `- ${a}`).join('\n')}
 }
 
 // Design docs that follow templates/docs (what an architect or threat modeler writes).
-function front(doc, job, title, status, related = ['findings.md']) {
-  return `---\ndoc: ${doc}\ntemplate: ${doc}@1\njob: ${job}\ntitle: ${title}\nstatus: ${status}\ndate: 2026-01-01\ncontract: contract.md\nrelated: [${related.join(', ')}]\n---\n`;
+function front(doc, job, title, status, related = ['findings.md'], template = `${doc}@1`) {
+  return `---\ndoc: ${doc}\ntemplate: ${template}\njob: ${job}\ntitle: ${title}\nstatus: ${status}\ndate: 2026-01-01\ncontract: contract.md\nrelated: [${related.join(', ')}]\n---\n`;
 }
 const DIAGRAM = '```mermaid\nflowchart LR\n  caller([Caller]) -->|add(a, b)| add\n  subgraph repo["tiny — this repository"]\n    add[src/add.js] -->|sum| caller2[tests/add.test.js]\n  end\n```\n';
-function adrText({ job, title = 'Fix add in place', acs = ['AC-1'], threats = [], diagram = DIAGRAM, decision = 'We will fix the operator in src/add.js.' } = {}) {
-  return `${front('adr', job, title, 'proposed')}
+// The design (0.11, adr@2 / no-adr@2: design depth) for the tiny add repo. template: 'adr@1'
+// writes the older template (a design from before design depth). layout: the Project layout lines.
+const LAYOUT = (acs) => [`src/`, `└── add.js         # changed · add(a, b) returns the sum · ${acs.join(', ')}`, `tests/`, `└── add.test.js    # existing · proves add(2, 3) is 5 · ${acs.join(', ')}`];
+// Project layout lines from [path, status, ACs, responsibility] rows (flat repo-relative paths).
+const layoutLines = (rows) => rows.map(([p, st, acs, what]) => `${p.padEnd(22)} # ${st} · ${what || `the ${p} part of the change`} · ${[].concat(acs).join(', ')}`);
+function adrText({ job, title = 'Fix add in place', acs = ['AC-1'], threats = [], diagram = DIAGRAM, decision = 'We will fix the operator in src/add.js.', template = 'adr@2', layout = null } = {}) {
+  const legacy = template === 'adr@1';
+  const depth = legacy ? '' : `
+## Decision records
+### D-1: Where the sum is computed
+**Context.** add subtracts; callers rely on its export shape.
+
+**Drivers.** ${acs.join(', ')}; constraint: no new dependencies.
+
+**Options.**
+
+| Option | Meets ${acs[0]} | Change size | Verdict |
+|---|---|---|---|
+| O-1 Fix the operator | yes | one line | chosen |
+| O-2 Rewrite the module | yes | whole file | rejected: out of scope |
+
+**Choice.** O-1, because it meets ${acs.join(', ')} with the smallest change.
+
+**Consequences.** Callers get sums; nothing else in the module changes.
+
+**Revisit when.** add needs to accept non-numbers.
+`;
+  const flows = legacy ? '' : `
+## End-to-end flow
+\`\`\`mermaid
+sequenceDiagram
+  participant T as tests/add.test.js
+  participant A as src/add.js
+  T->>A: add(2, 3)
+  alt numbers
+    A-->>T: 5
+    Note over T,A: ${acs.join(' ')}
+  else not numbers
+    A-->>T: NaN
+  end
+  T->>T: assert the sum
+  T-->>T: exit code
+\`\`\`
+
+## Data model and mapping
+None: this change moves no data between systems.
+
+## Failure and state flow
+| Failure | Detected by | Behaviour | AC |
+|---|---|---|---|
+| Wrong sum | the test's assertion | the test exits non-zero | ${acs[0]} |
+| Non-number input | NaN result | returned as is (out of scope) | ${acs[0]} |
+
+## Project layout
+\`\`\`text
+${(layout || LAYOUT(acs)).join('\n')}
+\`\`\`
+
+## How it runs
+- Test: \`node tests/add.test.js\`
+`;
+  return `${front('adr', job, title, 'proposed', ['findings.md'], template)}
 # ADR 001: ${title}
 
 ## Context
 add subtracts instead of adding (findings · codebase · src/add.js:1).
 
 ## Decision drivers
-- AC-1 must hold without changing the export shape.
+- ${acs[0]} must hold without changing the export shape.
 
 ## Considered options
 | # | Option | Pros | Cons | Verdict |
 |---|---|---|---|---|
-| 1 | Fix the operator | One line | None | chosen |
-| 2 | Rewrite the module | — | Larger change | rejected: out of scope |
-
+| ${legacy ? '1' : 'O-1'} | Fix the operator | One line | None | chosen |
+| ${legacy ? '2' : 'O-2'} | Rewrite the module | — | Larger change | rejected: out of scope |
+${legacy ? '' : '| O-3 | Wrap add in a new module | Isolated | More code | rejected: no criterion needs it |\n'}
 ## Decision
 ${decision}
-
+${depth}
 ## Architecture diagram
-${diagram}
+${diagram}${flows}
 ## Consequences
 - Positive: callers get sums.
 
@@ -143,8 +203,9 @@ Revert the merge commit; no data changes.
 None.
 `;
 }
-function noAdrText({ job, acs = ['AC-1'] } = {}) {
-  return `${front('no-adr', job, 'Fix the operator', 'accepted')}
+function noAdrText({ job, acs = ['AC-1'], template = 'no-adr@2', layout = null } = {}) {
+  const legacy = template === 'no-adr@1';
+  return `${front('no-adr', job, 'Fix the operator', 'accepted', ['findings.md'], template)}
 # No ADR: Fix the operator
 
 ## Why no decision is needed
@@ -152,7 +213,15 @@ One viable fix.
 
 ## Approach
 Change - to + in src/add.js.
+${legacy ? '' : `
+## Project layout
+\`\`\`text
+${(layout || LAYOUT(acs)).join('\n')}
+\`\`\`
 
+## How it runs
+- Test: \`node tests/add.test.js\`
+`}
 ## How each acceptance criterion is met
 | AC | How | Proof |
 |---|---|---|
@@ -328,4 +397,4 @@ function jobDir(root, id) {
   return path.join(root, '.factory', 'jobs', id);
 }
 
-module.exports = { PLUGIN, BIN, sh, write, makeRepo, cli, reply, built, contractText, envelope, record, jobDir, clarify, adrText, noAdrText, threatModelText, recommendationText, contractsDocText, DIAGRAM };
+module.exports = { layoutLines, PLUGIN, BIN, sh, write, makeRepo, cli, reply, built, contractText, envelope, record, jobDir, clarify, adrText, noAdrText, threatModelText, recommendationText, contractsDocText, DIAGRAM };

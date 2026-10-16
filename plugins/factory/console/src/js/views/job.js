@@ -41,6 +41,8 @@ function nowCard(job) {
     parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
     if ((g === 'H1' || g === 'EH1') && job.h1) parts.push(h1Html(job.h1));
     if (['H2', 'EH2', 'H3', 'HF'].includes(g) && job.gate_review) parts.push(gateReviewHtml(job.gate_review));
+    // 0.11: what / how / where — decisions, the diagrams drawn, the layout with its owner tasks
+    if (['H2', 'EH2', 'H3'].includes(g) && job.design) parts.push(designHtml(job.design));
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
     else parts.push(`<p>Reply to clarify in chat, in plain words${job.clarify && job.clarify.questions && job.clarify.questions.length ? ` (${job.clarify.questions.length} decision${job.clarify.questions.length === 1 ? '' : 's'} on the sheet): <code>ok</code> takes the recommendations, <code>ok, but 2 b</code> changes one` : ': <code>ok</code>, or what to change'}. The main session can record it too: <code>factory clarify reply "…"</code>.</p>`);
   } else if (m.bucket === 'parked') {

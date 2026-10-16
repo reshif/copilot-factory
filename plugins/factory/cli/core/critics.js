@@ -91,6 +91,16 @@ function gateView(ctx, gate) {
     const l = ledgerSummary(root, state.id);
     if (l) out.api_ledger = l;
   }
+  // 0.11 design depth: the decisions as a table, the diagrams (mermaid source, rendered by the
+  // console), the project layout with each file's owner task (H3: once there is a plan), how it runs
+  if (showsDesign || gate === 'H3') {
+    try {
+      const v = require('./design').view(root, state);
+      if (v) out.design = v;
+    } catch {
+      /* the view is advice; the gate stands without it */
+    }
+  }
   if (gate === 'H3') {
     const p = critique(root, state.id, 'plan');
     if (p && p.hash === ctx.b.plan) out.plan_critique = { verdict: p.verdict, open: (p.items || []).filter((i) => i.severity !== 'minor').map(itemLine) };

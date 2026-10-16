@@ -3,4 +3,8 @@
   "paths": { "type": "array", "minItems": 1, "items": { "type": "string" } },
   "summary": { "type": "string" },
   "rejected": { "type": "array", "items": { "type": "object", "required": ["option", "reason"], "properties": {
-    "option": { "type": "string" }, "reason": { "type": "string" } } } } } }
+    "option": { "type": "string" }, "reason": { "type": "string" } } } },
+  "decisions": { "type": "array", "items": { "type": "object", "required": ["id", "title", "chosen"], "properties": {
+    "id": { "type": "string", "pattern": "^D-\\d+$" }, "title": { "type": "string" }, "chosen": { "type": "string" } } } },
+  "layout": { "type": "object", "required": ["files"], "properties": {
+    "files": { "type": "integer", "minimum": 0 }, "new": { "type": "integer", "minimum": 0 }, "changed": { "type": "integer", "minimum": 0 } } } } }

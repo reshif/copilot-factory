@@ -30,6 +30,8 @@ function clarifyAndApprove(root, J) {
   assert.equal(F.record(root, F.envelope(g, 'ok', { topics: [{ topic: 'codebase', claims: [{ claim: 'x', source: 'src/add.js:1' }], unknowns: [] }], degraded: [] })).status, 'ok');
 }
 
+// the Project layout the plan below is derived from (design depth: one owner task per file)
+const MATH = F.layoutLines([['src/add.js', 'changed', 'AC-1'], ['tests/add.test.js', 'changed', 'AC-1'], ['src/sub.js', 'new', 'AC-2'], ['tests/sub.test.js', 'new', 'AC-2'], ['src/index.js', 'new', ['AC-1', 'AC-2']]]);
 function plan(root, J) {
   fs.writeFileSync(
     path.join(F.jobDir(root, J), 'plan.json'),
@@ -96,7 +98,7 @@ test('standard@medium: ADR and plan approved at ONE gate (H3, with the build env
   assert.equal(r.status, 'retry');
   assert.ok(r.doc_problems.some((p) => /No front matter/.test(p)) && r.doc_problems.some((p) => /Missing section "## Architecture diagram"/.test(p)), JSON.stringify(r.doc_problems));
   assert.equal(next(root).step, 'decide', 'a rejected design record is decided again');
-  F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], diagram: 'Two modules, add and sub.\n' }));
+  F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, layout: MATH, acs: ['AC-1', 'AC-2'], diagram: 'Two modules, add and sub.\n' }));
   brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
   assert.match(fs.readFileSync(brief.judge.prompt.split('\n')[1].trim(), 'utf8'), /breaks the doc templates[\s\S]*needs a ```mermaid diagram/, 'the next architect run gets the template problems');
   r = F.record(root, env([{ verdict: 'approve', items: [] }]));
@@ -109,13 +111,13 @@ test('standard@medium: ADR and plan approved at ONE gate (H3, with the build env
   assert.match(r.park_reason, /unbalanced brackets[\s\S]*does not cover AC-2|does not cover AC-2[\s\S]*unbalanced brackets/);
   F.reply(root, 'resume decide');
   // architect writes a valid ADR; the critics stop with an objection open → it goes to the gate, never a park
-  F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], decision: 'We will add separate modules.' }));
+  F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, layout: MATH, acs: ['AC-1', 'AC-2'], decision: 'We will add separate modules.' }));
   assert.equal(F.cli(root, ['doc', 'check', adrPath]).ok, true);
   brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
   assert.equal(brief.verifier.agent_type, 'factory:finding-verifier', 'the design critics\' serious items are verified');
   assert.deepEqual(brief.critics.map((c) => c.id), ['god-eye'], 'no dependency source: no API-conformance critic');
   r = F.record(root, F.envelope(brief, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-math.md')], summary: 's' }, stop: 'no_progress', revised_after_last: true, open: ['god-eye-2-1'], critiques: [{ round: 1, verdict: 'revise', items: [{ id: 'god-eye-1-1', critic: 'god-eye', issue: 'i', severity: 'major', verified: 'confirmed' }], open: ['god-eye-1-1'] }, { round: 2, verdict: 'revise', items: [{ id: 'god-eye-2-1', critic: 'god-eye', issue: 'i', severity: 'major', verified: 'confirmed' }], open: ['god-eye-2-1'] }] }));
-  assert.equal(r.status, 'ok');
+  assert.equal(r.status, 'ok', JSON.stringify(r));
   assert.match(r.message, /you will see them at H3/);
   // decompose → the one gate for design + plan + environment
   n = next(root);
@@ -133,7 +135,7 @@ test('standard@medium: ADR and plan approved at ONE gate (H3, with the build env
   assert.match(n.review.design_critique.not_rechecked, /final revision not re-checked by the critics/, 'm12: the gate says the last revision was never critiqued');
   assert.match(n.review.objections, /1 objection/);
   // a document edited after it was presented can't be approved
-  F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], decision: 'We will add separate modules, edited.' }));
+  F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, layout: MATH, acs: ['AC-1', 'AC-2'], decision: 'We will add separate modules, edited.' }));
   assert.throws(() => F.reply(root, 'approve'), /changed after it was presented/);
   n = next(root);
   assert.equal(n.first_failing, null);
@@ -199,7 +201,7 @@ test('full@high: threat model required, H2 and H3 human, HS before ship, trial r
   assert.ok(brief.fanout.some((f) => f.id === 'threat-modeler'));
   assert.match(fs.readFileSync(brief.fanout.find((f) => f.id === 'threat-modeler').prompt.split('\n')[1].trim(), 'utf8'), /templates\/docs\/threat-model\.md[\s\S]*doc check/);
   assert.match(fs.readFileSync(path.join(F.PLUGIN, 'agents', 'threat-modeler.agent.md'), 'utf8'), /trust boundary drawn as a subgraph/);
-  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], threats: ['TH-1'] }));
+  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J, layout: MATH, acs: ['AC-1', 'AC-2'], threats: ['TH-1'] }));
   const noThreat = F.record(root, F.envelope(brief, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-x.md')], summary: 's' }, critiques: [{ verdict: 'approve', items: [] }] }, { threat_model: true }));
   assert.equal(noThreat.error, true);
   assert.match(noThreat.message, /threat model is required/);
@@ -281,7 +283,7 @@ function toShip(root, risk, h) {
   const J = F.cli(root, ['job', 'new', '--title', 'Ship me', '--type', 'feature', '--risk', risk]).job;
   clarifyAndApprove(root, J);
   if (risk === 'high') F.write(F.jobDir(root, J), 'threat-model.md', F.threatModelText({ job: J }));
-  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], threats: risk === 'high' ? ['TH-1'] : [] }));
+  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J, layout: MATH, acs: ['AC-1', 'AC-2'], threats: risk === 'high' ? ['TH-1'] : [] }));
   let brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
   assert.equal(F.record(root, F.envelope(brief, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-x.md')], summary: 's' }, critiques: [{ verdict: 'approve', items: [] }] }, { threat_model: risk === 'high' })).status, 'ok');
   if (risk === 'high') {

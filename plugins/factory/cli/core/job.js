@@ -186,6 +186,9 @@ function rulebookSnapshot({ recipe, policy, workType, risk, effRisk, epic }) {
     limits: policy.limits,
     required_lanes: policy.required_lanes,
     plugin: { name: manifest.name || 'factory', version: manifest.version || null, root: PLUGIN_ROOT, behaviour_hash: sha256(behaviour.join('\n')) },
+    // 0.11 design depth: the design templates this job's ADR / no-adr note must follow; a job
+    // created before this release has none in its lock and keeps the older templates' rules
+    design_templates: { adr: require('./doc').loadTemplate('adr').version, 'no-adr': require('./doc').loadTemplate('no-adr').version },
   });
 }
 

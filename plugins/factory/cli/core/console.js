@@ -483,6 +483,15 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
         return null;
       }
     })() : null,
+    // 0.11 design depth: the decision records, the diagrams (mermaid source, drawn by the page),
+    // the project layout with each file's owner task, how it runs (cli/core/design.js)
+    design: (() => {
+      try {
+        return require('./design').view(root, state);
+      } catch {
+        return null;
+      }
+    })(),
     api_ledger: (() => {
       try {
         return require('./critics').ledgerSummary(root, id);

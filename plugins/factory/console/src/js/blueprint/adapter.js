@@ -250,6 +250,8 @@ function toDisplay(data) {
       h1: j.h1 || null,
       // at the design / combined gate: the critics' open objections, the API ledger, the plan probe
       gate_review: j.gate_review || null,
+      // 0.11: the design view (decision table, diagrams, layout tree with owner tasks)
+      design: j.design || null,
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {
