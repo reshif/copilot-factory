@@ -402,8 +402,17 @@ function clarify(root, { contract = null, readback = null, objections = [], chec
   return results[results.length - 1] || null;
 }
 
+// Record an env_repair workflow result as factory drive does: factory record, then (when the
+// candidate is to be run) the long CLI step factory env check --repair, whose result ends the round
+// (review M-1). Returns the round's result: { status, park, … }.
+function recordRepair(root, J, brief, data, opts = {}) {
+  const rec = record(root, envelope(brief, 'ok', data));
+  if (!rec || !rec.pending_check) return rec;
+  return cli(root, ['env', 'check', '--repair', '--job', J], opts);
+}
+
 function jobDir(root, id) {
   return path.join(root, '.factory', 'jobs', id);
 }
 
-module.exports = { layoutLines, PLUGIN, BIN, sh, write, makeRepo, cli, reply, built, contractText, envelope, record, jobDir, clarify, adrText, noAdrText, threatModelText, recommendationText, contractsDocText, DIAGRAM };
+module.exports = { recordRepair, layoutLines, PLUGIN, BIN, sh, write, makeRepo, cli, reply, built, contractText, envelope, record, jobDir, clarify, adrText, noAdrText, threatModelText, recommendationText, contractsDocText, DIAGRAM };

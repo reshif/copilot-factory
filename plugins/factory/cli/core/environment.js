@@ -852,9 +852,17 @@ function check(root, { proposed = false, env: given = null } = {}) {
   // a proposal carries where it came from (source, evidence): not fields of the environment
   const pp = problems(which === 'proposed' ? essence(e) : e);
   if (pp.length) return { ok: false, which, problems: pp };
+  sweepChecks(root);
   const wt = path.join(root, '.factory', 'worktrees', `_envcheck-${process.pid}`);
   git.run(root, ['worktree', 'prune'], { allowFail: true });
   git.run(root, ['worktree', 'add', '--detach', wt, 'HEAD']);
+  const owner = `${wt}.owner.json`;
+  try {
+    const ps = require('./probe').procStat(process.pid);
+    writeJson(owner, { pid: process.pid, start: ps ? ps.start : null, at: nowIso() });
+  } catch {
+    /* the owner file only helps the sweep */
+  }
   try {
     const { evidence: _e, notes: _n, source: _s, ...run } = e;
     // An environment nobody confirmed yet (a proposal: detected, or written with factory env
@@ -898,10 +906,60 @@ function check(root, { proposed = false, env: given = null } = {}) {
     git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
     try {
       fs.rmSync(wt, { recursive: true, force: true });
+      fs.rmSync(owner, { force: true });
     } catch {
       /* gone */
     }
   }
+}
+
+// Scratch worktrees of env checks that died (a killed caller, a killed child): removed, with
+// whatever still runs in them, unless their owner (pid and start time) still lives (review M-1).
+// Without an owner file, a live pid keeps one for at most 2 h. `force`: pids whose worktrees go
+// whatever their owner (a run just killed).
+function sweepChecks(root, { force = [] } = {}) {
+  const dir = path.join(root, '.factory', 'worktrees');
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((n) => /^_envcheck-\d+$/.test(n));
+  } catch {
+    return [];
+  }
+  const P = require('./probe');
+  const gone = [];
+  for (const n of names) {
+    const wt = path.join(dir, n);
+    const pid = Number(n.split('-')[1]);
+    const owner = readJson(`${wt}.owner.json`, null);
+    let keep;
+    if (force.includes(pid)) keep = false;
+    else if (owner && owner.pid) keep = P.sameProcess(owner.pid, owner.start);
+    else {
+      let age = 0;
+      try {
+        age = Date.now() - fs.statSync(wt).mtimeMs;
+      } catch {
+        age = Infinity;
+      }
+      keep = P.sameProcess(pid, null) && age < 2 * 3600e3;
+    }
+    if (keep) continue;
+    try {
+      P.survivors(`envcheck-${pid}`, { wt });
+    } catch {
+      /* nothing left running */
+    }
+    git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+    try {
+      fs.rmSync(wt, { recursive: true, force: true });
+      fs.rmSync(`${wt}.owner.json`, { force: true });
+    } catch {
+      /* gone */
+    }
+    gone.push(n);
+  }
+  if (gone.length) git.run(root, ['worktree', 'prune'], { allowFail: true });
+  return gone;
 }
 
 // Undo what setup (or the tests) started for one worktree: the environment's teardown, run in
@@ -1091,4 +1149,4 @@ function status(root, { jobId = null } = {}) {
   };
 }
 
-module.exports = { DOC_PATH, status, upgradeOf, toolChoice, describe, schemaOf, commandsOf, inert, excludeReport, ensureIgnored, DOC, KEYS, lint, readsOf, withBaseEnv, gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };
+module.exports = { sweepChecks, DOC_PATH, status, upgradeOf, toolChoice, describe, schemaOf, commandsOf, inert, excludeReport, ensureIgnored, DOC, KEYS, lint, readsOf, withBaseEnv, gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };

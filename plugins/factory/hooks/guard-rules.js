@@ -168,7 +168,7 @@ function checkReadTool(root, tool, ti, absFile, cwd, policy) {
 // ---- factory CLI recognition -------------------------------------------------------------
 
 // the human-only verbs, shared with factory drive (cli/lib/human-verbs.js)
-const { HUMAN_ONLY, isHumanOnly, agentFlagRefusal } = require('../cli/lib/human-verbs');
+const { HUMAN_ONLY, isHumanOnly, agentFlagRefusal, machineStepInText } = require('../cli/lib/human-verbs');
 // Mirrors cli/main.js parseArgs: --k=v, --k v (unless the flag is boolean or v starts with --), and --.
 // the CLI's own boolean-flag list (cli/lib/args.js): the guard reads a command exactly as the CLI parses it
 const CLI_BOOL = require('../cli/lib/args').BOOL;
@@ -760,7 +760,9 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
           const v = varName(x.text);
           return v && ctx.vars.has(v) ? ctx.vars.get(v) : x.text;
         });
-        const byFlag = agentFlagRefusal(a, b, (name) => flags.some((x) => x === `--${name}` || String(x).startsWith(`--${name}=`)));
+        // a flag computed at run time cannot be read here: for these commands it is refused (m-2)
+        const computed = flags.some((x) => /[$`]/.test(String(x)));
+        const byFlag = agentFlagRefusal(a, b, (name) => flags.some((x) => x === `--${name}` || String(x).startsWith(`--${name}=`)), { computed });
         if (byFlag) return byFlag.message;
       }
       if (agent && a && !agentAllowed(a, b)) return agentMessage(a, b);
@@ -795,6 +797,13 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
     // interpreters reaching into factory state or internals
     if (INTERPRETER.test(n) && !call) {
       const code = inlineCode(head, cmd, pipeline);
+      // the machine scan and the confirmed environment's checks, inside inline code (review m-2)
+      if (agent) {
+        const arg = head.args.map((x) => x.text).find((t) => t && !t.startsWith('-') && !/[$`]/.test(t));
+        const file = arg ? path.resolve(ctx.cwd || ctx.root || '.', arg) : null;
+        const why = machineStepInText(code) || (file ? machineStepInText(readScript(file, ctx) || '') : null);
+        if (why) return why;
+      }
       if (INTERNALS_STRICT.test(code) || (STATE.test(code) && WRITE_OPS.test(code))) {
         return 'Inline scripts may not change factory state or load factory internals. To read a job file use the Read tool; to change one you are allowed to change (an ADR, the plan, a threat model) use Write or Edit; for job state use the factory CLI (factory job show, contract show, why).';
       }

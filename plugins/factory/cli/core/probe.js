@@ -776,4 +776,13 @@ function problemKey(p) {
   return sha256(stableStringify([...((p && p.problems) || [])].map((x) => String(x).replace(/Output \(tail\):.*$/, '')).sort()));
 }
 
-module.exports = { splitLogin, cleanNetValue, urlCarriesToken, stripCreds, PROXY, recover, readStarted, markStarted, interruptedQuestion, procStat, sameProcess, ownDirs, STARTED, MAX_INTERRUPTED, mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
+// How long the caller of a long step may wait (factory drive passes FACTORY_DRIVE_DEADLINE when it
+// has one); without one, a long step is waited for until it ends (copilot's drive runs its steps
+// as child processes with no tool ceiling), and a caller cut off by a shell tool leaves it running
+// for the next call to pick up.
+function callerDeadline() {
+  const d = Number(process.env.FACTORY_DRIVE_DEADLINE);
+  return d > 0 ? d : Date.now() + 24 * 3600e3;
+}
+
+module.exports = { callerDeadline, splitLogin, cleanNetValue, urlCarriesToken, stripCreds, PROXY, recover, readStarted, markStarted, interruptedQuestion, procStat, sameProcess, ownDirs, STARTED, MAX_INTERRUPTED, mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };

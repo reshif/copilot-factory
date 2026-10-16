@@ -2203,6 +2203,8 @@ function mmLines(src) {
 const MM_MAX_LINES = 400;
 const MM_MAX_NODES = 250;
 const MM_MAX_DEPTH = 10;
+// edges too (review m-5): "a&b&…-->c&d&…" multiplies, so 63 lines could make ~900 000 edges
+const MM_MAX_EDGES = 1500;
 let MM_UNKNOWN = [];
 // { svg, partial, unknown: [lines], reason } — svg null when not drawn (reason says why)
 function mermaidRender(src) {
@@ -2326,6 +2328,7 @@ function mmFlow(lines, dir) {
         rest = `?${rest}`;
         break;
       }
+      if (edges.length + left.length * right.length > MM_MAX_EDGES) return 'TOO_LARGE';
       for (const a of left) for (const b of right) edges.push({ from: a, to: b, label, dashed, arrow: />$/.test(op) && !/~/.test(op) });
       left = right;
     }

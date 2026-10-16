@@ -406,7 +406,9 @@ function jobOpts(root, state, file) {
   if (lp.problem) fail(`${state.id}'s recipe lock is invalid (${lp.problem}): its design templates cannot be read. Restore it, or run factory reseal in your own terminal.`, 'recipe_lock_invalid');
   const lock = lp.lock;
   const pick = (x) => (x && x.design_templates && typeof x.design_templates === 'object' ? x.design_templates : null);
-  const designTemplates = pick(lock) || pick(state);
+  // the sealed state's marker wins (review m-6): a lock re-sealed with other (older) templates
+  // never downgrades the job
+  const designTemplates = pick(state) || pick(lock);
   return { job: state.id, root, base: state.base_commit || null, ...(designTemplates ? { designTemplates } : {}), acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}), ...(testAcs.length ? { testAcs } : {}), ...(options && options.length ? { options } : {}) };
 }
 

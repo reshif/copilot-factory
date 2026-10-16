@@ -324,6 +324,8 @@ function resume(root, { jobId, step, words: given = null, channel }) {
 const PARK_OPTION = /^(?:option\s+([a-z]|\d{1,2})|\(([a-z]|\d{1,2})\)|([a-z]|\d{1,2})\))(?:\s*[:.,\u2014\u2013-]?\s*(.*))?$/is;
 const PARK_LETTER = /^([a-z]|\d{1,2})(?:\s*[:.,\u2014\u2013-]\s*(.*))?$/is;
 const PARK_CONFIRM = /^(y|yes|yep|yes please|ok|okay|sure|confirm|use it|do it)[.!]?$/i;
+// the environment seal's option letter on its own (review m-1)
+const SEAL_LETTER = /^(?:option\s+a|\(a\)|a\)|a)\.?$/i;
 const PARK_STOP = new Set('this that with from your have will them they what when where which would could should about into only also just then than were been their there here more some such very much does make like want need please okay sure think maybe test tests build builds job jobs factory file files code thing things good fine looks look check work works done'.split(' '));
 function sigWords(text) {
   return new Set((String(text || '').toLowerCase().match(/[a-z0-9_][a-z0-9_.-]{3,}/g) || []).map((w) => w.replace(/[.-]+$/, '')).filter((w) => w.length >= 4 && !PARK_STOP.has(w)));
@@ -343,6 +345,18 @@ function parkAnswer(state, text) {
       if (m[1].toLowerCase() !== want) fail(`The repaired environment waiting for your seal is ${want}, not ${m[1]}: it changed after it was shown. Nothing was sealed.`, 'stale_environment');
       const a = (park.options || [])[0];
       return { words: a ? a.text : 'seal', option: 'a', optionText: a ? a.text : 'seal', extra: null, via: 'option' };
+    }
+    // the option letter alone seals too: "a", "(a)", "a)", "option a" — never with words after it
+    // ("a, no wait"), never its number ("1"), never the option's text ("Seal the …"): review m-1
+    if (SEAL_LETTER.test(t)) {
+      const a = (park.options || [])[0];
+      return { words: a ? a.text : 'seal', option: 'a', optionText: a ? a.text : 'seal', extra: null, via: 'option' };
+    }
+    const om = PARK_OPTION.exec(t) || PARK_LETTER.exec(t);
+    const okey = om ? String(om[1] || om[2] || om[3] || '').toLowerCase() : null;
+    const head = String(((park.options || [])[0] || {}).text || '').toLowerCase().split(/[\s:,(]+/).filter(Boolean).slice(0, 2).join(' ');
+    if (okey === 'a' || okey === '1' || (head.length >= 4 && t.toLowerCase().startsWith(head)) || /^seal\b/i.test(t)) {
+      fail(`"${t.slice(0, 80)}" does not seal the repaired build environment: only "approve environment ${(state.env_repair || {}).short || '<hash>'}" or "a" on its own seals it. Nothing was sealed.`, 'explicit_seal_needed');
     }
   }
   const m = PARK_OPTION.exec(t) || PARK_LETTER.exec(t);
@@ -694,6 +708,8 @@ function readReply(text) {
     if (C.ACCEPT.test(y) || ACCEPT_HEAD.test(x) || SHEET.test(x)) forms.add('clarify');
     if (PARK_OPTION.test(y) || PARK_LETTER.test(y) || PARK_CONFIRM.test(y) || budgetGrant(y)) forms.add('park');
     if (INSPECTOR.test(x)) forms.add('inspector');
+    // anything shaped like the environment seal (approve / seal … environment)
+    if (/^(approve|seal)\b[\s\S]{0,80}\benvironment\b/i.test(y)) forms.add('park');
   }
   out.forms = [...forms];
   out.reply = forms.size > 0;

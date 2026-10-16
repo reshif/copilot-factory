@@ -40,6 +40,11 @@ const SCAN_VERSION = 2;
 const searchDirs = () => String(process.env.FACTORY_MACHINE_PATH || process.env.PATH || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d));
 const searchPath = () => searchDirs().join(path.delimiter);
 let SCAN_DIR = null;
+// The whole scan is bounded (review m-7): past SCAN_BUDGET_MS every remaining command is skipped
+// and the inventory is marked partial (never cached), so a cold scan cannot hold a step for minutes.
+const SCAN_BUDGET_MS = () => (Number(process.env.FACTORY_MACHINE_SCAN_BUDGET_MS) > 0 ? Number(process.env.FACTORY_MACHINE_SCAN_BUDGET_MS) : 60000);
+let SCAN_DEADLINE = 0;
+let SCAN_PARTIAL = false;
 function scanEnv() {
   const env = { PATH: searchPath(), HOME: SCAN_DIR || os.tmpdir(), TMPDIR: SCAN_DIR || os.tmpdir(), LANG: 'C', LC_ALL: 'C' };
   // the proxy and index settings curl and pip need, without any login in them
@@ -67,7 +72,12 @@ function which(name, dirs = searchPath()) {
   return null;
 }
 function run(file, args, { timeoutSec = 10 } = {}) {
-  const r = spawnSync(file, args, { encoding: 'utf8', timeout: timeoutSec * 1000, stdio: ['ignore', 'pipe', 'pipe'], cwd: SCAN_DIR || os.tmpdir(), env: scanEnv() });
+  const left = SCAN_DEADLINE ? SCAN_DEADLINE - Date.now() : timeoutSec * 1000;
+  if (left < 250) {
+    SCAN_PARTIAL = true;
+    return { code: -1, out: '', skipped: true };
+  }
+  const r = spawnSync(file, args, { encoding: 'utf8', timeout: Math.min(timeoutSec * 1000, left), stdio: ['ignore', 'pipe', 'pipe'], cwd: SCAN_DIR || os.tmpdir(), env: scanEnv() });
   return { code: r.status === null ? -1 : r.status, out: `${r.stdout || ''}${r.stderr ? `\n${r.stderr}` : ''}`.trim() };
 }
 const firstLine = (s) => String(s || '').split('\n').map((x) => x.trim()).find(Boolean) || '';
@@ -94,6 +104,7 @@ function venvWorks(py) {
   try {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-venv-probe-'));
     const r = run(py, ['-I', '-m', 'venv', path.join(dir, 'v')], { timeoutSec: 90 });
+    if (r.skipped) return { works: null, python: py, why: 'not checked: the machine scan ran out of time (factory doctor --machine scans again)' };
     const bin = path.join(dir, 'v', process.platform === 'win32' ? 'Scripts' : 'bin');
     const pipOk = fs.existsSync(path.join(bin, 'pip')) || fs.existsSync(path.join(bin, 'pip3'));
     if (r.code === 0 && pipOk) return { works: true, python: py, why: null };
@@ -117,11 +128,15 @@ function reach(curl, url) {
 
 function scan() {
   SCAN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-machine-scan-'));
+  SCAN_DEADLINE = Date.now() + SCAN_BUDGET_MS();
+  SCAN_PARTIAL = false;
   try {
-    return scanIn();
+    const inv = scanIn();
+    return SCAN_PARTIAL ? { ...inv, partial: true } : inv;
   } finally {
     fs.rmSync(SCAN_DIR, { recursive: true, force: true });
     SCAN_DIR = null;
+    SCAN_DEADLINE = 0;
   }
 }
 function scanIn() {
@@ -187,26 +202,37 @@ function inventory({ refresh = false, cacheOnly = false } = {}) {
   if (!refresh) {
     try {
       const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-      if (c && c.key === key && c.version === SCAN_VERSION && Date.now() - Date.parse(c.at) < TTL_MS) return c;
+      // sealed with the factory secret (review m-9): a forged or hand-edited inventory (it steers
+      // proposals and the lint) is ignored and the machine scanned again
+      if (c && c.key === key && c.version === SCAN_VERSION && Date.now() - Date.parse(c.at) < TTL_MS && require('../lib/seal').valid(c)) {
+        const { seal: _s, ...inv } = c;
+        return inv;
+      }
     } catch {
       /* none yet */
     }
   }
   if (cacheOnly) return null;
   const inv = { ...scan(), key };
+  // a partial scan (it ran out of its budget) is used once, never cached
+  if (inv.partial) return inv;
   try {
     fs.mkdirSync(path.dirname(f), { recursive: true });
-    fs.writeFileSync(f, JSON.stringify(inv, null, 1));
+    fs.writeFileSync(f, JSON.stringify(require('../lib/seal').seal(inv), null, 1));
   } catch {
     /* a cache is a convenience */
   }
   return inv;
 }
 
-// Forget this machine's cached inventory (the human says they fixed the machine).
+// Forget this machine's cached inventories (the human says they fixed the machine): every
+// machine-*.json, not only this process's key (review M-3): the key includes the PATH, and the
+// reply hook that runs this sees another PATH than the drive and env check (a profile-only
+// ~/.local/bin, where uv installs, is in one and not the other).
 function invalidate() {
+  const dir = path.dirname(cacheFile(cacheKey()));
   try {
-    fs.rmSync(cacheFile(cacheKey()), { force: true });
+    for (const n of fs.readdirSync(dir)) if (/^machine-[0-9a-f]+\.json$/.test(n)) fs.rmSync(path.join(dir, n), { force: true });
   } catch {
     /* none */
   }
@@ -230,7 +256,7 @@ const has = (inv, t) => Boolean(inv && inv.tools && inv.tools[t]);
 // null when none can (the reason says what to install). No inventory yet: venv, unverified.
 function pythonTool(inv, { poetryRepo = false, poetryLock = poetryRepo } = {}) {
   if (!inv) return { tool: 'venv', maker: 'venv', reason: 'no machine scan yet (factory doctor --machine scans): python3 -m venv assumed, not verified' };
-  const maker = has(inv, 'uv') ? 'uv' : has(inv, 'virtualenv') ? 'virtualenv' : inv.venv && inv.venv.works ? 'venv' : null;
+  const maker = has(inv, 'uv') ? 'uv' : has(inv, 'virtualenv') ? 'virtualenv' : inv.venv && inv.venv.works !== false ? 'venv' : null;
   const makerWhy = { uv: 'uv makes the venv', virtualenv: 'virtualenv makes the venv', venv: 'python3 -m venv makes the venv (it works here)' }[maker];
   if (poetryRepo && poetryLock && has(inv, 'poetry') && maker) return { tool: 'poetry', maker, reason: `the repo pins its dependencies in poetry.lock and only poetry installs from it (with its dev group); ${makerWhy}` };
   if (maker === 'uv') return { tool: 'uv', maker, reason: `uv is installed: it makes the venv itself (no ensurepip needed), installs fastest and retries on its own${poetryRepo ? '; poetry is not installed, so poetry.lock is not used (only the dependencies pyproject.toml declares)' : ''}` };
@@ -246,7 +272,7 @@ function pythonInstaller(inv, opts = {}) {
 function lines(inv) {
   if (!inv) return [];
   const L = [];
-  L.push({ name: 'inventory', ok: true, detail: `scanned ${ageText(inv)} (${inv.at || '?'}); factory doctor --machine scans again` });
+  L.push({ name: 'inventory', ok: !inv.partial, detail: `scanned ${ageText(inv)} (${inv.at || '?'})${inv.partial ? '; PARTIAL: the scan ran out of its time budget, so some facts are missing' : ''}; factory doctor --machine scans again` });
   const t = (n) => (inv.tools[n] ? `${n} ${inv.tools[n].version || ''}`.trim() : null);
   L.push({ name: 'python', ok: inv.python.length > 0, detail: inv.python.length ? inv.python.map((p) => `${p.cmd} ${p.version || '?'}`).join(', ') : 'no python3 on the PATH', remedy: 'install Python 3 (your package manager), or use uv (it fetches Python itself)' });
   L.push({ name: 'python3 -m venv', ok: Boolean(inv.venv && inv.venv.works), detail: inv.venv && inv.venv.works ? 'works (a throwaway venv was created)' : `does not work${inv.venv && inv.venv.why ? `: ${inv.venv.why}` : ''}`, remedy: has(inv, 'uv') ? 'environments use uv instead' : has(inv, 'virtualenv') ? 'environments use virtualenv instead' : 'install uv (curl -LsSf https://astral.sh/uv/install.sh | sh, no sudo) or the venv package (sudo apt install python3-venv)' });

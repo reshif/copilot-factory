@@ -527,7 +527,16 @@ function run(argv) {
       if (sub === 'check') {
         // --job: the sealed environment's check before any task (the router's env.check step):
         // recorded for the job; a failure is a result the repair loop takes up, not an error
-        if (opt.job && !opt.proposed) return C('env-repair').checkForJob(R(), C('job').resolve(R(), J));
+        // --repair: a recorded repair candidate's check (the router's env.repair_check step). Both
+        // run as a long step: a detached child with a sealed started record, picked up by the next
+        // call when the caller is cut off (review M-1); --foreground runs it here (your terminal,
+        // after step_too_long)
+        if ((opt.job || opt.repair) && !opt.proposed) {
+          const kind = opt.repair ? 'repair' : 'sealed';
+          const ER = C('env-repair');
+          if (opt.child && process.env.FACTORY_ENVCHECK_CHILD === opt.child) return ER.runChild(R(), C('job').resolve(R(), J).id, kind, opt.child);
+          return ER.runManaged(R(), C('job').resolve(R(), J).id, kind, { foreground: Boolean(opt.foreground) });
+        }
         const r = E.check(R(), { proposed: Boolean(opt.proposed) });
         if (!r.ok) process.exitCode = 1;
         return r;

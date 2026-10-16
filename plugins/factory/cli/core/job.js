@@ -124,7 +124,9 @@ function reseal(root, jobId) {
     const { seal } = require('../lib/seal');
     const { seal: _old, ...body } = lp.lock;
     // the human takes the file as it is, except the design-depth marker the job was created with
-    if (s.design_templates && !(body.design_templates && typeof body.design_templates === 'object')) {
+    // (missing, or changed: the state's marker is the job's; review m-6)
+    if (s.design_templates && JSON.stringify(body.design_templates || null) !== JSON.stringify(s.design_templates)) {
+      if (body.design_templates) out.design_templates_differed = body.design_templates;
       body.design_templates = s.design_templates;
       out.design_templates_kept = true;
     }

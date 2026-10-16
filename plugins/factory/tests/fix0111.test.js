@@ -46,7 +46,7 @@ function toSealPark(t) {
   const w = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'env_repair']);
   const R = core('env-repair').REPAIR(root, J);
   fs.writeFileSync(R, JSON.stringify(GOOD));
-  const r = F.record(root, F.envelope(w, 'ok', { repair: { path: R, summary: 'fix' } }));
+  const r = F.recordRepair(root, J, w, { repair: { path: R, summary: 'fix' } });
   assert.equal(r.park.kind, 'environment_repair', JSON.stringify(r));
   return { root, J, short: core('job').load(root, J).env_repair.short };
 }

@@ -148,7 +148,8 @@ test('P2.1: the proposal rides on factory next from H1; the human confirms it (c
   // the terminal path re-confirms (typed code), and env check runs the setup in a scratch worktree
   const t = terminal(root, ['env', 'set', '--file', writeEnv(root, P.ENV)]);
   assert.equal(t.environment.name, 'python-venv', JSON.stringify(t));
-  const c = F.cli(root, ['env', 'check'], agentEnv);
+  assert.equal(F.cli(root, ['env', 'check'], agentEnv).code, 'agent_not_allowed', 'an agent checks only a proposal (review m-8)');
+  const c = F.cli(root, ['env', 'check']);
   assert.equal(c.ok, true, JSON.stringify(c));
   assert.deepEqual(c.ran.map((x) => x.code), [0]);
   assert.equal(F.sh(root, 'git worktree list').split('\n').filter((l) => /_envcheck/.test(l)).length, 0, 'the scratch worktree is gone');
@@ -237,7 +238,7 @@ test('P2.1 acceptance (fix 0.10.1): a broken sealed setup is checked before any 
   assert.equal(b.judge.agent_type, 'factory:planner');
   assert.match(fs.readFileSync(b.judge.prompt.split('\n')[1].trim(), 'utf8'), /environment repair[\s\S]*No matching distribution found for nautobot==9\.9/);
   fs.writeFileSync(core('env-repair').REPAIR(root, J), JSON.stringify(P.ENV));
-  const rec = F.record(root, F.envelope(b, 'ok', { repair: { path: core('env-repair').REPAIR(root, J), summary: 'drop the failing install' } }));
+  const rec = F.recordRepair(root, J, b, { repair: { path: core('env-repair').REPAIR(root, J), summary: 'drop the failing install' } });
   assert.equal(rec.status, 'park', JSON.stringify(rec));
   assert.equal(rec.park.kind, 'environment_repair');
   let st = core('job').load(root, J);

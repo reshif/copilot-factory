@@ -604,7 +604,7 @@ test('J-0001 after H3: the sealed environment is checked before any task; it fai
   const R = core('env-repair').REPAIR(root, J);
   // round 1: the agent changes nothing useful: no progress, the next round escalates
   fs.writeFileSync(R, JSON.stringify(BROKEN));
-  let rec = F.record(root, F.envelope(b, 'ok', { repair: { path: R, summary: 'same' } }));
+  let rec = F.recordRepair(root, J, b, { repair: { path: R, summary: 'same' } });
   assert.equal(rec.status, 'retry', JSON.stringify(rec));
   assert.equal(core('job').load(root, J).status, 'active');
   assert.equal(F.cli(root, ['next'], { env }).step, 'env_repair');
@@ -613,7 +613,7 @@ test('J-0001 after H3: the sealed environment is checked before any task; it fai
   // round 2: virtualenv, pins installed directly with retries (no requirements.txt), a health loop
   const FIXED = { ...BROKEN, setup: ['mkdir -p .venv/bin'], services: { ...BROKEN.services, health: `for i in $(seq 100); do test -f ${ready} && exit 0; sleep 0.1; done; exit 1` } };
   fs.writeFileSync(R, JSON.stringify(FIXED));
-  rec = F.record(root, F.envelope(b, 'ok', { repair: { path: R, summary: 'wait for the database' } }));
+  rec = F.recordRepair(root, J, b, { repair: { path: R, summary: 'wait for the database' } });
   assert.equal(rec.status, 'park', JSON.stringify(rec));
   assert.equal(rec.park.kind, 'environment_repair');
   let st = core('job').load(root, J);
@@ -653,12 +653,15 @@ test('environment repair: without progress the loop stops with a specific questi
     fs.writeFileSync(ER.REPAIR(root, J), JSON.stringify(BAD));
     core('job').mutate(root, J, (x) => { x.last_decision = 'workflow:env_repair::'; });
     last = ER.record(root, core('job').load(root, J), {});
+    // review M-1: recording only lints; the candidate's check is its own step, which ends the round
+    if (last.pending_check) last = ER.checkRepair(root, core('job').load(root, J));
     if (last.status === 'park') break;
   }
   assert.equal(last.status, 'park');
-  assert.equal(last.park_kind, 'environment_broken');
-  assert.match(last.park_question.question, /still does not set up on this machine \(echo "No matching distribution/);
-  assert.equal(last.park_question.options.length, 3);
+  assert.equal(last.park.kind, 'environment_broken');
+  const pk = core('job').load(root, J).park;
+  assert.match(pk.question, /still does not set up on this machine \(echo "No matching distribution/);
+  assert.equal(pk.options.length, 3);
   assert.throws(() => F.reply(root, 'approve environment'), /no repaired build environment waiting/);
   assert.equal(core('human').parseReply('approve environment').cmd, 'approve_environment');
   assert.ok(core('human').readReply('approve environment').reply);

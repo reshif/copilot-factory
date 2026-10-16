@@ -342,7 +342,7 @@ function stopDetail(kind, n, extra = {}) {
         return { summary: `${J} is done: ${String(n.reason || 'closed').split('\n')[0]}${ls.length ? ` Lessons proposed: ${ls.map((l) => l.id).join(', ')}.` : ''}${bs.length ? ` Project brief changes proposed: ${bs.map((b) => b.id).join(', ')} (they reach every later agent).` : ''}${digest.length ? ` One reply settles them all, e.g. "${digest.join('; ')}" ("reject lesson Ln <why>" / "reject brief Pn <why>" for one you do not want); factory inbox lists them.` : ''}`, ...(ls.length ? { lessons: ls } : {}), ...(bs.length ? { briefs: bs } : {}), ...(digest.length ? { digest: { reply: digest.join('; ') } } : {}) };
       }
     case 'step_too_long':
-      return { in_step: extra.in_step || null, kills: extra.kills || null, summary: `${J}: ${extra.message}`, command: extra.detached ? `factory ${extra.in_step || ''}`.trim() : 'factory drive --detach' };
+      return { in_step: extra.in_step || null, kills: extra.kills || null, summary: `${J}: ${extra.message}`, command: extra.command || (extra.detached ? `factory ${extra.in_step || ''}`.trim() : 'factory drive --detach') };
     default:
       return { summary: `${J || 'drive'}: ${extra.message || n.reason || kind}` };
   }
@@ -480,6 +480,12 @@ async function loop(ctx) {
         const res = await runChild(ctx, w);
         ran();
         const key = n.command;
+        // a long step cut off twice before it finished (the environment checks, review M-1): the
+        // user's terminal runs it in the foreground
+        if (res.json && res.json.code === 'step_too_long') {
+          const d = res.json.details || {};
+          return ctx.stop('step_too_long', n, { message: res.json.message || `${n.command} was cut off while running`, in_step: d.step || w.join(' '), command: d.command || null });
+        }
         if (res.code !== 0 || !res.json || res.json.error) {
           fails[key] = (fails[key] || 0) + 1;
           // a failing check (ci verify) is routed again by factory next; the same command

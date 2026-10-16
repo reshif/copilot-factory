@@ -833,7 +833,7 @@ test('0.9.0 loops: R6 checks the caps a clarify line names (writer_rounds), and 
 
 test('factory 0.11: the router\'s env_check and env_repair (between the seal and realize) are router steps, not steps outside the recipe; an unknown step still is', () => {
   const M = require('../inspector/model');
-  assert.ok(M.SPECIAL_STEPS.has('env_check') && M.SPECIAL_STEPS.has('env_repair'));
+  assert.ok(M.SPECIAL_STEPS.has('env_check') && M.SPECIAL_STEPS.has('env_repair') && M.SPECIAL_STEPS.has('env_repair_check'));
   const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
   const recipe = { id: 'standard@medium', steps: [{ step: 'decompose', run: 'workflow:decompose' }, { step: 'H3', run: 'gate' }, { step: 'realize', run: 'workflow:realize' }] };
   const job = {

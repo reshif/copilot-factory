@@ -391,7 +391,8 @@ test('factory env check builds the shared env once; the next check and every tas
   seal(root, K.env());
   const c1 = F.cli(root, ['env', 'check']);
   assert.equal(c1.ok, true, JSON.stringify(c1));
-  const c2 = F.cli(root, ['env', 'check'], { env: { FACTORY_RUNNER: '1' } });
+  const c2 = F.cli(root, ['env', 'check']);
+  assert.equal(F.cli(root, ['env', 'check'], { env: { FACTORY_RUNNER: '1' } }).code, 'agent_not_allowed', 'an agent checks only a proposal (review m-8)');
   assert.equal(c2.ok, true);
   assert.equal(K.installs(), 1, 'the second check reuses it');
   for (const n of ['J-0001-T1', 'J-0001-T2']) E.ensure(root, state, { taskId: n, wt: worktree(root, n) });
