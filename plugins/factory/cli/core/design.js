@@ -167,7 +167,7 @@ function layoutProblems(title, layout, { acs, testAcs } = {}) {
     const ghost = [...new Set(fs_.flatMap((e) => e.acs).filter((a) => !known.has(a)))];
     if (ghost.length) out.push(`${where} cites ${ghost.join(', ')}, which the contract does not have`);
   }
-  if (testAcs && testAcs.length && !fs_.some((e) => OWNED.has(e.status) && isTest(e.path))) out.push(`${where}: the tree lists no new or changed test file, but ${testAcs.join(', ')} need${testAcs.length === 1 ? 's' : ''} test evidence`);
+  if (testAcs && testAcs.length && !fs_.some((e) => e.status !== 'deleted' && isTest(e.path))) out.push(`${where}: the tree lists no test file, but ${testAcs.join(', ')} need${testAcs.length === 1 ? 's' : ''} test evidence: name the tests that prove them (new, changed or existing)`);
   return out;
 }
 

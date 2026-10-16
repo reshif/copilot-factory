@@ -261,7 +261,7 @@ function check(text, opts = {}) {
   const named = front && front.template && isLegacy(front.template) && String(front.template).startsWith(`${type}@`) ? front.template : null;
   const t = loadTemplate(type, named);
   const tfile = named ? `templates/docs/legacy/${named}.md` : `templates/docs/${TYPES[type].file}`;
-  if (named) warnings.push(`Written under the older template ${named}: checked by its rules. The current template ${loadTemplate(type).version} (design depth: decision records, end-to-end flow, data mapping, failure flow, project layout) applies to designs written now`);
+  if (named && !(opts.designTemplates && opts.designTemplates[type])) warnings.push(`Written under the older template ${named}: checked by its rules. The current template ${loadTemplate(type).version} (design depth: decision records, end-to-end flow, data mapping, failure flow, project layout) applies to designs written now`);
 
   // Front matter
   if (!front) problems.push(`No front matter: start the file with the "---" block from ${tfile} (doc, template, job, title, status, date)`);
@@ -269,6 +269,9 @@ function check(text, opts = {}) {
     for (const k of FRONT_KEYS) if (!front[k] || (Array.isArray(front[k]) && !front[k].length)) problems.push(`Front matter is missing "${k}"`);
     if (front.doc && front.doc !== type) problems.push(`Front matter says doc: ${front.doc}, but this is a ${type} document`);
     if (front.template && front.template !== t.version) problems.push(`Front matter says template: ${front.template}; the current template is ${t.version}`);
+    // a job created under design depth (its recipe lock names the templates) may not fall back
+    const required = opts.designTemplates && opts.designTemplates[type];
+    if (named && required && required !== named) problems.push(`Front matter says template: ${named}, but this job was created under ${required} (its recipe lock): its design must follow ${`templates/docs/${TYPES[type].file}`} with the design-depth sections (decision records, flows, data mapping, failure flow, project layout, how it runs)`);
     if (front.status && t.statuses && !t.statuses.includes(front.status)) problems.push(`status "${front.status}" is not one of ${t.statuses.join(', ')}`);
     if (front.date && !/^\d{4}-\d{2}-\d{2}$/.test(front.date)) problems.push(`date "${front.date}" is not YYYY-MM-DD`);
     if (opts.job && front.job && front.job !== opts.job) problems.push(`Front matter says job: ${front.job}, but this is ${opts.job}`);
@@ -397,7 +400,9 @@ function jobOpts(root, state, file) {
   } catch {
     ledgerIds = null;
   }
-  return { job: state.id, acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}), ...(testAcs.length ? { testAcs } : {}), ...(options && options.length ? { options } : {}) };
+  const lock = readJson(jp.recipeLock, null);
+  const designTemplates = lock && lock.design_templates && typeof lock.design_templates === 'object' ? lock.design_templates : null;
+  return { job: state.id, ...(designTemplates ? { designTemplates } : {}), acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}), ...(testAcs.length ? { testAcs } : {}), ...(options && options.length ? { options } : {}) };
 }
 
 function checkFile(file, opts = {}) {

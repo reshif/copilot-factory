@@ -81,20 +81,24 @@ test('doc check: the project layout — a tree of files with status, responsibil
   has(problems(GOOD.replace('# new · exports collect_vlans · AC-1', '# new · AC-1')), /collectors\/__init__\.py needs its responsibility/);
   has(problems(GOOD.replace('· AC-1, AC-4\n└── writer', '· AC-1, AC-4, AC-9\n└── writer')), /cites AC-9, which the contract does not have/);
   const noTests = GOOD.replace(/^tests\/\n(├──|│|└──)[^\n]*\n(│[^\n]*\n|├──[^\n]*\n|└──[^\n]*\n)*/m, '');
-  has(problems(noTests), /lists no new or changed test file, but AC-1/);
+  has(problems(noTests), /lists no test file, but AC-1/);
   has(problems(GOOD.replace('README.md                     # existing', '../README.md                  # existing')), /must be a repository-relative path inside the repository/);
 });
 
 test('doc check: an ADR written under adr@1 keeps adr@1\'s rules (with a warning); a no-adr@2 note needs its layout', () => {
-  const old = F.adrText({ job: 'J-0001' });
+  const old = F.adrText({ job: 'J-0001', template: 'adr@1' });
   const r = doc.check(old, { type: 'adr', acs: ['AC-1'] });
   assert.equal(r.ok, true, r.problems.join('\n'));
   assert.equal(r.template, 'adr@1');
   assert.ok(r.warnings.some((w) => /older template adr@1/.test(w)));
-  const no2 = F.noAdrText({ job: 'J-0001' }).replace('template: no-adr@1', 'template: no-adr@2');
-  has(doc.check(no2, { type: 'no-adr' }).problems, /Missing section "## Project layout"/);
-  const full = no2.replace('## How each acceptance criterion is met', '## Project layout\n```text\nsrc/\n└── add.js          # changed · adds instead of subtracting · AC-1\ntests/\n└── add.test.js     # changed · proves add(2, 3) is 5 · AC-1\n```\n\n## How it runs\n- Test: `node tests/add.test.js`\n\n## How each acceptance criterion is met');
+  const full = F.noAdrText({ job: 'J-0001' });
   assert.deepEqual(doc.check(full, { type: 'no-adr', acs: ['AC-1'], testAcs: ['AC-1'] }).problems, []);
+  const no2 = full.replace(/## Project layout[\s\S]*?(?=## How it runs)/, '');
+  has(doc.check(no2, { type: 'no-adr' }).problems, /Missing section "## Project layout"/);
+  // a job created under design depth (its recipe lock names adr@2) may not fall back to adr@1
+  const strict = doc.check(old, { type: 'adr', acs: ['AC-1'], designTemplates: { adr: 'adr@2', 'no-adr': 'no-adr@2' } });
+  has(strict.problems, /says template: adr@1, but this job was created under adr@2 \(its recipe lock\)/);
+  has(doc.check(F.noAdrText({ job: 'J-0001', template: 'no-adr@1' }), { type: 'no-adr', designTemplates: { adr: 'adr@2', 'no-adr': 'no-adr@2' } }).problems, /created under no-adr@2/);
 });
 
 function vlanJob(t) {
@@ -140,10 +144,24 @@ test('plan validate: every new or changed layout file is owned by exactly one ta
   assert.match(md, /```text\nnautobot_vlan_sync\/\n  __init__\.py\s+# changed · T3 · AC-5/);
 });
 
-test('plan validate: an older design (adr@1) has no layout contract; plans are checked as before', (t) => {
+test('a job created under this release must use adr@2 (doc check error); a job created before it (no design_templates in its lock) keeps adr@1 rules and plans are checked as before', (t) => {
   const root = F.makeRepo(t);
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'medium']).job;
-  fs.writeFileSync(path.join(F.jobDir(root, J), 'adr-001-fix-add.md'), F.adrText({ job: J }));
+  const jd = F.jobDir(root, J);
+  const lockFile = path.join(jd, 'recipe.lock.json');
+  const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+  assert.deepEqual(lock.design_templates, { adr: 'adr@2', 'no-adr': 'no-adr@2' });
+  const adrFile = path.join(jd, 'adr-001-fix-add.md');
+  fs.writeFileSync(adrFile, F.adrText({ job: J, template: 'adr@1' }));
+  const now = F.cli(root, ['doc', 'check', adrFile]);
+  assert.equal(now.ok, false);
+  has(now.problems, /created under adr@2/);
+  // the same job as an older release created it: no design_templates in its (re-sealed) lock
+  const { seal: _s, design_templates: _d, ...body } = lock;
+  fs.writeFileSync(lockFile, JSON.stringify(require('../cli/lib/seal').seal(body), null, 2));
+  const before = F.cli(root, ['doc', 'check', adrFile]);
+  assert.equal(before.ok, true, JSON.stringify(before.problems));
+  assert.ok(before.warnings.some((w) => /older template adr@1/.test(w)));
   fs.writeFileSync(path.join(F.jobDir(root, J), 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', objective: 'Fix add', allowed_paths: ['src/**'], criteria_ids: ['AC-1'], verify_commands: ['node tests/add.test.js'] }] }));
   const v = F.cli(root, ['plan', 'validate', '--job', J]);
   assert.equal(v.valid, true, JSON.stringify(v.errors));
@@ -241,4 +259,28 @@ test('e2e: the fake Copilot writes a full design; record holds it to every gener
   const job = data.jobs.find((j) => j.id === J);
   assert.equal(job.design.decisions.length, 3);
   assert.equal(job.design.layout.planned, true);
+});
+
+test('separate gates (high risk): H2 shows the design with "tasks are assigned at decompose"; H3 re-shows the full design view with each file\'s owner task', (t) => {
+  const root = F.makeRepo(t);
+  const J = F.cli(root, ['job', 'new', '--title', 'VLAN sync', '--type', 'feature', '--risk', 'high']).job;
+  const jd = F.jobDir(root, J);
+  fs.writeFileSync(path.join(jd, 'contract.md'), CONTRACT);
+  fs.writeFileSync(path.join(jd, 'adr-001-vlan-sync.md'), GOOD.replace('job: J-0001', `job: ${J}`));
+  const critics = require('../cli/core/critics');
+  const steps = require('../cli/core/steps');
+  const job = require('../cli/core/job');
+  const ctx = () => steps.context(root, job.load(root, J), job.load);
+  const h2 = critics.gateView(ctx(), 'H2').design;
+  assert.equal(h2.layout.planned, false);
+  assert.ok(h2.layout.files.every((f) => !f.owners.length));
+  assert.match(design.markdown(h2), /tasks are assigned at decompose/);
+  fs.writeFileSync(path.join(jd, 'plan.json'), JSON.stringify({ tasks: require('./helpers/design-crew').GOOD }));
+  const h3 = critics.gateView(ctx(), 'H3').design;
+  assert.deepEqual(h3.decisions.map((d) => d.id), ['D-1', 'D-2', 'D-3']);
+  assert.equal(h3.diagrams.length, 4);
+  assert.equal(h3.layout.planned, true);
+  assert.equal(h3.layout.files.find((f) => f.path === 'nautobot_vlan_sync/writer.py').owners[0], 'T3');
+  assert.doesNotMatch(design.markdown(h3), /tasks are assigned at decompose/);
+  assert.match(design.markdown(h3), /writer\.py\s+# new · T3 ·/);
 });

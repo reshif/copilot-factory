@@ -79,7 +79,7 @@ test('doc check: sections, order, front matter, tables, coverage and placeholder
   assert.ok(doc.check(good.replace('# ADR 001: Fix add in place', '# Fix add'), { type: 'adr' }).problems.some((p) => /Title "Fix add" should look like "ADR/.test(p)));
   assert.ok(doc.check(good.replace('Revert the merge commit; no data changes.', '<!-- later -->'), { type: 'adr' }).problems.some((p) => /"## Rollback and migration" is empty/.test(p)));
   // AC-1 is not AC-10
-  assert.ok(doc.check(good.replace(/\| AC-1 \|/, '| AC-10 |'), { type: 'adr', acs: ['AC-1'] }).problems.some((p) => /does not cover AC-1/.test(p)));
+  assert.ok(doc.check(good.replace(/\| AC-1 \| operator fixed/, '| AC-10 | operator fixed').replace(/(## End-to-end flow[\s\S]*?## How each)/, (m) => m.replace(/AC-1/g, 'AC-10')), { type: 'adr', acs: ['AC-1'] }).problems.some((p) => /does not cover AC-1/.test(p)));
 });
 
 test('doc check: no-adr is lighter (no diagram needed), but any Mermaid it has must be well formed', () => {
@@ -136,7 +136,7 @@ test('doc check --job checks every doc of a job; findings and the lessons regist
   // index renders and passes its own check
   const idx = F.cli(root, ['doc', 'index']);
   assert.equal(doc.checkFile(idx.index, { type: 'index', acs: ['AC-1'] }).ok, true);
-  assert.match(fs.readFileSync(idx.index, 'utf8'), /\| contract\.md \| contract \|[^\n]*approved \(H1\) \| ok \|[\s\S]*\| no-adr\.md \| no-adr \| no-adr@1 \| accepted \| \d problem\(s\) \|[\s\S]*## Changelog[\s\S]*\| clarify \| ok \|/);
+  assert.match(fs.readFileSync(idx.index, 'utf8'), /\| contract\.md \| contract \|[^\n]*approved \(H1\) \| ok \|[\s\S]*\| no-adr\.md \| no-adr \| no-adr@2 \| accepted \| \d problem\(s\) \|[\s\S]*## Changelog[\s\S]*\| clarify \| ok \|/);
   // lessons register
   F.cli(root, ['lessons', 'add', '--job', J, '--text', 'In src/**, arithmetic helpers have a test per operator.', '--scope', 'src/**', '--why', 'code-1: add subtracted']);
   const reg = path.join(root, '.factory', 'lessons', 'lessons.md');
