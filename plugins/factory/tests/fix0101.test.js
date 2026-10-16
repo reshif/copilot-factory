@@ -553,13 +553,16 @@ function toCombinedGate(t, env) {
   F.cli(root, ['deps', 'fetch']);
   const g = F.cli(root, ['wfargs', 'ground']);
   F.record(root, F.envelope(g, 'ok', { topics: [{ topic: 'codebase', claims: [], unknowns: [] }], degraded: [] }));
-  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J }));
+  // design depth (adr@2): the plan's files come from the design's Project layout; T1 writes
+  // requirements.txt (the J-0001 setup reads it), so the layout names it
+  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J, layout: F.layoutLines([['src/add.js', 'changed', ['AC-1'], 'add(a, b) returns the sum'], ['tests/add.test.js', 'existing', ['AC-1'], 'proves add(2, 3) is 5'], ['requirements.txt', 'new', ['AC-1'], 'the pinned Python dependencies']]) }));
   let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
   F.record(root, F.envelope(b, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-x.md')], summary: 's' }, critiques: [{ verdict: 'approve', items: [] }] }));
   b = F.cli(root, ['wfargs', 'decompose']);
   writePlan(root, J, [{ id: 'T1', objective: 'fix', allowed_paths: ['src/add.js', 'requirements.txt'], criteria_ids: ['AC-1'], verify_commands: ['node tests/add.test.js'] }]);
   fs.writeFileSync(core('environment').JOB_PROPOSED(root, J), JSON.stringify(env));
-  assert.equal(F.record(root, F.envelope(b, 'ok', { planner: { valid: true, errors: [], path: 'plan.json' }, critique: { verdict: 'approve', items: [] } })).status, 'ok');
+  const rec = F.record(root, F.envelope(b, 'ok', { planner: { valid: true, errors: [], path: 'plan.json' }, critique: { verdict: 'approve', items: [] } }));
+  assert.equal(rec.status, 'ok', JSON.stringify(rec.errors || rec));
   assert.equal(next(root).step, 'H3');
   return { root, J };
 }
@@ -646,4 +649,32 @@ test('environment repair: without progress the loop stops with a specific questi
   assert.throws(() => F.reply(root, 'approve environment'), /no repaired build environment waiting/);
   assert.equal(core('human').parseReply('approve environment').cmd, 'approve_environment');
   assert.ok(core('human').readReply('approve environment').reply);
+});
+
+test('proxies and index URLs reach the probe and a proposal\'s check by default; a login in their URL is stripped (unless policy decompose.probe_proxy_credentials) and redacted in output; probe_proxy false keeps them out', (t) => {
+  const root = F.makeRepo(t);
+  const J = newJob(root);
+  const show = `node -e "console.log('p='+process.env.HTTPS_PROXY+' l='+process.env.https_proxy+' n='+process.env.NO_PROXY+' i='+process.env.PIP_INDEX_URL+' u='+process.env.UV_INDEX_URL+' r='+process.env.npm_config_registry); console.log('echo http://bob:s3cr'+'3tpw@proxy.corp:8080'); process.exit(1)"`;
+  writePlan(root, J, [task('T1', [show])]);
+  const env = { HTTPS_PROXY: 'http://bob:s3cr3tpw@proxy.corp:8080', https_proxy: 'http://bob:s3cr3tpw@proxy.corp:8080', NO_PROXY: 'localhost,.corp', PIP_INDEX_URL: 'https://ci:idxtoken99@pypi.corp/simple', UV_INDEX_URL: 'https://pypi.corp/simple', npm_config_registry: 'https://npm.corp/' };
+  let r = F.cli(root, ['plan', 'probe'], { env });
+  const tail = r.commands[0].tail;
+  assert.match(tail, /p=http:\/\/proxy\.corp:8080 l=http:\/\/proxy\.corp:8080 n=localhost,\.corp i=https:\/\/pypi\.corp\/simple u=https:\/\/pypi\.corp\/simple r=https:\/\/npm\.corp\//, tail);
+  assert.match(tail, /http:\/\/\[redacted\]@proxy\.corp:8080/, 'a login printed in output is redacted');
+  assert.doesNotMatch(fs.readFileSync(core('probe').FILE(root, J), 'utf8'), /s3cr3tpw|idxtoken99/);
+  // the credentials themselves only when the repo says so
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { probe_proxy_credentials: true } }));
+  r = F.cli(root, ['plan', 'probe'], { env });
+  assert.match(r.commands[0].tail, /p=http:\/\/\[redacted\]@proxy\.corp:8080/, 'passed with its login, still redacted in what is recorded');
+  assert.doesNotMatch(fs.readFileSync(core('probe').FILE(root, J), 'utf8'), /s3cr3tpw/);
+  // off
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { probe_proxy: false } }));
+  r = F.cli(root, ['plan', 'probe'], { env });
+  assert.match(r.commands[0].tail, /p=undefined l=undefined n=undefined i=undefined/);
+  // a proposal's env check gets the same environment
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({}));
+  const out = path.join(T.mkdtemp('factory-proxy-', t), 'seen');
+  fs.writeFileSync(path.join(root, '.factory', 'environment.proposed.json'), JSON.stringify({ version: 1, name: 'p', setup: [`echo "$HTTPS_PROXY $PIP_INDEX_URL" > ${out}`] }));
+  assert.equal(F.cli(root, ['env', 'check', '--proposed'], { env }).ok, true);
+  assert.equal(fs.readFileSync(out, 'utf8').trim(), 'http://proxy.corp:8080 https://pypi.corp/simple');
 });

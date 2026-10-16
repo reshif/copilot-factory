@@ -92,7 +92,9 @@
     "probe_timeout_seconds": 900
   },
   "decompose": {
-    "plan_probe": "auto"
+    "plan_probe": "auto",
+    "probe_proxy": true,
+    "probe_proxy_credentials": false
   },
   "deps": {
     "enabled": true,

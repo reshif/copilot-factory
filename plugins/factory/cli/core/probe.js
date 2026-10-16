@@ -42,20 +42,32 @@ const LINT = [
 // The environment a dry-run gets: an allowlist, never the user's tokens or credentials, marked as
 // an agent's (every human-only verb refuses it, a pty included), tagged so survivors can be found.
 const KEEP = /^(PATH|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|SHELL|USER|LOGNAME|PWD|COLUMNS|LINES)$/;
-const PROXY = /^(https?_proxy|HTTPS?_PROXY|no_proxy|NO_PROXY|ALL_PROXY|all_proxy|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|REQUESTS_CA_BUNDLE|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|npm_config_registry)$/;
+// The network settings a setup needs behind a corporate proxy (fix 0.11: passed by default; the
+// user saw PyPI time out without them): proxies, CA bundles, package index URLs.
+const PROXY = /^(https?_proxy|HTTPS?_PROXY|no_proxy|NO_PROXY|ALL_PROXY|all_proxy|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|PIP_TRUSTED_HOST|UV_INDEX_URL|UV_EXTRA_INDEX_URL|UV_DEFAULT_INDEX|npm_config_registry|NPM_CONFIG_REGISTRY|npm_config_proxy|npm_config_https_proxy|NPM_CONFIG_PROXY|NPM_CONFIG_HTTPS_PROXY|YARN_REGISTRY|YARN_NPM_REGISTRY_SERVER)$/;
+// user:password@ inside a URL (a proxy or an index URL that carries its login)
+const URL_CREDS = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+(?::[^\s/@]*)?)@/gi;
+const stripCreds = (v) => String(v).replace(URL_CREDS, '$1');
 const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|_KEY$|^KEY$|APIKEY|API_KEY|CREDENTIAL|^AWS_|^GH_|^GITHUB_|^SSH_|^GPG_|^COPILOT_|^NPM_TOKEN|^AZURE_|^GOOGLE_|^GCP_|COOKIE|SESSION)/i;
 // `own`: the probe's own directories (its scratch home, temp and caches), never filtered: a path
 // can contain a secret-looking variable's value (a temp dir named in a *_TMPDIR or *_SESSION
 // variable) and must still be set (else the dry-run and setup silently fall back to the real home).
 function probeEnv(root, probeId, extra = {}, own = {}) {
-  let allowProxy = false;
+  // proxies and index URLs pass by default (policy decompose.probe_proxy: false keeps them out);
+  // a login embedded in one (user:pass@) is stripped unless decompose.probe_proxy_credentials
+  let dec = {};
   try {
-    allowProxy = ((require('./policy').load(root) || {}).decompose || {}).probe_proxy === true;
+    dec = (require('./policy').load(root) || {}).decompose || {};
   } catch {
-    allowProxy = false;
+    dec = {};
   }
+  const allowProxy = dec.probe_proxy !== false;
+  const keepCreds = dec.probe_proxy_credentials === true;
   const out = {};
-  for (const [k, v] of Object.entries(process.env)) if (KEEP.test(k) || (allowProxy && PROXY.test(k))) out[k] = v;
+  for (const [k, v] of Object.entries(process.env)) {
+    if (KEEP.test(k)) out[k] = v;
+    else if (allowProxy && PROXY.test(k)) out[k] = keepCreds ? v : stripCreds(v);
+  }
   // what the environment declares (its env block, the probe's own dirs) is kept, except a value
   // carrying one of the user's secrets (a declared `TOKEN: $GH_TOKEN`)
   const secrets = Object.entries(process.env).filter(([k, v]) => SECRET_NAME.test(k) && v && v.length >= 6).map(([, v]) => v);
@@ -67,8 +79,15 @@ function probeEnv(root, probeId, extra = {}, own = {}) {
 // well-known token shapes, key=value pairs that name a secret, and the values of the user's own
 // secret-looking environment variables.
 function redact(text) {
-  let t = String(text || '');
+  // a login embedded in a URL first (user:pass@), whole
+  let t = String(text || '').replace(URL_CREDS, '$1[redacted]@');
   for (const [k, v] of Object.entries(process.env)) if (SECRET_NAME.test(k) && v && v.length >= 6) t = t.split(v).join(`[redacted ${k}]`);
+  // the password of a login embedded in a proxy or index URL, wherever it shows up on its own
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!PROXY.test(k) || !v) continue;
+    const m = /:\/\/[^\s/@:]+:([^\s/@]{4,})@/.exec(v);
+    if (m) t = t.split(m[1]).join(`[redacted ${k} password]`);
+  }
   return t
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,})\b/g, '[redacted]')
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[redacted private key]')
@@ -685,4 +704,4 @@ function problemKey(p) {
   return sha256(stableStringify([...((p && p.problems) || [])].map((x) => String(x).replace(/Output \(tail\):.*$/, '')).sort()));
 }
 
-module.exports = { recover, readStarted, markStarted, interruptedQuestion, procStat, sameProcess, ownDirs, STARTED, MAX_INTERRUPTED, mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
+module.exports = { stripCreds, PROXY, recover, readStarted, markStarted, interruptedQuestion, procStat, sameProcess, ownDirs, STARTED, MAX_INTERRUPTED, mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
