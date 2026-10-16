@@ -396,21 +396,31 @@ function loops(job) {
   const L = (job.lock && job.lock.limits) || {};
   const resumes = job.decisions.filter((d) => d.action === 'human.resume');
   const count = (rule) => job.decisions.filter((d) => isRouting(d) && d.rule === rule).length;
+  // the fix rounds of each loop (factory 0.9.0: the loop engine's escalated rounds count too); the
+  // policy ceiling holds per loop segment, and each resume of that loop starts a new segment
   const checks = [
-    ['row4.confirmed_serious', L.max_review_rounds, 'review', 'review'],
-    ['row5.acs_unproven', L.max_verify_fix_rounds, 'verify', 'verify-fix'],
+    [['row4.confirmed_serious', 'loop.review.escalate'], L.max_review_rounds, 'review', 'review'],
+    [['row5.acs_unproven', 'loop.verify.escalate'], L.max_verify_fix_rounds, 'verify', 'verify-fix'],
   ];
-  for (const [rule, max, from, name] of checks) {
+  for (const [rs, max, from, name] of checks) {
     if (max === undefined) continue;
-    const allowed = max + resumes.filter((r) => r.from === from).length;
-    const n = count(rule);
-    if (n > allowed) out.push(f({ rule: 'R6.rounds_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:${rule}`, job: job.id, summary: `${n} ${name} rounds, but the cap allows ${allowed} (${max} + ${allowed - max} resume(s)).`, question: `How did ${name} rounds exceed the cap?` }));
+    const res = resumes.filter((r) => r.from === from).length;
+    const engine = job.decisions.some((d) => isRouting(d) && String(d.rule || '').startsWith(`loop.${from}.`));
+    const allowed = engine ? max * (1 + res) : max + res;
+    const n = rs.reduce((k, r) => k + count(r), 0);
+    if (n > allowed) out.push(f({ rule: 'R6.rounds_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:${rs[0]}`, job: job.id, summary: `${n} ${name} rounds, but the cap allows ${allowed} (${engine ? `a ceiling of ${max} per loop segment, ${res + 1} segment(s)` : `${max} + ${allowed - max} resume(s)`}).`, question: `How did ${name} rounds exceed the cap?` }));
   }
-  // clarify v3: each stage line records its counters and the caps it ran under
-  const over3 = job.ledger.filter((e) => e.kind === 'clarify' && e.detail && e.detail.caps && e.detail.counters).filter((e) => ['research_passes', 'writer_attempts'].some((k) => Number(e.detail.counters[k]) > Number(e.detail.caps[k])));
+  // clarify v3: each stage line records its counters and the caps it ran under; only the caps a
+  // line names are checked (0.9.0 records writer_rounds, the loop engine's automatic writer
+  // rounds; lines from before record writer_attempts)
+  const CLARIFY_CAPS = ['research_passes', 'writer_rounds', 'writer_attempts'];
+  const overKeys = (e) => CLARIFY_CAPS.filter((k) => k in e.detail.caps && Number(e.detail.counters[k]) > Number(e.detail.caps[k]));
+  const over3 = job.ledger.filter((e) => e.kind === 'clarify' && e.detail && e.detail.caps && e.detail.counters).filter((e) => overKeys(e).length);
   if (over3.length) {
     const e = over3[over3.length - 1];
-    out.push(f({ rule: 'R6.clarify_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:clarify`, job: job.id, summary: `Clarify ran ${e.detail.counters.research_passes} research pass(es) and ${e.detail.counters.writer_attempts} writer attempt(s); its caps were ${e.detail.caps.research_passes} and ${e.detail.caps.writer_attempts}.`, question: 'How did clarify keep running past its caps?' }));
+    const NAMES = { research_passes: 'research pass(es)', writer_rounds: 'automatic writer round(s)', writer_attempts: 'writer attempt(s)' };
+    const ks = CLARIFY_CAPS.filter((k) => k in e.detail.caps);
+    out.push(f({ rule: 'R6.clarify_over_cap', class: 'deviation', severity: 'medium', subject: `${job.id}:clarify`, job: job.id, summary: `Clarify ran ${ks.map((k) => `${Number(e.detail.counters[k]) || 0} ${NAMES[k]}`).join(' and ')}; its caps were ${ks.map((k) => e.detail.caps[k]).join(' and ')}.`, question: 'How did clarify keep running past its caps?' }));
   }
   const clarifySteps = job.ledger.filter((e) => e.kind === 'step' && e.step === 'clarify');
   const v2 = clarifySteps.filter((e) => e.detail && e.detail.ledger && Number.isInteger(e.detail.ledger.ceiling));
@@ -793,10 +803,34 @@ function jobHealth(job, L, now) {
   if (dropped >= L.questions_dropped_per_job) out.push(f({ rule: 'R19.question_overrun', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(clarify.filter((e) => e.detail.dropped), 'at'), summary: `Clarify in ${id} proposed ${dropped} question(s) beyond the round budget or already asked; the CLI dropped them (limit ${L.questions_dropped_per_job}).`, question: 'Does the judge ignore the question budget or the never-re-ask list in its brief?' }));
   // clarify v3: parks (caps reached, agents that returned nothing), H1 reached with God Eye still
   // objecting (you said proceed), and research gaps carried to H1
+  // each park by the rule that stopped it (detail.kind / detail.rule: an agent that returned
+  // nothing, or before 0.9.0 the writer and readiness caps). Since 0.9.0 clarify parks only for an
+  // agent; a park on findings the writer could fix itself is the old cap stopping converging work.
   const parks3 = job.ledger.filter((e) => e.kind === 'clarify' && e.outcome === 'park');
-  if (parks3.length) out.push(f({ rule: 'R19.clarify_parked', class: 'ambiguity', severity: 'medium', subject: id, job: id, latest: latest(parks3, 'at'), summary: `Clarify in ${id} parked ${parks3.length} time(s): ${parks3.slice(-3).map((e) => String((e.detail || {}).reason || 'no reason recorded').slice(0, 120)).join('; ')}.`, question: 'Were the agents failing (time caps, the model), or did the caps stop work that was converging?' }));
+  if (parks3.length) {
+    const ruleOf = (e) => { const d = e.detail || {}; return d.rule ? `${d.kind || 'writer'} ${d.rule}` : d.kind === 'agent' || /returned nothing|failed twice/.test(d.reason || '') ? 'agent' : d.kind ? `${d.kind} cap` : 'unknown'; };
+    const by = {};
+    for (const e of parks3) by[ruleOf(e)] = (by[ruleOf(e)] || 0) + 1;
+    const capParks = parks3.filter((e) => /cap$|no_progress|ceiling/.test(ruleOf(e)));
+    out.push(f({ rule: 'R19.clarify_parked', class: 'ambiguity', severity: capParks.length ? 'medium' : 'low', subject: id, job: id, latest: latest(parks3, 'at'), summary: `Clarify in ${id} parked ${parks3.length} time(s) (${Object.entries(by).map(([k, n]) => `${k} ×${n}`).join(', ')}): ${parks3.slice(-3).map((e) => String((e.detail || {}).reason || 'no reason recorded').slice(0, 120)).join('; ')}.${capParks.length ? ` ${capParks.length} of them on a cap (factory before 0.9.0): since 0.9.0 the readiness loop runs on progress and ends at H1, never in a park.` : ''}`, question: capParks.length ? 'Did the caps stop work that was converging (findings the writer could fix itself)?' : 'Were the agents failing (time caps, the model, the network)?' }));
+  }
+  // H1 reached with God Eye still objecting: because you said proceed (before 0.9.0), or because
+  // the readiness loop ended without converging (0.9.0: loop_end, with its rule)
   const objected = clarify.filter((e) => e.ok && e.detail.version === 3 && e.detail.approved === false);
-  if (objected.length) out.push(f({ rule: 'R19.proceeded_past_objections', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(objected, 'at'), summary: `${id} reached H1 with ${objected[objected.length - 1].detail.god_eye_objects || 'some'} God Eye objection(s) still open (you said proceed); H1 showed them as objections, not approval.`, question: 'Were the objections wrong, or was the contract approved with a known gap?' }));
+  if (objected.length) {
+    const d = objected[objected.length - 1].detail;
+    const why = d.proceeded ? 'you said proceed' : d.loop_end ? `the readiness loop ended: ${d.loop_end.rule}${d.loop_end.diagnosed ? ', after a diagnosis' : ''}` : 'the readiness check still objected';
+    out.push(f({ rule: 'R19.proceeded_past_objections', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(objected, 'at'), summary: `${id} reached H1 with ${d.god_eye_objects || 'some'} God Eye objection(s) still open (${why}); H1 showed them as objections, not approval.`, question: 'Were the objections wrong, or was the contract approved with a known gap?' }));
+  }
+  // a park of a loop (review-fix, verify-fix, re-verify, the integrator, the budget) must ask a
+  // specific question (0.9.0: the loop engine's diagnosis, or the budget question), never a bare
+  // "resume": a reply then carries the human's answer
+  const LOOP_KINDS = new Set(['review_rounds', 'verify_fix_rounds', 'unverified_finding', 'integration', 'budget']);
+  const parkRows = job.decisions.filter((d) => (d.action === 'park' || d.action === 'parked') && d.park && LOOP_KINDS.has(d.park.kind));
+  const bare = parkRows.filter((d) => !d.park.question);
+  if (bare.length) out.push(f({ rule: 'R19.park_without_question', class: 'ambiguity', severity: 'medium', subject: `${id}:parks`, job: id, latest: latest(bare), summary: `${id} parked ${bare.length} time(s) on a loop (${[...new Set(bare.map((d) => d.park.kind))].join(', ')}) without a specific question: the human could only say "resume", which adds no information.`, evidence: bare.slice(0, 6).map((d) => d.id).filter(Boolean), question: 'Did the loop park on a count, before escalating and diagnosing (a factory from before 0.9.0, or a park by another path)?' }));
+  const undiagnosed = parkRows.filter((d) => d.park.question && d.park.kind !== 'budget' && d.park.diagnosed === false && String(d.rule || '').startsWith('loop.'));
+  if (undiagnosed.length) out.push(f({ rule: 'R19.park_undiagnosed', class: 'ambiguity', severity: 'low', subject: `${id}:parks`, job: id, latest: latest(undiagnosed), summary: `${id} parked ${undiagnosed.length} time(s) with a question the CLI built itself: the diagnosis did not run or returned nothing.`, evidence: undiagnosed.slice(0, 6).map((d) => d.id).filter(Boolean), question: 'Is the diagnosis agent failing, or is diagnosis turned off (policy loops.diagnose)?' }));
   const gaps = clarify.filter((e) => e.ok && e.detail.version === 3 && Number(e.detail.failures) > 0);
   if (gaps.length && Number(gaps[gaps.length - 1].detail.failures) >= L.research_gaps_per_job) out.push(f({ rule: 'R20.research_gaps', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(gaps, 'at'), summary: `Clarify in ${id} reached H1 with ${gaps[gaps.length - 1].detail.failures} research gap(s) recorded (shown at H1 and in the contract's Research gaps).`, question: 'Why could research not settle them: no web access, a time box too small for this risk, or no source for the confirmed version?' }));
   out.push(...groundedIntent(job, L));

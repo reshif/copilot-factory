@@ -19,6 +19,8 @@ const synthetic = (ledger, extra = {}) => ({ id: 'J-0001', state: { status: 'act
 
 test('R14 step_failures: clarify/ground rounds that asked the user are not failures (outcome needs_user, and legacy records)', () => {
   const root = F.makeRepo();
+  // a read-back that waits for the user (factory 0.9.0 shows it without waiting by default)
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ clarify: { readback: 'wait' } }));
   const J = F.cli(root, ['job', 'new', '--title', 'Sync VLAN', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   // clarify v3 waits on the user three times (a read-back you correct twice): waiting is not failing

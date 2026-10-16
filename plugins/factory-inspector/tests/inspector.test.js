@@ -583,6 +583,8 @@ function scoutData(world) {
 
 test('clarify v3 from the real CLI: a clean run has no clarify findings; replies while it waits are expected; a hand-edited clarify.json is forged (R1)', () => {
   const root = F.makeRepo();
+  // a read-back that waits for the user (factory 0.9.0 shows it without waiting by default)
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ clarify: { readback: 'wait' } }));
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText({ verify: '`node tests/add.test.js` (AC-1)' }));
   F.clarify(root, { until: 'readback_wait' });
@@ -788,4 +790,43 @@ test('R5.unverified_finding_lost matches a finding by what it is, not by its id:
     { kind: 'step', step: 'challenge', ok: false, at: at(2), detail: { round: 2, findings: [{ ...other, status: 'refuted' }, { ...noFile, id: 'code-1@r1', carried: { from_round: 1, times: 1 } }] } },
   ] };
   assert.ok(!rules.evidenceChain(carried).some((x) => x.rule === 'R5.unverified_finding_lost'), 'carried under a new id');
+});
+
+test('0.9.0 loops: R6 checks the caps a clarify line names (writer_rounds), and a loop ceiling per segment; R19 breaks parks down by rule, flags a loop park without a specific question, and says why H1 had objections', () => {
+  const at = (h) => new Date(Date.UTC(2026, 0, 1) + h * 36e5).toISOString();
+  const cl = (h, outcome, detail) => ({ kind: 'clarify', at: at(h), job: 'J-0009', stage: outcome, outcome, detail });
+  const LIM = require('../inspector/config').LIMITS;
+  // a line from 0.9.0 names writer_rounds, not writer_attempts: only what it names is checked
+  const ok = { id: 'J-0009', state: { status: 'active' }, lock: { limits: {} }, decisions: [], events: [], ledger: [cl(1, 'check', { counters: { research_passes: 1, writer_rounds: 5, writer_attempts: 9 }, caps: { research_passes: 2, writer_rounds: 5 } })] };
+  assert.deepEqual(rules.loops(ok), [], 'writer_attempts is not a cap any more; 5 of 5 rounds is within it');
+  const over = { ...ok, ledger: [cl(1, 'check', { counters: { research_passes: 1, writer_rounds: 6 }, caps: { research_passes: 2, writer_rounds: 5 } })] };
+  assert.match(rules.loops(over)[0].summary, /6 automatic writer round\(s\).*caps were 2 and 5/);
+  // the loop engine's review rounds: the ceiling holds per segment, a resume starts a new one
+  const fixRound = (h, rule) => ({ id: `J-0009-D${h}`, ts: at(h), action: 'workflow', workflow: 'realize', step: 'realize', scope: 'fix', rule });
+  const seg = { ...ok, ledger: [], lock: { limits: { max_review_rounds: 3 } }, decisions: [fixRound(1, 'row4.confirmed_serious'), fixRound(2, 'row4.confirmed_serious'), fixRound(3, 'loop.review.escalate'), { id: 'r', ts: at(4), action: 'human.resume', from: 'review' }, fixRound(5, 'row4.confirmed_serious'), fixRound(6, 'row4.confirmed_serious')] };
+  assert.deepEqual(rules.loops(seg), [], '5 rounds in 2 segments of at most 3');
+  seg.decisions.push(fixRound(7, 'row4.confirmed_serious'), fixRound(8, 'loop.review.escalate'));
+  assert.match(rules.loops(seg)[0].summary, /7 review rounds, but the cap allows 6 \(a ceiling of 3 per loop segment, 2 segment\(s\)\)/);
+  // parks: by rule; an old cap park is called out; a loop park without a question is flagged
+  const job = {
+    id: 'J-0009', state: { status: 'parked' }, lock: { limits: {} }, events: [],
+    ledger: [
+      cl(1, 'park', { kind: 'agent', reason: 'The God Eye readiness check failed twice at the check stage (timed out after 900s).' }),
+      cl(2, 'park', { kind: 'writer', reason: 'The contract still fails its readiness check after 2 writer attempt(s)' }),
+      { kind: 'step', step: 'clarify', at: at(3), job: 'J-0009', ok: true, detail: { version: 3, approved: false, god_eye_objects: 2, loop_end: { rule: 'no_progress', rounds: 4, diagnosed: true } } },
+    ],
+    decisions: [
+      { id: 'J-0009-D0010', ts: at(5), action: 'parked', rule: 'cap.review_rounds', park: { kind: 'review_rounds', from: 'review' }, reason: 'Review rounds used up (3)' },
+      { id: 'J-0009-D0011', ts: at(6), action: 'parked', rule: 'loop.verify.no_progress', park: { kind: 'verify_fix_rounds', from: 'verify', question: 'Who creates POLICY_OK?', options: 2, diagnosed: true } },
+    ],
+  };
+  const h = rules.jobHealth(job, LIM, at(10));
+  const cp = h.find((x) => x.rule === 'R19.clarify_parked');
+  assert.match(cp.summary, /parked 2 time\(s\) \(agent ×1, writer cap ×1\)/);
+  assert.match(cp.summary, /1 of them on a cap \(factory before 0\.9\.0\)/);
+  assert.equal(cp.severity, 'medium');
+  const bare = h.find((x) => x.rule === 'R19.park_without_question');
+  assert.ok(bare, h.map((x) => x.rule).join());
+  assert.deepEqual(bare.evidence, ['J-0009-D0010'], 'the diagnosed park with its question is fine');
+  assert.match(h.find((x) => x.rule === 'R19.proceeded_past_objections').summary, /2 God Eye objection\(s\) still open \(the readiness loop ended: no_progress, after a diagnosis\)/);
 });
