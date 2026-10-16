@@ -113,6 +113,7 @@ function layout(root) {
       ledger: path.join(f, 'jobs', id, 'ledger.jsonl'),
       intent: path.join(f, 'jobs', id, 'intent-evidence.json'),
       clarify: path.join(f, 'jobs', id, 'clarify.json'),
+      plan: path.join(f, 'jobs', id, 'plan.json'),
     }),
   };
 }

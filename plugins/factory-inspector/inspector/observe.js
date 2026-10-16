@@ -76,6 +76,9 @@ function observe(root) {
     const events = eventsAll.filter((e) => e.rec && e.rec.job === id);
     jobs[id] = {
       id,
+      root, // for the outcome rules' read-only git (R23, R24)
+      dir: p.dir,
+      plan: readJson(p.plan, null),
       state,
       lock,
       stateSealed: state ? sealOk(state) !== false : false,

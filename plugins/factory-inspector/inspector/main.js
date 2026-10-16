@@ -134,7 +134,9 @@ function health(root, { now = nowIso() } = {}) {
   const top = (items, keyFn, n = 3) => [...items.reduce((m, x) => m.set(keyFn(x), (m.get(keyFn(x)) || 0) + 1), new Map()).entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([key, count]) => ({ key, count }));
   const jobs = Object.values(obs.jobs);
   const cli = by((e) => e.event === 'cli');
-  const failed = cli.filter((e) => e.ok === false);
+  // refusals and errors; a check's negative verdict (exit 1, no code: a failing task verify) is counted apart
+  const failed = cli.filter((e) => e.ok === false && e.code);
+  const verdicts = cli.filter(rules.cliVerdict);
   const ledger = jobs.flatMap((j) => j.ledger);
   const runs = ledger.filter((e) => e.kind === 'agents').flatMap((e) => e.agents || []);
   const open = openAgents(ev);
@@ -166,10 +168,11 @@ function health(root, { now = nowIso() } = {}) {
     guard_denials: { total: by((e) => e.event === 'guard_deny').length, top: top(by((e) => e.event === 'guard_deny'), (e) => `${e.agent_type || 'main session'}: ${String(e.reason || '').slice(0, 80)}`) },
     stop_blocks: by((e) => e.event === 'stop_block').length,
     replies: { refused: by((e) => e.event === 'reply_refused').length, unparsed: by((e) => e.event === 'reply_unparsed').length },
-    cli: { runs: cli.length, failed: failed.length, crashes: failed.filter((e) => e.code === 'internal').length, by_code: top(failed, (e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}: ${e.code || 'error'}`, 6) },
+    cli: { runs: cli.length, failed: failed.length, verdicts: verdicts.length, crashes: failed.filter((e) => e.code === 'internal').length, by_code: top(failed, (e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}: ${e.code || 'error'}`, 6) },
     records: { stale: cli.filter((e) => e.cmd === 'record' && e.status === 'stale').length, degraded: cli.filter((e) => e.cmd === 'record' && e.status === 'degraded').length, workflow_errors: ledger.filter((e) => e.kind === 'error').length },
     agents: { runs: runs.length, retries: runs.filter((a) => a.retry || /#([2-9]|\d{2,})$/.test(a.label || '')).length, failed: runs.filter((a) => rules.AGENT_FAILED.has(a.outcome)).length, started: by((e) => e.event === 'SubagentStart').length, not_stopped: open.length },
-    parks: obs.decisions.filter((d) => d.action === 'parked').length,
+    // every park, from every record that says so: the same count R16 uses (rules.parksOf)
+    parks: jobs.reduce((n, j) => n + rules.parksOf(j).length, 0),
     resumes: obs.decisions.filter((d) => d.action === 'human.resume').length,
     idle_jobs: idle,
     gate_wait_hours: waits.length ? { median: r1(waits[Math.floor(waits.length / 2)]), max: r1(waits[waits.length - 1]), n: waits.length } : null,
@@ -186,7 +189,7 @@ function healthMd(h) {
     `- Records: seals ${h.seals} · unsealed lines ${h.unsealed_lines} · torn lines ${h.torn_lines}`,
     `- Hook errors: ${n(h.hook_errors)}${h.inspector_hook_errors ? ` · inspector hooks ${h.inspector_hook_errors}` : ''}`,
     `- Hook pushback: guard denials ${h.guard_denials.total}${h.guard_denials.total ? ` (${n(h.guard_denials.top)})` : ''} · stop blocks ${h.stop_blocks} · replies refused ${h.replies.refused} · look-alike replies ${h.replies.unparsed}`,
-    `- CLI: ${h.cli.runs} commands, ${h.cli.failed} failed${h.cli.crashes ? `, ${h.cli.crashes} crashed` : ''}${h.cli.failed ? ` (${n(h.cli.by_code)})` : ''}`,
+    `- CLI: ${h.cli.runs} commands, ${h.cli.failed} failed${h.cli.crashes ? `, ${h.cli.crashes} crashed` : ''}${h.cli.failed ? ` (${n(h.cli.by_code)})` : ''}${h.cli.verdicts ? ` · ${h.cli.verdicts} check(s) that ran and failed (e.g. task verify: a verdict, not a CLI failure)` : ''}`,
     `- Workflows: stale results ${h.records.stale} · degraded ${h.records.degraded} · errors ${h.records.workflow_errors}`,
     `- Agents: ${h.agents.runs} runs · ${h.agents.retries} retries · ${h.agents.failed} failed · ${h.agents.not_stopped} of ${h.agents.started} started never stopped`,
     `- Parks ${h.parks} · resumes ${h.resumes}${h.gate_wait_hours ? ` · gate replies: median ${h.gate_wait_hours.median} h, max ${h.gate_wait_hours.max} h` : ''}`,

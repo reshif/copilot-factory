@@ -34,6 +34,7 @@ const LIMITS = {
   clarify_stalled_rounds: 2, // clarify v2 rounds in a row that settled and asked nothing (degraded rounds not counted)
   reraised_per_job: 3, // settled clarify issues raised again by agents (folded as notes by the ledger)
   research_gaps_per_job: 1, // clarify v3: research gaps recorded when the job reached H1
+  drive_notify_minutes: 10, // R25: how long a drive stop on an active job may wait for its notification
 };
 const DEFAULTS = { version: 1, mode: 'on', sample_every: 10, settle_after: 20, threshold: 3, recipes: {}, limits: LIMITS, rules_off: [] };
 

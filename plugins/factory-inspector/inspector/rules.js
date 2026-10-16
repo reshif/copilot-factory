@@ -126,9 +126,13 @@ function conformance(job) {
 function gates(job) {
   const out = [];
   const routing = job.decisions.filter(isRouting).sort((a, b) => (a.ts < b.ts ? -1 : 1));
+  // The amendment gate A is presented by `factory amend submit` (it prints the amendment and
+  // "reply approve"), not by a routing decision: a successful submit before the approval counts.
+  const amendSubmits = job.events.filter((e) => e.event === 'cli' && e.cmd === 'amend' && e.sub === 'submit' && e.ok !== false).map((e) => e.ts);
   for (const a of job.decisions.filter((d) => d.action === 'human.approve')) {
     const presented = routing.filter((d) => d.action === 'gate' && d.step === a.gate && d.ts <= a.ts);
     const last = presented[presented.length - 1];
+    if (!last && a.gate === 'A' && amendSubmits.some((t) => t <= a.ts)) continue;
     if (!last) {
       out.push(f({ rule: 'R4.unpresented_gate', class: 'deviation', severity: 'high', subject: `${job.id}:${a.gate}@${a.ts}`, job: job.id, summary: `${a.gate} was approved but never presented as a gate.`, evidence: [a.ts], question: 'How was an approval recorded without a presented gate?' }));
     } else if (last.gate_hash && a.hash && last.gate_hash !== a.hash) {
@@ -162,7 +166,7 @@ function evidenceChain(job) {
     const fp = s.bound && s.bound.fingerprint;
     if (fp && (!has('prove', fp, s.at) || !has('challenge', fp, s.at))) out.push(f({ rule: 'R5.shipped_unverified', class: 'deviation', severity: 'high', subject: `${job.id}:ship@${fp.slice(0, 12)}`, job: job.id, summary: 'Shipped a build without both a passing proof and a passing review on that exact build.', evidence: [s.at], question: 'How did ship pass its floors?' }));
   }
-  return [...out, ...lostFindings(job), ...doneWithoutBuilder(job)];
+  return [...out, ...lostFindings(job), ...doneWithoutBuilder(job), ...workLost(job), ...exportsRemoved(job)];
 }
 
 // Outcome integrity: a blocker/major finding left unverified by a review round (verifier
@@ -216,6 +220,141 @@ function doneWithoutBuilder(job) {
   }
   if (!hits.length) return [];
   return [f({ rule: 'R5.done_without_builder', class: 'deviation', severity: 'high', subject: job.id, job: job.id, latest: latest(hits.filter((h) => h.at), 'at'), summary: `${hits.length} task result(s) in ${job.id} counted work its builder did not finish: ${hits.slice(0, 4).map((h) => `${h.task} ${h.why}`).join('; ')}.`, evidence: [...new Set(hits.map((h) => h.task))], question: 'Was a stale branch verified (a crashed, timed-out or blocked builder)? Does the task branch hold its dependencies?' })];
+}
+
+// ---------------------------------------------------------------- R23 / R24 outcome integrity
+// Work or interfaces lost between steps, read from git (read-only). Both need the job's commits
+// and say nothing when git can't tell (a commit gc'd after close, no repository).
+const G = require('./git');
+const shipHead = (job) => {
+  const s = job.ledger.filter((e) => e.kind === 'step' && e.step === 'ship' && e.ok && e.detail && e.detail.head).pop();
+  return s ? { head: s.detail.head, at: s.at } : null;
+};
+// Each task's last verified head (its passing task-verify evidence), and the heads the last
+// integration before ship recorded.
+function taskHeads(job, before) {
+  const out = {};
+  const rec = job.ledger.filter((e) => e.kind === 'step' && e.step === 'reconcile' && e.ok && e.detail && e.detail.task_heads && (!before || e.at <= before)).pop();
+  for (const [id, h] of Object.entries((rec && rec.detail.task_heads) || {})) if (h) out[id] = { head: h, from: 'integration' };
+  for (const [id, t] of Object.entries((job.state && job.state.tasks) || {})) {
+    if (out[id]) out[id].start = t.start_commit || null;
+    if (t.outcome !== 'done' || !t.evidence || !t.evidence.pass || !t.evidence.file) continue;
+    const ev = require('./io').readJson(t.evidence.file, null);
+    // a verify newer than that integration (or no integration at all) is the task's latest work
+    if (ev && ev.head && (!out[id] || !rec || (t.evidence.at && t.evidence.at > rec.at))) out[id] = { head: ev.head, from: 'task verify', start: t.start_commit || null };
+  }
+  return out;
+}
+
+// R23 work lost: a task's verified or integrated commits are not in the commit that shipped.
+function workLost(job) {
+  if (!job.root) return [];
+  const ship = shipHead(job);
+  if (!ship) return [];
+  const lost = [];
+  for (const [id, h] of Object.entries(taskHeads(job, ship.at))) {
+    const inShip = G.isAncestor(job.root, h.head, ship.head);
+    if (inShip === false) lost.push({ task: id, head: h.head, from: h.from, missing: G.countBetween(job.root, ship.head, h.head) });
+  }
+  if (!lost.length) return [];
+  return [f({ rule: 'R23.work_lost', class: 'deviation', severity: 'high', subject: job.id, job: job.id, latest: ship.at, summary: `${lost.length} task(s) of ${job.id} have commits that are not in what shipped (${String(ship.head).slice(0, 10)}): ${lost.slice(0, 4).map((l) => `${l.task} @${String(l.head).slice(0, 10)} (${l.from}${l.missing !== null ? `, ${l.missing} commit(s) missing` : ''})`).join('; ')}.`, evidence: lost.slice(0, 6).map((l) => `${l.task}:${String(l.head).slice(0, 12)}`), question: 'Was a task rebuilt or re-verified after the last integration, a merge undone, or the job branch reset before ship?' })];
+}
+
+// The exports a source file defines: JS/TS export statements, CommonJS exports (an object literal
+// over several lines included), top-level Python def/class (not _private), Go exported funcs.
+const CODE = /\.(m?[jt]sx?|cjs|py|go)$/;
+function exportsOf(text, file) {
+  const out = new Set();
+  if (typeof text !== 'string') return out;
+  const t = text;
+  if (/\.py$/.test(file)) {
+    for (const m of t.matchAll(/^(?:async\s+)?(?:def|class)\s+([A-Za-z]\w*)/gm)) out.add(m[1]);
+    return out;
+  }
+  if (/\.go$/.test(file)) {
+    for (const m of t.matchAll(/^func\s+(?:\([^)]*\)\s*)?([A-Z]\w*)\s*[([]/gm)) out.add(m[1]);
+    return out;
+  }
+  for (const m of t.matchAll(/^\s*export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][\w$]*)/gm)) out.add(m[1]);
+  for (const m of t.matchAll(/^\s*export\s*\{([^}]*)\}/gm)) for (const n of m[1].split(',')) { const x = n.trim().split(/\s+as\s+/).pop(); if (/^[A-Za-z_$][\w$]*$/.test(x)) out.add(x); }
+  for (const m of t.matchAll(/^\s*(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=/gm)) out.add(m[1]);
+  // re-exports count as exports too: `...require('./csv')` in a module.exports object, `export * from './csv'`
+  for (const m of t.matchAll(/module\.exports\s*=\s*\{([\s\S]*?)\}\s*;?\s*$/gm)) {
+    for (const part of m[1].split(/,(?![^(]*\))/)) {
+      const p = part.trim();
+      const spread = /^\.\.\.\s*require\(\s*['"]([^'"]+)['"]\s*\)/.exec(p);
+      if (spread) { out.add(`...require('${spread[1]}')`); continue; }
+      const x = p.split(/[:(\s]/)[0];
+      if (/^[A-Za-z_$][\w$]*$/.test(x)) out.add(x);
+    }
+  }
+  for (const m of t.matchAll(/^\s*export\s*\*\s*(?:as\s+\w+\s*)?from\s*['"]([^'"]+)['"]/gm)) out.add(`* from '${m[1]}'`);
+  return out;
+}
+// A line that names an export: the identifier as a word, or a re-export's module name.
+function mentions(line, name) {
+  const re = /^(?:\.\.\.require\('|\* from ')([^']+)'/.exec(name);
+  if (re) return line.includes(re[1].replace(/^\.\//, '').replace(/\.[cm]?[jt]s$/, ''));
+  return new RegExp(`\\b${name.replace(/[$]/g, '\\$')}\\b`).test(line);
+}
+
+// The job's recorded reasons a symbol may go: any line, in the plan, the contract, amendments,
+// the design record, the builders' summaries or a decision's reason, that names it together
+// with a removal word.
+const REMOVAL = /\b(remov|renam|drop|delet|replac|deprecat|inlin|retir|consolidat)/i;
+function removalReasons(job) {
+  const io = require('./io');
+  const fs = require('fs');
+  const path = require('path');
+  const texts = [];
+  if (job.plan) texts.push(JSON.stringify(job.plan, null, 1));
+  if (job.dir) {
+    for (const f of ['contract.md', 'no-adr.md', 'contracts.md']) texts.push(io.readText(path.join(job.dir, f), '') || '');
+    try {
+      for (const f of fs.readdirSync(job.dir).filter((x) => /^adr-\d+.*\.md$/.test(x))) texts.push(io.readText(path.join(job.dir, f), '') || '');
+    } catch { /* no folder */ }
+    try {
+      const ad = path.join(job.dir, 'amendments');
+      for (const f of fs.readdirSync(ad)) texts.push(io.readText(path.join(ad, f), '') || '');
+    } catch { /* no amendments */ }
+  }
+  for (const t of Object.values((job.state && job.state.tasks) || {})) for (const h of t.history || []) if (h.summary) texts.push(String(h.summary));
+  for (const d of job.decisions) if (d.reason) texts.push(String(d.reason));
+  return texts.join('\n').split('\n').filter((l) => REMOVAL.test(l));
+}
+
+// R24 exports removed: an export one task added is gone from what shipped, and nothing the job
+// recorded (plan, contract, amendment, design, builder summary, decision) gives a reason.
+function exportsRemoved(job) {
+  if (!job.root) return [];
+  const ship = shipHead(job);
+  if (!ship) return [];
+  const heads = taskHeads(job, ship.at);
+  const ordered = Object.entries(heads).filter(([, h]) => h.start && h.head);
+  const gone = [];
+  for (const [id, h] of ordered) {
+    const files = (G.changedFiles(job.root, h.start, h.head) || []).filter((x) => CODE.test(x)).slice(0, 60);
+    for (const file of files) {
+      const before = exportsOf(G.show(job.root, h.start, file), file);
+      const after = exportsOf(G.show(job.root, h.head, file), file);
+      const shipped = exportsOf(G.show(job.root, ship.head, file), file);
+      for (const name of after) if (!before.has(name) && !shipped.has(name)) gone.push({ task: id, file, name });
+    }
+  }
+  if (!gone.length) return [];
+  const reasons = removalReasons(job);
+  const unexplained = gone.filter((g) => !reasons.some((l) => mentions(l, g.name)));
+  if (!unexplained.length) return [];
+  // who removed it: a later task whose own range drops it
+  for (const g of unexplained) {
+    for (const [id, h] of ordered) {
+      if (id === g.task) continue;
+      const had = exportsOf(G.show(job.root, h.start, g.file), g.file);
+      const has = exportsOf(G.show(job.root, h.head, g.file), g.file);
+      if (had.has(g.name) && !has.has(g.name)) { g.by = id; break; }
+    }
+  }
+  return [f({ rule: 'R24.export_removed', class: 'deviation', severity: 'high', subject: job.id, job: job.id, latest: ship.at, summary: `${unexplained.length} export(s) a task of ${job.id} added are not in what shipped, and nothing the job recorded says why: ${unexplained.slice(0, 5).map((g) => `${g.name} (${g.file}, added by ${g.task}${g.by ? `, removed by ${g.by}` : ''})`).join('; ')}.`, evidence: unexplained.slice(0, 8).map((g) => `${g.file}:${g.name}`), question: 'Did a later task or a conflict resolution drop an interface another task built? Was the removal intended (then the plan or an amendment should say so)?' })];
 }
 
 // ---------------------------------------------------------------- R6 loop accounting
@@ -340,6 +479,9 @@ function driverFidelity(job) {
       // a `cmd: run` line is only written when the run failed before or around them, and a
       // failed run changed nothing by itself (R13 counts repeated failures).
       if (e.cmd === 'run') continue;
+      // `factory amend start/submit` is a legitimate route from any step (the park and amend
+      // skills send the driver there); what it changes is judged at its gate A (R4) and by R3.
+      if (e.cmd === 'amend') continue;
       if (exp.allowed.has(k) || exp.allowed.has(e.cmd)) continue;
       const mutating = MUTATING_IN_WAIT.has(k) || MUTATING_IN_WAIT.has(e.cmd);
       out.push(f({ rule: exp.quiet ? 'R7.acted_while_waiting' : 'R7.unexpected_command', class: 'deviation', severity: exp.quiet && mutating ? 'high' : 'medium', subject: `${job.id}:${d.id}:${k}`, job: job.id, summary: exp.quiet ? `Ran "factory ${e.cmd}${e.sub ? ` ${e.sub}` : ''}" while the job was at ${d.action} "${d.step || ''}" — nothing should change there.` : `Ran "factory ${e.cmd}${e.sub ? ` ${e.sub}` : ''}" while factory next had asked for ${d.action} "${d.step || d.skill || d.command}".`, evidence: [d.id, e.ts], question: 'Was this an improvisation the skills should describe, or a mistake?' }));
@@ -464,6 +606,24 @@ const groupBy = (items, keyFn) => {
   return m;
 };
 const hours = (a, b) => (Date.parse(b) - Date.parse(a)) / 36e5;
+// A CLI failure is a refusal or an error (it carries a code, not an internal crash: R13.cli_crash
+// has those); exit 1 with no code is a check's negative verdict, not a failure.
+const cliFailure = (e) => e.event === 'cli' && e.ok === false && Boolean(e.code) && e.code !== 'internal';
+const cliVerdict = (e) => e.event === 'cli' && e.ok === false && !e.code;
+// Every time a job parked, from every record that says so: the router's parked decisions, a
+// workflow result that parked it, a park by hand, and (factory 0.8+) any typed park event, whatever
+// its name says park (its type and reason read generically). The health summary and R16 both count these.
+function parksOf(job) {
+  const cli = job.events.filter((e) => e.event === 'cli');
+  return [
+    ...job.decisions.filter((d) => d.action === 'parked').map((d) => ({ ts: d.ts, id: d.id, rule: d.rule, reason: d.reason })),
+    ...cli.filter((e) => (e.cmd === 'park' && e.ok) || (e.cmd === 'record' && e.status === 'park')).map((e) => ({ ts: e.ts, reason: e.cmd === 'park' ? 'parked by hand' : `${e.workflow || 'workflow'} parked it` })),
+    ...job.events.filter((e) => typeof e.event === 'string' && e.event !== 'cli' && /park/i.test(e.event) && !/unpark|resume/i.test(e.event)).map((e) => ({ ts: e.ts, rule: e.type || e.park_type || e.rule || null, reason: e.reason || e.event })),
+  ]
+    .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')))
+    // one park written by two records (a workflow's result and its typed event) counts once
+    .filter((p, i, all) => !all.slice(0, i).some((q) => q.ts && p.ts && Math.abs(Date.parse(p.ts) - Date.parse(q.ts)) < 5000));
+}
 const AGENT_FAILED = new Set(['no_result', 'error', 'failed', 'exhausted', 'timeout', 'crashed']);
 const ENFORCING_HOOKS = new Set(['guard', 'stop', 'prompt']);
 
@@ -510,7 +670,9 @@ function jobHealth(job, L, now) {
   }
   // R13 CLI failures and stale results
   const cli = ev.filter((e) => e.event === 'cli');
-  for (const [k, items] of groupBy(cli.filter((e) => e.ok === false && e.code !== 'internal'), (e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}|${e.code || 'error'}`)) {
+  // A command that ran and returned a negative verdict (a failing `task verify`, `plan validate`,
+  // `contract check`: exit 1, no error code) did its job; only refusals and errors (a code) count.
+  for (const [k, items] of groupBy(cli.filter(cliFailure), (e) => `${e.cmd}${e.sub ? ` ${e.sub}` : ''}|${e.code}`)) {
     if (items.length < L.cli_failures) continue;
     const [cmd, code] = k.split('|');
     out.push(f({ rule: 'R13.cli_failures', class: 'ambiguity', severity: 'medium', subject: `${id}:${k}`, job: id, latest: latest(items), summary: `"factory ${cmd}" failed ${items.length} times in ${id} with ${code}.`, evidence: [...new Set(items.map((e) => e.decision_id).filter(Boolean))].slice(0, 6), question: 'Is Copilot retrying blindly? Does the skill say what to do on this error?' }));
@@ -556,7 +718,7 @@ function jobHealth(job, L, now) {
   const orphans = openAgents(ev).filter((s) => ended || hours(s.ts, now) * 60 >= L.orphan_agent_minutes);
   if (orphans.length) out.push(f({ rule: 'R15.orphaned_agents', class: 'gap', severity: 'low', subject: id, job: id, latest: latest(orphans), summary: `${orphans.length} agent(s) in ${id} started and never reported stopping${ended ? ` before the job ${status}` : ` within ${L.orphan_agent_minutes} min`}: ${orphans.slice(0, 4).map((s) => `${s.agent_type || 'agent'} since ${s.ts}`).join(', ')}.`, evidence: orphans.slice(0, 6).map((s) => s.agent_id || `${s.agent_type || 'agent'}@${s.ts}`), question: 'Did these agents crash or time out? Were their results lost?' }));
   // R16 parks and resumes
-  const parks = [...job.decisions.filter((d) => d.action === 'parked'), ...cli.filter((e) => (e.cmd === 'park' && e.ok) || (e.cmd === 'record' && e.status === 'park')).map((e) => ({ ts: e.ts, reason: e.cmd === 'park' ? 'parked by hand' : `${e.workflow || 'workflow'} parked it` }))];
+  const parks = parksOf(job);
   const resumes = job.decisions.filter((d) => d.action === 'human.resume');
   if (parks.length >= L.parks_per_job) out.push(f({ rule: 'R16.park_loop', class: 'ambiguity', severity: 'medium', subject: `${id}:parks`, job: id, latest: latest(parks), summary: `${id} was parked ${parks.length} times (limit ${L.parks_per_job}): ${[...new Set(parks.map((p) => p.rule || p.reason).filter(Boolean))].slice(0, 3).join(', ')}.`, evidence: parks.slice(0, 6).map((p) => p.id).filter(Boolean), question: 'Is this job too big or unclear for its recipe?' }));
   if (resumes.length >= L.resumes_per_job) out.push(f({ rule: 'R16.resumed_past_caps', class: 'ambiguity', severity: 'medium', subject: `${id}:resumes`, job: id, latest: latest(resumes), summary: `${id} was resumed past its caps ${resumes.length} times (limit ${L.resumes_per_job}).`, question: 'Are the caps too tight, or should this job have been re-scoped?' }));
@@ -604,9 +766,30 @@ function jobHealth(job, L, now) {
   const gaps = clarify.filter((e) => e.ok && e.detail.version === 3 && Number(e.detail.failures) > 0);
   if (gaps.length && Number(gaps[gaps.length - 1].detail.failures) >= L.research_gaps_per_job) out.push(f({ rule: 'R20.research_gaps', class: 'ambiguity', severity: 'low', subject: id, job: id, latest: latest(gaps, 'at'), summary: `Clarify in ${id} reached H1 with ${gaps[gaps.length - 1].detail.failures} research gap(s) recorded (shown at H1 and in the contract's Research gaps).`, question: 'Why could research not settle them: no web access, a time box too small for this risk, or no source for the confirmed version?' }));
   out.push(...groundedIntent(job, L));
-  out.push(...reviewRegressions(job), ...reconcileDrops(job));
+  out.push(...reviewRegressions(job), ...reconcileDrops(job), ...driveStops(job, L, now));
   return out;
 }
+
+// R25 drive stops never surfaced: `factory drive` stopped (a drive_stop event, any type) and
+// nothing after it reached the user: no drive_notified (inbox or notification) for it and no
+// reply of theirs. A stop younger than drive_notify_minutes on an active job is still in flight.
+// Jobs that never ran under drive have no drive_stop lines and get nothing here.
+function driveStops(job, L, now) {
+  const stops = job.events.filter((e) => e.event === 'drive_stop');
+  if (!stops.length) return [];
+  const notified = job.events.filter((e) => e.event === 'drive_notified');
+  const replies = [...job.decisions.filter((d) => /^human\./.test(String(d.action || ''))).map((d) => d.ts), ...job.events.filter((e) => ['reply_applied', 'reply_refused', 'reply_unparsed'].includes(e.event) || (e.event === 'cli' && e.channel === 'tty')).map((e) => e.ts)];
+  const active = job.state && job.state.status === 'active';
+  const quiet = stops.filter((s) => {
+    const sid = s.stop_id || s.id || null;
+    if (notified.some((n) => n.ts >= s.ts && (!sid || !(n.stop_id || n.id) || (n.stop_id || n.id) === sid))) return false;
+    if (replies.some((t) => t && t >= s.ts)) return false;
+    return !(active && hours(s.ts, now) * 60 < (L.drive_notify_minutes || 10));
+  });
+  if (!quiet.length) return [];
+  return [f({ rule: 'R25.drive_stop_unsurfaced', class: 'gap', severity: 'medium', subject: `${job.id}:drive`, job: job.id, latest: latest(quiet), summary: `factory drive stopped ${quiet.length} time(s) in ${job.id} and nothing reached you after: ${quiet.slice(0, 3).map((s) => `${s.type || s.reason || 'stop'} at ${s.ts}`).join('; ')} (no drive_notified, no reply of yours).`, evidence: quiet.slice(0, 6).map((s) => s.ts), question: 'Did the inbox entry or the notification fail, or is nobody watching this job?' })];
+}
+
 
 // R21 review regressions: a finding confirmed serious in one challenge round and found again in
 // a later one — the fix was lost (reverted, merged over, rebuilt from stale code). High when the
@@ -713,4 +896,4 @@ function inspectGlobal(obs, threshold, { limits } = {}) {
   return out;
 }
 
-module.exports = { AGENT_FAILED, HUMAN_ACTIONS, inspectJob, intentSummary, groundedIntent, reviewRegressions, reconcileDrops, inspectGlobal, jobHealth, factoryHealth, seals, intendedRecipe, conformance, gates, evidenceChain, loops, driverFidelity, consistency, friction, expectationsFor };
+module.exports = { AGENT_FAILED, HUMAN_ACTIONS, parksOf, cliFailure, cliVerdict, exportsOf, workLost, exportsRemoved, driveStops, inspectJob, intentSummary, groundedIntent, reviewRegressions, reconcileDrops, inspectGlobal, jobHealth, factoryHealth, seals, intendedRecipe, conformance, gates, evidenceChain, loops, driverFidelity, consistency, friction, expectationsFor };

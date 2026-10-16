@@ -22,11 +22,11 @@ Then show `factory-inspect report --format md` (open findings, then a **Factory 
 
 ## Explain the findings
 Group them by class, highest severity first, in plain words:
-- **deviation** — the factory did something its declared rulebook doesn't allow (wrong recipe, skipped step, approval for a document that wasn't presented, review on an unproven build, the agent doing something other than what `factory next` said, records written outside the CLI).
+- **deviation** — the factory did something its declared rulebook doesn't allow (wrong recipe, skipped step, approval for a document that wasn't presented, review on an unproven build, the agent doing something other than what `factory next` said, records written outside the CLI), or lost an outcome: a finding, a task's commits or an export that never reached what shipped.
 - **ambiguity** — the rules left room and someone improvised (same situation routed differently, caps you keep resuming past, guard denials agents keep hitting, the same step repeating).
 - **gap** — something the audit needs is missing or broken (no rulebook snapshot, a recipe edited without a version bump, a hook that failed and so enforced nothing, torn log lines, a CLI crash, agents that never stopped, a job left idle).
 
-For health findings (hook errors, guard denials, refused replies, CLI failures, stale or degraded steps, agent failures, parks), intent parks and grounded-intent findings, read [references/rules.md](references/rules.md) first: it says how to read each and what to tell the user.
+For health findings (hook errors, guard denials, refused replies, CLI failures, stale or degraded steps, agent failures, parks, drive stops nobody was told about), outcome findings (work or exports lost by ship), intent parks and grounded-intent findings, read [references/rules.md](references/rules.md) first: it says how to read each and what to tell the user.
 
 For each, give the evidence (decision ids, job) and the inspector's question. Say what you think the likely cause is when the records support it, and what would fix it (a skill wording, a recipe version bump, a cap change) — but **don't change recipes, floors, policy or skills**; those are the user's.
 
