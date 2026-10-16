@@ -143,7 +143,15 @@ function normKey(s) {
 const files = (layout) => (layout ? layout.entries.filter((e) => !e.dir) : []);
 const isTest = (p) => /(^|\/)(tests?|spec|__tests__)\//i.test(p) || /(^|\/)test_[^/]+$/i.test(p) || /[._-](test|spec)\.[^/]+$/i.test(p);
 
-function layoutProblems(title, layout, { acs, testAcs } = {}) {
+// What a path is at a commit: 'blob', 'tree' or null (absent). null when there is no repo to ask.
+function kindAt(root, base, p) {
+  if (!root || !base) return undefined;
+  const r = require('../lib/git').run(root, ['cat-file', '-t', `${base}:${p}`], { allowFail: true });
+  return r.code === 0 ? String(r.stdout).trim() : null;
+}
+const GLOB_CHARS = /[*?[\]{}]/;
+
+function layoutProblems(title, layout, { acs, testAcs, root = null, base = null } = {}) {
   const out = [];
   const where = `Section "## ${title}"`;
   if (!layout.blocks) return [`${where} needs the file tree in a \`\`\`text block (one file per line, then "# status · responsibility · ACs")`];
@@ -156,6 +164,14 @@ function layoutProblems(title, layout, { acs, testAcs } = {}) {
     if (seen.has(e.path)) out.push(`${where}: ${e.path} is listed twice`);
     seen.add(e.path);
     if (!e.status) out.push(`${where}: ${e.path} has no status: start its note with new, changed, existing or deleted ("# new · what it does · AC-1")`);
+    // release review M5: a layout entry is one file, never a pattern
+    if (GLOB_CHARS.test(e.path.replace(/\{\{[^}]*\}\}/g, 'x'))) out.push(`${where}: ${e.path} is a pattern, not a file: list each file the change touches`);
+    // release review m3: the status is checked against the repository (the base commit)
+    const k = e.status ? kindAt(root, base, e.path) : undefined;
+    if (k !== undefined && !GLOB_CHARS.test(e.path)) {
+      if (['existing', 'changed', 'deleted'].includes(e.status) && k !== 'blob') out.push(`${where}: ${e.path} is marked ${e.status}, but the base commit has no such file${k === 'tree' ? ' (it is a directory)' : ''}`);
+      if (e.status === 'new' && k) out.push(`${where}: ${e.path} is marked new, but it already exists at the base commit: mark it changed (or existing)`);
+    }
     if (words(e.responsibility) < 2) out.push(`${where}: ${e.path} needs its responsibility: what the file does, in a few words`);
   }
   if (!fs_.some((e) => OWNED.has(e.status))) out.push(`${where}: no file is new, changed or deleted: the layout must show what the job builds`);
@@ -348,9 +364,12 @@ function ownership(layout, tasks) {
   return (layout ? layout.entries : []).map((e) => ({ ...e, owners: e.dir ? [] : (tasks || []).filter((t) => matchesAny(e.path, t.allowed_paths || [])).map((t) => t.id) }));
 }
 
-// plan ↔ layout: every new, changed or deleted file is owned by exactly one task; every task
-// path covers at least one of them.
-function planLayoutProblems(layout, tasks) {
+// plan ↔ layout: every new, changed or deleted file is owned by exactly one task, and each task's
+// write scope is the files the layout gives it (release review M5): an allowed path is an exact
+// layout file of that task (new, changed or deleted), or a glob whose every match — among the
+// layout's files and the repository's files at the base commit — is such a file. Never "**", a
+// bare directory, or a glob that also covers an existing file the human was told stays untouched.
+function planLayoutProblems(layout, tasks, { root = null, base = null } = {}) {
   if (!layout || !files(layout).length) return [];
   const out = [];
   const own = ownership(layout, tasks).filter((e) => !e.dir);
@@ -359,9 +378,36 @@ function planLayoutProblems(layout, tasks) {
     else if (e.owners.length > 1) out.push(`${e.path} (${e.status} in the design's Project layout) is owned by ${e.owners.join(' and ')}: exactly one task owns each file (narrow the allowed paths)`);
   }
   const built = own.filter((x) => OWNED.has(x.status));
+  const builtSet = new Set(built.map((e) => e.path));
+  let tree = [];
+  if (root && base) {
+    try {
+      tree = require('../lib/git').out(root, ['ls-tree', '-r', '--name-only', base]).split('\n').filter(Boolean);
+    } catch {
+      tree = [];
+    }
+  }
+  const layoutDirs = new Set(layout.entries.filter((e) => e.dir).map((e) => e.path.replace(/\/+$/, '')));
+  const universe = [...new Set([...own.map((e) => e.path), ...tree])];
   for (const t of tasks || []) {
-    for (const p of t.allowed_paths || []) {
-      if (!built.some((e) => matchesAny(e.path, [p]))) out.push(`${t.id}'s allowed path ${p} covers no new, changed or deleted file in the design's Project layout (${layout.files.join(', ')}): derive tasks from the layout, or narrow the path to its files`);
+    for (const raw of t.allowed_paths || []) {
+      const p = String(raw).replace(/^=/, '').replace(/^\.\//, '');
+      const where = `${t.id}'s allowed path ${raw}`;
+      if (/(^|\/)\*\*(\/|$)/.test(p) && p.replace(/\*\*\/?/g, '').replace(/\/$/, '') === '') {
+        out.push(`${where} is "**" (everything): name the task's files from the design's Project layout`);
+        continue;
+      }
+      if (!GLOB_CHARS.test(p)) {
+        if (builtSet.has(p)) continue;
+        const isDir = p.endsWith('/') || layoutDirs.has(p.replace(/\/$/, '')) || tree.some((f) => f.startsWith(`${p.replace(/\/$/, '')}/`)) || own.some((e) => e.path.startsWith(`${p.replace(/\/$/, '')}/`));
+        out.push(isDir ? `${where} is a directory: a task's allowed paths name the layout's files (a directory covers files the design keeps or gives to other tasks)` : `${where} covers no new, changed or deleted file in the design's Project layout (${layout.files.join(', ')}): derive tasks from the layout, or narrow the path to its files`);
+        continue;
+      }
+      const hits = universe.filter((f) => matchesAny(f, [p]));
+      const mine = hits.filter((f) => builtSet.has(f) && (own.find((e) => e.path === f) || {}).owners.includes(t.id));
+      const extra = hits.filter((f) => !mine.includes(f));
+      if (!mine.length) out.push(`${where} covers no new, changed or deleted file in the design's Project layout (${layout.files.join(', ')}): derive tasks from the layout, or narrow the path to its files`);
+      else if (extra.length) out.push(`${where} also covers ${extra.slice(0, 5).join(', ')}${extra.length > 5 ? ` and ${extra.length - 5} more` : ''}, which the design's Project layout does not give ${t.id} to change (existing, another task's, or not in the layout): name the files instead`);
     }
   }
   return out;
@@ -414,7 +460,7 @@ function view(root, state, { tasks = null } = {}) {
       files: own.filter((e) => !e.dir).map((e) => ({ path: e.path, status: e.status, responsibility: e.responsibility, acs: e.acs, owners: e.owners })),
       tree: treeText(own),
       planned: t.length > 0,
-      ...(t.length ? { problems: planLayoutProblems(lay, t) } : {}),
+      ...(t.length ? { problems: planLayoutProblems(lay, t, { root, base: state.base_commit || null }) } : {}),
     };
   }
   out.summary = summary(out);

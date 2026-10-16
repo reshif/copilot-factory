@@ -128,13 +128,88 @@ function brief(root, state, { agentSpec, prompt, schema, jobContext }) {
     verifier: null,
   };
 }
-const inputHash = (state, rec) => sha256(stableStringify({ repair: rec ? rec.hash : null, at: rec ? rec.at : null, round: ((((state.loops || {})[LOOP]) || {}).round) || 0 }));
+// bound to the routing decision that asked for the repair (B2)
+const inputHash = (state, rec) => sha256(stableStringify({ repair: rec ? rec.hash : null, at: rec ? rec.at : null, round: ((((state.loops || {})[LOOP]) || {}).round) || 0, decision: state.last_decision_id || null }));
 
-function unifiedCommands(a, b) {
-  const lines = (e) => [...(e.setup || []).map((x) => `setup: ${x}`), ...(e.services ? ['up', 'health', 'down'].filter((k) => e.services[k]).map((k) => `services.${k}: ${e.services[k]}`) : []), ...(e.teardown ? [`teardown: ${e.teardown}`] : []), ...Object.entries(e.env || {}).map(([k, v]) => `env ${k}=${v}`)];
-  const A = lines(a || {});
-  const B = lines(b || {});
-  return [...A.filter((x) => !B.includes(x)).map((x) => `- ${x}`), ...B.filter((x) => !A.includes(x)).map((x) => `+ ${x}`)].join('\n');
+// The full difference between two environments, every field the schema has (and any other key
+// either one carries), never a hand-picked list (release review B2): lists element by element,
+// maps key by key, scalars as - old / + new. Fields that act outside setup are called out.
+const SENSITIVE = {
+  prefix: 'prefix runs in front of EVERY verify command, with your full environment',
+  ignore: 'ignore is appended to the repository\'s .git/info/exclude: matching files disappear from git status and the drift check',
+  cache_key: 'cache_key decides when setup runs again',
+  env: 'env is set for every setup, build and verify command',
+};
+function fullDiff(a, b) {
+  const A = a || {};
+  const B = b || {};
+  const keys = [...new Set([...require('./environment').KEYS, ...Object.keys(A), ...Object.keys(B)])].filter((k) => !['version', 'seal', 'confirmed', 'source', 'evidence', 'hash', 'problems'].includes(k));
+  const lines = [];
+  const notes = [];
+  const show = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
+  for (const k of keys) {
+    const x = A[k];
+    const y = B[k];
+    if (stableStringify(x === undefined ? null : x) === stableStringify(y === undefined ? null : y)) continue;
+    if (SENSITIVE[k]) notes.push(`! ${SENSITIVE[k]}: it changes here.`);
+    if (Array.isArray(x) || Array.isArray(y)) {
+      const X = (x || []).map(show);
+      const Y = (y || []).map(show);
+      for (const v of X.filter((v) => !Y.includes(v))) lines.push(`- ${k}: ${v}`);
+      for (const v of Y.filter((v) => !X.includes(v))) lines.push(`+ ${k}: ${v}`);
+      if (!lines.some((l) => l.slice(2).startsWith(`${k}:`))) lines.push(`~ ${k}: order changed`);
+    } else if ((x && typeof x === 'object') || (y && typeof y === 'object')) {
+      const X = x || {};
+      const Y = y || {};
+      for (const kk of [...new Set([...Object.keys(X), ...Object.keys(Y)])]) {
+        if (stableStringify(X[kk]) === stableStringify(Y[kk])) continue;
+        if (X[kk] !== undefined) lines.push(`- ${k}.${kk}: ${show(X[kk])}`);
+        if (Y[kk] !== undefined) lines.push(`+ ${k}.${kk}: ${show(Y[kk])}`);
+      }
+    } else {
+      if (x !== undefined && x !== null) lines.push(`- ${k}: ${show(x)}`);
+      if (y !== undefined && y !== null) lines.push(`+ ${k}: ${show(y)}`);
+    }
+  }
+  return [...notes, ...lines].join('\n');
+}
+const unifiedCommands = fullDiff;
+
+// Other jobs that build in the repository environment this seal replaces (release review m5).
+function otherJobs(root, jobId) {
+  const job = require('./job');
+  const out = [];
+  for (const id of job.listJobIds(root)) {
+    if (id === jobId) continue;
+    const st = readJson(jobPaths(root, id).state, null);
+    if (st && ['active', 'parked'].includes(st.status)) out.push(id);
+  }
+  return out;
+}
+
+// Is a repair open for this job: the sealed environment's check failed for its current hash, the
+// loop has not stopped, and the router's last decision for the job was the repair (B2: an
+// env_repair result is recorded only for a repair the router asked for).
+function repairOpen(root, state) {
+  const r = routerAction({ root, state });
+  if (!r || r.step !== 'env_repair') return 'the sealed build environment has no failing check to repair';
+  if (!String(state.last_decision || '').startsWith('workflow:env_repair')) return 'factory next did not route an environment repair';
+  return null;
+}
+
+// The repair policy (M3): the plan probe's switch applies to repair candidates too. false: nothing
+// runs (the lint is shown, the human decides); 'lint': lint only; otherwise the candidate runs in
+// a scratch worktree, sandboxed.
+function repairMode(root, state) {
+  let live = {};
+  try {
+    live = (require('./policy').load(root) || {}).decompose || {};
+  } catch {
+    live = {};
+  }
+  const snap = ((state && state.policy) || {}).decompose || {};
+  const flag = live.plan_probe !== undefined ? live.plan_probe : snap.plan_probe;
+  return flag === false ? 'off' : flag === 'lint' ? 'lint' : 'run';
 }
 
 // Recording the repair agent's result (factory record, fanout-judge env_repair).
@@ -142,18 +217,31 @@ function record(root, state, env) {
   const envMod = require('./environment');
   const Loop = require('./loop');
   const job = require('./job');
+  const open = repairOpen(root, state);
+  if (open) require('../lib/util').fail(`No environment repair is open for ${state.id} (${open}): nothing recorded. Run factory next.`, 'no_repair_open');
   const g = envMod.gateProposal(root, state.id);
   const file = REPAIR(root, state.id);
   const cand = readJson(file, null);
   const inv = machine();
   const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
+  const mode = repairMode(root, state);
   let res;
   let lint = [];
+  let notRun = null;
   if (!cand) res = { ok: false, problems: [`no repaired environment at ${file}`] };
   else {
     const pp = envMod.problems(envMod.essence(cand));
     lint = pp.length ? [] : envMod.lint(envMod.essence(cand), { root, base: state.base_commit || 'HEAD', plan, machine: inv });
-    res = pp.length ? { ok: false, problems: pp } : lint.length ? { ok: false, problems: lint.map((l) => `${l.cmd}: ${l.message}`) } : envMod.check(root, { env: envMod.essence(cand) });
+    if (pp.length) res = { ok: false, problems: pp };
+    else if (mode === 'off') {
+      // nothing runs: the human sees the candidate and its lint and decides
+      notRun = `NOT run: policy decompose.plan_probe is false, so the CLI did not execute this candidate${lint.length ? `; the lint found:\n${lint.map((l) => `  - ${l.cmd}: ${l.message}`).join('\n')}` : ' (its lint is clean)'}`;
+      res = { ok: true, not_run: true };
+    } else if (lint.length) res = { ok: false, problems: lint.map((l) => `${l.cmd}: ${l.message}`) };
+    else if (mode === 'lint') {
+      notRun = 'NOT run: policy decompose.plan_probe is "lint", so the CLI only linted this candidate (clean)';
+      res = { ok: true, not_run: true };
+    } else res = envMod.check(root, { env: envMod.essence(cand) });
   }
   require('./events').append(root, { event: 'environment_repair', job: state.id, ok: Boolean(res.ok), ...(res.ok ? {} : { cmd: res.broken ? res.broken.cmd : null, problems: (res.problems || []).length }) });
   const fresh = job.load(root, state.id);
@@ -163,17 +251,22 @@ function record(root, state, env) {
   fresh.loops[LOOP] = { ...d.state, for_hash: g.hash, segments: (prev || {}).segments || 0, ...(d.model ? { model: d.model } : prev && prev.model ? { model: prev.model } : {}), last_failure: res.ok ? null : res.broken || { problems: res.problems } };
   if (res.ok) {
     const fixed = envMod.essence(cand);
-    const diff = unifiedCommands(g.env, fixed);
-    fresh.env_repair = { from: g.hash, hash: envMod.fullHash(fixed), env: fixed, diff, at: nowIso() };
+    const diff = fullDiff(g.env, fixed) || '(no difference)';
+    const short = envMod.short(fixed);
+    const others = otherJobs(root, state.id);
+    fresh.env_repair = { from: g.hash, hash: envMod.fullHash(fixed), short, env: fixed, diff, at: nowIso(), ...(notRun ? { not_run: true } : {}) };
     job.save(root, fresh);
+    const how = notRun || 'It set up in a scratch worktree (sandboxed: no tokens, no login shell).';
+    const replaces = `Sealing it replaces the repository's build environment (.factory/environment.json)${others.length ? `, which the other active jobs ${others.join(', ')} also build in` : ''}.`;
+    const question = `Seal the repaired build environment ${short} for ${state.id}? ${how} ${replaces}\nWhat changes:\n${diff}\nThe whole repaired environment:\n${JSON.stringify(fixed, null, 1)}`;
     return {
       status: 'park',
       park_kind: 'environment_repair',
       park_from: 'environment',
       park_loop: null,
-      park_reason: `The sealed build environment failed its check; a repaired one sets up in a scratch worktree. It needs your seal:\n${diff}`,
-      park_question: { question: `Seal the repaired build environment for ${state.id}? It differs from the sealed one in:\n${diff}`, options: [{ key: 'a', text: 'Approve the repaired environment (reply "approve environment")' }, { key: 'b', text: 'Not this one: repair it again, with what I say' }, { key: 'c', text: 'I fix it myself (factory env set in my terminal), then resume' }], recommendation: 'a', cause: String(((readCheck(root, state.id) || {}).broken || {}).reason || '').slice(0, 400) },
-      message: `A repaired build environment passed its check in a scratch worktree; ${state.id} waits for your seal (reply "approve environment").`,
+      park_reason: `The sealed build environment failed its check; a repaired one (${short}) waits for your seal. ${how}\n${diff}`,
+      park_question: { question, options: [{ key: 'a', text: `Seal the repaired environment ${short} (reply "approve environment ${short}" or "a")` }, { key: 'b', text: 'Not this one: repair it again, with what I say' }, { key: 'c', text: `I fixed it on my machine: re-check the sealed environment (factory env check --job ${state.id} runs again)` }], recommendation: notRun ? null : 'a', cause: String(((readCheck(root, state.id) || {}).broken || {}).reason || '').slice(0, 400), seal: short },
+      message: `A repaired build environment ${short} ${notRun ? 'was proposed (not run)' : 'passed its check in a scratch worktree'}; ${state.id} waits for your seal (reply "approve environment ${short}").`,
     };
   }
   job.save(root, fresh);
@@ -185,7 +278,7 @@ function record(root, state, env) {
       park_from: 'environment',
       park_loop: null,
       park_reason: `The build environment does not set up, and ${d.round || (prev && prev.round) || CEILING} repair round(s) did not fix it (${d.rule}). Last: ${last}`,
-      park_question: { question: `The build environment still does not set up on this machine (${last}). How should it be fixed?`, options: [{ key: 'a', text: 'I fix the machine or the environment myself (install the tool; factory env set), then resume' }, { key: 'b', text: 'Repair it again, with what I say (resume with your hint)' }, { key: 'c', text: 'Stop here (cancel job)' }], recommendation: 'a', cause: last.slice(0, 400) },
+      park_question: { question: `The build environment still does not set up on this machine (${last}). How should it be fixed?`, options: [{ key: 'a', text: `I fixed it on my machine (installed the tool, or factory env set): re-check (factory env check --job ${state.id} runs again with a fresh machine inventory)` }, { key: 'b', text: 'Repair it again, with what I say (resume with your hint)' }, { key: 'c', text: 'Stop here (cancel job)' }], recommendation: 'a', cause: last.slice(0, 400) },
       message: 'The environment repair stopped without a fix: the job asks you how to go on.',
     };
   }
@@ -202,13 +295,23 @@ function sealRepair(root, state, channel) {
   // the job's environment is the repaired one now; a combined gate that approved the old one
   // moves with it (this seal is the human's approval of the change)
   writeJson(envMod.JOB_PROPOSED(root, state.id), p.env);
+  // Only the environment component moves, and only when everything else the gate bound is as it
+  // was approved: the gate hash recomputed with the OLD environment must equal the approved hash.
+  // A plan or design edited since the gate keeps the approval stale: the gate is asked again
+  // (release review B1).
   const steps = require('./steps');
   const ctx = steps.context(root, state, require('./job').load);
+  const newHash = envMod.fullHash(p.env);
   for (const [gate, a] of Object.entries(state.approvals || {})) {
-    if (a && a.environment && a.environment === p.from) {
-      const h = steps.gateHash(ctx, gate);
-      state.approvals[gate] = { ...a, environment: envMod.fullHash(p.env), hash: h || a.hash, environment_repaired: { from: p.from, at: nowIso() } };
+    if (!a || !a.environment || a.environment !== p.from) continue;
+    const parts = steps.combinedParts(ctx, gate);
+    if (!parts || !('environment' in parts) || ('design' in parts && !parts.design) || !parts.plan) continue;
+    const withEnv = (h) => sha256(stableStringify({ design: parts.design, plan: parts.plan, environment: h }));
+    if (withEnv(p.from) !== a.hash) {
+      require('./events').append(root, { event: 'environment_repair_gate_stale', job: state.id, gate });
+      continue;
     }
+    state.approvals[gate] = { ...a, environment: newHash, hash: withEnv(newHash), environment_repaired: { from: p.from, at: nowIso() } };
   }
   fs.rmSync(REPAIR(root, state.id), { force: true });
   require('./events').append(root, { event: 'environment_set', channel, name: r.environment.name || null, hash: r.hash, job: state.id, repair: true });
@@ -217,4 +320,17 @@ function sealRepair(root, state, channel) {
   return r;
 }
 
-module.exports = { checkForJob, routerAction, brief, record, sealRepair, readCheck, inputHash, unifiedCommands, CHECK, REPAIR, LOOP };
+// The human's "I fixed it on my machine" (M4): the sealed environment is checked again, with its
+// real execution context and a fresh machine inventory, before any agent repair.
+function recheck(root, state) {
+  fs.rmSync(CHECK(root, state.id), { force: true });
+  try {
+    require('./machine').invalidate();
+  } catch {
+    /* no cache */
+  }
+  if (state.loops) delete state.loops[LOOP];
+  state.env_repair = null;
+}
+
+module.exports = { recheck, fullDiff, repairOpen, repairMode, otherJobs, checkForJob, routerAction, brief, record, sealRepair, readCheck, inputHash, unifiedCommands, CHECK, REPAIR, LOOP };

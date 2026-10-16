@@ -242,7 +242,8 @@ test('P2.1 acceptance (fix 0.10.1): a broken sealed setup is checked before any 
   assert.equal(core('environment').load(root).setup[1], BROKEN.setup[1], 'nothing is sealed by the agent or the CLI');
   assert.equal(F.cli(root, ['resume', 'a'], { env: { FACTORY_RUNNER: '1' } }).code, 'agent_not_allowed', 'an agent never seals');
   // the human seals it with one reply
-  F.reply(root, 'approve environment');
+  assert.throws(() => F.reply(root, 'approve environment'), /Name the environment you seal/, 'the seal names the environment it seals');
+  F.reply(root, `approve environment ${st.env_repair.short}`);
   st = core('job').load(root, J);
   assert.equal(st.status, 'active');
   assert.deepEqual(core('environment').load(root).setup, P.ENV.setup);

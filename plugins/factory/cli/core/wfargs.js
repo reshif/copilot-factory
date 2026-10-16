@@ -589,6 +589,8 @@ function decompose(root, state, ctx, action) {
 function realize(root, state, ctx, action) {
   const plan = readJson(jobPaths(root, state.id).plan, null);
   if (!plan) fail(`${state.id} has no plan to build`, 'no_plan');
+  const envGate = require('./env-repair').routerAction({ root, state });
+  if (envGate) fail(`No build starts yet: ${envGate.reason} Run factory next.`, 'environment_unchecked');
   const pending = plan.tasks.filter((t) => !steps.taskDone(ctx, t.id));
   const pendingIds = new Set(pending.map((t) => t.id));
   const waves = (plan.waves || [plan.tasks.map((t) => t.id)]).map((w) => w.filter((id) => pendingIds.has(id))).filter((w) => w.length);

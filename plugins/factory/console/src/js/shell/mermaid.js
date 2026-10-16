@@ -10,26 +10,48 @@ const mmClean = (s) => String(s || '').replace(/^["'`]|["'`]$/g, '').replace(/<b
 function mmLines(src) {
   return String(src || '').split('\n').map((l) => l.replace(/%%.*$/, '').trim()).filter(Boolean);
 }
-function mermaidSvg(src) {
+// Release review m1/m2: a diagram is drawn only within caps (lines, nodes, subgraph depth): past
+// them the page shows the source ("too large"); a line the renderer does not understand marks the
+// figure "partly drawn" and the page opens the source next to it.
+const MM_MAX_LINES = 400;
+const MM_MAX_NODES = 250;
+const MM_MAX_DEPTH = 10;
+let MM_UNKNOWN = [];
+// { svg, partial, unknown: [lines], reason } — svg null when not drawn (reason says why)
+function mermaidRender(src) {
   const lines = mmLines(src);
-  if (!lines.length) return null;
+  if (!lines.length) return { svg: null, partial: false, unknown: [], reason: 'empty' };
+  if (lines.length > MM_MAX_LINES || String(src).length > 60000) return { svg: null, partial: false, unknown: [], reason: `too large (${lines.length} lines) — showing source` };
   const head = lines[0].split(/\s+/)[0];
+  MM_UNKNOWN = [];
+  let svg = null;
   try {
-    if (head === 'flowchart' || head === 'graph') return mmFlow(lines.slice(1), (lines[0].split(/\s+/)[1] || 'TB').replace(';', ''));
-    if (head === 'stateDiagram' || head === 'stateDiagram-v2') return mmFlow(mmStateToFlow(lines.slice(1)), 'TB');
-    if (head === 'erDiagram') return mmFlow(mmErToFlow(lines.slice(1)), 'LR');
-    if (head === 'sequenceDiagram') return mmSeq(lines.slice(1));
+    if (head === 'flowchart' || head === 'graph') svg = mmFlow(lines.slice(1), (lines[0].split(/\s+/)[1] || 'TB').replace(';', ''));
+    else if (head === 'stateDiagram' || head === 'stateDiagram-v2') svg = mmFlow(mmStateToFlow(lines.slice(1)), 'TB');
+    else if (head === 'erDiagram') svg = mmFlow(mmErToFlow(lines.slice(1)), 'LR');
+    else if (head === 'sequenceDiagram') svg = mmSeq(lines.slice(1));
+    else return { svg: null, partial: false, unknown: [], reason: `${head} is not drawn here — showing source` };
   } catch (e) {
-    return null;
+    return { svg: null, partial: false, unknown: [], reason: String((e && e.message) || 'not drawn') };
   }
-  return null;
+  const unknown = MM_UNKNOWN.slice(0, 20);
+  if (svg === 'TOO_LARGE') return { svg: null, partial: false, unknown: [], reason: 'too large — showing source' };
+  return { svg, partial: unknown.length > 0, unknown, reason: svg ? null : 'not drawn — showing source' };
+}
+function mermaidSvg(src) {
+  return mermaidRender(src).svg;
 }
 // ---------------------------------------------------------------- flowchart
 const MM_SHAPES = [[/^\(\[(.*)\]\)$/, 'stadium'], [/^\[\((.*)\)\]$/, 'db'], [/^\(\((.*)\)\)$/, 'circle'], [/^\[\[(.*)\]\]$/, 'rect'], [/^\[\/(.*)\/\]$/, 'rect'], [/^\[(.*)\]$/, 'rect'], [/^\((.*)\)$/, 'round'], [/^\{\{(.*)\}\}$/, 'hex'], [/^\{(.*)\}$/, 'diamond'], [/^>(.*)\]$/, 'rect']];
-const MM_EDGE = /^\s*(?:(-->|---|-\.->|-\.-|==>|===|--[ox]|<-->|~~~)\s*(?:\|([^|]*)\|)?|--\s+([^-][^>]*?)\s+-->|==\s+(.*?)\s+==>|-\.\s+(.*?)\s+\.->)\s*/;
+// Every Mermaid link form (release review m1): any length (--> ---> ---->, --- ----, ==> ===>,
+// === ====, -.-> -..->, -.-), circle/cross ends (--o --x), both ends (<-->, <==>), invisible (~~~),
+// a label as |text| after the link, or as text inside it (-- text --> / -- text --- / == text ==>
+// / -. text .->).
+const MM_EDGE = /^\s*(?:(<?-{2,}>|<?={2,}>|-{3,}|={3,}|-\.+-?>|-\.+-|--[ox](?![\w])|~{3,})\s*(?:\|([^|]*)\|)?|--\s+([^-|\s][^|]*?)\s+(-{2,}>|-{3,})|==\s+([^=|\s][^|]*?)\s+(={2,}>|={3,})|-\.\s+(.*?)\s+(\.-+>|\.-+))\s*/;
 function mmNodeTok(s) {
-  // an id, then an optional shape; returns [id, label|null, shape|null, rest]
-  const m = /^([A-Za-z0-9_][\w.-]*)/.exec(s);
+  // an id, then an optional shape; returns [id, label|null, shape|null, rest]. A "-" belongs to
+  // the id only when no link follows it ("A-->B" is A, -->, B; "my-node" is one id)
+  const m = /^([A-Za-z0-9_](?:[\w.]|-(?![-.=>ox]{1,}[\s\w|>]|-))*)/.exec(s);
   if (!m) return null;
   let rest = s.slice(m[0].length);
   let label = null;
@@ -70,6 +92,7 @@ function mmFlow(lines, dir) {
   };
   for (const l of lines) {
     let m;
+    if (stack.length >= MM_MAX_DEPTH && /^subgraph\b/.test(l)) return 'TOO_LARGE';
     if ((m = /^subgraph\s+(.*)$/.exec(l))) {
       const t = m[1].trim();
       const x = /^([\w.-]+)\s*\[(.*)\]$/.exec(t);
@@ -100,18 +123,27 @@ function mmFlow(lines, dir) {
       return ids;
     };
     left = side();
-    if (!left.length) continue;
+    if (!left.length) {
+      MM_UNKNOWN.push(l);
+      continue;
+    }
     for (;;) {
       const e = MM_EDGE.exec(rest);
       if (!e) break;
       rest = rest.slice(e[0].length);
-      const label = mmClean(e[2] || e[3] || e[4] || e[5] || '');
-      const dashed = /\.|~/.test(e[1] || (e[5] !== undefined ? '.' : ''));
+      const op = e[1] || e[4] || e[6] || e[8] || '';
+      const label = mmClean(e[2] || e[3] || e[5] || e[7] || '');
+      const dashed = /\.|~/.test(op);
       const right = side();
-      if (!right.length) break;
-      for (const a of left) for (const b of right) edges.push({ from: a, to: b, label, dashed, arrow: !/---|===|-\.-$|~~~/.test(e[1] || '') });
+      if (!right.length) {
+        rest = `?${rest}`;
+        break;
+      }
+      for (const a of left) for (const b of right) edges.push({ from: a, to: b, label, dashed, arrow: />$/.test(op) && !/~/.test(op) });
       left = right;
     }
+    if (rest.trim()) MM_UNKNOWN.push(l);
+    if (nodes.size > MM_MAX_NODES) return 'TOO_LARGE';
   }
   if (!nodes.size) return null;
   for (const id of changed) if (nodes.has(id)) nodes.get(id).changed = true;
@@ -170,7 +202,16 @@ function mmFlow(lines, dir) {
   const bandEnd = place(true, grouped ? 34 : 20);
   place(false, grouped ? bandEnd + 26 : 20);
   // subgraph boxes around their members (nested ones included)
-  const memberOf = (gi) => ids.filter((id) => { let g = nodes.get(id).group; while (g !== null && g !== undefined) { if (g === gi) return true; g = groups[g].parent; } return false; });
+  // each node's groups, walked once (nodes × depth), not per group (release review m2)
+  const members = groups.map(() => []);
+  for (const id of ids) {
+    let g = nodes.get(id).group;
+    for (let d = 0; g !== null && g !== undefined && d <= MM_MAX_DEPTH; d++) {
+      members[g].push(id);
+      g = groups[g].parent;
+    }
+  }
+  const memberOf = (gi) => members[gi];
   const boxes = groups.map((g, gi) => {
     const ms = memberOf(gi).map((id) => pos[id]);
     if (!ms.length) return null;
@@ -259,7 +300,7 @@ function mmSeq(lines) {
     }
     if ((m = /^([^\s:+-][^:]*?)\s*(-->>|->>|-->|->|--x|-x|--\)|-\))\s*[+-]?\s*([^:]+?)\s*:\s*(.*)$/.exec(l))) {
       rows.push({ kind: 'msg', from: part(m[1].trim()), to: part(m[3].trim()), text: mmClean(m[4]), dashed: m[2].startsWith('--'), lost: /x$/.test(m[2]) });
-    }
+    } else MM_UNKNOWN.push(l);
   }
   if (!parts.length || !rows.length) return null;
   for (const b of open) b.end = rows.length;

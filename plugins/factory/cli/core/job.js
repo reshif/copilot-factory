@@ -123,6 +123,11 @@ function reseal(root, jobId) {
   if (lp.lock && lp.resealable) {
     const { seal } = require('../lib/seal');
     const { seal: _old, ...body } = lp.lock;
+    // the human takes the file as it is, except the design-depth marker the job was created with
+    if (s.design_templates && !(body.design_templates && typeof body.design_templates === 'object')) {
+      body.design_templates = s.design_templates;
+      out.design_templates_kept = true;
+    }
     writeJson(jobPaths(root, jobId).recipeLock, seal(body));
     if (!require('./steps').lockProblem(root, s).problem) out.recipe_lock_resealed = true;
   }
@@ -232,6 +237,9 @@ function create(root, { title, workType, risk, epic = false, parent = null, slic
     slice_id: sliceId,
     followup_of: followupOf,
     recipe: { id: recipe.id, version: recipe.version },
+    // the design-depth marker, kept in the sealed state too (release review m9): a hand-edited
+    // recipe lock that drops it cannot silently downgrade the job to the older templates' rules
+    design_templates: { adr: require('./doc').loadTemplate('adr').version, 'no-adr': require('./doc').loadTemplate('no-adr').version },
     policy,
     base_branch: base,
     base_commit: baseCommit,

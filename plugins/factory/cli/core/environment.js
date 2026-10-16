@@ -118,7 +118,8 @@ const PIP = '.venv/bin/pip install -q --retries 5 --timeout 60';
 function machineOf(given) {
   if (given !== undefined) return given;
   try {
-    return require('./machine').inventory();
+    // a proposal is built on routing paths (factory next): the cached inventory only, never a scan
+    return require('./machine').inventory({ cacheOnly: true });
   } catch {
     return null;
   }
@@ -260,7 +261,7 @@ function lint(env, { root, base = 'HEAD', plan = null, machine = null } = {}) {
       else if (inv && /^python3?(\.\d+)?$/.test(head) && !inv.python.some((p) => p.cmd === head) && !(head === 'python' && inv.python.length)) add('missing_tool', cmd, `\`${head}\` is not installed on this machine (found: ${inv.python.map((p) => p.cmd).join(', ') || 'no python'})`);
       else if (inv && KNOWN_TOOLS.has(head) && !/^python/.test(head)) {
         const tool = head === 'uvx' ? 'uv' : head === 'npx' ? 'npm' : head;
-        if (!M.has(inv, tool)) add('missing_tool', cmd, `\`${head}\` is not installed on this machine: use a tool it has (${['uv', 'poetry', 'virtualenv', 'pipx', 'node', 'npm', 'pnpm', 'yarn', 'docker'].filter((t) => M.has(inv, t)).join(', ') || 'none of the usual'}), or install it yourself (no sudo: uv installs with curl -LsSf https://astral.sh/uv/install.sh | sh)`);
+        if (!M.has(inv, tool)) add('missing_tool', cmd, `\`${head}\` is not installed on this machine: use a tool it has (${['uv', 'poetry', 'virtualenv', 'pipx', 'node', 'npm', 'pnpm', 'yarn', 'docker'].filter((t) => M.has(inv, t)).join(', ') || 'none of the usual'}), or install it yourself (no sudo: uv installs with curl -LsSf https://astral.sh/uv/install.sh | sh), then factory doctor --machine`);
         else if (head === 'docker' && /^docker\s+compose\b/.test(seg) && inv.docker.compose !== 'docker compose') add('missing_tool', cmd, `\`docker compose\` is not available here (${inv.docker.compose || 'no compose'})`);
         else if (head === 'docker' && inv.docker.daemon && inv.docker.daemon !== 'reachable') add('missing_tool', cmd, `the docker daemon is ${inv.docker.daemon === 'needs_sudo' ? 'reachable only with sudo (add yourself to the docker group)' : 'not running'} on this machine`);
       }
@@ -268,7 +269,7 @@ function lint(env, { root, base = 'HEAD', plan = null, machine = null } = {}) {
     }
   }
   for (const cmd of setup) {
-    if (inv && inv.venv && inv.venv.works === false && /\bpython[\d.]*\s+-m\s+venv\b/.test(cmd)) add('venv_no_ensurepip', cmd, `\`python3 -m venv\` does not work on this machine (${inv.venv.why || 'no ensurepip'}; installing python3-venv needs sudo): use ${M.has(inv, 'uv') ? '`uv venv .venv`' : M.has(inv, 'virtualenv') ? '`virtualenv .venv`' : 'uv or virtualenv (install uv without sudo)'}`);
+    if (inv && inv.venv && inv.venv.works === false && /\bpython[\d.]*\s+-m\s+venv\b/.test(cmd)) add('venv_no_ensurepip', cmd, `\`python3 -m venv\` does not work on this machine (${inv.venv.why || 'no ensurepip'}; installing python3-venv needs sudo): use ${M.has(inv, 'uv') ? '`uv venv .venv`' : M.has(inv, 'virtualenv') ? '`virtualenv .venv`' : 'uv or virtualenv (install uv without sudo)'}; after installing something, factory doctor --machine scans again`);
   }
   // files setup reads: on the base commit, or written first by the bootstrap task
   if (root) {
@@ -323,7 +324,9 @@ function wrap(e, v, cmd) {
 }
 
 // The env for a process the runner starts (a builder): values expanded, $VAR from this env.
-function processEnv(e, v, base = process.env) {
+// under a base environment (the probe, a sandboxed check) $VAR expands from that allowlist, never
+// from the user's full environment (a declared `X: $GH_TOKEN` would carry the token in)
+function processEnv(e, v, base = BASE_ENV || process.env) {
   const out = {};
   for (const [k, val] of Object.entries((e && e.env) || {})) out[k] = expand(val, v).replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_, n) => (n in out ? out[n] : base[n] || ''));
   return out;
@@ -424,17 +427,20 @@ function servicesUp(root, state, e, v) {
   const job = require('./job');
   const key = hash({ up: s.up, env: e.env || {} });
   const fresh = state ? job.load(root, state.id) : null;
-  const jv = { ...v, worktree: root, task: 'job', slug: `${v.job}`.toLowerCase(), db: `factory_${String(v.job).toLowerCase().replace(/[^a-z0-9]/g, '')}` };
+  // a job's services run from the checkout; a check's (no job: env check, the probe, a repair
+  // candidate) from its scratch worktree, never the user's checkout (release review M3)
+  const home = state ? root : v.worktree || root;
+  const jv = { ...v, worktree: home, task: 'job', slug: `${v.job}`.toLowerCase(), db: `factory_${String(v.job).toLowerCase().replace(/[^a-z0-9]/g, '')}` };
   const env = processEnv(e, jv);
   const up = () => {
-    const r = sh(expand(s.up, jv), root, T, env);
+    const r = sh(expand(s.up, jv), home, T, env);
     if (r.code !== 0) return broken('services.up', expand(s.up, jv), r);
     if (fresh) job.mutate(root, fresh.id, (st) => { st.environment_services = { key, up_at: nowIso() }; });
     return null;
   };
   const healthy = () => {
     if (!s.health) return null;
-    const r = sh(expand(s.health, jv), root, Math.min(T, 300), env);
+    const r = sh(expand(s.health, jv), home, Math.min(T, 300), env);
     return r.code === 0 ? null : broken('services.health', expand(s.health, jv), r);
   };
   const wasUp = Boolean(fresh && fresh.environment_services && fresh.environment_services.key === key);
@@ -577,10 +583,30 @@ function check(root, { proposed = false, env: given = null } = {}) {
       const base = P.probeEnv(root, `envcheck-${process.pid}`, {}, P.ownDirs(box));
       inBox = (fn) => withBaseEnv(base, fn);
     }
-    const r = inBox(() => ensure(root, null, { taskId: 'envcheck', wt, env: run }));
+    let r = inBox(() => ensure(root, null, { taskId: 'envcheck', wt, env: run }));
+    // the prefix runs in front of every verify command: the check runs it too (release review B2)
+    if (r.ok && run.prefix && String(run.prefix).trim()) {
+      const v = vars(root, null, 'envcheck', wt);
+      const pr = inBox(() => sh(wrap(run, v, 'true'), wt, 120, processEnv(run, v)));
+      if (pr.code !== 0) r = { ...r, ok: false, broken: broken('prefix', `${run.prefix} true`, pr) };
+    }
     const torn = inBox(() => teardown(root, null, { taskId: 'envcheck', wt, env: run }));
     let down = null;
-    if (e.services && e.services.down) down = inBox(() => sh(expand(e.services.down, vars(root, null, 'envcheck', wt)), root, 600)).code;
+    if (e.services && e.services.down) down = inBox(() => sh(expand(e.services.down, vars(root, null, 'envcheck', wt)), wt, 600)).code;
+    // what a sandboxed check started and left running (a backgrounded service, a setsid'd
+    // process): found by the check's tag or a working directory in its worktree, killed (M3)
+    if (which === 'proposed') {
+      // a moment for what is already ending (a service's last step) to end
+      try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+      } catch {
+        /* no wait */
+      }
+      const left = require('./probe').survivors(`envcheck-${process.pid}`, { wt });
+      if (left.length) {
+        return { ok: false, which, name: e.name || null, ran: r.ran || [], broken: { step: 'survivors', cmd: left.map((x) => x.cmd).join('; '), code: null, tail: '', reason: `left ${left.length} process(es) running after the check (killed): ${left.map((x) => x.cmd).join('; ')}` }, message: 'processes left running' };
+      }
+    }
     return { ok: r.ok, which, name: e.name || null, ran: r.ran || [], ...(r.ok ? {} : { broken: r.broken, message: r.broken.reason }), ...(torn ? { teardown_exit: torn.code } : {}), ...(down !== null ? { services_down_exit: down } : {}) };
   } finally {
     git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
@@ -695,4 +721,4 @@ function notice(root) {
   };
 }
 
-module.exports = { lint, readsOf, withBaseEnv, gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };
+module.exports = { KEYS, lint, readsOf, withBaseEnv, gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };

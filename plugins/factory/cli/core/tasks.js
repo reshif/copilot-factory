@@ -142,6 +142,10 @@ function start(root, jobId, taskId) {
   const branch = steps.taskBranch(state, taskId);
   const wt = taskWorktree(root, state.id, taskId);
   const ctx = steps.context(root, state, job.load);
+  // release review m4: no task starts (no attempt is spent) before the sealed build environment
+  // passed its check (the router's env.check / env.repair)
+  const envGate = require('./env-repair').routerAction({ root, state });
+  if (envGate) fail(`${taskId} cannot start: ${envGate.reason} Run factory next.`, 'environment_unchecked');
   // Explicit depends_on plus earlier-wave tasks with overlapping paths (plan.effectiveDeps).
   const deps = planMod.effectiveDeps(plan.tasks, taskId, plan.interfaces);
   for (const d of deps) {

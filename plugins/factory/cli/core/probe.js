@@ -45,9 +45,63 @@ const KEEP = /^(PATH|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|SHELL|USER|LOGNAME|PWD|COL
 // The network settings a setup needs behind a corporate proxy (fix 0.11: passed by default; the
 // user saw PyPI time out without them): proxies, CA bundles, package index URLs.
 const PROXY = /^(https?_proxy|HTTPS?_PROXY|no_proxy|NO_PROXY|ALL_PROXY|all_proxy|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|PIP_TRUSTED_HOST|UV_INDEX_URL|UV_EXTRA_INDEX_URL|UV_DEFAULT_INDEX|npm_config_registry|NPM_CONFIG_REGISTRY|npm_config_proxy|npm_config_https_proxy|NPM_CONFIG_PROXY|NPM_CONFIG_HTTPS_PROXY|YARN_REGISTRY|YARN_NPM_REGISTRY_SERVER)$/;
-// user:password@ inside a URL (a proxy or an index URL that carries its login)
-const URL_CREDS = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+(?::[^\s/@]*)?)@/gi;
-const stripCreds = (v) => String(v).replace(URL_CREDS, '$1');
+// Network values parsed, not pattern-matched (release review M2). A login (userinfo) is whatever
+// precedes the LAST "@" that is followed by a host[:port], with or without a scheme
+// (user:pass@proxy:8080, http://user:p@ss@proxy, socks5h://bob:pa/ss@sock, https://:PAT@host).
+const HOSTPORT = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~%-]+)(:\d{1,5})?$/;
+function splitLogin(v) {
+  const str = String(v || '');
+  const sm = /^\s*([a-z][a-z0-9+.-]*:\/\/)/i.exec(str);
+  const lead = sm ? sm[0] : (/^\s*/.exec(str) || [''])[0];
+  const body = str.slice(lead.length);
+  for (let i = body.lastIndexOf('@'); i > 0; i = body.lastIndexOf('@', i - 1)) {
+    const host = body.slice(i + 1).split(/[/?#\s]/)[0];
+    if (!HOSTPORT.test(host)) continue;
+    const info = body.slice(0, i);
+    if (/\s/.test(info)) continue;
+    // "host/path@x" is a path, not a login: a login has ":" (or no "/") before any "/"
+    const slash = info.indexOf('/');
+    if (slash >= 0 && !(info.indexOf(':') >= 0 && info.indexOf(':') < slash)) continue;
+    return { lead, login: info, rest: body.slice(i + 1) };
+  }
+  return null;
+}
+const stripLogin = (v) => {
+  const p = splitLogin(v);
+  return p ? `${p.lead}${p.rest}` : String(v);
+};
+// A token in an index URL's path or query (Cloudsmith, Gemfury, ?token=…): such a URL is dropped.
+const TOKEN_QUERY = /[?&](token|access_token|auth|key|api_key|apikey|password|secret)=/i;
+const TOKEN_HOSTS = /^(dl\.cloudsmith\.io|[a-z]+\.fury\.io|npm-proxy\.fury\.io)$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function urlCarriesToken(u) {
+  const s = String(u || '');
+  if (TOKEN_QUERY.test(s)) return true;
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)(\/[^?#]*)?/i.exec(s);
+  if (!m) return false;
+  const segs = String(m[2] || '').split('/').filter(Boolean);
+  if (TOKEN_HOSTS.test(m[1].replace(/^.*@/, '').replace(/:\d+$/, '')) && segs[0] && segs[0].length >= 6) return true;
+  return segs.some((x) => x.length >= 16 && /\d/.test(x) && /[A-Za-z]/.test(x) && !UUID.test(x) && /^[A-Za-z0-9_-]+$/.test(x));
+}
+const INDEX_VAR = /INDEX|REGISTRY/i;
+// One network variable's value for an agent's command: logins stripped; an index URL with a token
+// in its path or query dropped (null) — unless the repo opted in (decompose.probe_proxy_credentials).
+function cleanNetValue(k, v, { keepCreds = false } = {}) {
+  if (keepCreds || v === undefined || v === null) return v;
+  const parts = String(v).split(/(\s+)/);
+  const out = [];
+  for (const x of parts) {
+    if (!x.trim()) {
+      out.push(x);
+      continue;
+    }
+    const clean = stripLogin(x);
+    if (INDEX_VAR.test(k) && urlCarriesToken(clean)) return null;
+    out.push(clean);
+  }
+  return out.join('');
+}
+const stripCreds = (v) => cleanNetValue('X', v);
 const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|_KEY$|^KEY$|APIKEY|API_KEY|CREDENTIAL|^AWS_|^GH_|^GITHUB_|^SSH_|^GPG_|^COPILOT_|^NPM_TOKEN|^AZURE_|^GOOGLE_|^GCP_|COOKIE|SESSION)/i;
 // `own`: the probe's own directories (its scratch home, temp and caches), never filtered: a path
 // can contain a secret-looking variable's value (a temp dir named in a *_TMPDIR or *_SESSION
@@ -66,7 +120,10 @@ function probeEnv(root, probeId, extra = {}, own = {}) {
   const out = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (KEEP.test(k)) out[k] = v;
-    else if (allowProxy && PROXY.test(k)) out[k] = keepCreds ? v : stripCreds(v);
+    else if (allowProxy && PROXY.test(k)) {
+      const c = cleanNetValue(k, v, { keepCreds });
+      if (c !== null) out[k] = c;
+    }
   }
   // what the environment declares (its env block, the probe's own dirs) is kept, except a value
   // carrying one of the user's secrets (a declared `TOKEN: $GH_TOKEN`)
@@ -79,15 +136,27 @@ function probeEnv(root, probeId, extra = {}, own = {}) {
 // well-known token shapes, key=value pairs that name a secret, and the values of the user's own
 // secret-looking environment variables.
 function redact(text) {
-  // a login embedded in a URL first (user:pass@), whole
-  let t = String(text || '').replace(URL_CREDS, '$1[redacted]@');
-  for (const [k, v] of Object.entries(process.env)) if (SECRET_NAME.test(k) && v && v.length >= 6) t = t.split(v).join(`[redacted ${k}]`);
-  // the password of a login embedded in a proxy or index URL, wherever it shows up on its own
+  let t = String(text || '');
+  // the raw value of every network variable that carries a login or a token, then its pieces
   for (const [k, v] of Object.entries(process.env)) {
     if (!PROXY.test(k) || !v) continue;
-    const m = /:\/\/[^\s/@:]+:([^\s/@]{4,})@/.exec(v);
-    if (m) t = t.split(m[1]).join(`[redacted ${k} password]`);
+    const p = splitLogin(v);
+    const tok = urlCarriesToken(v);
+    if (!p && !tok) continue;
+    t = t.split(v).join(`[redacted ${k}]`);
+    if (p && p.login.length >= 3) {
+      t = t.split(p.login).join('[redacted]');
+      const pw = p.login.includes(':') ? p.login.slice(p.login.indexOf(':') + 1) : '';
+      if (pw.length >= 4) t = t.split(pw).join('[redacted]');
+    }
   }
+  // any other login in a URL, with or without a scheme (the same parser)
+  t = t.replace(/[^\s'"`<>()=,;]*@[^\s'"`<>()=,;]+/g, (w) => {
+    const p = splitLogin(w);
+    // without a scheme only user:password@host (an e-mail address is not a login)
+    return p && (/:\/\//.test(p.lead) || p.login.includes(':')) ? `${p.lead}[redacted]@${p.rest}` : w;
+  });
+  for (const [k, v] of Object.entries(process.env)) if (SECRET_NAME.test(k) && v && v.length >= 6) t = t.split(v).join(`[redacted ${k}]`);
   return t
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,})\b/g, '[redacted]')
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[redacted private key]')
@@ -153,6 +222,8 @@ function survivors(probeId, { sid = null, wt = null } = {}) {
       }
     }
     if (!ours) continue;
+    // a zombie has already ended (its parent has not reaped it yet)
+    if ((procStat(pid) || {}).state === 'Z') continue;
     let cmd = '';
     try {
       cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
@@ -704,4 +775,4 @@ function problemKey(p) {
   return sha256(stableStringify([...((p && p.problems) || [])].map((x) => String(x).replace(/Output \(tail\):.*$/, '')).sort()));
 }
 
-module.exports = { stripCreds, PROXY, recover, readStarted, markStarted, interruptedQuestion, procStat, sameProcess, ownDirs, STARTED, MAX_INTERRUPTED, mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
+module.exports = { splitLogin, cleanNetValue, urlCarriesToken, stripCreds, PROXY, recover, readStarted, markStarted, interruptedQuestion, procStat, sameProcess, ownDirs, STARTED, MAX_INTERRUPTED, mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };

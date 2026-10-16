@@ -338,7 +338,7 @@ function check(text, opts = {}) {
     if (ts.rules.mapping) problems.push(...D.mappingProblems(ts.title, s.text, mine));
     if (ts.rules.failures) problems.push(...D.failureProblems(ts.title, s.text));
     if (ts.rules.runs) problems.push(...D.runsProblems(ts.title, s.text));
-    if (ts.rules.layout && layout) problems.push(...D.layoutProblems(ts.title, layout, { acs: opts.acs, testAcs: opts.testAcs }));
+    if (ts.rules.layout && layout) problems.push(...D.layoutProblems(ts.title, layout, { acs: opts.acs, testAcs: opts.testAcs, root: opts.root || null, base: opts.base || null }));
     if (ts.rules['layout-names'] && layout) problems.push(...D.layoutNameProblems(ts.title, mine, layout));
     if (ts.rules['flow-acs'] || ts.rules.failures) {
       flowWanted = flowWanted || ts.rules['flow-acs'];
@@ -400,9 +400,14 @@ function jobOpts(root, state, file) {
   } catch {
     ledgerIds = null;
   }
-  const lock = readJson(jp.recipeLock, null);
-  const designTemplates = lock && lock.design_templates && typeof lock.design_templates === 'object' ? lock.design_templates : null;
-  return { job: state.id, ...(designTemplates ? { designTemplates } : {}), acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}), ...(testAcs.length ? { testAcs } : {}), ...(options && options.length ? { options } : {}) };
+  // the lock is read only when its seal holds (release review m9): an invalid lock fails closed;
+  // the sealed state keeps the same marker
+  const lp = require('./steps').lockProblem(root, state);
+  if (lp.problem) fail(`${state.id}'s recipe lock is invalid (${lp.problem}): its design templates cannot be read. Restore it, or run factory reseal in your own terminal.`, 'recipe_lock_invalid');
+  const lock = lp.lock;
+  const pick = (x) => (x && x.design_templates && typeof x.design_templates === 'object' ? x.design_templates : null);
+  const designTemplates = pick(lock) || pick(state);
+  return { job: state.id, root, base: state.base_commit || null, ...(designTemplates ? { designTemplates } : {}), acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}), ...(testAcs.length ? { testAcs } : {}), ...(options && options.length ? { options } : {}) };
 }
 
 function checkFile(file, opts = {}) {
@@ -437,8 +442,42 @@ function designProblems(root, state) {
     if (!DESIGN_TYPES.includes(type)) continue;
     const r = checkFile(f, { type, ...jobOpts(root, state, f) });
     for (const p of r.problems) out.push(`${path.basename(f)}: ${p}`);
+    // release review M6: a no-ADR note only for a genuinely trivial design (design depth jobs)
+    if (type === 'no-adr') {
+      const why = noAdrRefusal(root, state, f);
+      if (why) out.push(`${path.basename(f)}: a no-ADR note is not allowed here: ${why}. Write the ADR (templates/docs/adr.md).`);
+    }
   }
   return out;
+}
+
+// When a job's design must be an ADR (adr@2), never a no-ADR note (release review M6). The rule,
+// deterministic, for jobs created under design depth (their sealed marker says so):
+//   1. the option generators produced two or more materially different options: options whose
+//      files (touches) differ, or, without touches, whose titles differ (ignoring case and
+//      punctuation): a choice was made, so it gets a decision record;
+//   2. the job is medium or high risk and talks to an external system: the dependency source has
+//      pinned packages, or ground's API ledger has entries.
+// Returns the reason, or null when a no-ADR note may stand. A job from before design depth keeps
+// the older rule (no-adr@1 allowed).
+function noAdrRefusal(root, state, file) {
+  const o = jobOpts(root, state, file);
+  if (!o.designTemplates) return null;
+  const opts = o.options || [];
+  const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const sig = (x) => ((x.touches || []).length ? [...x.touches].map(String).sort().join('|') : `title:${norm(x.title)}`);
+  const distinct = new Set(opts.map(sig));
+  if (distinct.size >= 2) return `the option generators proposed ${distinct.size} materially different options (${opts.map((x) => x.id).join(', ')}): a choice between them needs a decision record`;
+  if (['medium', 'high'].includes(state.risk)) {
+    let pinned = 0;
+    try {
+      pinned = require('./deps').fetched(root, state.id).length + require('./deps').gaps(root, state.id).length;
+    } catch {
+      pinned = 0;
+    }
+    if (pinned || (o.ledger && o.ledger.length)) return `${state.risk} risk with an external system (${pinned ? `${pinned} pinned package(s)` : ''}${pinned && o.ledger ? ', ' : ''}${o.ledger ? `${o.ledger.length} API ledger entr${o.ledger.length === 1 ? 'y' : 'ies'}` : ''})`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- rendering helpers
@@ -533,4 +572,4 @@ function list() {
   return Object.entries(TYPES).map(([type, t]) => ({ type, template: loadTemplate(type).version, path: templatePath(type), what: t.what, sections: loadTemplate(type).sections.map((s) => `${s.title}${s.rules.optional ? ' (optional)' : ''}`) }));
 }
 
-module.exports = { TYPES, DESIGN_TYPES, template, templatePath, loadTemplate, isLegacy, legacyPath, frontMatter, check, checkFile, checkJob, jobOpts, designProblems, mermaid, structure, typeOf, frontBlock, cell, sectionLead, index, list, threatIds };
+module.exports = { noAdrRefusal, TYPES, DESIGN_TYPES, template, templatePath, loadTemplate, isLegacy, legacyPath, frontMatter, check, checkFile, checkJob, jobOpts, designProblems, mermaid, structure, typeOf, frontBlock, cell, sectionLead, index, list, threatIds };

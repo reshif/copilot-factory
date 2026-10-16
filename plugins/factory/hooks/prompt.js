@@ -47,7 +47,8 @@ function waitingOnUser(root) {
   try {
     return require('../cli/core/inbox').list(root, { plain: true }).items.filter((x) => x.kind !== 'amend').length > 0;
   } catch {
-    return false;
+    // fail closed (release review m10): when the inbox cannot be read, assume something waits
+    return true;
   }
 }
 

@@ -159,6 +159,8 @@ test('a job created under this release must use adr@2 (doc check error); a job c
   // the same job as an older release created it: no design_templates in its (re-sealed) lock
   const { seal: _s, design_templates: _d, ...body } = lock;
   fs.writeFileSync(lockFile, JSON.stringify(require('../cli/lib/seal').seal(body), null, 2));
+  // (an older job has no marker in its state either: 0.11 keeps it there too, release review m9)
+  require('../cli/core/job').mutate(root, J, (x) => { delete x.design_templates; });
   const before = F.cli(root, ['doc', 'check', adrFile]);
   assert.equal(before.ok, true, JSON.stringify(before.problems));
   assert.ok(before.warnings.some((w) => /older template adr@1/.test(w)));
@@ -210,6 +212,11 @@ test('e2e: the fake Copilot writes a full design; record holds it to every gener
   const dir = T.mkdtemp('factory-e2e-design-', t);
   const env = { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: CREW, FAKE_COPILOT_LOG: path.join(dir, 'copilot.jsonl'), FACTORY_NOTIFY: 'off' };
   const root = F.makeRepo(t);
+  // the files the design marks changed exist at the base commit (release review m3: a layout's
+  // statuses are checked against the repository)
+  F.write(root, 'nautobot_vlan_sync/__init__.py', '# app config\n');
+  F.write(root, 'pyproject.toml', '[project]\nname = "nautobot-vlan-sync"\n');
+  F.sh(root, 'git add -A && git commit -qm app');
   const J = F.cli(root, ['job', 'new', '--title', 'VLAN sync', '--type', 'feature', '--risk', 'medium']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), CONTRACT);
   const runs = [];

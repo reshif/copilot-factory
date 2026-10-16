@@ -8,9 +8,12 @@ function designHtml(d) {
     P.push(`<table class="dsg-t"><thead><tr><th>Decision</th><th>Chosen</th><th>Rejected</th><th>Why</th><th>Revisit when</th></tr></thead><tbody>${d.decisions.map((x) => `<tr><td><b>${esc(x.id)}</b> ${esc(x.title || '')}</td><td>${esc(x.chosen || '—')}</td><td>${esc((x.options || []).filter((o) => o.option !== x.chosen).map((o) => `${o.option}${o.verdict ? ` (${o.verdict})` : ''}`).join('; ') || '—')}</td><td>${esc(x.why || '—')}</td><td>${esc(x.revisit || '—')}</td></tr>`).join('')}</tbody></table>`);
   }
   for (const g of d.diagrams || []) {
-    let svg = null;
-    try { svg = mermaidSvg(g.source); } catch { svg = null; }
-    P.push(`<figure class="dsg-fig"><figcaption>${esc(g.section || 'Diagram')} <span class="meta">${esc(g.type || 'mermaid')}${g.ok === false ? ' · malformed' : ''}</span></figcaption>${svg ? `<div class="dsg-svg">${svg}</div>` : ''}<details${svg ? '' : ' open'}><summary>mermaid source</summary><pre>${esc(g.source)}</pre></details></figure>`);
+    let r = { svg: null, partial: false, unknown: [], reason: null };
+    try { r = mermaidRender(g.source); } catch { r = { svg: null, partial: false, unknown: [], reason: 'not drawn' }; }
+    const svg = r.svg;
+    // drawn only in part, or not at all: the source is open next to it (release review m1)
+    const note = r.partial ? ` · partly drawn: ${r.unknown.length} line(s) not understood — check the source` : !svg && r.reason ? ` · ${r.reason}` : '';
+    P.push(`<figure class="dsg-fig"><figcaption>${esc(g.section || 'Diagram')} <span class="meta">${esc(g.type || 'mermaid')}${g.ok === false ? ' · malformed' : ''}${esc(note)}</span></figcaption>${svg ? `<div class="dsg-svg">${svg}</div>` : ''}<details${svg && !r.partial ? '' : ' open'}><summary>mermaid source</summary>${r.partial ? `<p class="meta bad">Not drawn: ${r.unknown.map((x) => `<code>${esc(x)}</code>`).join(' ')}</p>` : ''}<pre>${esc(g.source)}</pre></details></figure>`);
   }
   if (d.layout) {
     const L = d.layout;

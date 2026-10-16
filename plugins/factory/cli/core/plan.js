@@ -236,7 +236,7 @@ function validatePlan(root, state, { write = true } = {}) {
   // 0.11 design depth: the plan is derived from the design's Project layout (adr@2 / no-adr@2):
   // every new, changed or deleted file has exactly one owner task, every task path covers one
   const layout = require('./design').jobLayout(root, state.id);
-  if (layout) errors.push(...require('./design').planLayoutProblems(layout, plan.tasks));
+  if (layout) errors.push(...require('./design').planLayoutProblems(layout, plan.tasks, { root, base: state.base_commit || null }));
   if (state.risk === 'low' && plan.tasks.length > 6) errors.push(`${plan.tasks.length} tasks is too large for low risk; raise the risk via amendment or split into an epic`);
   for (const lock of otherJobLocks(root, state)) {
     const mine = plan.tasks.flatMap((t) => t.allowed_paths);

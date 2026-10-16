@@ -7,6 +7,15 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+// Hermetic machine facts (release review m8): no test scans the real machine, calls the network
+// or writes the real ~/.cache/factory. A test that wants a scan sets FACTORY_MACHINE_FILE to ''
+// and its own FACTORY_MACHINE_PATH (shims) for the CLI it runs.
+if (!process.env.FACTORY_TEST_REAL_MACHINE) {
+  if (!process.env.XDG_CACHE_HOME || !process.env.XDG_CACHE_HOME.includes('factory-xdg-')) process.env.XDG_CACHE_HOME = require('./tmp').mkdtemp('factory-xdg-');
+  process.env.FACTORY_MACHINE_OFFLINE = '1';
+  if (process.env.FACTORY_MACHINE_FILE === undefined) require('./machine').use(require('./machine').VENV_ONLY);
+}
+
 const readJson = (f) => {
   try {
     return JSON.parse(fs.readFileSync(f, 'utf8'));

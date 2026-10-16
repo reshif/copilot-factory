@@ -430,7 +430,7 @@ function shims(t) {
     fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`);
     fs.chmodSync(path.join(dir, name), 0o755);
   };
-  sh('python3', 'case "$1" in --version) echo "Python 3.10.12";; -m) if [ "$2" = venv ]; then echo "The virtual environment was not created successfully because ensurepip is not" >&2; echo "available.  On Debian/Ubuntu systems, you need to install the python3-venv" >&2; echo "package using the following command." >&2; echo "    apt install python3.10-venv" >&2; exit 1; fi;; esac');
+  sh('python3', '[ "$1" = -I ] && shift; case "$1" in --version) echo "Python 3.10.12";; -m) if [ "$2" = venv ]; then echo "The virtual environment was not created successfully because ensurepip is not" >&2; echo "available.  On Debian/Ubuntu systems, you need to install the python3-venv" >&2; echo "package using the following command." >&2; echo "    apt install python3.10-venv" >&2; exit 1; fi;; esac');
   sh('virtualenv', 'echo "virtualenv 20.25.0 from /usr/lib/python3/dist-packages/virtualenv/__init__.py"');
   sh('docker', 'case "$1" in --version) echo "Docker version 24.0.7";; compose) echo "Docker Compose version v2.21.0";; info) echo "permission denied while trying to connect to the Docker daemon socket" >&2; exit 1;; esac');
   sh('curl', 'echo "200 0.052"');
@@ -441,7 +441,7 @@ function shims(t) {
 test('machine inventory (PATH shims): python versions, a venv that fails for want of ensurepip, virtualenv but no uv, docker needing sudo, sudo with a password, the index reachable; cached per machine; doctor shows it with remedies', (t) => {
   const dir = shims(t);
   const cache = T.mkdtemp('factory-cache-', t);
-  const env = { FACTORY_MACHINE_PATH: dir, XDG_CACHE_HOME: cache, FACTORY_MACHINE_FILE: '' };
+  const env = { FACTORY_MACHINE_PATH: dir, XDG_CACHE_HOME: cache, FACTORY_MACHINE_FILE: '', FACTORY_MACHINE_OFFLINE: '' };
   const run = (code) => JSON.parse(spawnSync(process.execPath, ['-e', `process.stdout.write(JSON.stringify(${code}))`], { cwd: F.PLUGIN, encoding: 'utf8', env: { ...process.env, ...env } }).stdout);
   const inv = run("require('./cli/core/machine').inventory()");
   assert.deepEqual(inv.python.map((p) => [p.cmd, p.version]), [['python3', '3.10.12']]);
@@ -449,7 +449,7 @@ test('machine inventory (PATH shims): python versions, a venv that fails for wan
   assert.match(inv.venv.why, /ensurepip is not|python3-venv|apt install/);
   assert.ok(inv.tools.virtualenv && !inv.tools.uv && !inv.tools.poetry);
   assert.deepEqual(inv.docker, { present: true, compose: 'docker compose', daemon: 'needs_sudo' });
-  assert.equal(inv.sudo, 'password');
+  assert.equal(inv.sudo, 'unknown', 'sudo is present but never probed (no auth-failure log line)');
   assert.deepEqual([inv.network.pypi.ok, inv.network.pypi.code, inv.network.pypi.ms], [true, 200, 52]);
   assert.equal(run("require('./cli/core/machine').pythonInstaller(require('./cli/core/machine').inventory())"), 'virtualenv');
   // cached: the second call is the first's scan
@@ -516,7 +516,8 @@ test('lint (J-0001 reproduced): venv without ensurepip, a missing tool, sudo, se
   const J = newJob(root);
   const inv = MH.inventory({ venv: false, tools: { virtualenv: true, docker: true } });
   const mf = MH.use(inv);
-  t.after(() => delete process.env.FACTORY_MACHINE_FILE);
+  const prevMachine = process.env.FACTORY_MACHINE_FILE;
+  t.after(() => { process.env.FACTORY_MACHINE_FILE = prevMachine; });
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { plan_probe: 'lint' } }));
   fs.writeFileSync(core('environment').JOB_PROPOSED(root, J), JSON.stringify({ ...J0001_ENV, setup: [...J0001_ENV.setup, 'uv pip install -q --python .venv/bin/python ruff', 'sudo apt-get install -y libpq-dev'] }));
   writePlan(root, J, J0001_PLAN);
@@ -572,12 +573,16 @@ test('J-0001 after H3: the sealed environment is checked before any task; it fai
   const box = T.mkdtemp('factory-db-', t);
   const ready = path.join(box, 'ready');
   // the slow database: it is ready a moment after it starts
-  const BROKEN = { version: 1, name: 'django-postgres', setup: [`${dir}/python3 -m venv .venv`, '.venv/bin/pip install -r requirements.txt'], services: { up: `rm -f ${ready}; (sleep 1; touch ${ready}) >/dev/null 2>&1 &`, health: `test -f ${ready}`, down: `rm -f ${ready}` } };
+  const BROKEN = { version: 1, name: 'django-postgres', setup: [`${dir}/python3 -m venv .venv`, '.venv/bin/pip install -r requirements.txt'], services: { up: `rm -f ${ready}; (sleep 1; touch ${ready}) >/dev/null 2>&1 & echo $! > ${ready}.pid`, health: `test -f ${ready}`, down: `kill $(cat ${ready}.pid) 2>/dev/null; rm -f ${ready} ${ready}.pid` } };
   const { root, J } = toCombinedGate(t, BROKEN);
   const mf = MH.use(MH.inventory({ venv: false, tools: { virtualenv: true, git: true } }));
-  t.after(() => delete process.env.FACTORY_MACHINE_FILE);
+  const prevMachine = process.env.FACTORY_MACHINE_FILE;
+  t.after(() => { process.env.FACTORY_MACHINE_FILE = prevMachine; });
   const env = { FACTORY_MACHINE_FILE: mf };
   F.reply(root, 'approve');
+  // the gate was reached with the probe off (as J-0001 was); repair candidates obey the same
+  // switch (release review M3), so the repair loop here runs with the probe on
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({}));
   const sealed = core('environment').load(root);
   assert.equal(sealed.name, 'django-postgres');
   const approvedH3 = core('job').load(root, J).approvals.H3.hash;
@@ -602,6 +607,7 @@ test('J-0001 after H3: the sealed environment is checked before any task; it fai
   let rec = F.record(root, F.envelope(b, 'ok', { repair: { path: R, summary: 'same' } }));
   assert.equal(rec.status, 'retry', JSON.stringify(rec));
   assert.equal(core('job').load(root, J).status, 'active');
+  assert.equal(F.cli(root, ['next'], { env }).step, 'env_repair');
   b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'env_repair'], { env });
   assert.ok(b.judge.model, 'escalated to the stronger model');
   // round 2: virtualenv, pins installed directly with retries (no requirements.txt), a health loop
@@ -613,8 +619,11 @@ test('J-0001 after H3: the sealed environment is checked before any task; it fai
   let st = core('job').load(root, J);
   assert.match(st.park.question, /- setup: .*python3 -m venv[\s\S]*\+ setup: mkdir -p \.venv\/bin[\s\S]*\+ services\.health: for i in/);
   assert.deepEqual(core('environment').load(root).setup, BROKEN.setup, 'not sealed until the human says so');
-  // 3. one question, one reply: chat "yes" seals it (the human's channel)
-  const ans = core('human').replyToPark(root, { jobId: J, text: 'yes', channel: 'chat' });
+  // 3. one question, one explicit reply: a bare "yes" never seals; "approve environment <hash>" does
+  assert.throws(() => core('human').replyToPark(root, { jobId: J, text: 'yes', channel: 'chat' }), /does not seal/);
+  const short = st.env_repair.short;
+  assert.match(st.park.question, new RegExp(`Seal the repaired build environment ${short}`));
+  const ans = core('human').replyToPark(root, { jobId: J, text: `approve environment ${short}`, channel: 'chat' });
   assert.equal(ans.resumed, true);
   assert.deepEqual(core('environment').load(root).setup, FIXED.setup);
   st = core('job').load(root, J);
@@ -636,9 +645,13 @@ test('environment repair: without progress the loop stops with a specific questi
   const ER = core('env-repair');
   ER.checkForJob(root, core('job').load(root, J));
   assert.equal(ER.routerAction({ root, state: core('job').load(root, J) }).step, 'env_repair');
+  // a repair the router did not route is refused (release review B2)
+  fs.writeFileSync(ER.REPAIR(root, J), JSON.stringify(BAD));
+  assert.throws(() => ER.record(root, core('job').load(root, J), {}), /No environment repair is open/);
   let last = null;
   for (let i = 0; i < 6; i++) {
     fs.writeFileSync(ER.REPAIR(root, J), JSON.stringify(BAD));
+    core('job').mutate(root, J, (x) => { x.last_decision = 'workflow:env_repair::'; });
     last = ER.record(root, core('job').load(root, J), {});
     if (last.status === 'park') break;
   }
@@ -660,12 +673,12 @@ test('proxies and index URLs reach the probe and a proposal\'s check by default;
   let r = F.cli(root, ['plan', 'probe'], { env });
   const tail = r.commands[0].tail;
   assert.match(tail, /p=http:\/\/proxy\.corp:8080 l=http:\/\/proxy\.corp:8080 n=localhost,\.corp i=https:\/\/pypi\.corp\/simple u=https:\/\/pypi\.corp\/simple r=https:\/\/npm\.corp\//, tail);
-  assert.match(tail, /http:\/\/\[redacted\]@proxy\.corp:8080/, 'a login printed in output is redacted');
+  assert.match(tail, /echo (\[redacted (HTTPS_PROXY|https_proxy)\]|http:\/\/\[redacted\]@proxy\.corp:8080)/, `a login printed in output is redacted: ${tail}`);
   assert.doesNotMatch(fs.readFileSync(core('probe').FILE(root, J), 'utf8'), /s3cr3tpw|idxtoken99/);
   // the credentials themselves only when the repo says so
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { probe_proxy_credentials: true } }));
   r = F.cli(root, ['plan', 'probe'], { env });
-  assert.match(r.commands[0].tail, /p=http:\/\/\[redacted\]@proxy\.corp:8080/, 'passed with its login, still redacted in what is recorded');
+  assert.match(r.commands[0].tail, /p=\[redacted (HTTPS_PROXY|https_proxy)\]/, 'passed with its login, still redacted in what is recorded');
   assert.doesNotMatch(fs.readFileSync(core('probe').FILE(root, J), 'utf8'), /s3cr3tpw/);
   // off
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { probe_proxy: false } }));
