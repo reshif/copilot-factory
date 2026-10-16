@@ -96,7 +96,7 @@ function submit(root, { jobId }) {
   state.amendment = { ...am, status: 'submitted', file, hash: sha256(readText(file)), affected_tasks: affected, changed_criteria: changedAcs };
   job.save(root, state);
   const parked = state.status === 'parked';
-  return { job: state.id, amendment: doc, ...(parked ? { parked: true } : {}), next: parked ? `Waiting for your approval: reply "approve" (the job is parked; approving the amendment also resumes it, no separate "resume") or "deny <what must change>". Run factory next: it presents gate A.` : 'Waiting for your approval: reply "approve" or "deny <what must change>".' };
+  return { job: state.id, amendment: doc, ...(parked ? { parked: true } : {}), next: parked ? `Run factory next (or factory drive): it presents gate A. Then reply "approve" (the job is parked; approving the amendment also resumes it, as "resume" would, no separate reply) or "deny <what must change>".` : 'Waiting for your approval: reply "approve" or "deny <what must change>".' };
 }
 
 // Called by human.approve for gate A.

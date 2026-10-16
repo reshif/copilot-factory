@@ -196,13 +196,9 @@ function snapshot(root, state, gate, hash) {
 function approve(root, { jobId, gate, channel, via }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
-  let pending = state.pending_gate;
-  // A parked job with a submitted amendment waits on gate A (factory next presents it); an
-  // approval that arrives before that routing is for the same amendment hash.
-  if ((!pending || pending.id === 'P') && state.amendment && state.amendment.status === 'submitted') {
-    pending = { id: 'A', hash: state.amendment.hash, docs: [state.amendment.file], at: nowIso() };
-    state.pending_gate = pending;
-  }
+  // Only a gate the router presented can be approved: an amendment is approvable once
+  // `factory next` (or the drive) has shown gate A, never straight after `amend submit`.
+  const pending = state.pending_gate;
   if (!pending || pending.id === 'P') fail(`${state.id} has no gate waiting for approval${pending && pending.id === 'P' ? ' (it is parked: reply "resume", "cancel job" or "abandon job")' : ''}.`, 'no_gate');
   if (gate && gate !== pending.id) fail(`${state.id} is waiting at ${pending.id}, not ${gate}.`, 'wrong_gate');
   const now = currentGateHash(root, state, pending.id);
@@ -222,13 +218,10 @@ function approve(root, { jobId, gate, channel, via }) {
   if (pending.id === 'A') require('./amend').applyApproved(root, state);
   // An amendment submitted while the job was parked pre-empts the park: approving it is the
   // human's decision to move on, so it resumes the job too (no separate "resume").
-  const resumed = pending.id === 'A' && state.status === 'parked' ? (state.park && state.park.from) || 'park' : null;
-  if (resumed) {
-    state.repeat = { key: null, count: 0 };
-    state.status = 'active';
-    state.resumed = { at: nowIso(), from: state.park ? state.park.from : null, step: null, via: 'amendment' };
-    state.park = null;
-  }
+  // It does exactly what `resume` does (one more round of the cap that parked it, the budget
+  // raised, clarify's onResume …), so the job doesn't park again on the same cap at once.
+  const resumed = pending.id === 'A' && state.status === 'parked';
+  if (resumed) applyResume(root, state, { step: null, via: 'amendment' });
   job.save(root, state);
   log(root, state, 'approve', { channel, gate: pending.id, hash: now });
   if (resumed) log(root, state, 'resume', { channel, from: state.resumed.from, step: null, via: 'amendment' });
@@ -238,8 +231,7 @@ function approve(root, { jobId, gate, channel, via }) {
 function deny(root, { jobId, reason, channel }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
-  let pending = state.pending_gate;
-  if ((!pending || pending.id === 'P') && state.amendment && state.amendment.status === 'submitted') pending = { id: 'A', hash: state.amendment.hash, docs: [state.amendment.file], at: nowIso() };
+  const pending = state.pending_gate;
   if (!pending || pending.id === 'P') fail(`${state.id} has no gate waiting.`, 'no_gate');
   if (!String(reason || '').trim()) fail(`Say what must change: reply "deny <what must change>" (for example "deny cover negative numbers too"). Nothing was denied; ${pending.id} is still waiting.`, 'needs_reason');
   confirmTyped(channel, state.id, `deny ${pending.id}`);
@@ -257,6 +249,16 @@ function resume(root, { jobId, step, channel }) {
   const state = job.resolve(root, jobId);
   if (state.status !== 'parked') fail(`${state.id} is not parked (status: ${state.status}).`, 'not_parked');
   confirmTyped(channel, state.id, 'resume it');
+  applyResume(root, state, { step });
+  job.save(root, state);
+  log(root, state, 'resume', { channel, from: state.resumed.from, step });
+  return { job: state.id, message: `Resumed ${state.id}${state.resumed.from ? ` (one more ${state.resumed.from} round allowed)` : ''}. Copilot continues with factory next.` };
+}
+
+// What un-parking does, whoever decides it (resume, or approving an amendment on a parked job):
+// one more round of whatever ran out, the repeat guard cleared, the job active again. Mutates
+// state; the caller saves and logs.
+function applyResume(root, state, { step = null, via = null } = {}) {
   const from = state.park && state.park.from;
   // One more round of whatever ran out.
   const L = state.policy.limits;
@@ -271,13 +273,12 @@ function resume(root, { jobId, step, channel }) {
   if (from === 'reverify') state.counters.reverify_bonus = (state.counters.reverify_bonus || 0) + 1;
   if (from === 'budget') state.policy.limits.max_agent_runs_per_job = Math.ceil(state.policy.limits.max_agent_runs_per_job * 1.5);
   state.repeat = { key: null, count: 0 };
+  delete state.transient_aborts; // the human says Copilot works again: count transient runs afresh
   state.status = 'active';
-  state.resumed = { at: nowIso(), from, step: step || null };
+  state.resumed = { at: nowIso(), from, step: step || null, ...(via ? { via } : {}) };
   state.park = null;
   state.pending_gate = null;
-  job.save(root, state);
-  log(root, state, 'resume', { channel, from, step });
-  return { job: state.id, message: `Resumed ${state.id}${from ? ` (one more ${from} round allowed)` : ''}. Copilot continues with factory next.` };
+  return state;
 }
 
 function stop(root, { jobId, kind, channel, reason }) {
@@ -486,4 +487,4 @@ function applyReply(root, parsed, channel = 'chat') {
   }
 }
 
-module.exports = { snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { applyResume, snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
