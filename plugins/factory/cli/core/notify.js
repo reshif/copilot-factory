@@ -1,7 +1,7 @@
 'use strict';
 // Desktop notifications when `factory drive` stops (a gate, a clarify turn, a park, done …).
 // Best effort and never blocking: the notifier is spawned detached with its output ignored and
-// a short kill timer, any error is swallowed, and the drive goes on whatever happens here.
+// never waited on, any error is swallowed, and the drive goes on whatever happens here.
 //
 //   Linux     notify-send
 //   WSL       wsl-notify-send.exe, else a powershell.exe toast (WSL is detected by
@@ -56,36 +56,44 @@ function which(names, env = process.env) {
   return null;
 }
 
-const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
-const asQuote = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+// Nothing the notification shows is ever part of a script's text: the title and body can carry
+// agent-written words (a park reason), and PowerShell and AppleScript would run what a quote in
+// them closes over. They travel as environment variables (PowerShell reads $env:…; WSL passes
+// them to the Windows side through WSLENV) or as argv items (osascript's `on run argv`,
+// notify-send), and control characters are stripped.
+const NOTE_ENV = ['FACTORY_NOTE_TITLE', 'FACTORY_NOTE_BODY'];
+// eslint-disable-next-line no-control-regex
+const clean = (s, n) => String(s || '').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+// PowerShell's own AppUserModelID (registered on every Windows install), so the toast is shown
+const PS_APP_ID = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';
+const TOAST_SCRIPT = [
+  '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null',
+  '$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)',
+  "$x = $t.GetElementsByTagName('text'); $x.Item(0).AppendChild($t.CreateTextNode($env:FACTORY_NOTE_TITLE)) > $null; $x.Item(1).AppendChild($t.CreateTextNode($env:FACTORY_NOTE_BODY)) > $null",
+  `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('${PS_APP_ID}').Show([Windows.UI.Notifications.ToastNotification]::new($t))`,
+].join('; ');
+const OSA_ARGS = ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run'];
 
-function toastScript(title, body) {
-  return [
-    '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null',
-    '$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)',
-    `$x = $t.GetElementsByTagName('text'); $x.Item(0).AppendChild($t.CreateTextNode(${psQuote(title)})) > $null; $x.Item(1).AppendChild($t.CreateTextNode(${psQuote(body)})) > $null`,
-    "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Software Factory').Show([Windows.UI.Notifications.ToastNotification]::new($t))",
-  ].join('; ');
-}
-
-// The command that would show the notification here: { method, file, args } or { method: 'bell' }.
+// The command that would show the notification here: { method, file, args, env } or { method: 'bell' }.
 function plan(title, body, { platform = process.platform, env = process.env, wsl = null, find = (n) => which(n, env) } = {}) {
-  const t = String(title).slice(0, 120);
-  const b = String(body).slice(0, 400);
+  const t = clean(title, 120);
+  const b = clean(body, 400);
+  const vars = { FACTORY_NOTE_TITLE: t, FACTORY_NOTE_BODY: b };
+  const ps = (file, viaWsl) => ({ method: 'powershell', file, args: ['-NoProfile', '-NonInteractive', '-Command', TOAST_SCRIPT], env: { ...vars, ...(viaWsl ? { WSLENV: [env.WSLENV, ...NOTE_ENV].filter(Boolean).join(':') } : {}) } });
   if (platform === 'darwin') {
     const f = find(['osascript']);
-    if (f) return { method: 'osascript', file: f, args: ['-e', `display notification ${asQuote(b)} with title ${asQuote(t)}`] };
+    if (f) return { method: 'osascript', file: f, args: [...OSA_ARGS, t, b], env: {} };
   } else if (platform === 'win32') {
-    return { method: 'powershell', file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', toastScript(t, b)] };
+    return ps('powershell.exe', false);
   } else if (platform === 'linux') {
     if (wsl === null ? isWsl(env) : wsl) {
       const w = find(['wsl-notify-send.exe', 'wsl-notify-send']);
-      if (w) return { method: 'wsl-notify-send', file: w, args: ['--category', t, b] };
-      const ps = find(['powershell.exe']);
-      if (ps) return { method: 'powershell', file: ps, args: ['-NoProfile', '-NonInteractive', '-Command', toastScript(t, b)] };
+      if (w) return { method: 'wsl-notify-send', file: w, args: ['--category', t, '--', b], env: {} };
+      const p = find(['powershell.exe']);
+      if (p) return ps(p, true);
     }
     const n = find(['notify-send']);
-    if (n) return { method: 'notify-send', file: n, args: ['--app-name=Software Factory', t, b] };
+    if (n) return { method: 'notify-send', file: n, args: ['--app-name=Software Factory', '--', t, b], env: {} };
   }
   return { method: 'bell' };
 }
@@ -112,30 +120,22 @@ function notify(root, { title, body, job = null, kind = null } = {}) {
       const p = plan(title, body);
       if (p.method === 'bell') res = { sent: bell(), method: 'bell' };
       else {
-        const child = spawn(p.file, p.args, { stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true });
+        // detached and never waited on: the drive goes on (and may exit) whatever the notifier does
+        const child = spawn(p.file, p.args, { stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true, env: { ...process.env, ...(p.env || {}) } });
         child.on('error', () => {});
-        const timer = setTimeout(() => {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            /* gone */
-          }
-        }, 5000);
-        timer.unref();
-        child.on('exit', () => clearTimeout(timer));
         child.unref();
-        res = { sent: true, method: p.method };
+        res = { sent: true, spawned: true, method: p.method };
       }
     }
   } catch (e) {
     res = { sent: false, method: 'error', error: String(e.message).slice(0, 200) };
   }
   try {
-    require('./events').append(root, { event: 'notify', job, kind, method: res.method, sent: res.sent, title: String(title || '').slice(0, 120) });
+    require('./events').append(root, { event: 'notify', job, kind, method: res.method, sent: res.sent, ...(res.spawned ? { result: 'spawned' } : {}), title: String(title || '').slice(0, 120) });
   } catch {
     /* logging is best effort too */
   }
   return res;
 }
 
-module.exports = { notify, plan, isWsl, which, enabled };
+module.exports = { notify, plan, isWsl, which, enabled, clean, TOAST_SCRIPT };
