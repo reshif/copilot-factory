@@ -5850,6 +5850,7 @@ var RUN_STEPS = (function () {
         { key: 'god-eye', label: 'design critics', match: /^decide: (God Eye|critics)/, roles: ['god-eye', 'api-conformance'] },
         { key: 'verify', label: 'verify serious items', match: /^decide: verify/, roles: ['finding-verifier'], optional: true },
         { key: 'revise', label: 'architect revises', match: /^decide: architect revises/, roles: ['architect'], optional: true },
+        { key: 'diagnosis', label: 'diagnosis (loop engine)', match: /^decide: diagnosis/, roles: ['god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, challenge: one reviewer per lane → a verifier per serious finding
