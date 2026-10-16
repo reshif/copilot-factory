@@ -1,7 +1,7 @@
 {
   "name": "factory-inspector-plugin",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Independent auditor for the Software Factory (GitHub Copilot CLI plugin).",
   "bin": {
     "factory-inspect": "bin/factory-inspect"

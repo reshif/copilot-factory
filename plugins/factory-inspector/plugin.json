@@ -1,7 +1,7 @@
 {
   "name": "factory-inspector",
   "description": "Independent auditor for the Software Factory: checks each job against the rulebook it declared and the factory's health (rules R1-R20). Never blocks or changes a job. Disable to turn off.",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "author": { "name": "Firdous" },
   "homepage": "https://github.com/reshif/copilot-factory/tree/main/plugins/factory-inspector#readme",
   "repository": "https://github.com/reshif/copilot-factory",
