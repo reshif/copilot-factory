@@ -316,7 +316,21 @@ function run(argv) {
       if (sub === 'probe') {
         // factory run's own step in decompose (and the main session's): lint + dry-run every
         // verify command in a scratch worktree inside the proposed build environment
-        const r = C('probe').run(root, { jobId: state.id });
+        // factory run's own step reuses a record for this very plan, environment and mode (the
+        // one the human ran in their terminal after an interrupted probe, review MAJ-2)
+        const P = C('probe');
+        if (process.env.FACTORY_VIA === 'run') {
+          const done = P.current(root, state);
+          if (done) return { job: state.id, file: P.FILE(root, state.id), reused: true, ...done };
+        }
+        const r = P.run(root, { jobId: state.id });
+        // interrupted MAX_INTERRUPTED times: called directly, the job parks with the question
+        // here; under factory run, recording decompose parks it (the workflow stops probing)
+        if (r.needs_answer && process.env.FACTORY_VIA !== 'run') {
+          const fresh = C('job').load(root, state.id);
+          if (fresh.status === 'active') C('decision-table').park(root, fresh, r.problems[0], 'decompose', { kind: 'plan_probe', question: r.question });
+          r.parked = true;
+        }
         if (!r.ok) process.exitCode = 1;
         return r;
       }

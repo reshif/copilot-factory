@@ -64,7 +64,7 @@ function evaluate(ctx) {
   if (v.no_drift && state.branch && ledger.lastStep(root, state.id, 'reconcile')) {
     const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
     // plus the paths realize granted a task inside the contract's allowed paths (tasks.grant)
-    const allowed = (plan.tasks || []).flatMap((t) => [...(t.allowed_paths || []), ...(((state.tasks || {})[t.id] || {}).granted_paths || [])]);
+    const allowed = (plan.tasks || []).flatMap((t) => [...(t.allowed_paths || []), ...(((state.tasks || {})[t.id] || {}).granted_paths || []).filter((x) => typeof x === 'string').map(require('../lib/glob').exact)]);
     let changed = [];
     try {
       changed = git.changedFiles(root, state.base_commit, state.branch).filter((f) => !f.startsWith('.factory-ship/'));

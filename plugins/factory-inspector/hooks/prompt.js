@@ -18,7 +18,10 @@ safe((input) => {
   const earlier = takeUnreported(root);
   if (earlier.length) lines.push(`${earlier.join(' ')} Tell the user in one line; details with the factory-inspector:inspect skill.`);
   const main = require('../inspector/main');
-  const p = main.parseReply(input.prompt);
+  // a prompt the Copilot CLI's scheduler sent (/every, /after, /loop: "[Scheduled prompt #N]")
+  // fires unattended: never a reply (the factory's prompt hook refuses it the same way)
+  const scheduled = /^\s*\[Scheduled prompt\b[^\]\n]{0,40}\]/i.test(String(input.prompt || ''));
+  const p = scheduled ? null : main.parseReply(input.prompt);
   if (p) {
     try {
       lines.push(`[inspector] Applied: ${main.applyReply(root, p).message}`);

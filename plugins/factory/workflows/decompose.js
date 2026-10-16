@@ -75,6 +75,8 @@ async function probeLoop() {
     phase(`decompose: plan probe${round > 1 ? ` (round ${round})` : ''}`)
     probe = await factory.probe()
     if (!probe || probe.ok) { probeStop = 'ok'; return }
+    // interrupted twice before (review MAJ-2): the planner cannot fix that; recording asks the human
+    if (probe.needs_answer) { probeStop = 'interrupted'; return }
     const v = await loopStep(ls, probeKey(probe), { stall_rounds: 1, ...(brief.loop || {}), ceiling: Math.max(1, maxP - 1), diagnose: false })
     ls = v.state
     if (v.model) plannerModel = v.model

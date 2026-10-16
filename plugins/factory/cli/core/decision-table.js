@@ -42,6 +42,7 @@ const PARK_NEXT = {
   transient: 'Copilot kept failing with rate limits or network errors: wait a few minutes, then reply "resume".',
   integration: 'Answer the question above in your own words (it resumes the job with them), or amend the plan.',
   epic_gate: 'Decide: a new slice (amend the epic) or a fix job for a merged slice.',
+  plan_probe: 'The plan probe was interrupted twice before it finished: answer the question (a: lint only, b: run factory plan probe in your own terminal, then resume, c: no probe for this job).',
   manual: 'Parked by hand: reply "resume" when ready, or "cancel job".',
   other: 'Read factory why --format md, then reply "resume", "cancel job" or "abandon job".',
 };

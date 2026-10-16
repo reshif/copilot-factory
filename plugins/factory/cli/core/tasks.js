@@ -383,9 +383,10 @@ function verify(root, jobId, taskId) {
 
 // A task's allowed paths as they are now: the plan's, plus the paths realize granted it inside
 // the contract's allowed paths (grant below). The guard and the drift check use the same union.
+// A granted path is one exact file ("=path"): never a subtree (review MAJ-4).
 function taskPaths(state, task) {
   const t = ((state && state.tasks) || {})[task.id] || {};
-  return [...(task.allowed_paths || []), ...(t.granted_paths || [])];
+  return [...(task.allowed_paths || []), ...(t.granted_paths || []).filter((x) => typeof x === 'string').map(require('../lib/glob').exact)];
 }
 
 // `factory task grant <T> --paths a,b` (factory run's own step in realize, 0.10.0): a builder
@@ -395,6 +396,27 @@ function taskPaths(state, task) {
 // stays a needs_paths park (an amendment the human approves).
 const MAX_GRANTS = 6;
 // A directory on the base commit, the job branch or disk (a grant names files only).
+// A file a builder may create: an existing file, or a new name with a file's shape (an extension,
+// or one of the usual extensionless files). A new name without one could be a directory, and a
+// granted directory would cover files other tasks own (review MAJ-4).
+const FILE_NAMES = /^(Makefile|GNUmakefile|Dockerfile|Containerfile|Procfile|Gemfile|Rakefile|Jenkinsfile|Vagrantfile|Brewfile|Justfile|justfile|LICENSE|NOTICE|README|CHANGELOG|CODEOWNERS|AUTHORS|\.[\w.-]+)$/;
+function existingKind(root, state, p) {
+  for (const ref of [state.branch, state.base_commit].filter(Boolean)) {
+    const r = git.run(root, ['cat-file', '-t', `${ref}:${p}`], { allowFail: true });
+    if (r.code === 0) return String(r.stdout).trim();
+  }
+  try {
+    return fs.statSync(path.join(root, p)).isDirectory() ? 'tree' : 'blob';
+  } catch {
+    return null;
+  }
+}
+function fileLike(root, state, p) {
+  const k = existingKind(root, state, p);
+  if (k) return k === 'blob';
+  const base = p.split('/').pop();
+  return /\.[A-Za-z0-9]{1,10}$/.test(base) || FILE_NAMES.test(base);
+}
 function isDirectory(root, state, p) {
   for (const ref of [state.branch, state.base_commit].filter(Boolean)) {
     const r = git.run(root, ['cat-file', '-t', `${ref}:${p}`], { allowFail: true });
@@ -426,6 +448,8 @@ function grant(root, jobId, taskId, paths) {
             ? 'a directory: only single files are granted (a directory covers files other tasks may own)'
           : p.startsWith('.factory/') || p.startsWith('.git/')
             ? 'factory or git state'
+          : !fileLike(root, state, p)
+            ? 'not a file: a new path without an extension could be a directory; name the file itself (e.g. src/util/index.js)'
             : matchesAny(p, pol.protected_paths || [])
               ? 'a protected path (policy.protected_paths)'
               : matchesAny(p, pol.secret_paths || []) && !matchesAny(p, pol.secret_exempt || [])
@@ -434,7 +458,7 @@ function grant(root, jobId, taskId, paths) {
                   ? `outside the contract's allowed paths (${allowed.join(', ') || 'none'}): only an amendment the human approves widens them`
                   : (() => {
                       // another task's file, or a path under this one (a file of the same name as a directory it owns)
-                      const other = plan.tasks.find((x) => x.id !== taskId && (matchesAny(p, taskPaths(state, x)) || taskPaths(state, x).some((y) => String(y).replace(/^\.\/+/, '').startsWith(`${p}/`))));
+                      const other = plan.tasks.find((x) => x.id !== taskId && (matchesAny(p, taskPaths(state, x)) || taskPaths(state, x).some((y) => String(y).replace(/^=/, '').replace(/^\.\/+/, '').startsWith(`${p}/`))));
                       return other ? `${other.id}'s path: give it to one task by amending the plan` : null;
                     })();
     if (why) refused.push({ path: p || raw, why });

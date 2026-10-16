@@ -8,6 +8,22 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
+// CRC-32 (IEEE), table-driven: zlib.crc32 only exists from Node 20.15 / 22.2, and CI runs Node 18.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
 function zip(entries) {
   const locals = [];
   const centrals = [];
@@ -15,7 +31,7 @@ function zip(entries) {
   for (const [name, content, opts = {}] of entries) {
     const data = Buffer.from(content);
     const n = Buffer.from(name);
-    const crc = zlib.crc32(data) >>> 0;
+    const crc = crc32(data);
     const lh = Buffer.alloc(30);
     lh.writeUInt32LE(0x04034b50, 0);
     lh.writeUInt16LE(20, 4);

@@ -68,7 +68,8 @@ function taskScope(root, worktreeName) {
   // plus the paths realize granted a task inside the contract (cli/core/tasks.js grant), kept in
   // the job's sealed state
   const st = readJson(path.join(root, '.factory', 'jobs', m[1], 'state.json'), null) || {};
-  const granted = (id) => (((st.tasks || {})[id] || {}).granted_paths || []).filter((x) => typeof x === 'string');
+  // exact files ("=path"): a granted name never covers a subtree (review MAJ-4)
+  const granted = (id) => (((st.tasks || {})[id] || {}).granted_paths || []).filter((x) => typeof x === 'string').map((x) => `=${x.replace(/^=/, '')}`);
   if (m[2]) {
     const t = plan.tasks.find((x) => x.id === m[2]);
     return { paths: t ? [...(t.allowed_paths || []), ...granted(t.id)] : [], job: m[1], task: m[2] };
@@ -107,7 +108,7 @@ function checkWrite(root, absIn, policy) {
       if (!scope) return `Unknown worktree ${parts[2]}.`;
       if (inner.startsWith('.git/') || inner === '.git') return 'Editing git internals in a worktree is not allowed.';
       if (matchesAny(inner, policy.protected_paths)) return `${inner} is a protected path.`;
-      if (!matchesAny(inner, scope.paths)) return `${inner} is outside ${scope.task ? `${scope.task}'s` : `${scope.job}'s`} allowed paths (${scope.paths.join(', ') || 'none'}). Return status "blocked" with needs_paths instead.`;
+      if (!matchesAny(inner, scope.paths)) return `${inner} is outside ${scope.task ? `${scope.task}'s` : `${scope.job}'s`} allowed paths (${scope.paths.map((x) => String(x).replace(/^=/, '')).join(', ') || 'none'}). Return status "blocked" with needs_paths instead.`;
       return null;
     }
     return `${r} is factory state. Only the factory CLI writes it.`;
@@ -876,4 +877,4 @@ function normalise(cmd) {
   return parse(cmd).map((c) => c.words.map((w) => w.text).join(' ')).join('; ');
 }
 
-module.exports = { CLI_BOOL, checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
+module.exports = { taskScope, CLI_BOOL, checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };

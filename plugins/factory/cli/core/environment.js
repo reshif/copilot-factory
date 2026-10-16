@@ -240,7 +240,13 @@ function withBaseEnv(base, fn) {
 
 function sh(cmd, cwd, timeoutSec, extraEnv = {}) {
   const started = Date.now();
-  const r = spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', timeout: timeoutSec * 1000, maxBuffer: 64 * 1024 * 1024, ...(BASE_ENV ? { stdio: ['ignore', 'pipe', 'pipe'] } : {}), env: { ...(BASE_ENV || process.env), CI: process.env.CI || '1', FACTORY_ENV_SETUP: '1', ...extraEnv } });
+  // Under a base environment (the plan probe's allowlist, an unconfirmed environment's check) never
+  // a login shell: bash -l re-reads the user's profile (~/.bash_profile, ~/.profile: found through
+  // passwd even with HOME elsewhere), which can export the very tokens the allowlist removed
+  // (review MAJ-3). The confirmed environment, sealed by the human, keeps the login shell their
+  // tools may need (a version manager on the PATH).
+  const argv = BASE_ENV ? ['--noprofile', '--norc', '-c', cmd] : ['-lc', cmd];
+  const r = spawnSync('bash', argv, { cwd, encoding: 'utf8', timeout: timeoutSec * 1000, maxBuffer: 64 * 1024 * 1024, ...(BASE_ENV ? { stdio: ['ignore', 'pipe', 'pipe'] } : {}), env: { ...(BASE_ENV || process.env), CI: process.env.CI || '1', FACTORY_ENV_SETUP: '1', ...extraEnv } });
   const out = `${r.stdout || ''}${r.stderr ? `\n${r.stderr}` : ''}`;
   return { code: r.status === null ? -1 : r.status, timed_out: Boolean(r.error && r.error.code === 'ETIMEDOUT'), ms: Date.now() - started, output: out.length > 2000 ? `…${out.slice(-2000)}` : out };
 }
@@ -443,20 +449,38 @@ function check(root, { proposed = false } = {}) {
   if (error) return { ok: false, error };
   const e = proposed || !confirmed ? strip(proposal(root)) : confirmed;
   const which = proposed || !confirmed ? 'proposed' : 'confirmed';
-  const pp = problems(e);
+  // a proposal carries where it came from (source, evidence): not fields of the environment
+  const pp = problems(which === 'proposed' ? essence(e) : e);
   if (pp.length) return { ok: false, which, problems: pp };
   const wt = path.join(root, '.factory', 'worktrees', `_envcheck-${process.pid}`);
   git.run(root, ['worktree', 'prune'], { allowFail: true });
   git.run(root, ['worktree', 'add', '--detach', wt, 'HEAD']);
   try {
     const { evidence: _e, notes: _n, source: _s, ...run } = e;
-    const r = ensure(root, null, { taskId: 'envcheck', wt, env: run });
-    const torn = teardown(root, null, { taskId: 'envcheck', wt, env: run });
+    // An environment nobody confirmed yet (a proposal: detected, or written with factory env
+    // propose; an agent may run env check) runs like the plan probe's setup: the allowlisted
+    // environment without the user's tokens, a home inside the scratch worktree, no login shell
+    // (review MAJ-3). The confirmed one is the human's and runs as their own shell would.
+    let inBox = (fn) => fn();
+    if (which === 'proposed') {
+      const P = require('./probe');
+      const box = path.join(wt, '.factory-probe');
+      for (const d of ['home', 'tmp', 'cache']) fs.mkdirSync(path.join(box, d), { recursive: true });
+      const base = P.probeEnv(root, `envcheck-${process.pid}`, {}, P.ownDirs(box));
+      inBox = (fn) => withBaseEnv(base, fn);
+    }
+    const r = inBox(() => ensure(root, null, { taskId: 'envcheck', wt, env: run }));
+    const torn = inBox(() => teardown(root, null, { taskId: 'envcheck', wt, env: run }));
     let down = null;
-    if (e.services && e.services.down) down = sh(expand(e.services.down, vars(root, null, 'envcheck', wt)), root, 600).code;
+    if (e.services && e.services.down) down = inBox(() => sh(expand(e.services.down, vars(root, null, 'envcheck', wt)), root, 600)).code;
     return { ok: r.ok, which, name: e.name || null, ran: r.ran || [], ...(r.ok ? {} : { broken: r.broken, message: r.broken.reason }), ...(torn ? { teardown_exit: torn.code } : {}), ...(down !== null ? { services_down_exit: down } : {}) };
   } finally {
     git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+    try {
+      fs.rmSync(wt, { recursive: true, force: true });
+    } catch {
+      /* gone */
+    }
   }
 }
 

@@ -44,7 +44,10 @@ const LINT = [
 const KEEP = /^(PATH|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|SHELL|USER|LOGNAME|PWD|COLUMNS|LINES)$/;
 const PROXY = /^(https?_proxy|HTTPS?_PROXY|no_proxy|NO_PROXY|ALL_PROXY|all_proxy|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|REQUESTS_CA_BUNDLE|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|npm_config_registry)$/;
 const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|_KEY$|^KEY$|APIKEY|API_KEY|CREDENTIAL|^AWS_|^GH_|^GITHUB_|^SSH_|^GPG_|^COPILOT_|^NPM_TOKEN|^AZURE_|^GOOGLE_|^GCP_|COOKIE|SESSION)/i;
-function probeEnv(root, probeId, extra = {}) {
+// `own`: the probe's own directories (its scratch home, temp and caches), never filtered: a path
+// can contain a secret-looking variable's value (a temp dir named in a *_TMPDIR or *_SESSION
+// variable) and must still be set (else the dry-run and setup silently fall back to the real home).
+function probeEnv(root, probeId, extra = {}, own = {}) {
   let allowProxy = false;
   try {
     allowProxy = ((require('./policy').load(root) || {}).decompose || {}).probe_proxy === true;
@@ -57,7 +60,7 @@ function probeEnv(root, probeId, extra = {}) {
   // carrying one of the user's secrets (a declared `TOKEN: $GH_TOKEN`)
   const secrets = Object.entries(process.env).filter(([k, v]) => SECRET_NAME.test(k) && v && v.length >= 6).map(([, v]) => v);
   for (const [k, v] of Object.entries(extra)) if (!secrets.some((x) => String(v).includes(x))) out[k] = v;
-  return { ...out, CI: '1', FACTORY_PROBE: '1', FACTORY_PROBE_ID: probeId, FACTORY_RUNNER: '1', AI_AGENT: 'factory-probe', PYTHONDONTWRITEBYTECODE: '1' };
+  return { ...out, ...own, CI: '1', FACTORY_PROBE: '1', FACTORY_PROBE_ID: probeId, FACTORY_RUNNER: '1', AI_AGENT: 'factory-probe', PYTHONDONTWRITEBYTECODE: '1' };
 }
 
 // Secrets out of anything the probe records or shows (probe.json, the gate, God Eye's input):
@@ -72,9 +75,39 @@ function redact(text) {
     .replace(/\b([A-Za-z_]*(token|secret|password|passwd|api[_-]?key)[A-Za-z_]*)\s*[=:]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=[redacted]');
 }
 
-// Processes a dry-run left behind (a new session escapes the timeout's group kill): found by the
-// probe's tag in their environment (Linux /proc), killed, reported.
-function survivors(probeId) {
+// A process's process group, session and start time (Linux /proc/<pid>/stat; the fields after
+// the command name: state is field 3, pgrp 5, session 6, starttime 22).
+function procStat(pid) {
+  try {
+    const f = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop().split(' ');
+    return { state: f[0], pgrp: Number(f[2]), sid: Number(f[3]), start: f[19] };
+  } catch {
+    return null;
+  }
+}
+const procStart = (pid) => (procStat(pid) || {}).start || null;
+// Alive, and the same process: a pid the system reused for another process has another start
+// time (review m7).
+function sameProcess(pid, start) {
+  if (!pid) return false;
+  try {
+    process.kill(Number(pid), 0);
+  } catch (e) {
+    if (!e || e.code !== 'EPERM') return false;
+  }
+  // a zombie (killed, not yet reaped by its parent) is gone
+  if ((procStat(pid) || {}).state === 'Z') return false;
+  if (!start) return true;
+  const now = procStart(pid);
+  return now === null ? true : now === String(start);
+}
+
+// Processes a dry-run left behind, killed and reported. Found by the probe's tag in their
+// environment (Linux /proc), and, for one that cleared its environment (review m1), by the
+// dry-run's own session (setsid: a process that only left the process group stays in the session)
+// or by a working directory inside the scratch worktree (one that also started a new session
+// still runs there).
+function survivors(probeId, { sid = null, wt = null } = {}) {
   const out = [];
   let pids = [];
   try {
@@ -88,9 +121,19 @@ function survivors(probeId) {
     try {
       env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8');
     } catch {
-      continue;
+      env = '';
     }
-    if (!env.includes(`FACTORY_PROBE_ID=${probeId}\0`) && !env.endsWith(`FACTORY_PROBE_ID=${probeId}`)) continue;
+    let ours = Boolean(probeId) && (env.includes(`FACTORY_PROBE_ID=${probeId}\0`) || env.endsWith(`FACTORY_PROBE_ID=${probeId}`));
+    if (!ours && sid && Number(pid) !== Number(sid)) ours = (procStat(pid) || {}).sid === Number(sid);
+    if (!ours && wt) {
+      try {
+        const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+        ours = cwd === wt || cwd.startsWith(`${wt}${path.sep}`);
+      } catch {
+        ours = false;
+      }
+    }
+    if (!ours) continue;
     let cmd = '';
     try {
       cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
@@ -120,17 +163,23 @@ function sweep(root, keep = null) {
   for (const n of names) {
     const wt = path.join(dir, n);
     if (keep && wt === keep) continue;
-    const pid = Number((/-(\d+)$/.exec(n) || [])[1]);
-    let alive = false;
-    try {
-      if (pid && pid !== process.pid) {
-        process.kill(pid, 0);
-        alive = true;
+    // the owner the probe wrote (its pid and that process's start time): a live pid with another
+    // start time is a reused pid, not the owner (review m7)
+    const owner = readJson(path.join(wt, '.factory-probe', 'owner.json'), null);
+    const pid = Number((owner && owner.pid) || (/-(\d+)$/.exec(n) || [])[1]);
+    if (pid === process.pid && !(owner && owner.start && owner.start !== procStart(process.pid))) continue;
+    let alive = pid !== process.pid && (owner ? sameProcess(pid, owner.start) : sameProcess(pid, null));
+    // no owner record (a probe from before, or killed before it wrote one): alive only while young
+    if (alive && !owner) {
+      try {
+        alive = Date.now() - fs.statSync(wt).mtimeMs < 2 * 3600e3;
+      } catch {
+        alive = false;
       }
-    } catch {
-      alive = false;
     }
     if (alive) continue;
+    // what the dead run left running: its tagged processes and anything still inside its worktree
+    survivors(owner && owner.probe_id, { wt });
     git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
     try {
       fs.rmSync(wt, { recursive: true, force: true });
@@ -144,7 +193,9 @@ function sweep(root, keep = null) {
 }
 
 // Does this environment's setup fetch code from the network (and so run code nobody approved)?
-const NETWORK_SETUP = /pip3? install|poetry install|uv (sync|pip)|npm (ci|install|i)\b|pnpm (install|i)\b|yarn\b|go (mod download|get|install)|cargo (build|fetch|install)|bundle install|gem install|curl |wget |docker (pull|build|compose (pull|build|up))|invoke build|apt(-get)? install|brew install/;
+// (review m2: also the runners that fetch and run a package, clones and fetches, any curl or wget,
+// a substituted download, and a URL)
+const NETWORK_SETUP = /pip3? install|pipx (run|install)|poetry install|uv (sync|pip|run|tool)|uvx\b|npm (ci|install|i|exec)\b|npx\b|pnpm (install|i|dlx|exec)\b|yarn\b|bunx?\b|go (mod download|get|install|run)|cargo (build|fetch|install)|bundle install|gem install|curl\b|wget\b|git (clone|fetch|pull|submodule)|deno (run|install)|docker (pull|build|run|compose (pull|build|up))|podman (pull|build|run)|invoke build|apt(-get)? install|brew install|<\(|https?:\/\//;
 
 function lintCommand(cmd) {
   const out = [];
@@ -226,7 +277,8 @@ function runBounded(cmd, cwd, capSec, env) {
   const argv = hasSetsid() ? ['setsid', '--wait', ...inner] : inner;
   const r = spawnSync(argv[0], argv.slice(1), hasTimeout() ? opts : { ...opts, timeout: capSec * 1000 });
   const output = `${r.stdout || ''}${r.stderr ? `\n${r.stderr}` : ''}`;
-  return { code: r.status === null ? -1 : r.status, timed_out: Boolean(r.error && r.error.code === 'ETIMEDOUT') || r.status === 124 || r.signal === 'SIGTERM' || r.signal === 'SIGKILL', ms: Date.now() - started, cap: capSec, output: output.length > 4000 ? `…${output.slice(-4000)}` : output };
+  // with setsid, the command's session id is the child's pid: what stays in it is a survivor (m1)
+  return { code: r.status === null ? -1 : r.status, sid: hasSetsid() ? r.pid || null : null, timed_out: Boolean(r.error && r.error.code === 'ETIMEDOUT') || r.status === 124 || r.signal === 'SIGTERM' || r.signal === 'SIGKILL', ms: Date.now() - started, cap: capSec, output: output.length > 4000 ? `…${output.slice(-4000)}` : output };
 }
 
 // Is this a greenfield plan: the environment sets things up from manifests the base commit does
@@ -270,6 +322,8 @@ function mode(root, state, ctx = null) {
   }
   const snap = ((state && state.policy) || {}).decompose || {};
   const flag = live.plan_probe !== undefined ? live.plan_probe : snap.plan_probe;
+  // the human's answer to an interrupted probe (park plan_probe, option a): lint only
+  if (state && state.probe_override === 'lint') return 'lint';
   if (flag === 'lint' || flag === 'full') return flag;
   const g = require('./environment').gateProposal(root, state.id);
   return g.status === 'proposed' && NETWORK_SETUP.test(((g.env || {}).setup || []).join('\n')) ? 'lint' : 'full';
@@ -285,6 +339,8 @@ function enabled(root, state, ctx = null) {
   const snap = ((state && state.policy) || {}).decompose || {};
   const flag = live.plan_probe !== undefined ? live.plan_probe : snap.plan_probe;
   if (flag === false) return false;
+  // the human's answer to an interrupted probe (park plan_probe, option c): no probe for this job
+  if (state && state.probe_override === false) return false;
   const c = ctx || require('./steps').context(root, state, require('./job').load);
   const step = c.recipe.steps.find((x) => x.step === 'decompose');
   return Boolean(step && String(step.run).startsWith('workflow:') && step.plan_probe !== false && !state.epic);
@@ -298,14 +354,21 @@ function run(root, { jobId } = {}) {
   if (!enabled(root, state)) return { job: state.id, ok: true, skipped: true, problems: [], commands: [], lint: [], message: 'The plan probe is off for this job (policy decompose.plan_probe, or its recipe).' };
   const runMode = mode(root, state);
   const probeId = require('crypto').randomBytes(8).toString('hex');
-  sweep(root);
   const jp = jobPaths(root, state.id);
   const plan = readJson(jp.plan, null);
   if (!plan || !Array.isArray(plan.tasks)) return { job: state.id, ok: false, problems: ['No plan.json to probe.'], commands: [], lint: [] };
   const planHash = hashFile(jp.plan);
   const gate = envMod.gateProposal(root, state.id);
   const S = settings(state);
+  // an earlier run that never finished (killed with the drive or factory run): picked up while
+  // it still runs, else cleaned up (its process group, its survivors, its scratch worktree) and
+  // counted; after MAX_INTERRUPTED in a row the job asks how to probe (review MAJ-2)
+  const prior = recover(root, state, { plan: planHash, environment: gate.hash, mode: runMode });
+  if (prior) return prior;
+  sweep(root);
   const started = Date.now();
+  const wtPath = path.join(root, '.factory', 'worktrees', `_probe-${state.id}-${process.pid}`);
+  markStarted(root, state, { probeId, plan: planHash, environment: gate.hash, mode: runMode, wt: wtPath, S });
   const lint = [];
   const problems = [];
   for (const t of plan.tasks) {
@@ -338,31 +401,37 @@ function run(root, { jobId } = {}) {
     setup = { status: 'deferred', why: `the environment is set up after ${boot[0].id} (bootstrap) writes its manifests` };
     for (const t of plan.tasks) for (const c of t.verify_commands || []) commands.push({ task: t.id, cmd: cmdOf(c), class: 'deferred', ok: true, why: 'dry-run after the bootstrap task (greenfield)' });
   } else {
-    const wt = path.join(root, '.factory', 'worktrees', `_probe-${state.id}-${process.pid}`);
+    const wt = wtPath;
     git.run(root, ['worktree', 'prune'], { allowFail: true });
     const add = git.run(root, ['worktree', 'add', '--detach', wt, base], { allowFail: true });
     if (add.code !== 0) {
       problems.push(`The probe could not create its scratch worktree: ${String(add.stderr || add.stdout || '').trim().slice(0, 300)}`);
     } else {
       let E = null;
+      // the dry-run writes only into its scratch worktree: home, temp and the usual caches point
+      // inside it (an OS sandbox it is not: a command could still name a path outside, which the
+      // check after the run reports). Setup, teardown and services get the same home (MAJ-3).
+      const box = path.join(wt, '.factory-probe');
+      for (const d of ['home', 'tmp', 'cache']) fs.mkdirSync(path.join(box, d), { recursive: true });
+      // who owns this scratch worktree: the sweep keeps it only while this very process lives (m7)
+      writeJson(path.join(box, 'owner.json'), { pid: process.pid, start: procStart(process.pid), probe_id: probeId, job: state.id, at: nowIso() });
+      const homeEnv = ownDirs(box);
+      const base = probeEnv(root, probeId, {}, homeEnv);
       try {
         if (e) {
           const { evidence: _e, notes: _n, source: _s, ...runEnv } = e;
           // the probe's budget bounds setup too
-          // setup runs with the same allowlisted environment (no tokens), no terminal
-          E = envMod.withBaseEnv(probeEnv(root, probeId), () => envMod.ensure(root, null, { taskId: 'probe', wt, env: { ...runEnv, timeout_seconds: Math.min(runEnv.timeout_seconds || 1200, S.budget) } }));
+          // setup runs with the same allowlisted environment (no tokens), no terminal, no login
+          // shell (environment.sh runs bash --noprofile --norc under a base environment: a
+          // ~/.profile or ~/.bashrc that exports a token never runs) and the scratch home
+          E = envMod.withBaseEnv(base, () => envMod.ensure(root, null, { taskId: 'probe', wt, env: { ...runEnv, timeout_seconds: Math.min(runEnv.timeout_seconds || 1200, S.budget) } }));
           if (!E.ok) {
             setup = { status: 'broken', cmd: E.broken.cmd, code: E.broken.code, tail: redact(String(E.broken.tail || '').slice(-800)) };
             problems.push(`The build environment does not set up: ${redact(E.broken.reason.slice(0, 600))}. Fix environment.proposed.json (setup, env, services) so every worktree can build.`);
           } else setup = { status: 'ok', ran: (E.ran || []).map((x) => ({ cmd: x.cmd, code: x.code })), cached: Boolean(E.cached) };
         }
         if (!e || (E && E.ok)) {
-          // the dry-run writes only into its scratch worktree: home, temp and the usual caches
-          // point inside it (an OS sandbox it is not: a command could still name a path outside,
-          // which the check after the run reports)
-          const box = path.join(wt, '.factory-probe');
-          for (const d of ['home', 'tmp', 'cache']) fs.mkdirSync(path.join(box, d), { recursive: true });
-          const penv = probeEnv(root, probeId, { ...(E && E.env ? envMod.processEnv(E.env, E.vars) : {}), HOME: path.join(box, 'home'), TMPDIR: path.join(box, 'tmp'), TMP: path.join(box, 'tmp'), TEMP: path.join(box, 'tmp'), XDG_CACHE_HOME: path.join(box, 'cache'), npm_config_cache: path.join(box, 'cache', 'npm'), PIP_CACHE_DIR: path.join(box, 'cache', 'pip') });
+          const penv = probeEnv(root, probeId, E && E.env ? envMod.processEnv(E.env, E.vars) : {}, homeEnv);
           const before = rootStatus(root);
           for (const t of plan.tasks) {
             for (const c of t.verify_commands || []) {
@@ -378,7 +447,7 @@ function run(root, { jobId } = {}) {
               }
               const r = runBounded(E && E.env ? envMod.wrap(E.env, E.vars, cmd) : cmd, wt, S.perCommand, penv);
               const k = classify(r, plan);
-              const left = survivors(probeId);
+              const left = survivors(probeId, { sid: r.sid, wt });
               commands.push({ task: t.id, cmd, code: r.code, ms: r.ms, class: left.length ? 'escaped' : k.class, ok: k.ok && !left.length, why: left.length ? `left ${left.length} process(es) running after it ended (killed): ${left.map((x) => x.cmd).join('; ')}` : k.why, tail: redact(String(r.output || '').trim().split('\n').slice(-12).join('\n')).slice(-1200) });
               if (left.length) problems.push(`${t.id}: \`${cmd}\` left ${left.length} process(es) running after it ended (the probe killed them): ${left.map((x) => x.cmd).join('; ')}. A verify command must stop everything it starts.`);
               else if (!k.ok) problems.push(`${t.id}: \`${cmd}\` cannot run in the build environment: ${k.why}. Output (tail): ${redact(String(r.output || '').trim().split('\n').slice(-4).join(' | ')).slice(-400)}`);
@@ -393,10 +462,12 @@ function run(root, { jobId } = {}) {
         try {
           if (e) {
             const { evidence: _e, notes: _n, source: _s, ...runEnv } = e;
-            envMod.teardown(root, null, { taskId: 'probe', wt, env: runEnv });
-            if (runEnv.services && runEnv.services.down) spawnSync('bash', ['-lc', envMod.expand(runEnv.services.down, envMod.vars(root, null, 'probe', wt))], { cwd: root, timeout: Math.min(600, S.budget) * 1000, stdio: ['ignore', 'pipe', 'pipe'], env: probeEnv(root, probeId) });
+            // teardown and services.down are the planner's commands too: the same allowlisted
+            // environment, scratch home and no login shell as setup
+            envMod.withBaseEnv(base, () => envMod.teardown(root, null, { taskId: 'probe', wt, env: runEnv }));
+            if (runEnv.services && runEnv.services.down) spawnSync('bash', ['--noprofile', '--norc', '-c', envMod.expand(runEnv.services.down, envMod.vars(root, null, 'probe', wt))], { cwd: root, timeout: Math.min(600, S.budget) * 1000, stdio: ['ignore', 'pipe', 'pipe'], env: base });
           }
-          for (const x of survivors(probeId)) problems.push(`A process of the probe's setup or services was still running at the end and was killed: ${x.cmd}`);
+          for (const x of survivors(probeId, { wt })) problems.push(`A process of the probe's setup or services was still running at the end and was killed: ${x.cmd}`);
         } catch {
           /* best effort */
         }
@@ -427,6 +498,7 @@ function run(root, { jobId } = {}) {
     problems: problems.map(redact),
   });
   writeJson(FILE(root, state.id), doc);
+  markFinished(root, state.id, probeId);
   try {
     require('./events').append(root, { event: 'plan_probe', job: state.id, ok: doc.ok, problems: problems.length, commands: commands.length, ms: doc.ms });
   } catch {
@@ -450,6 +522,136 @@ function dependsOn(tasks, id, on, seen = new Set()) {
   return Boolean(t && (t.depends_on || []).some((d) => d === on || dependsOn(tasks, d, on, seen)));
 }
 
+// ---------------------------------------------------------------- started, interrupted (review MAJ-2)
+//
+// Every run that executes anything records itself first in .factory/jobs/<job>/probe.started.json
+// (sealed): the plan and environment it probes, its pid and that process's start time, its probe
+// id, its scratch worktree and a deadline. A run killed with the drive or factory run (its
+// finally never ran) leaves that record unfinished. The next run:
+//   - picks it up while it still runs (the same plan, environment and mode): it waits for its
+//     result instead of starting a second probe;
+//   - else cleans up after it: its process group, every process tagged with its probe id or
+//     still inside its scratch worktree, the worktree itself; and counts it as interrupted;
+//   - after MAX_INTERRUPTED interrupted runs in a row (a run that finishes resets the count), it
+//     does not start again: the job asks how to probe (lint only, run it in your own terminal, or
+//     no probe), never a third silent restart.
+
+const STARTED = (root, jobId) => path.join(jobPaths(root, jobId).dir, 'probe.started.json');
+const MAX_INTERRUPTED = 2;
+const ownDirs = (box) => ({ HOME: path.join(box, 'home'), TMPDIR: path.join(box, 'tmp'), TMP: path.join(box, 'tmp'), TEMP: path.join(box, 'tmp'), XDG_CACHE_HOME: path.join(box, 'cache'), XDG_CONFIG_HOME: path.join(box, 'home', '.config'), XDG_DATA_HOME: path.join(box, 'home', '.local', 'share'), npm_config_cache: path.join(box, 'cache', 'npm'), PIP_CACHE_DIR: path.join(box, 'cache', 'pip') });
+
+function readStarted(root, jobId) {
+  const s = readJson(STARTED(root, jobId), null);
+  return s && valid(s) ? s : null;
+}
+
+function markStarted(root, state, { probeId, plan, environment, mode: m, wt, S }) {
+  const prev = readStarted(root, state.id);
+  const interrupted = prev && prev.finished && ['died', 'overdue'].includes(prev.outcome) ? prev.interrupted || 0 : 0;
+  // setup (bounded by the budget), the dry-run (the budget), one command's overrun, services
+  const deadline = Date.now() + (2 * S.budget + S.perCommand + 120) * 1000;
+  writeJson(STARTED(root, state.id), seal({ version: 1, job: state.id, plan, environment, mode: m, probe_id: probeId, pid: process.pid, pid_start: procStart(process.pid), wt, at: nowIso(), deadline_at: new Date(deadline).toISOString(), interrupted, finished: false }));
+}
+
+function markFinished(root, jobId, probeId) {
+  const st = readStarted(root, jobId);
+  if (st && st.probe_id === probeId) writeJson(STARTED(root, jobId), seal({ ...st, finished: true, outcome: 'done', interrupted: 0, ended_at: nowIso() }));
+}
+
+function sleepMs(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, ms));
+  } catch {
+    /* no wait available: poll */
+  }
+}
+
+// An unfinished run's leftovers, gone: its process group (when it leads one: factory run starts
+// every CLI step detached), the process itself, every process tagged with its probe id or still
+// inside its scratch worktree, and the worktree.
+function killRun(root, st) {
+  if (st.pid && st.pid !== process.pid && sameProcess(st.pid, st.pid_start)) {
+    const ps = procStat(st.pid);
+    try {
+      if (ps && ps.pgrp === Number(st.pid)) process.kill(-Number(st.pid), 'SIGKILL');
+      else process.kill(Number(st.pid), 'SIGKILL');
+    } catch {
+      /* gone */
+    }
+  }
+  const wt = st.wt && String(st.wt).startsWith(path.join(root, '.factory', 'worktrees', '_probe-')) ? st.wt : null;
+  const left = survivors(st.probe_id, { wt });
+  if (wt) {
+    git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+    try {
+      fs.rmSync(wt, { recursive: true, force: true });
+    } catch {
+      /* gone */
+    }
+    git.run(root, ['worktree', 'prune'], { allowFail: true });
+  }
+  return left;
+}
+
+// The question the job parks with after MAX_INTERRUPTED interrupted runs.
+function interruptedQuestion(jobId, n) {
+  return {
+    question: `The plan probe was interrupted ${n} times before it finished (factory run or the drive was stopped while it ran). How should this plan be probed?`,
+    options: [
+      { key: 'a', text: 'Lint only for this job: check the verify commands without running them (the gate shows nothing ran)' },
+      { key: 'b', text: `I run it in my own terminal: factory plan probe --job ${jobId}, then reply resume (its result is used)` },
+      { key: 'c', text: 'No probe for this job: the plan gate says it was not probed' },
+    ],
+    recommendation: 'b',
+  };
+}
+
+function needsAnswer(state, n) {
+  const reason = `The plan probe was interrupted ${n} times before it finished; it is not started again silently.`;
+  return { job: state.id, ok: false, needs_answer: true, interrupted: n, question: interruptedQuestion(state.id, n), problems: [reason], commands: [], lint: [], message: `${reason} ${state.id} asks how to probe the plan (a: lint only, b: run factory plan probe in your own terminal, c: no probe).` };
+}
+
+// Before a run: what an earlier, unfinished one left. Returns a result to use instead of
+// running (its picked-up record, or the question after MAX_INTERRUPTED), or null to go on.
+function recover(root, state, { plan, environment, mode: m }) {
+  let st = readStarted(root, state.id);
+  if (!st) return null;
+  if (!st.finished && !(st.pid === process.pid && st.pid_start === procStart(process.pid))) {
+    const same = st.plan === plan && st.environment === environment && st.mode === m;
+    const overdue = () => Date.now() > Date.parse(st.deadline_at || 0) + 120000;
+    // still running, on this very plan: wait for its result (never a second probe beside it)
+    if (same && sameProcess(st.pid, st.pid_start) && !overdue()) {
+      while (sameProcess(st.pid, st.pid_start) && !overdue()) {
+        const r = current(root, state);
+        if (r && r.at >= st.at) return { job: state.id, file: FILE(root, state.id), picked_up: true, ...r };
+        sleepMs(250);
+      }
+      sleepMs(200);
+      const r = current(root, state);
+      if (r && r.at >= st.at) return { job: state.id, file: FILE(root, state.id), picked_up: true, ...r };
+      st = readStarted(root, state.id) || st;
+      if (st.finished) return null;
+    }
+    const alive = sameProcess(st.pid, st.pid_start);
+    // a run for another plan or environment that still goes on: superseded, stopped, not counted
+    const superseded = alive && !same && !overdue();
+    const left = killRun(root, st);
+    const interrupted = superseded ? st.interrupted || 0 : (st.interrupted || 0) + 1;
+    const outcome = superseded ? 'superseded' : alive ? 'overdue' : 'died';
+    writeJson(STARTED(root, state.id), seal({ ...st, finished: true, outcome, interrupted, killed: left.length, ended_at: nowIso() }));
+    try {
+      require('./events').append(root, { event: 'plan_probe_interrupted', job: state.id, probe_id: st.probe_id, outcome, interrupted, killed: left.length });
+    } catch {
+      /* the log is a convenience */
+    }
+    st = readStarted(root, state.id);
+  }
+  // (while the job is parked on that question, the human's own run in their terminal goes ahead)
+  const asked = state.status === 'parked' && state.park && state.park.kind === 'plan_probe';
+  if (st && (st.interrupted || 0) >= MAX_INTERRUPTED && !asked) return needsAnswer(state, st.interrupted);
+  return null;
+}
+
 // The probe record for the plan as it is now, or null (none, stale, or edited by hand).
 function current(root, state) {
   const p = readJson(FILE(root, state.id), null);
@@ -457,6 +659,9 @@ function current(root, state) {
   const jp = jobPaths(root, state.id);
   if (!exists(jp.plan) || p.plan !== hashFile(jp.plan)) return null;
   if (p.environment !== require('./environment').gateProposal(root, state.id).hash) return null;
+  // a record made in another mode (lint only, full) is not this one's
+  const m = mode(root, state);
+  if (m && p.mode && p.mode !== m) return null;
   return p;
 }
 
@@ -465,4 +670,4 @@ function problemKey(p) {
   return sha256(stableStringify([...((p && p.problems) || [])].map((x) => String(x).replace(/Output \(tail\):.*$/, '')).sort()));
 }
 
-module.exports = { mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
+module.exports = { recover, readStarted, markStarted, interruptedQuestion, procStat, sameProcess, ownDirs, STARTED, MAX_INTERRUPTED, mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };

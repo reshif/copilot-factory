@@ -41,6 +41,16 @@ function isFactoryPrompt(prompt) {
   return /^\/factory[:\s-]/i.test(p) || /(^|\s)factory:(start|gate|ship|review|park|amend|clarify|intake|why|distill|console)\b/i.test(p) || /^factory\s+\w/i.test(p);
 }
 
+// Does anything wait on the user's reply (a park, a gate, a clarify screen, the ship review, a
+// merge, a criterion, a proposal)? factory inbox's list, read without unsealing anything.
+function waitingOnUser(root) {
+  try {
+    return require('../cli/core/inbox').list(root, { plain: true }).items.filter((x) => x.kind !== 'amend').length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function writeTurn(root, rec) {
   try {
     fs.writeFileSync(path.join(root, '.factory', 'turn.json'), JSON.stringify(rec) + '\n');
@@ -130,7 +140,12 @@ safe((input) => {
     const text = unscheduled(input.prompt).trim();
     const human = require('../cli/core/human');
     writeTurn(r, { at: new Date().toISOString(), session: input.sessionId || null, factory: isFactoryPrompt(text), scheduled: true });
-    const looks = human.parseReply(text) || human.nearMiss(text) || (text.length <= 200 && /^(ok|okay|yes|accept|reject|approve|deny|resume|proceed)\b/i.test(text));
+    // the same reader the user's own prompts go through (human.readReply: exact replies, ";"
+    // batches, near misses, clarify's ok and sheet answers, park options and confirmations,
+    // budget grants, the inspector's replies); and, fail closed, any short text while something
+    // waits on the user (a free-text park or clarify answer has no fixed form)
+    const read = human.readReply(text);
+    const looks = read.reply || (!/^\//.test(text) && !isFactoryPrompt(text) && !/\?\s*$/.test(text) && text.split(/\s+/).length <= 12 && waitingOnUser(r));
     if (!looks) return;
     const events = require('../cli/core/events');
     const ctx = events.context(r, null);
@@ -142,9 +157,11 @@ safe((input) => {
   }
   const root0 = findRoot(input.cwd);
   const human = require('../cli/core/human');
-  // one exact reply, or several in one message ("confirm AC-2; approve"): the ship review, the digest
-  const parsed = human.parseReply(input.prompt) || human.parseBatch(input.prompt);
-  const miss = parsed ? null : human.nearMiss(input.prompt);
+  // one exact reply, or several in one message ("confirm AC-2; approve"): the ship review, the
+  // digest. The one reader (human.readReply) the scheduled path above uses too.
+  const read = human.readReply(input.prompt);
+  const parsed = read.parsed;
+  const miss = read.miss;
   const applied = !parsed && !miss && root0 ? clarifyReply(root0, input) || parkReply(root0, input) : false;
   if (root0) writeTurn(root0, { at: new Date().toISOString(), session: input.sessionId || null, factory: Boolean(parsed || applied || isFactoryPrompt(input.prompt)) });
   if (applied) return;

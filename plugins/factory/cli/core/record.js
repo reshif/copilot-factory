@@ -197,6 +197,8 @@ function recDecompose(root, state, env) {
   if (!state.epic && require('./probe').enabled(root, state)) {
     const P = require('./probe');
     probeRec = P.current(root, state) || P.run(root, { jobId: state.id });
+    // interrupted MAX_INTERRUPTED times in a row (review MAJ-2): the job asks how to probe it
+    if (probeRec.needs_answer) return { status: 'park', park_kind: 'plan_probe', park_from: 'decompose', park_reason: probeRec.problems[0], park_question: probeRec.question, park_loop: null };
     const prev = ledger.lastStep(root, state.id, 'decompose');
     const same = prev && prev.detail && prev.detail.probe_key === P.problemKey(probeRec);
     const stopped = d.probe && ['no_progress', 'ceiling'].includes(d.probe.stop);
@@ -444,7 +446,7 @@ function apply(root, { jobId, file, envelope }) {
       return e ? e.needs_paths : [];
     };
     const tasks = (res.tasks || []).map((t) => ({ id: t.id, outcome: t.outcome, summary: t.summary || '', needs_paths: lastNeeds(t.id) }));
-    const p = decisionTable.park(root, now, res.park_reason, res.park_from || env.workflow, { tasks, kind: res.park_kind, ...(res.park_next ? { next: res.park_next } : {}), ...(res.park_question ? { question: res.park_question, loop: res.park_loop || 'integrator' } : {}) });
+    const p = decisionTable.park(root, now, res.park_reason, res.park_from || env.workflow, { tasks, kind: res.park_kind, ...(res.park_next ? { next: res.park_next } : {}), ...(res.park_question ? { question: res.park_question, ...(res.park_loop === null ? {} : { loop: res.park_loop || 'integrator' }) } : {}) });
     res.park = { kind: p.kind, next: p.next };
   }
   return { job: state.id, workflow: env.workflow, config: env.config || null, ...res };

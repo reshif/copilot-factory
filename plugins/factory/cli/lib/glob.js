@@ -1,7 +1,10 @@
 'use strict';
 // Minimal glob matcher for allowed_paths / protected_paths / ui_paths.
 // Supports: ** (any depth), * (within a segment), ? (one char), and a
-// trailing "/" meaning "everything under this directory".
+// trailing "/" meaning "everything under this directory". An entry "=path" matches that one path
+// exactly, never what is under it: how a granted file is kept (review MAJ-4: a bare granted name
+// must not cover a subtree another task owns).
+const EXACT = (g) => typeof g === 'string' && g.startsWith('=');
 
 const cache = new Map();
 
@@ -44,6 +47,7 @@ function normalize(p) {
 
 function matches(file, glob) {
   const f = normalize(file);
+  if (EXACT(glob)) return f === normalize(glob.slice(1));
   const g = normalize(glob);
   // A bare directory name (no glob chars, no extension match) also covers its contents.
   if (!/[*?]/.test(g) && (f === g || f.startsWith(g.endsWith('/') ? g : g + '/'))) return true;
@@ -57,8 +61,11 @@ function matchesAny(file, globs) {
 // Rough overlap test between two glob lists (used for "no shared files in a wave").
 // Conservative: treats globs as overlapping if either could match the other's literal prefix.
 function globsOverlap(a, b) {
-  for (const x of a || []) {
-    for (const y of b || []) {
+  const plain = (g) => (EXACT(g) ? g.slice(1) : g);
+  for (const x0 of a || []) {
+    for (const y0 of b || []) {
+      const x = plain(x0);
+      const y = plain(y0);
       const px = literalPrefix(x);
       const py = literalPrefix(y);
       if (matches(px || '', y) || matches(py || '', x)) return true;
@@ -74,4 +81,7 @@ function literalPrefix(glob) {
   return idx === -1 ? g : g.slice(0, idx);
 }
 
-module.exports = { matches, matchesAny, globsOverlap, normalize };
+// A granted file as a path entry that matches only itself.
+const exact = (p) => `=${normalize(String(p).replace(/^=/, ''))}`;
+
+module.exports = { matches, matchesAny, globsOverlap, normalize, exact, EXACT };
