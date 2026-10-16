@@ -13,6 +13,7 @@ function paintFlags() {
   if (ap) flags.push(`<span class="flag ${ap.recent ? 'bad' : 'unk'}" title="${esc(autopilotText(ap))}">⚠ autopilot</span>`);
   $('#flags').innerHTML = flags.join('');
   paintAutopilot(ap);
+  paintInbox(DATA && DATA.inbox);
   const hb = $('#f-health');
   if (hb) hb.addEventListener('click', () => { UI.wireHealth = !UI.wireHealth; if (UI.wireHealth && UI.view === 'job') { UI.wireOpen = true; $('#app').classList.add('wire-open'); } if (window.innerWidth <= 960) { const t = document.querySelector('.mtabs [data-mpane="wire"]'); if (t) t.click(); } paintFlags(); renderWire(); });
   $('#proj').textContent = DATA ? `${DATA.project} · read-only${DATA.plugin_version ? ` · factory ${DATA.plugin_version}` : ''}` : 'Software Factory · read-only';

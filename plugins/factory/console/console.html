@@ -707,6 +707,18 @@ kbd { font: 500 10.5px/1 var(--mono); padding: 2px 5px 3px; border-radius: 3px; 
 }
 
 /* the wire */
+.inbox { display: block; margin: 10px 0 2px; padding: 9px 12px; border: 1px solid var(--rule); border-left: 4px solid var(--signal); border-radius: 3px; background: var(--paper); font-size: 13px; line-height: 1.45; }
+.inbox[hidden] { display: none; }
+.inbox h3 { margin: 0 0 4px; font-size: 13px; font-weight: 700; }
+.inbox h3 .cnt { margin-left: 4px; color: var(--signal); }
+.inbox ul { list-style: none; margin: 0; padding: 0; }
+.inbox .ib-item { padding: 5px 0; border-top: 1px dashed var(--rule); }
+.inbox .ib-item:first-child { border-top: 0; }
+.inbox .ib-job { font-weight: 700; }
+.inbox .ib-gate, .inbox .ib-since, .inbox .ib-note, .inbox .ib-drive, .inbox .ib-none { color: var(--muted, #666); font-size: 12px; }
+.inbox .ib-drive { margin: 0 0 4px; }
+.inbox .ib-next, .inbox .ib-how { font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.inbox code { font-size: 11.5px; }
 .wire { border-left: 1px solid var(--rule); background: var(--paper); display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; overflow: hidden; }
 .wire > .apwarn { grid-row: 2; margin: 8px 12px 0; } .wire > #wbody { grid-row: 3; }
 .wireh { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px 14px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
@@ -1749,6 +1761,7 @@ html[data-theme="light"] .dx-blueprint{
           <label class="pick2">Sort <select id="sortby" aria-label="Sort by"><option value="urgency">urgency</option><option value="updated">updated</option><option value="created">created</option><option value="id">id</option></select></label>
         </div>
         <div class="apwarn" id="ap-board" role="alert" hidden></div>
+        <div class="inbox" id="inbox" role="region" aria-label="Waiting on you (factory inbox)" hidden></div>
         <div class="board" id="board" role="list" aria-label="Jobs"></div>
       </section>
 
@@ -5354,6 +5367,7 @@ function paintFlags() {
   if (ap) flags.push(`<span class="flag ${ap.recent ? 'bad' : 'unk'}" title="${esc(autopilotText(ap))}">⚠ autopilot</span>`);
   $('#flags').innerHTML = flags.join('');
   paintAutopilot(ap);
+  paintInbox(DATA && DATA.inbox);
   const hb = $('#f-health');
   if (hb) hb.addEventListener('click', () => { UI.wireHealth = !UI.wireHealth; if (UI.wireHealth && UI.view === 'job') { UI.wireOpen = true; $('#app').classList.add('wire-open'); } if (window.innerWidth <= 960) { const t = document.querySelector('.mtabs [data-mpane="wire"]'); if (t) t.click(); } paintFlags(); renderWire(); });
   $('#proj').textContent = DATA ? `${DATA.project} · read-only${DATA.plugin_version ? ` · factory ${DATA.plugin_version}` : ''}` : 'Software Factory · read-only';
@@ -5398,6 +5412,20 @@ function connectLive() {
 }
 
 // ===================================================================== crew
+// factory inbox on the page: what waits on the human across jobs (a gate, a clarify turn, a park,
+// a merge), with the chat reply and the terminal command, and where factory drive is. Read-only:
+// the page never answers anything; a human-only command asks for its code on the user's terminal.
+function paintInbox(ib) {
+  const el = $('#inbox');
+  if (!el) return;
+  const items = (ib && ib.items) || [];
+  const d = ib && ib.drive;
+  el.hidden = !items.length && !d;
+  if (el.hidden) { el.innerHTML = ''; return; }
+  const driveLine = d ? `<p class="ib-drive">${d.running ? `<b>factory drive</b> is running ${esc(d.job || '')}${d.step ? `: <code>${esc(d.step)}</code>` : ''}` : `<b>factory drive</b> ${esc(d.status || 'stopped')}${d.last ? `: ${esc(d.last)}` : ''}`}</p>` : '';
+  const row = (it) => `<li class="ib-item ib-${esc(it.kind)}"><span class="ib-job mono">${esc(it.job)}</span> <span class="ib-what">${esc(it.what || it.kind)}</span>${it.gate ? ` <span class="ib-gate mono">${esc(it.gate)} · ${esc(String(it.hash || '').slice(0, 12))}</span>` : ''}${it.since ? ` <span class="ib-since" data-ago="${Date.parse(it.since) || ''}">${esc(shortAgo(nowMs() - Date.parse(it.since)))}</span>` : ''}${it.next ? `<div class="ib-next">${esc(it.next)}</div>` : ''}<div class="ib-how">Reply in chat: ${(it.reply || []).map((r) => `<code>${esc(r)}</code>`).join(' · ')}${it.command ? ` &nbsp;or in your terminal: <code>${esc(it.command)}</code>${it.human_only ? ' <span class="ib-note">(it asks for a code shown on that terminal)</span>' : ''}` : ''}</div></li>`;
+  el.innerHTML = `<h3>Waiting on you <span class="cnt">${items.length}</span></h3>${driveLine}${items.length ? `<ul>${items.map(row).join('')}</ul>` : '<p class="ib-none">Nothing waits on you.</p>'}`;
+}
 function renderCrew() {
   const used = {};
   if (DATA && DATA.jobs) {

@@ -91,3 +91,15 @@
 }
 
 /* the wire */
+.inbox { display: block; margin: 10px 0 2px; padding: 9px 12px; border: 1px solid var(--rule); border-left: 4px solid var(--signal); border-radius: 3px; background: var(--paper); font-size: 13px; line-height: 1.45; }
+.inbox[hidden] { display: none; }
+.inbox h3 { margin: 0 0 4px; font-size: 13px; font-weight: 700; }
+.inbox h3 .cnt { margin-left: 4px; color: var(--signal); }
+.inbox ul { list-style: none; margin: 0; padding: 0; }
+.inbox .ib-item { padding: 5px 0; border-top: 1px dashed var(--rule); }
+.inbox .ib-item:first-child { border-top: 0; }
+.inbox .ib-job { font-weight: 700; }
+.inbox .ib-gate, .inbox .ib-since, .inbox .ib-note, .inbox .ib-drive, .inbox .ib-none { color: var(--muted, #666); font-size: 12px; }
+.inbox .ib-drive { margin: 0 0 4px; }
+.inbox .ib-next, .inbox .ib-how { font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.inbox code { font-size: 11.5px; }

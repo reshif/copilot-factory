@@ -53,6 +53,7 @@
     "js/shell/palette.js",
     "js/shell/ingest.js",
     "js/shell/live.js",
+    "js/shell/inbox.js",
     "js/views/crew.js",
     "js/blueprint/host.js",
     "js/blueprint/words.js",
