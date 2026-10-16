@@ -258,6 +258,12 @@ function create(root, { title, workType, risk, epic = false, parent = null, slic
     save(root, p);
   }
   setCurrent(root, id);
+  // the project brief (.factory/project.md): created at the first job, its indexes refreshed after
+  try {
+    require('./project-brief').refresh(root, policy);
+  } catch {
+    /* a convenience: never fail job creation over it */
+  }
   return state;
 }
 

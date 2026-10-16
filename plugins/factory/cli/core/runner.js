@@ -1282,6 +1282,13 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
       '```json',
       JSON.stringify(context, null, 2),
       '```',
+      ...(() => {
+        // the project brief, for the edits the lesson-writer may propose (the CLI applies them)
+        const pb = require('./project-brief');
+        pb.ensure(root, state.policy);
+        const text = pb.read(root);
+        return text ? ['', `## Project brief (${pb.file(root)}): propose edits in your reply's project_brief, never edit the file`, '```markdown', text.trim(), '```'] : [];
+      })(),
     ].join('\n');
     // one step, logged like a workflow run's, so the console's Learn bank shows it while it runs
     const t0 = Date.now();
@@ -1313,13 +1320,16 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     const unrecorded = claimed.filter((id) => !added.some((l) => l.id === id));
     const run = ctx.runs[ctx.runs.length - 1] || {};
     const outcome = run.outcome || (reply ? 'ok' : 'invalid');
-    log({ outcome, lessons: added.map((l) => l.id), claimed, unrecorded, agent_ms: run.ms || null });
+    // the lesson-writer's proposed diff to the project brief, applied by the CLI (never by the agent)
+    const brief = reply && reply.project_brief && Array.isArray(reply.project_brief.edits) ? require('./project-brief').applyEdits(root, reply.project_brief.edits, { job: state.id }) : null;
+    log({ outcome, lessons: added.map((l) => l.id), claimed, unrecorded, agent_ms: run.ms || null, ...(brief ? { project_brief: { applied: brief.applied.length, refused: brief.refused.length } } : {}) });
     const out = {
       job: state.id,
       outcome,
       lessons: added.map((l) => ({ id: l.id, text: l.text, scope: l.scope, why: l.why || null })),
       ...(unrecorded.length ? { unrecorded, warning: `The lesson-writer named ${unrecorded.join(', ')} but no such lesson was recorded for ${state.id}; only the lessons listed were recorded.` } : {}),
       ...(reply && reply.note ? { note: reply.note } : {}),
+      ...(brief ? { project_brief: { file: require('./project-brief').file(root), applied: brief.applied, refused: brief.refused, why: reply.project_brief.why || null } } : {}),
       message: added.length ? `${added.length} lesson(s) proposed: ${added.map((l) => l.id).join(', ')}. The user can reply "accept lesson Ln" or "reject lesson Ln <why>". Run factory distill done.` : outcome === 'ok' ? 'The lesson-writer found nothing worth a lesson. Run factory distill done.' : `The lesson-writer did not finish (${outcome}); no lessons were recorded. Run factory distill done to move on, or factory distill write to try again.`,
       copilot: S.bin,
       agents: ctx.runs,

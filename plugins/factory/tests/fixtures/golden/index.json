@@ -106,5 +106,9 @@
   "god-eye.readiness": {
     "role": "god-eye",
     "schema": "readiness"
+  },
+  "lesson-writer.project-brief": {
+    "role": "lesson-writer",
+    "schema": "lessons"
   }
 }

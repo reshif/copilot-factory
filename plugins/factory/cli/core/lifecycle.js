@@ -144,6 +144,11 @@ function distillContext(root, { jobId }) {
 
 function distillDone(root, { jobId }) {
   const state = job.resolve(root, jobId);
+  try {
+    require('./project-brief').refresh(root, state.policy); // this job's ADRs and newly accepted lessons join the index
+  } catch {
+    /* a convenience */
+  }
   ledger.append(root, state.id, { kind: 'step', step: 'distill', ok: true, bound: {} });
   return { job: state.id, ok: true };
 }

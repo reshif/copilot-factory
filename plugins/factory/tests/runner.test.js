@@ -1101,3 +1101,76 @@ test('P4.4 distill learns from build trouble: parks (typed ones read generically
   assert.match(brief, /process or environment lesson/);
   assert.match(brief, /dependency_conflict/);
 });
+
+test('P4.3 project brief: created at the first job from detection, filled by ground, carried (trimmed) in every brief, its indexes refreshed at distill; your edits kept; distill proposes a diff the CLI applies', () => {
+  const root = F.makeRepo();
+  const PB = require('../cli/core/project-brief');
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ checks: [{ cmd: 'node tests/add.test.js' }] }));
+  const J = newJob(root);
+  const file = path.join(root, '.factory', 'project.md');
+  let text = fs.readFileSync(file, 'utf8');
+  for (const s of PB.SECTIONS) assert.match(text, new RegExp(`^## ${s.replace(/[()]/g, '\\$&')}$`, 'm'), s);
+  assert.match(text, /`src\/` \d+ file\(s\)/, 'the module map, from git ls-files');
+  assert.match(text, /`node tests\/add\.test\.js` \(policy check/, 'the test commands');
+  assert.match(text, /## Environment\n<!-- factory:auto environment -->\n- `none` \(detected/, 'the environment, detected and not confirmed');
+  // your edit outside the CLI's blocks survives every refresh
+  fs.writeFileSync(file, text.replace('## Notes\n', '## Notes\n- Release notes go in CHANGELOG.md, newest first.\n'));
+  // ground fills "What ground found" (once), and every brief carries the project brief
+  F.clarify(root);
+  F.cli(root, ['next']);
+  F.reply(root, 'approve');
+  const g = F.cli(root, ['wfargs', 'ground']);
+  const probe = fs.readFileSync(g.probes[0].prompt.split('\n')[1].trim(), 'utf8');
+  assert.match(probe, /## Project brief \(.*project\.md; shared across jobs, the user may edit it\)\n## Conventions/);
+  assert.match(probe, /Release notes go in CHANGELOG\.md/, 'your edits reach the agents');
+  const history = g.probes.find((p) => /history/.test(p.label || p.id));
+  assert.match(fs.readFileSync(history.prompt.split('\n')[1].trim(), 'utf8'), /earlier factory jobs' ADRs, indexed in .*project\.md[\s\S]*adr-\*\.md/, 'the history probe reads earlier ADRs through the index');
+  F.record(root, F.envelope(g, 'ok', { topics: [{ topic: 'codebase', claims: [{ claim: 'add is one arrow function', source: 'src/add.js:1' }], unknowns: [] }], degraded: [] }));
+  text = fs.readFileSync(file, 'utf8');
+  assert.match(text, new RegExp(`## What ground found\\n<!-- factory:auto ground -->\\n- From ${J}'s ground step [^\\n]*\\n- add is one arrow function \\(\`src/add\\.js:1\`\\)`));
+  assert.match(text, /- Release notes go in CHANGELOG\.md, newest first\./);
+  // distill done: this job's ADR joins the index
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'adr-001-sum.md'), '# ADR-001: add sums its arguments\n');
+  require('../cli/core/lifecycle').distillDone(root, { jobId: J });
+  text = fs.readFileSync(file, 'utf8');
+  assert.match(text, new RegExp(`- ${J} \\(Fix add\\): \`\\.factory/jobs/${J}/adr-001-sum\\.md\` — ADR-001: add sums its arguments`));
+  assert.match(text, /Release notes go in CHANGELOG/);
+  // distill's diff: applied to editable sections only, exact lines only, logged
+  const r = PB.applyEdits(root, [
+    { section: 'Conventions', add: ['Arithmetic helpers live in src/, one per file.'] },
+    { section: 'Notes', remove: ['- Release notes go in CHANGELOG.md, newest first.'], add: ['Release notes go in CHANGELOG.md, oldest first.'] },
+    { section: 'Earlier decisions (ADRs)', add: ['- forged'] },
+    { section: 'Module map', remove: [/^- `src\/`.*$/m.exec(text)[0]] }, // a real line, but inside the CLI's block
+  ], { job: J });
+  assert.deepEqual(r.applied.map((x) => [x.section, x.add || null, x.remove || null]), [['Conventions', '- Arithmetic helpers live in src/, one per file.', null], ['Notes', null, '- Release notes go in CHANGELOG.md, newest first.'], ['Notes', '- Release notes go in CHANGELOG.md, oldest first.', null]]);
+  assert.deepEqual(r.refused.map((x) => x.section), ['Earlier decisions (ADRs)', 'Module map'], 'the CLI\'s index and its auto lines are not distill\'s to edit');
+  text = fs.readFileSync(file, 'utf8');
+  assert.ok(!/none recorded yet/.test(text), 'the Conventions placeholder goes');
+  assert.ok(events(root).some((e) => e.event === 'project_brief_updated' && e.job === J && e.applied.length === 3));
+  // trimmed in briefs
+  fs.appendFileSync(file, `\n${'- filler line for the trim test\n'.repeat(400)}`);
+  const t = PB.forBrief(root);
+  assert.ok(t.length < PB.BRIEF_CHARS + 200 && /trimmed; the full brief: \.factory\/project\.md/.test(t));
+});
+
+test('P4.3 distill write: the lesson-writer sees the project brief and proposes edits; the CLI applies them', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const decisions = require('../cli/core/decisions');
+  const job = require('../cli/core/job');
+  require('../cli/core/ledger').append(root, J, { kind: 'step', step: 'challenge', ok: true, bound: {}, detail: { round: 1, findings: [{ id: 'code-1', status: 'confirmed', severity: 'major', file: 'src/add.js', summary: 'add subtracts' }] } });
+  decisions.write(root, { id: 'D-distill-1', job: J, action: 'skill', skill: 'distill', step: 'distill' });
+  const st = job.load(root, J);
+  st.last_decision_id = 'D-distill-1';
+  job.save(root, st);
+  const h = harness({ 'factory:lesson-writer': { lessons: [], nothing_to_learn: true, project_brief: { edits: [{ section: 'Test and lint commands', add: ['node tests/add.test.js runs the arithmetic tests'] }, { section: 'Accepted lessons', add: ['L99 forged'] }], why: 'verify ran it' } } });
+  const r = spawnSync('node', [F.BIN, 'distill', 'write'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: h.file, FAKE_COPILOT_LOG: path.join(path.dirname(h.file), 'copilot.jsonl') }, timeout: 120000 });
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.outcome, 'ok', r.stdout + r.stderr);
+  assert.deepEqual(out.project_brief.applied.map((x) => x.add), ['- node tests/add.test.js runs the arithmetic tests']);
+  assert.deepEqual(out.project_brief.refused.map((x) => x.section), ['Accepted lessons']);
+  const brief = fs.readFileSync(flagOf(h.log()[0].argv, '-p').split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
+  assert.match(brief, /## Project brief \(.*project\.md\): propose edits in your reply's project_brief, never edit the file/);
+  assert.match(fs.readFileSync(path.join(root, '.factory', 'project.md'), 'utf8'), /## Test and lint commands\n<!-- factory:auto commands -->\n[\s\S]*?<!-- \/factory:auto -->\n- node tests\/add\.test\.js runs the arithmetic tests\n/);
+  assert.equal(events(root).filter((e) => e.event === 'distill_write').pop().project_brief.applied, 1);
+});

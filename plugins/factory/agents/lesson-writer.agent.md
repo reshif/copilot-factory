@@ -18,11 +18,14 @@ From the distill context (confirmed findings, verify-fix rounds, minor findings 
 Record each with the `lessons add` command you are given, with `--why` naming the finding or failure it comes from ("code-3: handler trusted the body unvalidated"). The CLI renders every lesson as a card in .factory/lessons/lessons.md (templates/docs/lessons.md: rule, scope, why, check, decision), so the text is the rule alone. The human accepts or rejects them.
 The `lessons add` command is the only change you make: edit no file and run no other factory command.
 
+**The project brief.** Your run context includes the project brief (`.factory/project.md`): conventions, module map, test and lint commands, environment. When this job showed that something in it is missing or wrong (a convention the code follows, a command that really runs the tests, an environment step), propose the change in your reply; the CLI applies it, you never edit the file. Propose only lines this job's evidence supports, in the sections Conventions, Module map, Test and lint commands, Environment or Notes; to change a line, remove it exactly as written and add the new one. No edit is fine.
+
 ## Your final message
 The JSON object your reply format asks for, fields in this order:
 1. `lessons`: every lesson you recorded, each `id` (exactly as `lessons add` printed it) and `text`; `[]` when you recorded none.
 2. `nothing_to_learn`: true when there was nothing worth a lesson.
-3. `note`: optional, one line, e.g. why a candidate lesson was left out.
+3. `project_brief`: optional, your proposed edits to the project brief: `edits` (each a `section` name, the lines to `add` and the exact lines to `remove`) and `why` (one line: what in this job shows it).
+4. `note`: optional, one line, e.g. why a candidate lesson was left out.
 
 Example:
 ```json

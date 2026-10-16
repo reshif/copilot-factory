@@ -81,12 +81,17 @@ let RUN = null;
 // agents/<role>.agent.md (the agent's system prompt, started as factory:<role>), the reply
 // format and its schema in the runner's strict reply block. The brief carries only this
 // run's context. Inline briefs (no files) still carry the role text.
+// The project brief (.factory/project.md, project-brief.js), trimmed, for every brief this
+// build writes: set by build().
+let PROJECT = null;
+
 function fullText(role, context, withRole = false) {
   return [
     ...(withRole ? [roleBody(role), '', '---'] : [`# Factory ${role} — this run`, '']),
     '## This run',
     context.trim(),
     '',
+    ...(PROJECT && PROJECT.text ? [`## Project brief (${PROJECT.file}; shared across jobs, the user may edit it)`, PROJECT.text, ''] : []),
     '## Working with files',
     workingText(role),
   ].join('\n');
@@ -375,7 +380,7 @@ function ground(root, state, ctx, action) {
     : [
         ['codebase', 'Where the change lands: the files, existing patterns to follow, the tests that cover it.'],
         ['interfaces', 'Libraries, APIs, data shapes and versions involved; what callers depend on.'],
-        ['history', `Prior decisions and lessons: ADRs in the repo, ${path.join(root, '.factory', 'lessons', 'lessons.json')}, recent commits in these areas.`],
+        ['history', `Prior decisions and lessons: the earlier factory jobs' ADRs, indexed in ${path.join(root, '.factory', 'project.md')} ("Earlier decisions (ADRs)": each one is .factory/jobs/<job>/adr-*.md; read those on these areas), ADRs kept in the repo itself, the accepted lessons in ${path.join(root, '.factory', 'lessons', 'lessons.json')}, and recent commits in these areas.`],
         ['external', 'Only if the contract depends on something outside the repo that clarify\'s intent research did not already settle: official docs, cited by URL. Otherwise return no claims.'],
       ];
   const cap = state.policy.limits.max_parallel_research;
@@ -515,6 +520,15 @@ function reconcile(root, state, ctx) {
 function build(root, { jobId, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded, inline = false }) {
   const state = job.resolve(root, jobId);
   RUN = inline ? null : { n: 0, dir: path.join(root, '.factory', 'scratch', 'briefs', state.id, `${workflow}${config ? `-${config}` : ''}-${Date.now()}`) };
+  PROJECT = (() => {
+    const pb = require('./project-brief');
+    try {
+      pb.ensure(root, state.policy); // a repo whose jobs predate the brief gets one now
+      return { file: pb.file(root), text: pb.forBrief(root) };
+    } catch {
+      return null;
+    }
+  })();
   const ctx = steps.context(root, state, job.load);
   const action = { mode, scope, lanes: lanes ? String(lanes).split(',') : null, threat_model: threatModel, plan_critique: planCritique };
   if (!lanes || !action.lanes) {
