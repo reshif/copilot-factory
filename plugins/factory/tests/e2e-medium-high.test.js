@@ -260,3 +260,92 @@ test('high-risk jobs refuse recipes that are not proven', () => {
   const out = spawnSync('node', [F.BIN, 'job', 'new', '--title', 'x', '--type', 'feature', '--risk', 'high'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_RECIPES_DIR: dir } });
   assert.match(out.stdout, /no_trial_recipes|omits floor "no_trial_recipes"|only run proven recipes/);
 });
+
+// ------------------------------------------------------------------ release review B1 / M1: ship
+// A fake gh on PATH (authenticated, logs every call) and a bare origin: what would `factory ship` push?
+function fakeGh(root) {
+  const dir = require('./helpers/tmp').mkdtemp('factory-gh-');
+  const log = path.join(dir, 'gh.log');
+  fs.writeFileSync(path.join(dir, 'gh'), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$1" in\n  pr) if [ "$2" = view ]; then exit 1; fi; echo https://github.com/x/y/pull/1 ;;\nesac\nexit 0\n`);
+  fs.chmodSync(path.join(dir, 'gh'), 0o755);
+  const bare = require('./helpers/tmp').mkdtemp('factory-origin-');
+  F.sh(bare, 'git init -q --bare');
+  F.sh(root, `git remote add origin "${bare}"`);
+  const env = { PATH: `${dir}:${process.env.PATH}` };
+  return { env, bare, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []), pushed: () => F.sh(bare, "git for-each-ref --format='%(refname)'") };
+}
+
+// A job taken to the ship step by hand (decide approved, plan, build, prove, every lane clean).
+function toShip(root, risk, h) {
+  const J = F.cli(root, ['job', 'new', '--title', 'Ship me', '--type', 'feature', '--risk', risk]).job;
+  clarifyAndApprove(root, J);
+  if (risk === 'high') F.write(F.jobDir(root, J), 'threat-model.md', F.threatModelText({ job: J }));
+  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], threats: risk === 'high' ? ['TH-1'] : [] }));
+  let brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
+  assert.equal(F.record(root, F.envelope(brief, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-x.md')], summary: 's' }, critiques: [{ verdict: 'approve', items: [] }] }, { threat_model: risk === 'high' })).status, 'ok');
+  if (risk === 'high') {
+    assert.equal(next(root).step, 'H2');
+    F.reply(root, 'approve');
+  }
+  next(root);
+  brief = F.cli(root, ['wfargs', 'decompose']);
+  plan(root, J);
+  F.record(root, F.envelope(brief, 'ok', { planner: { valid: true, errors: [], path: 'plan.json' }, critique: null }));
+  assert.equal(next(root).step, 'H3');
+  F.reply(root, 'approve');
+  buildAll(root, J);
+  next(root);
+  brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  F.record(root, F.envelope(brief, 'ok', { lanes: brief.fanout.map((f) => ({ lane: f.id, findings: [] })), degraded: [], verifications: [] }, { fingerprint: brief.fingerprint }));
+  void h;
+  return J;
+}
+
+test('B1: policy ship.mode "local" at high risk skips HS AND keeps `factory ship` local: no push, no PR, even with a remote and an authenticated gh', () => {
+  const root = F.makeRepo();
+  const g = fakeGh(root);
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ ship: { mode: 'local' } }));
+  const J = toShip(root, 'high');
+  const n = F.cli(root, ['next'], { env: g.env });
+  assert.equal(n.skill, 'ship', 'HS skipped: nothing outward to sign off');
+  const r = F.cli(root, ['ship'], { env: g.env });
+  assert.equal(r.mode, 'local', JSON.stringify(r));
+  assert.deepEqual(g.calls().filter((c) => /^pr /.test(c)), [], 'no gh pr call');
+  assert.equal(g.pushed(), '', 'nothing pushed to origin');
+  const st = require('../cli/core/job').load(root, J);
+  assert.equal(st.pr.mode, 'local');
+  // a stale local pr.mode counts only for the build it shipped: a rebuilt job with a remote asks HS again
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), '{}');
+  st.pr = { ...st.pr, fingerprint: 'an-older-build' };
+  require('../cli/core/job').save(root, st);
+  const ctx = require('../cli/core/steps').context(root, require('../cli/core/job').load(root, J), require('../cli/core/job').load);
+  assert.equal(require('../cli/core/steps').isLocalShip(ctx), false);
+  assert.equal(require('../cli/core/steps').isDone(ctx, { step: 'HS' }), false);
+});
+
+test('M1: at medium `factory ship` itself refuses to push without "approve ship"; with the draft opt-in it opens only a draft; approved, a normal PR', () => {
+  const root = F.makeRepo();
+  const g = fakeGh(root);
+  const J = toShip(root, 'medium');
+  const n = F.cli(root, ['next'], { env: g.env });
+  assert.equal(n.rule, 'ship.review', 'the router asks for the push approval');
+  // run directly anyway: refused at the CLI, nothing pushed
+  let r = F.cli(root, ['ship'], { env: g.env });
+  assert.equal(r.code, 'needs_ship_approval', JSON.stringify(r));
+  assert.equal(g.pushed(), '');
+  // the repository's one-time opt-in: a draft, never a normal PR
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ ship: { auto_pr: 'draft' } }));
+  r = F.cli(root, ['ship'], { env: g.env });
+  assert.equal(r.mode, 'github', JSON.stringify(r));
+  assert.ok(g.calls().some((c) => /^pr create .*--draft/.test(c)), g.calls().join('\n'));
+  // the human's "approve ship" for this build: a normal PR
+  const root2 = F.makeRepo();
+  const g2 = fakeGh(root2);
+  toShip(root2, 'medium');
+  F.cli(root2, ['next'], { env: g2.env });
+  F.reply(root2, 'approve ship');
+  r = F.cli(root2, ['ship'], { env: g2.env });
+  assert.equal(r.mode, 'github', JSON.stringify(r));
+  assert.ok(g2.calls().some((c) => /^pr create /.test(c) && !/--draft/.test(c)), g2.calls().join('\n'));
+  void J;
+});

@@ -182,7 +182,22 @@ function ship(root, { jobId, local = false, title, draft = null }) {
   }
   const head = git.revParse(root, state.branch);
   const fresh = job.load(root, state.id);
-  const ready = local ? { ok: false, why: 'local mode requested' } : ghReady(root);
+  // one predicate (steps.isLocalShip): a ship the router treated as local never pushes
+  const localShip = local || steps.isLocalShip(ctx);
+  const ready = localShip ? { ok: false, why: local ? 'local mode requested' : 'local mode (policy ship.mode "local", or no remote)' } : ghReady(root);
+  // Pushing is outward: at high risk HS signed it off (the before_ship floors); at low/medium it
+  // needs the human's "approve ship" for this build, or the repository's opt-in to automatic
+  // draft PRs (policy ship.auto_pr "draft"), in which case the PR is a draft. Enforced here, not
+  // only by the router, so no caller of `factory ship` can push past it.
+  let forceDraft = false;
+  if (ready.ok && state.risk !== 'high') {
+    const approved = Boolean(state.ship_approval && state.ship_approval.fingerprint === ctx.b.fingerprint);
+    if (!approved) {
+      if (((require('./policy').load(root).ship || {}).auto_pr) !== 'draft') fail(`${state.id}: pushing and opening a pull request needs your "approve ship" for this build (the ship review), or the repository's opt-in to automatic draft PRs (policy ship.auto_pr "draft"). Nothing was pushed.`, 'needs_ship_approval');
+      forceDraft = true;
+    }
+  }
+  if (ready.ok && state.risk === 'high' && !steps.approved(ctx, 'HS', ctx.b.fingerprint)) fail(`${state.id}: pushing at high risk needs the HS sign-off for this build. Nothing was pushed.`, 'needs_ship_approval');
   if (ready.ok) {
     const push = git.run(root, ['push', '-u', 'origin', state.branch], { allowFail: true });
     if (push.code !== 0) fail(`git push failed: ${push.stderr}`, 'push_failed');
@@ -193,12 +208,12 @@ function ship(root, { jobId, local = false, title, draft = null }) {
     } else {
       const bodyFile = path.join(root, '.factory', 'scratch', `pr-body-${state.id}.md`);
       writeText(bodyFile, prBody(readText(reportFile, '')));
-      const asDraft = wantsDraft(root, state, ctx, draft);
+      const asDraft = forceDraft || wantsDraft(root, state, ctx, draft);
       const pr = gh(['pr', 'create', '--base', state.base_branch, '--head', state.branch, '--title', title || `${state.id}: ${state.title}`, '--body-file', bodyFile, ...(asDraft ? ['--draft'] : [])], root);
       if (pr.code !== 0) fail(`gh pr create failed: ${pr.stderr}`, 'pr_failed');
       url = pr.stdout.split('\n').pop();
     }
-    fresh.pr = { mode: 'github', url, fingerprint: ctx.b.fingerprint, head, checks: {}, merged: false, opened_at: nowIso(), ...(existing.code !== 0 && wantsDraft(root, state, ctx, draft) ? { draft: true } : {}) };
+    fresh.pr = { mode: 'github', url, fingerprint: ctx.b.fingerprint, head, checks: {}, merged: false, opened_at: nowIso(), ...(existing.code !== 0 && (forceDraft || wantsDraft(root, state, ctx, draft)) ? { draft: true } : {}) };
   } else {
     fresh.pr = { mode: 'local', fingerprint: ctx.b.fingerprint, head, checks: {}, merged: false, prepared_at: nowIso(), why_local: ready.why };
   }

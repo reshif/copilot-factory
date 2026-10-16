@@ -163,11 +163,13 @@ function lastAtFingerprint(ctx, step) {
   return s.length ? s[s.length - 1] : null;
 }
 
-// Local mode: ship pushes nothing (no "origin" remote, or policy ship.mode "local"), so the
+// Local mode: ship pushes nothing (policy ship.mode "local", or no "origin" remote), so the
 // irreversible sign-off HS has nothing outward to sign off: the human's own merge (H4) is the step.
-function shipsLocally(ctx) {
+// ONE predicate for "is this a local ship?" and "may ship push?": the router (HS, the push
+// approval), the floors and `factory ship` all use it, so nothing skipped as local ever pushes.
+// A job already shipped counts its earlier mode only for that same build (a rebuilt job asks again).
+function isLocalShip(ctx) {
   const { root, state } = ctx;
-  if (state.pr && state.pr.mode) return state.pr.mode === 'local';
   const live = (() => {
     try {
       return require('./policy').load(root);
@@ -178,12 +180,17 @@ function shipsLocally(ctx) {
   // the repository's setting (its live policy); a job snapshot from before 0.9.0 has none
   const ship = live.ship || (state.policy && state.policy.ship) || {};
   if (ship.mode === 'local') return true;
+  let remote = false;
   try {
-    return !git.hasRemote(root);
+    remote = git.hasRemote(root);
   } catch {
-    return false;
+    remote = false;
   }
+  if (!remote) return true;
+  if (state.pr && state.pr.mode && state.pr.fingerprint && state.pr.fingerprint === ctx.b.fingerprint) return state.pr.mode === 'local';
+  return false;
 }
+const shipsLocally = isLocalShip;
 
 function isDone(ctx, stepDef) {
   const { root, state, b } = ctx;
@@ -259,4 +266,4 @@ function isDone(ctx, stepDef) {
   }
 }
 
-module.exports = { lockedRecipe, combinedOf, combinedParts, context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };
+module.exports = { isLocalShip, lockedRecipe, combinedOf, combinedParts, context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };
