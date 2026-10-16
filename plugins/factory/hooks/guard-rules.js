@@ -830,10 +830,10 @@ function ownJobDir(jobId) {
 
 // The CLI's test-only human seam and the seal-secret override are for the test suite: a shell
 // command that sets them (bash, env, export, PowerShell $env:) is never an agent's business.
-const TEST_SEAM = /\bFACTORY_(TEST_HUMAN\w*|SECRET_FILE)\b/;
+const TEST_SEAM = /\bFACTORY_(TEST_HUMAN\w*|SECRET_FILE|DEPS_FETCH_\w+)\b/;
 
 function checkBash(root, cmd, policy, opts = {}) {
-  if (TEST_SEAM.test(String(cmd || ''))) return 'FACTORY_TEST_HUMAN and FACTORY_SECRET_FILE are the test suite\'s seam into human-only actions, never set from here. Human-only actions are the user\'s: their chat reply, or their own terminal.';
+  if (TEST_SEAM.test(String(cmd || ''))) return 'FACTORY_TEST_HUMAN, FACTORY_SECRET_FILE and FACTORY_DEPS_FETCH_* are the test suite\'s seams (into human-only actions, and the dependency fetch), never set from here. Human-only actions are the user\'s: their chat reply, or their own terminal.';
   const ctx = { root, cwd: opts.cwd || root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [], scripts: 0 };
   try {
     return walk(String(cmd || ''), ctx, 0);

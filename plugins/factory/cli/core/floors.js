@@ -83,7 +83,7 @@ function check(ctx, floor) {
       // approved by the critics, or stopped (ceiling or no progress) and the human approved the
       // design at its gate (H2, or the combined design + plan gate)
       const humanSaw = steps.approved(ctx, 'H2', b.design) || (Boolean(a.H3 && a.H3.design === b.design) && steps.approved(ctx, 'H3', steps.gateHash(ctx, 'H3')));
-      return c.verdict === 'approve' || ((c.rounds >= state.policy.limits.max_design_critique_rounds || ['ceiling', 'no_progress'].includes(c.stop)) && humanSaw);
+      return c.verdict === 'approve' || ((c.rounds >= state.policy.limits.max_design_critique_rounds || ['ceiling', 'no_progress', 'critic_failed'].includes(c.stop)) && humanSaw);
     }
     case 'plan_validated':
       return steps.isDone(ctx, { step: 'decompose' });

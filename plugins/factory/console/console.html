@@ -4792,7 +4792,7 @@ function gateReviewHtml(r) {
   const E = r.environment;
   const parts = [];
   if (r.approves) parts.push(`<p class="meta">One approval covers: ${esc(r.approves.join(' + '))}.</p>`);
-  if (dc) parts.push(list(`Design critics: ${dc.verdict}${dc.stop && dc.stop !== 'approved' ? ` (${dc.stop === 'no_progress' ? 'stopped: no progress' : 'stopped at the ceiling'})` : ''}`, (dc.open || []).map(item), dc.open && dc.open.length ? `Open after ${dc.rounds} round(s)${dc.revised_after_last ? '; the architect revised after the last critique' : ''}: your call.` : null, dc.open && dc.open.length ? 'bad' : null));
+  if (dc) parts.push(list(`Design critics: ${dc.verdict}${dc.stop && dc.stop !== 'approved' ? ` (${dc.stop === 'no_progress' ? 'stopped: no progress' : dc.stop === 'critic_failed' ? 'a critic returned no result' : 'stopped at the ceiling'})` : ''}`, (dc.open || []).map(item), dc.open && dc.open.length ? `Open after ${dc.rounds} round(s)${dc.revised_after_last ? '; the architect revised after the last critique' : ''}: your call.` : null, dc.open && dc.open.length ? 'bad' : null));
   if (pc && (pc.open || []).length) parts.push(list(`Plan critique: ${pc.verdict}`, pc.open.map(item), null, 'bad'));
   if (L) parts.push(list(`API ledger: ${L.entries} verified quote(s) from the pinned source${L.rejected ? `, ${L.rejected} rejected` : ''}`, [...(L.symbols || []).map(esc), ...(L.gaps || []).map((g) => `<span class="bad">gap: ${esc(g)}</span>`)]));
   if (P) parts.push(list(`Plan probe: ${P.ok ? 'every verify command can run' : `${(P.problems || []).length} problem(s)`}${P.current ? '' : ' (for an earlier plan)'}`, [...(P.problems || []).map((x) => `<span class="bad">${esc(x)}</span>`), ...(P.commands || []).map(esc)]));

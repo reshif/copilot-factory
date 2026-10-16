@@ -150,13 +150,13 @@ function recDecide(root, state, env) {
   const approved = last && last.verdict === 'approve';
   // 0.10.0: a critique loop that stopped (ceiling, no progress) goes to the gate with its open
   // objections; it never parks. A legacy envelope (no stop) keeps the old rule.
-  const stopped = ['ceiling', 'no_progress'].includes(d.stop);
+  const stopped = ['ceiling', 'no_progress', 'critic_failed'].includes(d.stop);
   const ok = Boolean(approved || stopped || (critiques.length >= max && humanWillSee) || !h2Step);
   ledger.append(root, state.id, { kind: 'step', step: 'decide', ok, bound: { contract: b.contract, design: b.design }, detail: { kind: a.kind, paths, critique: last ? last.verdict : null, rounds: critiques.length, threat_model: needThreat, ...(d.stop ? { stop: d.stop, open: openItems.length } : {}), ...(d.targeted ? { targeted: true } : {}) } });
   if (ok) {
     if (approved) return { status: 'ok', message: `Design critique approved${critiques.length > 1 ? ` after ${critiques.length} rounds` : ''}.` };
     const where = h2Step ? `you will see them at ${h2Step.step}` : 'no gate in this recipe reviews the design: they are listed in the completion report';
-    return { status: 'ok', open: openItems.map((it) => ({ id: it.id, critic: it.critic, severity: it.severity, issue: it.issue })), message: `Design critique still has ${openItems.length || 'open'} objection(s) after ${critiques.length} round(s)${stopped ? ` (${d.stop === 'no_progress' ? 'no progress' : 'ceiling'}; the architect revised after the last critique)` : ''}; ${where}.` };
+    return { status: 'ok', open: openItems.map((it) => ({ id: it.id, critic: it.critic, severity: it.severity, issue: it.issue })), message: `Design critique still has ${openItems.length || 'open'} objection(s) after ${critiques.length} round(s)${stopped ? ` (${d.stop === 'no_progress' ? 'no progress' : d.stop === 'critic_failed' ? `a critic returned no result: ${((last && last.missing) || []).join(', ')}` : 'ceiling'}${d.stop === 'critic_failed' ? '' : '; the architect revised after the last critique'})` : ''}; ${where}.` };
   }
   return { status: 'park', park_reason: `Design critique did not approve after ${critiques.length} round(s) and no human gate will review it.`, message: 'Parked.' };
 }

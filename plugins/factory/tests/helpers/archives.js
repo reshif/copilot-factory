@@ -80,7 +80,7 @@ function fakeIndex(dir) {
   const serve = (eco, ext) => `f='${dir}/${eco}/{name}-{version}.${ext}'; if [ -f "$f" ]; then cp "$f" {dest}/; else echo "ERROR: Could not find a version that satisfies the requirement {name}=={version} (network is unreachable)" >&2; exit 1; fi`;
   return {
     dir,
-    env: { FACTORY_DEPS_FETCH_PYPI: serve('pypi', 'whl'), FACTORY_DEPS_FETCH_NPM: serve('npm', 'tgz') },
+    env: { NODE_ENV: 'test', FACTORY_DEPS_FETCH_PYPI: serve('pypi', 'whl'), FACTORY_DEPS_FETCH_NPM: serve('npm', 'tgz') },
     add(eco, name, version, files) {
       fs.mkdirSync(path.join(dir, eco), { recursive: true });
       const f = path.join(dir, eco, `${name}-${version}.${eco === 'pypi' ? 'whl' : 'tgz'}`);

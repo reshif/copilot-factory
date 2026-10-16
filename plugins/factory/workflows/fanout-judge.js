@@ -149,8 +149,10 @@ async function critiqueRound(design, round) {
   const status = (it) => { const v = verifications.find((x) => x.finding_id === it.id); return v ? v.status : brief.verifier ? 'unverifiable' : 'confirmed' }
   for (const it of serious) it.verified = status(it)
   const open = serious.filter((it) => it.verified !== 'refuted')
-  const verdict = open.length ? 'revise' : 'approve'
-  return { round, verdict, verdicts, items, verifications, open }
+  // a critic that returned nothing (twice) approved nothing: the round is not an approval
+  const missing = critics.filter((c, i) => !outs[i]).map((c) => c.id || 'god-eye')
+  const verdict = open.length || missing.length ? 'revise' : 'approve'
+  return { round, verdict, verdicts, items, verifications, open, missing }
 }
 
 if (brief.config === 'decide') {
@@ -174,7 +176,7 @@ if (brief.config === 'decide') {
     const c = await critiqueRound(design, round)
     critiques.push(c)
     revisedAfterLast = false
-    if (!c.open.length) { stop = 'approved'; break }
+    if (!c.open.length) { stop = c.missing.length ? 'critic_failed' : 'approved'; break }
     history.push(c.open.map(itemKey))
     // always one revise after the last critique: the gate gets the design with these addressed
     phase(`decide: architect revises (round ${round})`)
@@ -184,8 +186,8 @@ if (brief.config === 'decide') {
   }
   const last = critiques[critiques.length - 1]
   // the shape recDecide has always read (verdict, items per round), plus the evidence
-  const out = critiques.map((c) => ({ round: c.round, verdict: c.verdict, verdicts: c.verdicts, items: c.items, verifications: c.verifications, open: c.open.map((it) => it.id) }))
-  return envelope('ok', `Design: ${design.kind} (${(design.paths || []).join(', ')}). Critics: ${last ? last.verdict : 'none'} after ${critiques.length} round(s)${stop !== 'approved' ? ` (${stop === 'no_progress' ? 'no progress' : 'ceiling'}; ${last.open.length} open, revised after the last critique: shown at the gate)` : ''}.`, { options: inputs, degraded, judge: design, critiques: out, stop, revised_after_last: revisedAfterLast, open: last ? last.open : [], targeted: Boolean(brief.targeted) }, { threat_model: Boolean(brief.threat_model) })
+  const out = critiques.map((c) => ({ round: c.round, verdict: c.verdict, verdicts: c.verdicts, items: c.items, verifications: c.verifications, open: c.open.map((it) => it.id), ...(c.missing.length ? { missing: c.missing } : {}) }))
+  return envelope('ok', `Design: ${design.kind} (${(design.paths || []).join(', ')}). Critics: ${last ? last.verdict : 'none'} after ${critiques.length} round(s)${stop !== 'approved' ? ` (${stop === 'no_progress' ? 'no progress' : stop === 'critic_failed' ? `no result from ${last.missing.join(', ')}` : 'ceiling'}; ${last.open.length} open${stop === 'critic_failed' ? '' : ', revised after the last critique'}: shown at the gate)` : ''}.`, { options: inputs, degraded, judge: design, critiques: out, stop, revised_after_last: revisedAfterLast, open: last ? last.open : [], targeted: Boolean(brief.targeted) }, { threat_model: Boolean(brief.threat_model) })
 }
 
 if (brief.config === 'challenge') {

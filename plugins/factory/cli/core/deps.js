@@ -61,8 +61,9 @@ function settings(root, state) {
   const snap = (state && state.policy && state.policy.deps) || {};
   const s = { ...DEFAULTS, ...live, ...snap };
   s.fetch = { ...DEFAULTS.fetch, ...(live.fetch || {}), ...(snap.fetch || {}) };
-  // FACTORY_DEPS_FETCH_<ECO> overrides the command (the test suite's fake index, a mirror)
-  for (const e of ECOSYSTEMS) if (process.env[`FACTORY_DEPS_FETCH_${e.toUpperCase()}`]) s.fetch[e] = process.env[`FACTORY_DEPS_FETCH_${e.toUpperCase()}`];
+  // FACTORY_DEPS_FETCH_<ECO> overrides the command for the test suite's fake index only
+  // (NODE_ENV=test; the guard refuses a shell command that sets it). A mirror goes in policy.deps.fetch.
+  if (process.env.NODE_ENV === 'test') for (const e of ECOSYSTEMS) if (process.env[`FACTORY_DEPS_FETCH_${e.toUpperCase()}`]) s.fetch[e] = process.env[`FACTORY_DEPS_FETCH_${e.toUpperCase()}`];
   return s;
 }
 
@@ -73,6 +74,9 @@ const SAFE_NAME = /^@?[A-Za-z0-9][A-Za-z0-9._~-]*(\/[A-Za-z0-9][A-Za-z0-9._~-]*)
 const SAFE_VERSION = /^v?[0-9][A-Za-z0-9.+_-]*$/;
 const EXACT = /^v?\d+(\.\d+)*([.+_-]?[A-Za-z0-9.]+)*$/; // 1.2.3, 2.4.3rc1, v1.2.0, 1.2.3+local
 const isExact = (v) => typeof v === 'string' && EXACT.test(v.trim()) && !/[x*]$/i.test(v.trim()) && !/^[<>=~^!]/.test(v.trim());
+
+// Pinned systems that are runtimes or services, not packages: never fetched.
+const RUNTIMES = /^(python|python3|cpython|node|nodejs|node\.js|npm|go|golang|java|jdk|ruby|rust|rustc|dotnet|php|perl|postgres|postgresql|mysql|mariadb|redis|docker|docker compose|kubernetes|ubuntu|debian|alpine|windows|macos|linux)$/i;
 
 const keyOf = (p) => `${p.ecosystem}:${String(p.name).toLowerCase()}`;
 const dirName = (p) => `${String(p.name).replace(/^@/, '').replace(/[/@\\]/g, '_')}-${p.version}`;
@@ -258,6 +262,7 @@ function wanted(root, state) {
     const data = C.load(root, state.id);
     for (const it of (data && data.items) || []) {
       if (it.kind !== 'pin' || it.status !== 'decided' || !it.value || !it.system) continue;
+      if (RUNTIMES.test(String(it.system).trim())) continue; // a runtime or a service, not a package to read
       const eco = inferEcosystem(it.system, repo, `${(it.source && it.source.quote) || ''}\n${contractText}`);
       push({ ecosystem: eco || 'unknown', name: it.system, version: it.value, from: `clarify pin ${it.id}`, ...(isExact(it.value) ? {} : { range: it.value }) });
     }
@@ -639,4 +644,4 @@ function cleanup(root, jobId) {
   removeTree(DIR(root, jobId));
 }
 
-module.exports = { DEFAULTS, ECOSYSTEMS, DIR, MANIFEST, REQUEST, LEDGER, settings, parseSpec, repoDeps, inferEcosystem, wanted, pinsHash, addRequest, readRequest, fetch, fetchOne, show, fetched, gaps, briefText, checkLedger, writeLedger, readLedger, checkFile, cleanup, unzip, untgz, unpack, safeRel, setReadOnly, removeTree, isExact };
+module.exports = { RUNTIMES, DEFAULTS, ECOSYSTEMS, DIR, MANIFEST, REQUEST, LEDGER, settings, parseSpec, repoDeps, inferEcosystem, wanted, pinsHash, addRequest, readRequest, fetch, fetchOne, show, fetched, gaps, briefText, checkLedger, writeLedger, readLedger, checkFile, cleanup, unzip, untgz, unpack, safeRel, setReadOnly, removeTree, isExact };

@@ -20,6 +20,7 @@ The JSON object your reply format asks for, fields in this order:
 2. `errors`: the validate command's remaining errors, word for word; `[]` when valid.
 3. `path`: the slices.json you wrote.
 4. `summary`: one or two sentences: the slices and what each delivers.
+5. `deps`: leave it out for slices (each slice job's planner names the pinned packages it needs, each `ecosystem`, `name` and `version`).
 
 Example:
 ```json
