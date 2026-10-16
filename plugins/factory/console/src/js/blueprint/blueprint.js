@@ -1552,7 +1552,7 @@
     // The Clarify block (clarify v3): where clarify is, every item with who decided it, the findings with
     // their source and verdict, research gaps and drops — the latest state, as factory clarify status prints it
     var CL_STATUS = { open: "open", to_decide: "on the sheet", decided: "decided", done: "done", assumed: "assumed", deferred: "to design", dropped: "dropped" };
-    var CL_STAGE = { readback: "reading your words back", readback_wait: "waiting for your ok", research: "researching", sheet_wait: "waiting for your sheet answer", interpret: "reading your answer", redirect: "reading your redirect", redirect_wait: "waiting for your ok on the redirect", assemble: "writing the contract", check: "readiness check", ready: "done: H1 next" };
+    var CL_STAGE = { readback: "reading your words back", readback_wait: "waiting for your ok", research: "researching", sheet_wait: "waiting for your sheet answer", interpret: "reading your answer", redirect: "reading your redirect", redirect_wait: "waiting for your ok on the redirect", assemble: "writing the contract", check: "readiness check", dispute: "checking a disputed objection", diagnose: "diagnosing the readiness loop", ready: "done: H1 next" };
     var EV_WORD = { repo: "repo, quote checked", pinned: "docs for the confirmed version", docs: "docs (no version to pin)", other_version: "another version: not used", unpinned: "a moving page: not used", bad_quote: "quote not at the line: not used", unsourced: "no quote: not used" };
     function clarifyBlock(j) {
       var c = j.clarify, tt = c.totals || {};

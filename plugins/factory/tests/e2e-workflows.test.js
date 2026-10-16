@@ -77,7 +77,8 @@ test('bug@low through the real workflow scripts', async () => {
     } else F.cli(root, ['clarify', 'reply', 'ok'], { allowFail: false });
     n = F.cli(root, ['next']);
   }
-  assert.deepEqual(stages, ['readback', 'readback_wait', 'research', 'sheet_wait', 'assemble', 'check'], 'read-back, ok, one research pass, the sheet (only facts to assume), ok, contract, readiness');
+  // 0.9.0: the read-back is shown, not waited on, and a sheet of facts alone is no turn (H1 lists them)
+  assert.deepEqual(stages, ['readback', 'research', 'assemble', 'check'], 'read-back, one research pass, contract, readiness: no user turn before H1');
   const facts = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8')).items.filter((it) => it.kind === 'fact');
   assert.ok(facts.some((it) => it.strength === 'evidence' && it.status === 'decided'), 'the repo finding settled the fact');
   assert.equal(n.step, 'H1');

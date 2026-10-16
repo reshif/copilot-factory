@@ -72,7 +72,7 @@ function run(root, jobId) {
         else if (covering.every((r) => r.pass)) ok.push(type);
         else bad.push(`${type}: ${covering.filter((r) => !r.pass).map((r) => `${r.cmd}${r.flaky ? ' (flaky)' : ''}`).join(', ')} failed`);
       } else if (type === 'human') {
-        if (evidence.some((e) => e.ac === ac.id && e.type === 'human' && e.pass)) ok.push('human');
+        if (evidence.some((e) => e.ac === ac.id && e.type === 'human' && e.pass) || anyEvidence.some((e) => e.ac === ac.id && e.type === 'human' && e.pass && humanStillHolds(root, state, e))) ok.push('human');
         else bad.push(`human: reply "confirm ${ac.id}" after checking it yourself`);
       } else if (type === 'diff' || type === 'doc') {
         const valid = anyEvidence.filter((e) => e.ac === ac.id && e.type === type && e.pass && recordStillHolds(root, state, e, fingerprint, changed));
@@ -95,6 +95,36 @@ function run(root, jobId) {
     if (s === 'proven') ledger.append(root, state.id, { kind: 'evidence', ac, type: 'verify', fingerprint, pass: true, source: file });
   }
   return { job: state.id, ok, fingerprint, acs, why, failed_commands: results.filter((r) => !r.pass).map((r) => ({ cmd: r.cmd, code: r.code, flaky: r.flaky, output: r.output })) };
+}
+
+// What a human check of a criterion rests on: the files the job changed inside the allowed paths
+// of the tasks that cover it, with their blobs on the job branch. null when no task covers it.
+function humanScope(root, state, ac) {
+  const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
+  const paths = [...new Set((plan.tasks || []).filter((t) => (t.criteria_ids || []).includes(ac) || (t.verify_commands || []).some((c) => typeof c === 'object' && (c.covers || []).includes(ac))).flatMap((t) => t.allowed_paths || []))];
+  if (!paths.length || !state.branch) return null;
+  let changed = [];
+  try {
+    changed = git.changedFiles(root, state.base_commit, state.branch);
+  } catch {
+    return null;
+  }
+  const { matchesAny } = require('../lib/glob');
+  const files = {};
+  for (const f of changed.filter((x) => matchesAny(x, paths))) files[f] = blobAt(root, state, f);
+  return { paths, files };
+}
+
+// A human check from an earlier build still holds when none of the files it rests on changed
+// since (same blobs, no file added or removed under those paths): a fix round elsewhere leaves it.
+function humanStillHolds(root, state, e) {
+  if (!e.files || !Array.isArray(e.scope) || !e.scope.length) return false;
+  const now = humanScope(root, state, e.ac);
+  if (!now) return false;
+  const a = Object.keys(e.files).sort();
+  const b = Object.keys(now.files).sort();
+  if (a.length !== b.length || a.some((f, i) => f !== b[i])) return false;
+  return a.every((f) => e.files[f] === now.files[f]);
 }
 
 // The file's blob on the job branch (null when the build has no such file).
@@ -138,4 +168,4 @@ function addEvidence(root, { jobId, ac, type, path: p, note }) {
   return ledger.append(root, state.id, { kind: 'evidence', ac: ac.toUpperCase(), type, path: p || null, blob, note: note || '', fingerprint: ctx.b.fingerprint, pass: true, source: 'agent' });
 }
 
-module.exports = { run, addEvidence, collectCommands };
+module.exports = { humanScope, humanStillHolds, run, addEvidence, collectCommands };

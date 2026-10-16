@@ -164,6 +164,10 @@ test('standard@medium: ADR → H2, plan → H3, three lanes, floors before ship'
 
 test('full@high: threat model required, H2 and H3 human, HS before ship, trial recipes refused', () => {
   const root = F.makeRepo();
+  // a remote, so ship would push: HS signs off that outward step (local mode skips it, below)
+  const bare = fs.mkdtempSync(path.join(require('os').tmpdir(), 'factory-origin-'));
+  F.sh(bare, 'git init -q --bare');
+  F.sh(root, `git remote add origin "${bare}"`);
   const J = F.cli(root, ['job', 'new', '--title', 'Auth math', '--type', 'feature', '--risk', 'high']).job;
   assert.equal(F.cli(root, ['job', 'show']).recipe.id, 'full@high');
   clarifyAndApprove(root, J);

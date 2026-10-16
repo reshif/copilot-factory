@@ -37,7 +37,15 @@ function toProve(root, { policyChecks } = {}) {
   return { J, worktree: s.worktree };
 }
 
-test('row 5: a failing proof opens a verify-fix round; the cap parks; resume allows one more', () => {
+// The loop engine's diagnosis, as factory run fanout-judge --config diagnose records it.
+function diagnose(root, diagnosis) {
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'diagnose']);
+  assert.equal(b.config, 'diagnose', JSON.stringify(b).slice(0, 300));
+  return F.record(root, F.envelope(b, 'ok', { loop: b.mode, diagnosis }));
+}
+const ASK = { cause: 'the policy check needs a file no task may create', needs_user: true, approach: '', question: 'Who creates POLICY_OK: a task (amend its paths) or you?', options: [{ key: 'a', text: 'A task creates it: amend T1 to allow POLICY_OK', consequences: 'T1 may write it' }, { key: 'b', text: 'I create it myself', consequences: 'the check passes once it exists' }], recommendation: 'a' };
+
+test('row 5: a failing proof opens a verify-fix round; the loop engine escalates, diagnoses, then parks with the diagnosis\'s question; any reply resumes with the words', () => {
   const root = F.makeRepo();
   const { J } = toProve(root, { policyChecks: ['test -f POLICY_OK'] });
   assert.match(next(root).command, /verify run/);
@@ -50,8 +58,15 @@ test('row 5: a failing proof opens a verify-fix round; the cap parks; resume all
   n = next(root);
   assert.equal(n.workflow, 'realize');
   assert.equal(F.cli(root, ['job', 'show']).counters.verify_fix_rounds, 1);
-  // three more failing rounds hit the cap (3) and park
-  for (let i = 0; i < 3; i++) {
+  const rules = [n.rule];
+  // the same command keeps failing: no progress
+  for (let i = 0; i < 6 && n.action !== 'parked'; i++) {
+    if (n.config === 'diagnose') {
+      assert.equal(diagnose(root, ASK).status, 'ok');
+      n = next(root);
+      rules.push(n.rule);
+      continue;
+    }
     const s = F.cli(root, ['task', 'start', 'T1']);
     F.write(s.worktree, 'src/add.js', `module.exports = (a, b) => a + b; // try ${i}\n`);
     F.sh(s.worktree, 'git commit -qam retry');
@@ -62,14 +77,30 @@ test('row 5: a failing proof opens a verify-fix round; the cap parks; resume all
     F.record(root, F.envelope(b, 'ok', { integrator: { status: 'merged', summary: '' } }));
     F.cli(root, ['verify', 'run']);
     n = next(root);
+    rules.push(n.rule);
   }
+  // round 1, a round without progress, then the builders on the stronger model, then the diagnosis
+  assert.deepEqual(rules, ['order.next_step', 'row5.acs_unproven', 'loop.verify.escalate', 'loop.verify.diagnose', 'loop.verify.no_progress'], rules.join(', '));
   assert.equal(n.action, 'parked');
-  assert.equal(n.rule, 'cap.verify_fix_rounds');
-  assert.equal(next(root).action, 'parked');
-  assert.match(F.reply(root, 'resume').message, /one more verify round/);
-  n = next(root);
-  assert.equal(n.scope, 'verifyFix');
-  assert.ok(F.cli(root, ['why']).decisions.some((d) => d.rule === 'cap.verify_fix_rounds'));
+  assert.equal(n.park.kind, 'verify_fix_rounds');
+  assert.equal(n.park.question, ASK.question, 'the park asks the diagnosis\'s question, never a bare resume');
+  assert.deepEqual(n.park.options.map((o) => o.key), ['a', 'b']);
+  assert.equal(n.park.recommendation, 'a');
+  assert.match(n.reason, /Question: Who creates POLICY_OK[\s\S]*a\) A task creates it[^\n]*\(recommended\)/);
+  const st = F.cli(root, ['job', 'show']);
+  assert.ok(st.loops.verify.diagnosis.needs_user);
+  // the escalated round ran its builders on the stronger model
+  assert.ok(F.cli(root, ['why']).decisions.some((d) => d.rule === 'loop.verify.escalate'));
+  // any reply of the human's resumes it, with their words for the next round
+  const r = require('../cli/core/human').replyToPark(root, { text: 'I created POLICY_OK myself; try again', channel: 'chat' });
+  assert.match(r.message, /Resumed/);
+  const after = F.cli(root, ['job', 'show']);
+  assert.equal(after.status, 'active');
+  assert.equal(after.human_notes[0].text, 'I created POLICY_OK myself; try again');
+  assert.equal(after.human_notes[0].question, ASK.question);
+  assert.equal(after.loops.verify.rounds, 0, 'a new loop segment');
+  assert.equal(after.loops.verify.segments, 1);
+  void J;
 });
 
 test('repeat guard: the same step from the same state three times parks', () => {
@@ -114,28 +145,50 @@ test('row 2: editing an approved contract routes to an amendment; approval re-bi
   assert.ok(!F.cli(root, ['why']).decisions.some((d) => d.chosen === 'clarify' && d.ts > state.amendment.applied_at), 'no re-clarify after an approved amendment');
 });
 
-test('row 2: files outside the allowed paths on the job branch park the job', () => {
+test('row 2: files outside the allowed paths on the job branch are reverted by the CLI, with a record; the same files again park with the question', () => {
   const root = F.makeRepo();
   const { J } = toProve(root);
   // someone commits straight onto the job branch outside the plan's paths
   const wt = path.join(root, '.factory', 'worktrees', J);
   F.write(wt, 'docs/notes.md', 'x\n');
   F.sh(wt, 'git add -A && git commit -qm sneaky');
-  const n = next(root);
+  let n = next(root);
+  assert.notEqual(n.action, 'parked', JSON.stringify(n).slice(0, 300));
+  assert.match(n.command || '', /verify run/, 'proven again on the reverted build');
+  const st = F.cli(root, ['job', 'show']);
+  assert.deepEqual(st.scope_reverts[0].files, ['docs/notes.md']);
+  assert.ok(F.cli(root, ['why']).decisions.some((d) => d.rule === 'row2.scope_reverted'));
+  assert.equal(require('../cli/lib/git').run(root, ['cat-file', '-e', `${st.branch}:docs/notes.md`], { allowFail: true }).code !== 0, true, 'gone from the job branch');
+  assert.ok(require('../cli/core/ledger').all(root, J).some((e) => e.kind === 'scope_revert'));
+  // again: the CLI never widens nor reverts twice; the human decides
+  F.write(wt, 'docs/notes.md', 'y\n');
+  F.sh(wt, 'git add -A && git commit -qm again');
+  n = next(root);
   assert.equal(n.action, 'parked');
   assert.equal(n.rule, 'row2.drift_scope');
   assert.match(n.reason, /docs\/notes\.md/);
+  assert.match(n.park.question, /outside its allowed paths\. Allow it\?/);
 });
 
-test('review rounds cap parks with confirmed findings still open', () => {
+test('review-fix loop: confirmed findings that never shrink escalate, are diagnosed, then park with the specific question; a contract-level finding goes straight to an amendment', () => {
   const root = F.makeRepo();
   toProve(root);
   F.cli(root, ['verify', 'run']);
   let n;
-  for (let round = 1; round <= 4; round++) {
+  const rules = [];
+  for (let round = 1; round <= 8; round++) {
     n = next(root);
     if (n.action === 'parked') break;
+    if (n.config === 'diagnose') {
+      rules.push(n.rule);
+      diagnose(root, { cause: 'each round adds a new problem in the same line', needs_user: true, approach: '', question: 'Should add reject non-numbers, or coerce them?', options: [{ key: 'a', text: 'Reject them with a TypeError', consequences: 'callers must pass numbers' }, { key: 'b', text: 'Coerce them with Number()', consequences: 'strings work' }], recommendation: 'a' });
+      continue;
+    }
     if (n.workflow === 'realize') {
+      rules.push(n.rule);
+      // an escalated fix round runs its builders on the stronger model from the first attempt
+      if (n.rule === 'loop.review.escalate') assert.equal(F.cli(root, ['wfargs', 'realize']).tasks.T1.builder.model, 'opus');
+      else assert.ok(!F.cli(root, ['wfargs', 'realize']).tasks.T1.builder.model);
       const s = F.cli(root, ['task', 'start', 'T1']);
       F.write(s.worktree, 'src/add.js', `module.exports = (a, b) => a + b; // r${round}\n`);
       F.sh(s.worktree, 'git commit -qam r');
@@ -147,13 +200,26 @@ test('review rounds cap parks with confirmed findings still open', () => {
       F.cli(root, ['verify', 'run']);
       n = next(root);
     }
-    assert.equal(n.config, 'challenge');
+    assert.equal(n.config, 'challenge', JSON.stringify(n).slice(0, 300));
     const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
     F.record(root, F.envelope(b, 'ok', { lanes: [{ lane: 'code', findings: [{ id: `code-${round}`, severity: 'blocker', file: 'src/add.js', line: 1, summary: `Problem ${round} in changed code` }] }], degraded: [], verifications: [{ finding_id: `code-${round}`, status: 'confirmed', reason: 'reproduced' }] }, { fingerprint: b.fingerprint }));
   }
-  n = next(root);
   assert.equal(n.action, 'parked');
-  assert.equal(n.rule, 'cap.review_rounds');
+  assert.equal(n.rule, 'loop.review.no_progress');
+  assert.equal(next(root).action, 'parked');
+  assert.deepEqual(rules, ['row4.confirmed_serious', 'row4.confirmed_serious', 'loop.review.escalate', 'loop.review.diagnose']);
+  assert.equal(n.park.question, 'Should add reject non-numbers, or coerce them?');
+  assert.ok(F.cli(root, ['job', 'show']).loops.review.diagnosis, 'diagnosed before it parked');
+  // a confirmed finding at the contract level: no fix round, an amendment
+  const root2 = F.makeRepo();
+  toProve(root2);
+  F.cli(root2, ['verify', 'run']);
+  next(root2);
+  const b2 = F.cli(root2, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  F.record(root2, F.envelope(b2, 'ok', { lanes: [{ lane: 'code', findings: [{ id: 'code-1', severity: 'major', file: 'src/add.js', line: 1, summary: 'AC-1 asks for integer addition, but the callers pass prices in floats' }] }], degraded: [], verifications: [{ finding_id: 'code-1', status: 'confirmed', reason: 'the AC is wrong for the callers', level: 'contract' }] }, { fingerprint: b2.fingerprint }));
+  const a = next(root2);
+  assert.deepEqual([a.action, a.skill, a.rule], ['skill', 'amend', 'row4.contract_level']);
+  assert.match(a.reason, /at the contract level[\s\S]*propose an amendment/);
 });
 
 test('convergence: from round 2 a new major on unchanged code becomes minor', () => {
@@ -191,7 +257,7 @@ test('stale results are refused: a contract edited while clarify ran', () => {
   assert.equal(r.status, 'stale');
 });
 
-test('budget cap parks; resume raises the cap by half', () => {
+test('budget cap parks; the budget is absolute: only a resume that names the grant (resume +50%) raises it', () => {
   const root = F.makeRepo();
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ limits: { max_agent_runs_per_job: 5 } }));
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
@@ -204,8 +270,13 @@ test('budget cap parks; resume raises the cap by half', () => {
   const n = next(root);
   assert.equal(n.action, 'parked');
   assert.equal(n.rule, 'cap.budget');
-  F.reply(root, 'resume');
+  // 0.9.0: the budget is absolute; a bare resume grants nothing and is refused (nothing changes)
+  assert.throws(() => F.reply(root, 'resume'), /budget is absolute: say how much more/);
+  assert.equal(F.cli(root, ['job', 'show']).status, 'parked');
+  assert.equal(F.cli(root, ['job', 'show']).policy.limits.max_agent_runs_per_job, 5);
+  F.reply(root, 'resume +50%');
   assert.equal(F.cli(root, ['job', 'show']).policy.limits.max_agent_runs_per_job, 8);
+  assert.equal(F.cli(root, ['job', 'show']).status, 'active');
 });
 
 test('human-only actions refuse the agent path', () => {
@@ -477,7 +548,7 @@ test('clarify: God Eye must confirm the intent; contract check names the Intent 
   assert.match(c.problems.join('\n'), /No "## Intent" section/);
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   // God Eye's "intent unclear" is a blocker for the read-back: it runs again with the objection
-  let r = F.clarify(root, { checklist: { intent_clear: false }, objections: [{ check: 'intent_clear', severity: 'blocker', stage: 'readback', ref: 'Goal', issue: 'the Goal and the Intent disagree', fix: 'ask who it is for' }] });
+  let r = F.clarify(root, { after: 'check', checklist: { intent_clear: false }, objections: [{ check: 'intent_clear', severity: 'blocker', stage: 'readback', ref: 'Goal', issue: 'the Goal and the Intent disagree', fix: 'ask who it is for' }] });
   assert.equal(r.status, 'continue');
   const n = next(root);
   assert.equal(n.clarify.stage, 'readback');

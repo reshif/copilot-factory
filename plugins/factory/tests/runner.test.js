@@ -69,8 +69,13 @@ function clarifyThrough(h, root) {
   return out;
 }
 
-function newJob(root, policy) {
-  if (policy) fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify(policy));
+// These runner tests stop at clarify's read-back turn, so their jobs keep the blocking read-back
+// (clarify.readback "wait"); since 0.9.0 the default shows it without waiting (`waitReadback: false`).
+function newJob(root, policy, { waitReadback = true } = {}) {
+  const pf = path.join(root, '.factory', 'policy.json');
+  const base = policy || (fs.existsSync(pf) ? JSON.parse(fs.readFileSync(pf, 'utf8') || '{}') : null);
+  const pol = waitReadback ? { ...(base || {}), clarify: { readback: 'wait', ...((base || {}).clarify || {}) } } : policy;
+  if (pol) fs.writeFileSync(pf, JSON.stringify(pol));
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   return J;
@@ -657,7 +662,7 @@ function runArgs(n) {
 
 test('bug@low through factory run: clarify, ground, realize (integrating its wave), challenge (a finding verified), each dry-run first', () => {
   const root = F.makeRepo();
-  const J = newJob(root);
+  const J = newJob(root, null, { waitReadback: false });
   const h = harness(CREW, { FAKE_CREW: JSON.stringify({ finding: 'major', verdict: 'refuted' }) });
   const step = (expect, check) => {
     const n = F.cli(root, ['next']);
@@ -691,7 +696,8 @@ test('bug@low through factory run: clarify, ground, realize (integrating its wav
     assert.equal(r.__code, 0, JSON.stringify(r) + r.__stderr);
     stages.push([n.clarify.stage, roles(r).join('+'), r.status, dry.agents.length === r.agents.length]);
   }
-  assert.deepEqual(stages, [['readback', 'interviewer', 'needs_user', true], ['research', 'brief-writer+researcher', 'needs_user', true], ['assemble', 'contract-writer', 'continue', true], ['check', 'god-eye', 'ok', true]]);
+  // 0.9.0: the read-back is shown, not waited on, and facts alone are no sheet: no user turn before H1
+  assert.deepEqual(stages, [['readback', 'interviewer', 'continue', true], ['research', 'brief-writer+researcher', 'continue', true], ['assemble', 'contract-writer', 'continue', true], ['check', 'god-eye', 'ok', true]]);
   const L = JSON.parse(fs.readFileSync(path.join(F.jobDir(root, J), 'clarify.json'), 'utf8'));
   assert.deepEqual(L.evidence.map((e) => [e.id, e.verdict, e.source]), [['E-1', 'repo', 'src/add.js:1']]);
   assert.deepEqual(L.items.filter((x) => x.kind === 'fact').map((x) => [x.strength, x.value]), [['evidence', 'add is implemented in src/add.js and subtracts']], 'settled by the repo line, shown under facts I\'ll assume');

@@ -348,10 +348,17 @@ test('3 doc/human ACs: no fix round — doc gaps route to factory evidence add, 
   assert.match(e.blob, /^[0-9a-f]{40,64}$/);
   assert.equal(F.cli(root, ['evidence', 'add', 'AC-2', '--type', 'diff', '--path', 'README.md', '--job', J]).code, 'bad_input', 'diff evidence must point at a changed file');
   assert.equal(F.cli(root, ['evidence', 'add', 'AC-2', '--type', 'doc', '--path', 'NOPE.md', '--job', J]).code, 'bad_input');
+  // 0.9.0: the human's own check waits for the ship review (asked once, after the review and its
+  // fix rounds): the job goes on to challenge first
+  n = F.cli(root, ['next']);
+  assert.equal(n.config, 'challenge', JSON.stringify(n).slice(0, 300));
+  const cb = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+  assert.equal(F.record(root, F.envelope(cb, 'ok', { lanes: cb.fanout.map((f) => ({ lane: f.id, findings: [] })), degraded: [], verifications: [] }, { fingerprint: cb.fingerprint })).status, 'ok');
   n = F.cli(root, ['next']);
   assert.equal(n.action, 'wait');
-  assert.equal(n.rule, 'row5.human_confirm');
-  assert.match(n.reason, /reply "confirm AC-3"/);
+  assert.equal(n.rule, 'ship.review');
+  assert.deepEqual(n.ship_review.acs, ['AC-3']);
+  assert.match(n.reason, /Ship review[\s\S]*"confirm AC-3"/);
   F.reply(root, 'confirm AC-3');
   n = F.cli(root, ['next']);
   assert.equal(n.rule, 'row5.evidence_recorded');
@@ -390,6 +397,7 @@ test('3 doc/human ACs: owners of failures ignore evidence-only criteria and neve
 
 test('4 question rounds: a clarify stage that waits on the user is no clarify step; a ground round that asks stays ok:false with outcome needs_user', () => {
   const root = F.makeRepo();
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ clarify: { readback: 'wait' } })); // a read-back that waits
   const J = F.cli(root, ['job', 'new', '--title', 'Sync VLAN', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   F.cli(root, ['next']);

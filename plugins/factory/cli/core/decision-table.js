@@ -18,16 +18,20 @@ const git = require('../lib/git');
 // or the change that fixes it), so the human gets a route, not only a stop. The park is logged
 // as its own decision row (action "park", rule park.<kind>) unless the router records it with
 // its routing decision (`logged`), so `factory why` shows every park with its reason.
+// Since 0.9.0 a loop park (review_rounds, verify_fix_rounds, unverified_finding, the integrator)
+// comes only after the loop engine (cli/core/loop.js) escalated and diagnosed, and carries the
+// diagnosis's specific question (park.question, park.options, park.recommendation): any reply of
+// the human's is resume + content. These texts are the fallback for parks from before.
 const PARK_NEXT = {
-  budget: 'Reply "resume" for 50% more agent runs, or "cancel job".',
-  scope_violation: 'Files outside the allowed paths changed: revert them and reply "resume", or ask for an amendment that allows them.',
-  review_rounds: 'Reply "resume" for one more review-fix round, or say what to change (an amendment).',
-  verify_fix_rounds: 'Reply "resume" for one more verify-fix round, or say what to change (an amendment).',
+  budget: 'The agent-run budget is spent (the budget is absolute). Grant more? a) +50%: reply "resume +50%"; b) +100%: reply "resume +100%"; c) stop: "cancel job". Recommended: a, if the job was converging.',
+  scope_violation: 'Files outside the allowed paths changed and could not be reverted automatically: revert them and reply "resume", or ask for an amendment that allows them.',
+  review_rounds: 'Answer the question above in your own words (it resumes the job with them), or say what to change (an amendment).',
+  verify_fix_rounds: 'Answer the question above in your own words (it resumes the job with them), or say what to change (an amendment).',
   no_progress: 'The same step kept coming back unchanged: read factory why, fix the cause (often the environment or a plan change), then reply "resume".',
   plan_invalid: 'The plan still fails validation: reply "resume" for one more planning round, or say how to split the work.',
   environment_broken: 'Fix the build environment (factory env check shows the failing command; factory env set changes it), then reply "resume".',
-  unverified_finding: 'Reply "resume" to re-verify once more, or settle it: "dismiss finding <id> <why>" or "accept finding <id> <why>".',
-  clarify: 'Reply "resume" for one more try, or "proceed" to go on with the gaps shown (at a research, contract or readiness cap).',
+  unverified_finding: 'Settle it: "dismiss finding <id> <why>" or "accept finding <id> <why>" (or reply with what to check, and it is re-verified with your words).',
+  clarify: 'An agent of clarify failed twice: reply "resume" to run it again (your words, if any, go with it), or "cancel job".',
   dependency_conflict: 'A task\'s dependencies do not merge even on a branch rebuilt from the integrated job branch: amend the plan (make one task depend on the other, or give the shared file to one task), then reply "resume".',
   needs_paths: 'A builder needs files outside its allowed paths: amend the plan to give them to it (the amend skill), then approve the amendment.',
   task_exhausted: 'A task used its attempts: reply "resume" for another round of attempts (they continue from the last one), or amend the task.',
@@ -36,11 +40,14 @@ const PARK_NEXT = {
   conflict: 'A conflict outside the tasks\' paths: amend the plan (paths or dependencies), then reply "resume".',
   design: 'The design critique did not approve and no human gate reviews it: reply "resume" for another round, or say what must change.',
   transient: 'Copilot kept failing with rate limits or network errors: wait a few minutes, then reply "resume".',
+  integration: 'Answer the question above in your own words (it resumes the job with them), or amend the plan.',
   epic_gate: 'Decide: a new slice (amend the epic) or a fix job for a merged slice.',
   manual: 'Parked by hand: reply "resume" when ready, or "cancel job".',
   other: 'Read factory why --format md, then reply "resume", "cancel job" or "abandon job".',
 };
 const FROM_KIND = { budget: 'budget', drift: 'scope_violation', review: 'review_rounds', verify: 'verify_fix_rounds', repeat: 'no_progress', decompose: 'plan_invalid', environment: 'environment_broken', reverify: 'unverified_finding', clarify: 'clarify', manual: 'manual', epic_gate: 'epic_gate', transient: 'transient', 'fanout-judge': 'design', decide: 'design' };
+// The parks a loop ends in: asked with a specific question (the inspector's R19 flags one without).
+const LOOP_PARKS = new Set(['review_rounds', 'verify_fix_rounds', 'unverified_finding', 'integration', 'budget']);
 
 function parkKind(reason, from, extra = {}) {
   if (extra.kind && PARK_NEXT[extra.kind]) return extra.kind;
@@ -75,12 +82,15 @@ function park(root, state, reason, from, extra = {}) {
   const kind = parkKind(reason, from, extra);
   const next = parkNext(kind, extra);
   state.status = 'parked';
-  state.park = { reason, at: nowIso(), from: from || null, kind, next };
+  // the specific question the park asks (a loop's diagnosis, or the budget question): any reply
+  // of the human's answers it and resumes the job with those words
+  const q = extra.question || (kind === 'budget' ? { question: 'Grant more agent runs for this job?', options: [{ key: 'a', text: '+50% more agent runs (resume +50%)' }, { key: 'b', text: '+100% more (resume +100%)' }, { key: 'c', text: 'stop here (cancel job)' }], recommendation: 'a' } : null);
+  state.park = { reason, at: nowIso(), from: from || null, kind, next, ...(q ? { question: q.question, options: q.options || [], recommendation: q.recommendation || null, ...(q.cause ? { cause: q.cause } : {}), ...(q.diagnosed !== undefined ? { diagnosed: q.diagnosed } : {}) } : {}), ...(extra.loop ? { loop: extra.loop } : {}) };
   state.pending_gate = { id: 'P', hash: null, docs: [], at: nowIso() };
   job.save(root, state);
   if (!extra.logged) {
     try {
-      decisions.write(root, { job: state.id, action: 'park', chosen: 'park', rule: `park.${kind}`, reason: String(reason || '').slice(0, 1000), park: { kind, from: from || null, next }, during: state.last_decision_id || null, node: state.parent ? `${state.parent}/${state.id}` : state.id, recipe: state.recipe.id, recipe_version: state.recipe.version });
+      decisions.write(root, { job: state.id, action: 'park', chosen: 'park', rule: `park.${kind}`, reason: String(reason || '').slice(0, 1000), park: { kind, from: from || null, next, ...(state.park.question ? { question: state.park.question, options: (state.park.options || []).length, diagnosed: Boolean(state.park.diagnosed) } : {}) }, during: state.last_decision_id || null, node: state.parent ? `${state.parent}/${state.id}` : state.id, recipe: state.recipe.id, recipe_version: state.recipe.version });
     } catch {
       /* the park itself is in the state; the row is for factory why */
     }
@@ -291,10 +301,32 @@ function attemptedSince(root, state) {
 // After "deny" at a gate, the step that produced the document runs again (with the reason
 // in its brief) instead of the unchanged document being presented again. Once that step
 // has run since the denial, the gate is shown even if the document came out the same.
-const PRODUCER = { H1: 'clarify', EH1: 'clarify', H2: 'decide', EH2: 'decide', HF: 'decide', H3: 'decompose', EH3: 'decompose' };
+// HS (the ship sign-off) has no document producer: "deny HS <reason>" becomes a finding the
+// builders fix in a fix round (every task reopened with your words), then prove and review again.
+const PRODUCER = { H1: 'clarify', EH1: 'clarify', H2: 'decide', EH2: 'decide', HF: 'decide', H3: 'decompose', EH3: 'decompose', HS: 'realize' };
+
+function deniedShip(ctx) {
+  const { root, state } = ctx;
+  const hash = steps.gateHash(ctx, 'HS');
+  if (!hash) return null;
+  const denied = (state.denials || []).filter((d) => d.gate === 'HS' && d.hash === hash).pop();
+  if (!denied) return null;
+  const key = `deny:HS@${denied.at}`;
+  if ((state.handled_denials || []).includes(key)) return null; // its fix round ran (the same build came out): HS is shown again
+  const tasks = steps.planTasks(ctx).map((t) => t.id);
+  if (!tasks.length) return null;
+  const finding = { id: 'human-1', lane: 'human', severity: 'major', status: 'confirmed', file: null, line: null, summary: denied.reason || '(no reason given)', from: 'HS denial' };
+  reopenTasks(state, tasks, 'review');
+  state.fix = { kind: 'fix', source: key, fingerprint: ctx.b.fingerprint, tasks, findings: [finding.id], owners: { [finding.id]: '*' }, human_findings: [finding] };
+  state.handled_denials = [...(state.handled_denials || []), key].slice(-20);
+  job.save(root, state);
+  const realize = ctx.recipe.steps.find((s) => s.step === 'realize');
+  return { ...stepAction(ctx, realize), scope: 'fix', denied: { gate: 'HS', reason: denied.reason || '', at: denied.at }, reason: `You denied HS: "${denied.reason || ''}". Your reason is the finding of a fix round (every task reopened with it); then prove and review run again and HS is shown on the new build.` };
+}
 
 function deniedReroute(ctx, gate) {
   const { root, state } = ctx;
+  if (gate === 'HS') return deniedShip(ctx);
   const from = PRODUCER[gate];
   const producer = from && ctx.recipe.steps.find((s) => s.step === from);
   if (!producer || producer.run.startsWith('cli:')) return null;
@@ -361,6 +393,192 @@ function decide(root, jobId) {
   return r;
 }
 
+// ---------------------------------------------------------------- the ship review (0.9.0)
+// One review before ship, shown once, after the review and its fix rounds converged: the human's
+// own checks of criteria (confirm AC-n, asked once on the final build), the serious findings no
+// verifier could settle (accept or dismiss each), and the push approval (HS at high risk, "approve
+// ship" at low or medium when the PR is not an opted-in draft). One reply may answer all of it
+// (the parts separated by ";"). Nothing in it is decided without the human.
+function humanAcsPending(ctx, al) {
+  const pr = steps.lastAtFingerprint(ctx, 'prove');
+  if (!pr || pr.ok) return [];
+  const gaps = proveGaps(pr.detail || {});
+  if (gaps.build.length || gaps.evidence.length || !gaps.human.length) return [];
+  if (ownersOfFailures(ctx, pr.detail || {}).length) return [];
+  const since = String(pr.at || '');
+  const recorded = ledger.all(ctx.root, ctx.state.id).filter((e) => e.kind === 'evidence' && e.type === 'human' && e.pass && e.at > since);
+  void al;
+  return gaps.human.filter((ac) => !recorded.some((e) => e.ac === ac));
+}
+
+// The last review left only serious findings no verifier could settle, and their re-verification
+// loop ended (record.js, state.unsettled): they wait for the human in the ship review.
+function challengeAwaitsHuman(ctx) {
+  const { state } = ctx;
+  const ch = steps.lastAtFingerprint(ctx, 'challenge');
+  if (!ch || ch.ok || !state.unsettled || state.unsettled.fingerprint !== ctx.b.fingerprint) return false;
+  const d = ch.detail || {};
+  if ((d.missing || []).length) return false;
+  const serious = (d.findings || []).filter((f) => ['blocker', 'major'].includes(f.severity));
+  if (serious.some((f) => f.status === 'confirmed')) return false;
+  return serious.filter((f) => f.status === 'unverified').length > 0;
+}
+
+function unsettledFindings(ctx) {
+  return require('./floors').openUnverifiedFindings(ctx).map((f) => ({ id: f.id, lane: f.lane, severity: f.severity, file: f.file || null, line: f.line || null, summary: f.summary, verification: f.verification || null }));
+}
+
+// Push approval at low/medium: shipping would push and open a PR, and the repo has not opted in
+// to automatic draft PRs (policy ship.auto_pr "draft"). At high risk HS is the approval.
+function pushNeeded(ctx) {
+  const { root, state } = ctx;
+  if (state.risk === 'high' || steps.shipsLocally(ctx)) return false;
+  // the repository's one-time opt-in (its live policy, not a job's snapshot)
+  if (((require('./policy').load(root).ship || {}).auto_pr) === 'draft') return false;
+  if (state.ship_approval && state.ship_approval.fingerprint === ctx.b.fingerprint) return false;
+  try {
+    return require('./ship').ghReady(root).ok;
+  } catch {
+    return false;
+  }
+}
+
+function shipReviewText(J, r) {
+  const L = [`Ship review · ${J}: one reply settles it (separate the parts with ";").`];
+  if (r.acs.length) L.push(`- Check on the built job worktree yourself, then: ${r.acs.map((a) => `"confirm ${a}"`).join(', ')}.`);
+  for (const f of r.findings) L.push(`- ${f.id} [${f.severity}] ${f.file || ''}${f.line ? `:${f.line}` : ''} ${String(f.summary).slice(0, 160)} — no verifier could settle it (also a second one on the stronger model): "accept finding ${f.id} <why>" (a known risk that ships) or "dismiss finding ${f.id} <why>" (not a problem).`);
+  if (r.push) L.push('- Push and open the pull request: "approve ship" (the repository has not opted in to automatic draft PRs: policy ship.auto_pr "draft").');
+  if (r.hs) L.push('- The irreversible sign-off: "approve" (or "deny <what must change>": your words become a fix round).');
+  const ex = [...r.acs.map((a) => `confirm ${a}`), ...r.findings.slice(0, 1).map((f) => `dismiss finding ${f.id} <why>`), ...(r.push ? ['approve ship'] : []), ...(r.hs ? ['approve'] : [])];
+  if (ex.length > 1) L.push(`For example: ${ex.join('; ')}`);
+  return L.join('\n');
+}
+
+// The next step in recipe order, skipping what only waits for the ship review (prove that lacks
+// only the human's checks, a challenge that left only unsettled findings); the ship review itself
+// when that is what is left before ship.
+function orderAction(ctx, al, { humanAcs = null } = {}) {
+  const { state } = ctx;
+  const acs = humanAcs || humanAcsPending(ctx, al);
+  const awaits = challengeAwaitsHuman(ctx);
+  const skip = (x) => (x.step === 'prove' && acs.length && steps.lastAtFingerprint(ctx, 'prove')) || (x.step === 'challenge' && awaits);
+  const s = ctx.recipe.steps.find((x) => !steps.isDone(ctx, x) && !skip(x));
+  if (!s) return { done: true };
+  if (['HS', 'ship'].includes(s.step)) {
+    const review = { acs, findings: awaits ? unsettledFindings(ctx) : [], push: s.step === 'ship' && pushNeeded(ctx), hs: s.step === 'HS' };
+    if (review.acs.length || review.findings.length || review.push || review.hs) {
+      const text = shipReviewText(state.id, review);
+      if (s.step === 'HS') return { ...stepAction(ctx, s), ship_review: review, reason: text, rule: 'ship.review_hs' };
+      if (review.acs.length || review.findings.length || review.push) return { step: 'ship_review', run: 'human:ship_review', action: 'wait', acs: review.acs, ship_review: review, reason: text, rule: 'ship.review' };
+    }
+  }
+  // a review waiting on the human, with steps before ship still to run (none in the shipped
+  // recipes): the step runs, the review waits
+  const ci = localReverify(ctx, s);
+  return { ...(ci || stepAction(ctx, s)), rule: ci ? 'order.ci_reverify' : 'order.next_step' };
+}
+
+// Local mode: the human merged the job branch into the base branch (it contains the shipped head):
+// recorded as their merge (H4), with the commit that brought it in. Agents cannot move factory/J-*
+// branches (the guard), so a merge of the job branch is the human's.
+function detectLocalMerge(root, state) {
+  if (!state.pr || state.pr.merged || state.pr.mode === 'github') return null;
+  const head = state.pr.head || state.branch;
+  if (!head || !state.base_branch || !git.branchExists(root, state.base_branch)) return null;
+  if (!git.isAncestor(root, head, state.base_branch)) return null;
+  const open = require('./floors').openUnverifiedFindings(steps.context(root, state, job.load));
+  if (open.length) return null; // H4 waits for the ship review to settle them, as "merged" does
+  const merges = git.run(root, ['rev-list', '--ancestry-path', '--merges', '--reverse', `${head}..${state.base_branch}`], { allowFail: true }).stdout.split('\n').filter(Boolean);
+  const sha = merges[0] || git.revParse(root, state.base_branch);
+  state.pr.merged = true;
+  state.pr.merge_commit = sha;
+  state.pr.merged_at = nowIso();
+  state.pr.merged_via = 'detected';
+  job.save(root, state);
+  try {
+    decisions.write(root, { job: state.id, action: 'merge.detected', chosen: 'merged', rule: 'merge.detected', reason: `${state.base_branch} contains the shipped head ${String(head).slice(0, 12)}; merge commit ${sha.slice(0, 12)}`, commit: sha, during: state.last_decision_id || null });
+  } catch {
+    /* the merge is in the state */
+  }
+  require('./events').append(root, { event: 'merge_detected', job: state.id, commit: sha, mode: 'local' });
+  return sha;
+}
+
+// Files a build changed outside the allowed paths (or into protected ones): put back as they are
+// on the base commit, on the job branch, by the CLI, with a record; the job proves again. Never
+// widens anything: only the human's amendment does. The same files a second time park.
+function revertScope(root, state, files) {
+  const done = (state.scope_reverts || []).flatMap((r) => r.files);
+  if (!files.length || files.some((f) => done.includes(f))) return null;
+  const tasks = require('./tasks');
+  let wt;
+  try {
+    wt = tasks.ensureJobWorktree(root, state);
+  } catch {
+    return null;
+  }
+  if (git.status(wt)) return null;
+  for (const f of files) {
+    const atBase = git.run(wt, ['cat-file', '-e', `${state.base_commit}:${f}`], { allowFail: true }).code === 0;
+    if (atBase) git.run(wt, ['checkout', state.base_commit, '--', f], { allowFail: true });
+    else git.run(wt, ['rm', '-q', '--cached', '--ignore-unmatch', '--', f], { allowFail: true });
+    if (!atBase) {
+      try {
+        require('fs').rmSync(require('path').join(wt, f), { force: true });
+      } catch {
+        /* gone */
+      }
+    }
+  }
+  git.run(wt, ['add', '-A', '--', ...files], { allowFail: true });
+  if (git.run(wt, ['diff', '--cached', '--quiet'], { allowFail: true }).code === 0) return null;
+  const c = git.run(wt, ['commit', '-q', '-m', `factory: revert changes outside the allowed paths\n\n${files.join('\n')}\n\nFactory-Job: ${state.id}`], { allowFail: true });
+  if (c.code !== 0) return null;
+  const rec = { at: nowIso(), files, commit: git.revParse(wt, 'HEAD') };
+  state.scope_reverts = [...(state.scope_reverts || []), rec].slice(-10);
+  job.save(root, state);
+  // the job branch still holds every task branch: reconcile stays done at the new fingerprint
+  const ctx = steps.context(root, state, job.load);
+  ledger.append(root, state.id, { kind: 'scope_revert', files, commit: rec.commit });
+  if (steps.allTasksMerged(ctx)) ledger.append(root, state.id, { kind: 'step', step: 'reconcile', ok: true, bound: { fingerprint: ctx.b.fingerprint }, detail: { scope_revert: files } });
+  require('./events').append(root, { event: 'scope_revert', job: state.id, files, commit: rec.commit });
+  return rec;
+}
+
+// ---------------------------------------------------------------- the router's loops (loop.js)
+// The review-fix and verify-fix loops run on the shared loop engine: each round's open problems
+// are fingerprinted; the loop goes on while they shrink, escalates the builders to the stronger
+// model after two rounds without shrinking, then has God Eye diagnose it, and only then parks
+// with the diagnosis's specific question. The policy ceiling (limits.max_review_rounds,
+// max_verify_fix_rounds) stays a hard stop; the agent-run budget stays the absolute one.
+const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+function findingKey(f) {
+  return { key: `${f.lane || ''}|${f.file || ''}|${f.rule || norm(f.summary).slice(0, 60)}` };
+}
+function loopPolicy(root, state, ceiling) {
+  const pol = require('../lib/util').deepMerge(require('./policy').load(root), state.policy || {});
+  return require('./loop').policyFor(pol, { ceiling });
+}
+function loopStep(ctx, name, blockers, ceiling) {
+  const { root, state } = ctx;
+  state.loops = state.loops || {};
+  const d = require('./loop').shouldContinue(state.loops[name], blockers, loopPolicy(root, state, ceiling));
+  state.loops[name] = { ...d.state, segments: (state.loops[name] || {}).segments || 0 };
+  return d;
+}
+// The diagnosis step: God Eye, as factory run fanout-judge --config diagnose --mode <loop>.
+function diagnoseAction(name, why) {
+  return { step: 'diagnose', run: 'workflow:fanout-judge', action: 'workflow', workflow: 'fanout-judge', config: 'diagnose', mode: name, reason: why };
+}
+// A loop that stopped: the park asks the diagnosis's question, with options and a recommendation.
+function loopPark(ctx, al, name, kind, what, blockers, fallback) {
+  const { root, state } = ctx;
+  const q = require('./loop').question(state.loops[name], { what, blockers, fallbackOptions: fallback.options, fallbackRecommendation: fallback.recommendation });
+  const replies = fallback.replies;
+  park(root, state, `${q.text}\n${replies}`, name === 'review' ? 'review' : 'verify', { logged: true, kind, loop: name, question: q, next: `${q.question}${q.options.length ? ` ${q.options.map((o) => `${o.key}) ${o.text}${o.key === q.recommendation ? ' (recommended)' : ''}`).join(' · ')}` : ''} — ${replies}` });
+  return record(root, state, al, { job: state.id, title: state.title, status: state.status, recipe: `${state.recipe.id}@v${state.recipe.version}`, risk: state.risk, action: 'parked', reason: state.park.reason, park: state.park, rule: `loop.${name}.${q.rule}` });
+}
+
 function route(root, jobId) {
   let state = job.resolve(root, jobId);
   const out = (o) => ({ job: state.id, title: state.title, status: state.status, recipe: `${state.recipe.id}@v${state.recipe.version}`, risk: state.risk, ...o });
@@ -375,7 +593,18 @@ function route(root, jobId) {
       job.save(root, state);
     }
     const p = state.park || {};
-    return out({ action: 'parked', reason: p.reason, park: { kind: p.kind || parkKind(p.reason, p.from), next: p.next || parkNext(p.kind || parkKind(p.reason, p.from)), from: p.from || null, at: p.at || null }, instructions: 'Wait for the human: resume <step> · cancel job · abandon job.' });
+    // clarify: the exact replies, and for a job parked before 0.8.3 on findings the writer can fix,
+    // that resume now continues automatically (the user still says resume)
+    let advice = null;
+    if (p.from === 'clarify') {
+      try {
+        advice = require('./clarify').parkAdvice(root, state);
+      } catch {
+        advice = null;
+      }
+    }
+    const next = (advice && advice.upgraded && advice.next) || p.next || parkNext(p.kind || parkKind(p.reason, p.from));
+    return out({ action: 'parked', reason: p.reason, park: { kind: p.kind || parkKind(p.reason, p.from), next, from: p.from || null, at: p.at || null, ...(advice ? { clarify: { upgraded: advice.upgraded, findings: advice.findings } } : {}) }, instructions: 'Wait for the human: resume <step> · cancel job · abandon job.' });
   }
   if (state.amendment && state.amendment.status === 'open') {
     return out({ action: 'skill', skill: 'amend', step: 'amend', reason: 'An amendment is open: finish editing, then `factory amend submit`.' });
@@ -422,7 +651,15 @@ function route(root, jobId) {
     }
     case 'no_drift':
       if (al.detail.drift === 'scope') {
-        park(root, state, `Files outside the allowed or into protected paths: ${(al.detail.outside || []).join(', ')}`, 'drift', { logged: true });
+        // put back automatically (the build goes through prove and review again); a second time,
+        // or a revert that cannot be made, parks with the question only the human can answer
+        const rv = revertScope(root, state, al.detail.outside || []);
+        if (rv) {
+          record(root, state, al, out({ action: 'cli', step: 'reconcile', command: null, reason: `Reverted ${rv.files.join(', ')} to the base commit on the job branch (${rv.commit.slice(0, 12)}): outside the allowed or into protected paths. The build is proven and reviewed again.`, rule: 'row2.scope_reverted' }));
+          return route(root, jobId);
+        }
+        const outside = al.detail.outside || [];
+        park(root, state, `Files outside the allowed or into protected paths: ${outside.join(', ')}${(state.scope_reverts || []).length ? ' (changed again after the factory reverted them once)' : ''}`, 'drift', { logged: true, question: { question: `The build needs ${outside.join(', ')}, outside its allowed paths. Allow it?`, options: [{ key: 'a', text: 'Allow them: an amendment that adds the paths (you approve it)' }, { key: 'b', text: 'Keep them out: reply with how the builders should do without them' }], recommendation: 'b' } });
         return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'row2.drift_scope' }));
       }
       action = { action: 'skill', skill: 'amend', step: 'amend', reason: `The approved ${al.detail.drift} changed; it needs an amendment and your approval.` };
@@ -435,40 +672,81 @@ function route(root, jobId) {
       break;
     }
     case 'no_confirmed_serious': {
-      state.counters.review_rounds += 1;
-      if (state.counters.review_rounds > L.max_review_rounds) {
-        park(root, state, `Review rounds used up (${L.max_review_rounds}) with confirmed serious findings still open.`, 'review', { logged: true });
-        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'cap.review_rounds' }));
+      // a confirmed finding that says the contract or the design is wrong (the code does what they
+      // say): no fix round can settle it, so it goes straight to an amendment the human approves
+      const contractLevel = al.detail.serious.filter((f) => f.level === 'contract');
+      if (contractLevel.length) {
+        action = { action: 'skill', skill: 'amend', step: 'amend', findings: contractLevel.map((f) => ({ id: f.id, file: f.file, line: f.line, summary: f.summary, verification: f.verification || null })), reason: `The verifier confirmed ${contractLevel.map((f) => f.id).join(', ')} at the contract level: the code does what the contract and the design say, but they are wrong (${contractLevel.map((f) => `${f.id}: ${String(f.summary).slice(0, 160)}`).join('; ')}). A fix round cannot settle it: propose an amendment (the amend skill) that changes the criterion or the design, for your approval.` };
+        rule = 'row4.contract_level';
+        break;
       }
+      const d = loopStep(ctx, 'review', al.detail.serious.map(findingKey), L.max_review_rounds);
+      if (d.action === 'diagnose') {
+        job.save(root, state);
+        action = diagnoseAction('review', `The review-fix loop made no progress (${d.rule}): the same confirmed findings came back${d.model ? `, also with builders on ${d.model}` : ''}. God Eye diagnoses it before the human is asked anything.`);
+        rule = 'loop.review.diagnose';
+        break;
+      }
+      if (d.action === 'stop') {
+        return loopPark(ctx, al, 'review', 'review_rounds', 'The review-fix loop', al.detail.serious, {
+          options: [{ text: 'One more fix round with your direction: reply with what the builders should do differently', consequences: 'the loop starts again with your words in every brief' }, { text: 'Change the contract or the design: an amendment (say what)', consequences: 'the finding is settled by changing what is asked' }, { text: 'Stop the job: "cancel job"', consequences: 'nothing ships' }],
+          recommendation: 'a',
+          replies: `Still open: ${al.detail.serious.map((f) => `${f.id} [${f.severity}] ${f.file || ''}${f.line ? `:${f.line}` : ''} ${String(f.summary).slice(0, 120)}`).join('; ')}. Reply in your own words (resume + your words), "cancel job", or ask for an amendment.`,
+        });
+      }
+      state.counters.review_rounds += 1;
       const { owners, byFinding } = ownersOfFindings(ctx, al.detail.serious);
       reopenTasks(state, owners, 'review');
-      state.fix = { kind: 'fix', source: al.detail.challenge_record, fingerprint: ctx.b.fingerprint, tasks: owners, findings: al.detail.serious.map((f) => f.id), owners: byFinding };
+      state.fix = { kind: 'fix', source: al.detail.challenge_record, fingerprint: ctx.b.fingerprint, tasks: owners, findings: al.detail.serious.map((f) => f.id), owners: byFinding, loop_round: d.state.rounds, ...(d.model ? { escalate_model: d.model } : {}), ...(d.approach ? { approach: d.approach } : {}) };
       job.save(root, state);
       action = stepAction(ctx, ctx.recipe.steps.find((s) => s.step === 'realize'));
       action.scope = 'fix';
-      rule = 'row4.confirmed_serious';
+      rule = d.action === 'escalate' ? 'loop.review.escalate' : 'row4.confirmed_serious';
       break;
     }
     case 'acs_proven': {
       const owners = ownersOfFailures(ctx, al.detail.prove_failures);
       if (!owners.length) {
         // Nothing for builders: the proof lacks only doc/diff records or a human check.
-        action = evidenceAction(ctx, al.detail.prove_record, proveGaps(al.detail.prove_failures));
+        const ev = evidenceAction(ctx, al.detail.prove_record, proveGaps(al.detail.prove_failures));
+        if (ev.rule === 'row5.human_confirm') {
+          // the human's own checks wait for the ship review (asked once, after the review and its
+          // fix rounds); the job goes on in recipe order
+          action = orderAction(ctx, al, { humanAcs: ev.acs });
+          if (action.done) return record(root, state, al, out({ action: 'done', reason: 'Every step is done.', rule: 'order.complete' }));
+          rule = action.rule;
+          delete action.rule;
+          break;
+        }
+        action = ev;
         rule = action.rule;
         delete action.rule;
         break;
       }
-      state.counters.verify_fix_rounds += 1;
-      if (state.counters.verify_fix_rounds > L.max_verify_fix_rounds) {
-        park(root, state, `Verify-fix rounds used up (${L.max_verify_fix_rounds}); criteria still unproven.`, 'verify', { logged: true });
-        return record(root, state, al, out({ action: 'parked', reason: state.park.reason, park: state.park, rule: 'cap.verify_fix_rounds' }));
+      const pf = al.detail.prove_failures || {};
+      const failing = [...Object.entries(pf.acs || {}).filter(([, st]) => st !== 'proven').map(([ac]) => ({ key: `ac|${ac}` })), ...(pf.commands || []).filter((c) => !c.pass).map((c) => ({ key: `cmd|${c.cmd}` }))];
+      const d = loopStep(ctx, 'verify', failing, L.max_verify_fix_rounds);
+      if (d.action === 'diagnose') {
+        job.save(root, state);
+        action = diagnoseAction('verify', `The verify-fix loop made no progress (${d.rule}): the same commands and criteria kept failing${d.model ? `, also with builders on ${d.model}` : ''}. God Eye diagnoses it before the human is asked anything.`);
+        rule = 'loop.verify.diagnose';
+        break;
       }
+      if (d.action === 'stop') {
+        const failed = (pf.commands || []).filter((c) => !c.pass).map((c) => c.cmd);
+        return loopPark(ctx, al, 'verify', 'verify_fix_rounds', 'The verify-fix loop', failing, {
+          options: [{ text: 'One more fix round with your direction: reply with what the builders should do differently', consequences: 'the loop starts again with your words in every brief' }, { text: 'Change the criterion or the plan: an amendment (say what)', consequences: 'what is proven changes' }, { text: 'Stop the job: "cancel job"', consequences: 'nothing ships' }],
+          recommendation: 'a',
+          replies: `Still failing: ${[...Object.entries(pf.acs || {}).filter(([, st]) => st !== 'proven').map(([ac]) => ac), ...failed].join(', ')}. Reply in your own words (resume + your words), "cancel job", or ask for an amendment.`,
+        });
+      }
+      state.counters.verify_fix_rounds += 1;
       reopenTasks(state, owners, 'verify');
-      state.fix = { kind: 'verifyFix', source: al.detail.prove_record, fingerprint: ctx.b.fingerprint, tasks: owners };
+      state.fix = { kind: 'verifyFix', source: al.detail.prove_record, fingerprint: ctx.b.fingerprint, tasks: owners, loop_round: d.state.rounds, ...(d.model ? { escalate_model: d.model } : {}), ...(d.approach ? { approach: d.approach } : {}) };
       job.save(root, state);
       action = stepAction(ctx, ctx.recipe.steps.find((s) => s.step === 'realize'));
       action.scope = 'verifyFix';
-      rule = 'row5.acs_unproven';
+      rule = d.action === 'escalate' ? 'loop.verify.escalate' : 'row5.acs_unproven';
       break;
     }
     case 'no_stale_evidence':
@@ -476,11 +754,10 @@ function route(root, jobId) {
       rule = 'row6.stale_evidence';
       break;
     default: {
-      const s = ctx.recipe.steps.find((x) => !steps.isDone(ctx, x));
-      if (!s) return record(root, state, al, out({ action: 'done', reason: 'Every step is done.', rule: 'order.complete' }));
-      const ci = localReverify(ctx, s);
-      action = ci || stepAction(ctx, s);
-      rule = ci ? 'order.ci_reverify' : 'order.next_step';
+      action = orderAction(ctx, al, {});
+      if (action.done) return record(root, state, al, out({ action: 'done', reason: 'Every step is done.', rule: 'order.complete' }));
+      rule = action.rule;
+      delete action.rule;
     }
   }
 
@@ -525,10 +802,14 @@ function route(root, jobId) {
     if (state.pr && state.pr.mode === 'github') {
       const justSynced = String(state.last_decision || '').startsWith('cli:H4:');
       action = justSynced
-        ? { ...action, action: 'wait', reason: `PR still open (${state.pr.url || 'see GitHub'}). Merge it on GitHub, then say "continue".` }
+        ? { ...action, action: 'wait', reason: `PR still open (${state.pr.url || 'see GitHub'}). Merge it on GitHub: the factory notices the merge by itself (factory next or factory drive syncs the PR again); no reply is needed.` }
         : { ...action, action: 'cli', command: `factory pr sync --job ${state.id}`, reason: 'PR is open: sync its checks and merge status.' };
     } else {
-      action = { ...action, action: 'wait', reason: 'Merge the job branch yourself, then reply "merged <commit>".' };
+      // local mode: the human merges the job branch; the CLI sees it (the base branch contains the
+      // shipped head) and records it; "merged <commit>" still works
+      const det = detectLocalMerge(root, state);
+      if (det) return route(root, jobId);
+      action = { ...action, action: 'wait', reason: `Merge the job branch yourself (git checkout ${state.base_branch} && git merge --no-ff ${state.branch}): the factory notices the merge by itself the next time it looks (factory next / factory drive); "merged <commit>" also records it.` };
     }
   } else if (action.step === 'children' && (state.children || []).length) {
     const kids = state.children.map((c) => {
@@ -598,6 +879,8 @@ function record(root, state, al, result) {
       chosen: result.step ? `${result.step}${result.scope && result.scope !== 'all' ? `:${result.scope}` : ''}` : result.action,
       action: result.action,
       rule: result.rule || null,
+      ...(result.action === 'parked' && result.park ? { park: { kind: result.park.kind || null, from: result.park.from || null, ...(result.park.question ? { question: result.park.question, options: (result.park.options || []).length, diagnosed: Boolean(result.park.diagnosed) } : {}) } } : {}),
+      ...(result.config === 'diagnose' ? { loop: result.mode } : {}),
       budget: { agent_runs: fresh.counters.agent_runs, review_rounds: fresh.counters.review_rounds, verify_fix_rounds: fresh.counters.verify_fix_rounds },
       reason: result.reason || null,
     });
@@ -611,4 +894,4 @@ function record(root, state, al, result) {
   return result;
 }
 
-module.exports = { decide, park, parkKind, parkNext, PARK_NEXT, ownersOfFindings, ownersOfFailures, proveGaps };
+module.exports = { decide, park, parkKind, parkNext, PARK_NEXT, LOOP_PARKS, findingKey, deniedShip, detectLocalMerge, revertScope, orderAction, ownersOfFindings, ownersOfFailures, proveGaps };

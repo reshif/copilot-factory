@@ -220,12 +220,13 @@ function approve(root, { jobId, gate, channel, via }) {
   // human's decision to move on, so it resumes the job too (no separate "resume").
   // It does exactly what `resume` does (one more round of the cap that parked it, the budget
   // raised, clarify's onResume …), so the job doesn't park again on the same cap at once.
-  const resumed = pending.id === 'A' && state.status === 'parked';
+  // (a budget park stays parked: the budget is absolute, only "resume +N%" grants more)
+  const resumed = pending.id === 'A' && state.status === 'parked' && !needsGrant(state, null);
   if (resumed) applyResume(root, state, { step: null, via: 'amendment' });
   job.save(root, state);
   log(root, state, 'approve', { channel, gate: pending.id, hash: now });
   if (resumed) log(root, state, 'resume', { channel, from: state.resumed.from, step: null, via: 'amendment' });
-  return { job: state.id, gate: pending.id, hash: now, ...(resumed ? { resumed: true } : {}), message: `Approved ${pending.id} for ${state.id} (hash ${now.slice(0, 12)}).${resumed ? ' The job was parked: approving the amendment resumed it.' : ''}` };
+  return { job: state.id, gate: pending.id, hash: now, ...(resumed ? { resumed: true } : {}), message: `Approved ${pending.id} for ${state.id} (hash ${now.slice(0, 12)}).${resumed ? ' The job was parked: approving the amendment resumed it.' : state.status === 'parked' ? ' The job stays parked on its spent budget: reply "resume +50%" (or another amount) to go on.' : ''}` };
 }
 
 function deny(root, { jobId, reason, channel }) {
@@ -244,38 +245,104 @@ function deny(root, { jobId, reason, channel }) {
   return { job: state.id, gate: pending.id, message: `Denied ${pending.id} for ${state.id}: ${reason || '(no reason given)'}. Copilot should revise it and present it again.` };
 }
 
-function resume(root, { jobId, step, channel }) {
+// `resume [step | your words]`: a recipe step name restarts at that step; any other words are
+// your answer to the park's question, and go to the next round (resume + content).
+function splitResume(state, step) {
+  const t = String(step || '').trim();
+  if (!t) return { step: null, words: null };
+  let steps = [];
+  try {
+    steps = require('./recipes').load(state.recipe.id).steps.map((s) => s.step.toLowerCase());
+  } catch {
+    steps = [];
+  }
+  return steps.includes(t.toLowerCase()) ? { step: t, words: null } : { step: null, words: t };
+}
+
+// The budget is absolute: resume grants more agent runs only when the human's words say how much
+// ("resume +50%", "+100%", "double it", or the budget question's option a/b). Returns the factor, or null.
+function budgetGrant(words) {
+  const t = String(words || '').toLowerCase().trim();
+  if (!t) return null;
+  let m;
+  if ((m = /\+?\s*(\d{1,3})\s*%/.exec(t))) return Number(m[1]) > 0 ? 1 + Math.min(300, Number(m[1])) / 100 : null;
+  if (/\b(double|twice|2x|x2)\b/.test(t)) return 2;
+  if (/^\(?a\)?\b/.test(t)) return 1.5;
+  if (/^\(?b\)?\b/.test(t)) return 2;
+  return null;
+}
+
+function needsGrant(state, words) {
+  return Boolean(state.park && (state.park.kind === 'budget' || state.park.from === 'budget') && !budgetGrant(words));
+}
+
+const GRANT_MSG = (state) => `${state.id} parked because its agent-run budget is spent (${(state.park && state.park.reason) || ''}). The budget is absolute: say how much more to allow — reply "resume +50%" or "resume +100%" — or "cancel job". Nothing was resumed.`;
+
+function resume(root, { jobId, step, words: given = null, channel }) {
   requireHumanChannel(channel);
   const state = job.resolve(root, jobId);
   if (state.status !== 'parked') fail(`${state.id} is not parked (status: ${state.status}).`, 'not_parked');
+  const sp = splitResume(state, step);
+  const words = [given, sp.words].filter(Boolean).join(' ').trim() || null;
+  if (needsGrant(state, words)) fail(GRANT_MSG(state), 'needs_grant');
   confirmTyped(channel, state.id, 'resume it');
-  applyResume(root, state, { step });
+  applyResume(root, state, { step: sp.step, words });
   job.save(root, state);
-  log(root, state, 'resume', { channel, from: state.resumed.from, step });
-  return { job: state.id, message: `Resumed ${state.id}${state.resumed.from ? ` (one more ${state.resumed.from} round allowed)` : ''}. Copilot continues with factory next.` };
+  log(root, state, 'resume', { channel, from: state.resumed.from, step: sp.step, ...(words ? { words: words.slice(0, 500) } : {}), ...(state.resumed.grant ? { grant: state.resumed.grant } : {}) });
+  return { job: state.id, resumed: true, message: `Resumed ${state.id}${state.resumed.grant ? ` with ${Math.round((state.resumed.grant - 1) * 100)}% more agent runs (${state.policy.limits.max_agent_runs_per_job})` : ''}${words ? '; your words go to the next round' : ''}. Copilot continues with factory next.` };
 }
 
-// What un-parking does, whoever decides it (resume, or approving an amendment on a parked job):
-// one more round of whatever ran out, the repeat guard cleared, the job active again. Mutates
-// state; the caller saves and logs.
-function applyResume(root, state, { step = null, via = null } = {}) {
-  const from = state.park && state.park.from;
-  // One more round of whatever ran out.
+// Any reply of the human's to a park is resume + content: their words are stored with the job
+// (and with clarify's record before H1) and every agent that works on it next gets them.
+function replyToPark(root, { jobId, text, channel }) {
+  requireHumanChannel(channel);
+  const state = job.resolve(root, jobId);
+  if (state.status !== 'parked') fail(`${state.id} is not parked (status: ${state.status}).`, 'not_parked');
+  const words = String(text || '').trim();
+  if (!words) fail('Say your answer.', 'bad_input');
+  if (needsGrant(state, words)) fail(GRANT_MSG(state), 'needs_grant');
+  confirmTyped(channel, state.id, 'resume it with your words');
+  applyResume(root, state, { words, via: 'reply' });
+  job.save(root, state);
+  log(root, state, 'resume', { channel, from: state.resumed.from, via: 'reply', words: words.slice(0, 500), ...(state.resumed.grant ? { grant: state.resumed.grant } : {}) });
+  return { job: state.id, resumed: true, message: `Resumed ${state.id} with your words${state.resumed.grant ? ` and ${Math.round((state.resumed.grant - 1) * 100)}% more agent runs` : ''}: they go to the next round. Copilot continues with factory next.` };
+}
+
+// What un-parking does, whoever decides it (resume, a reply, or approving an amendment on a parked
+// job): the loop that stopped starts a new segment with the human's words (it never just buys one
+// more identical round), the repeat guard is cleared, the job is active again. The budget grows
+// only by the grant the human's words name. Mutates state; the caller saves and logs.
+function applyResume(root, state, { step = null, via = null, words = null } = {}) {
+  const park = state.park || {};
+  const from = park.from;
   const L = state.policy.limits;
   const oneMore = (key, max) => {
     state.counters[key] = Math.min(state.counters[key], Math.max(0, max - 1));
   };
+  // the loops the engine runs (cli/core/loop.js): a new segment, with the human's answer
+  const LOOP_OF = { review: 'review', verify: 'verify', reverify: 'reverify', reconcile: 'integrator' };
+  const loopName = LOOP_OF[from] || (park.loop || null);
+  if (loopName) {
+    state.loops = state.loops || {};
+    const old = state.loops[loopName] || {};
+    state.loops[loopName] = { ...require('./loop').fresh(), segments: (old.segments || 0) + 1, last_question: old.diagnosis ? old.diagnosis.question : null };
+  }
   if (from === 'review') oneMore('review_rounds', L.max_review_rounds);
   if (from === 'verify') oneMore('verify_fix_rounds', L.max_verify_fix_rounds);
-  // Clarify v3: one more try of the stage that hit its cap (cli/core/clarify.js onResume).
-  if (from === 'clarify') require('./clarify').onResume(root, state);
+  // Clarify v3: clarify's own park (an agent that failed twice), and words given while parked
+  if (from === 'clarify' || require('./clarify').inClarify(state)) require('./clarify').onResume(root, state, words);
   if (from === 'decompose') oneMore('decompose_rounds', L.max_plan_validate_rounds);
   if (from === 'reverify') state.counters.reverify_bonus = (state.counters.reverify_bonus || 0) + 1;
-  if (from === 'budget') state.policy.limits.max_agent_runs_per_job = Math.ceil(state.policy.limits.max_agent_runs_per_job * 1.5);
+  let grant = null;
+  if (from === 'budget' || park.kind === 'budget') {
+    grant = budgetGrant(words);
+    if (grant) state.policy.limits.max_agent_runs_per_job = Math.ceil(state.policy.limits.max_agent_runs_per_job * grant);
+  }
+  if (words) state.human_notes = [...(state.human_notes || []), { at: nowIso(), text: String(words).slice(0, 2000), from: park.kind || from || null, ...(park.question ? { question: park.question } : {}) }].slice(-10);
   state.repeat = { key: null, count: 0 };
   delete state.transient_aborts; // the human says Copilot works again: count transient runs afresh
   state.status = 'active';
-  state.resumed = { at: nowIso(), from, step: step || null, ...(via ? { via } : {}) };
+  state.resumed = { at: nowIso(), from, step: step || null, ...(via ? { via } : {}), ...(words ? { words: String(words).slice(0, 500) } : {}), ...(grant ? { grant } : {}) };
   state.park = null;
   state.pending_gate = null;
   return state;
@@ -352,9 +419,28 @@ function confirmAc(root, { jobId, ac, channel }) {
   const ctx = steps.context(root, state, job.load);
   if (!ctx.b.fingerprint) fail('Nothing built yet to confirm against.', 'bad_input');
   confirmTyped(channel, state.id, `confirm ${String(ac).toUpperCase()}`);
-  ledger.append(root, state.id, { kind: 'evidence', ac: ac.toUpperCase(), type: 'human', fingerprint: ctx.b.fingerprint, pass: true, source: `human:${channel}` });
+  // the files the check rests on (what the tasks that cover the criterion changed): a later fix
+  // round that leaves them as they are does not ask for the check again (verify.js)
+  const scope = require('./verify').humanScope(root, state, ac.toUpperCase());
+  ledger.append(root, state.id, { kind: 'evidence', ac: ac.toUpperCase(), type: 'human', fingerprint: ctx.b.fingerprint, pass: true, source: `human:${channel}`, ...(scope ? { scope: scope.paths, files: scope.files } : {}) });
   log(root, state, 'confirm_ac', { channel, ac });
   return { job: state.id, message: `Confirmed ${ac.toUpperCase()} for ${state.id} on the current build. Run factory verify run to include it.` };
+}
+
+// "approve ship": the human's go to push the job branch and open the pull request (part of the
+// ship review at low or medium risk, when the repository has not opted in to automatic draft PRs).
+// Bound to the build it was given for: a new build asks again.
+function approveShip(root, { jobId, channel }) {
+  requireHumanChannel(channel);
+  const state = job.resolve(root, jobId);
+  const ctx = steps.context(root, state, job.load);
+  if (!ctx.b.fingerprint) fail('Nothing built yet to ship.', 'bad_input');
+  if (state.pr && state.pr.fingerprint === ctx.b.fingerprint) fail(`${state.id} is already shipped for this build.`, 'bad_input');
+  confirmTyped(channel, state.id, 'approve pushing it and opening the pull request');
+  state.ship_approval = { fingerprint: ctx.b.fingerprint, at: nowIso(), via: channel };
+  job.save(root, state);
+  log(root, state, 'approve_ship', { channel, fingerprint: ctx.b.fingerprint });
+  return { job: state.id, message: `Push and pull request approved for ${state.id} on build ${ctx.b.fingerprint.slice(0, 12)}. Copilot continues with factory next (it runs factory ship).` };
 }
 
 // "dismiss finding code-1 <reason>" / "accept finding code-1 <reason>": settle a serious
@@ -404,6 +490,7 @@ function parseReply(text) {
   if (!t || t.includes('\n')) return null;
   let m;
   const J = '(J-\\d+)';
+  if ((m = t.match(new RegExp(`^approve(?:\\s+${J})?\\s+ship$`, 'i')))) return { cmd: 'approve_ship', jobId: m[1] && m[1].toUpperCase() };
   if ((m = t.match(new RegExp(`^approve(?:\\s+${J})?(?:\\s+(${GATE_IDS.join('|')}))?$`, 'i')))) return { cmd: 'approve', jobId: m[1] && m[1].toUpperCase(), gate: m[2] && m[2].toUpperCase() };
   if ((m = t.match(new RegExp(`^deny(?:\\s+${J})?(?:(?:\\s*[:\u2014\u2013-]\\s*|\\s+)(.*))?$`, 'i')))) return { cmd: 'deny', jobId: m[1] && m[1].toUpperCase(), reason: (m[2] || '').trim() };
   if ((m = t.match(new RegExp(`^resume(?:\\s+${J})?(?:\\s+(.*))?$`, 'i')))) return { cmd: 'resume', jobId: m[1] && m[1].toUpperCase(), step: (m[2] || '').trim() || null };
@@ -421,8 +508,21 @@ function parseReply(text) {
   return null;
 }
 
+// One message that is several exact replies, separated by ";" or new lines ("confirm AC-2;
+// dismiss finding code-1 not reachable; approve"): the ship review and the end-of-job digest in
+// one reply. Every part must be an exact reply, or nothing is taken as one.
+function parseBatch(text) {
+  const t = String(text || '').trim();
+  if (!t || (!t.includes(';') && !t.includes('\n'))) return null;
+  const parts = t.split(/\s*;\s*|\s*\n+\s*/).map((x) => x.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const parsed = parts.map((x) => parseReply(x));
+  if (parsed.some((x) => !x)) return null;
+  return { cmd: 'batch', parts: parsed.map((x, i) => ({ ...x, text: parts[i] })) };
+}
+
 // The exact forms, for "that was not applied" hints.
-const REPLY_FORMS = ['approve [J-0001] [H1]', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'proceed [J-0001]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] <sha>', 'confirm AC-1 [J-0001]', 'change [J-0001] A-3 <new value>', 'drop [J-0001] A-3', 'accept lesson L4', 'reject lesson L4 [reason]', 'accept brief P1', 'reject brief P1 [reason]', 'accept finding code-1 <reason>', 'dismiss finding code-1 <reason>', 'confirm environment [hash|none]'];
+const REPLY_FORMS = ['approve [J-0001] [H1]', 'approve ship', 'several replies in one message, separated by ";"', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'proceed [J-0001]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] <sha>', 'confirm AC-1 [J-0001]', 'change [J-0001] A-3 <new value>', 'drop [J-0001] A-3', 'accept lesson L4', 'reject lesson L4 [reason]', 'accept brief P1', 'reject brief P1 [reason]', 'accept finding code-1 <reason>', 'dismiss finding code-1 <reason>', 'confirm environment [hash|none]'];
 const VERBS = ['approve', 'approved', 'deny', 'denied', 'resume', 'proceed', 'cancel', 'abandon', 'waive', 'merged', 'merge', 'confirm', 'accept', 'reject', 'dismiss', 'lgtm'];
 // Common words: only a near miss when the message is about an assumption id ("change A3 x", "drop a-3 now").
 const ASSUMPTION_VERBS = ['change', 'drop'];
@@ -453,6 +553,23 @@ function nearMiss(text) {
 function applyReply(root, parsed, channel = 'chat') {
   const lessons = require('./lessons');
   switch (parsed.cmd) {
+    case 'batch': {
+      // in order; a part that fails stops the rest (what was applied stays applied, and says so)
+      const done = [];
+      for (const p of parsed.parts) {
+        try {
+          const r = applyReply(root, p, channel);
+          done.push(`${p.text}: ${r.message || 'applied'}`);
+        } catch (e) {
+          const msg = `${done.length ? `Applied ${done.length} of ${parsed.parts.length}: ${done.join(' | ')}. ` : ''}NOT applied: "${p.text}" (${e.message})${parsed.parts.length - done.length > 1 ? ` and the ${parsed.parts.length - done.length - 1} part(s) after it` : ''}.`;
+          if (!done.length) fail(msg, e.code || 'bad_input');
+          return { message: msg, applied: done.length, of: parsed.parts.length, partial: true };
+        }
+      }
+      return { message: `Applied all ${done.length}: ${done.join(' | ')}`, applied: done.length, of: parsed.parts.length };
+    }
+    case 'approve_ship':
+      return approveShip(root, { jobId: parsed.jobId, channel });
     case 'approve':
       return approve(root, { jobId: parsed.jobId, gate: parsed.gate, channel });
     case 'deny':
@@ -491,4 +608,4 @@ function applyReply(root, parsed, channel = 'chat') {
   }
 }
 
-module.exports = { applyResume, snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { applyResume, replyToPark, approveShip, parseBatch, budgetGrant, splitResume, snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };

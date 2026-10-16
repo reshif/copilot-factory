@@ -95,7 +95,7 @@ function researchHtml(x) {
 }
 // Clarify v3 (factory clarify status): where clarify is, every item with who decided it, every
 // finding with its source and the CLI's verdict, the research gaps, drops and redirects.
-const CL_STAGE = { readback: 'reading your words back', readback_wait: 'waiting for your ok on the read-back', research: 'researching', sheet_wait: 'waiting for your answer to the decision sheet', interpret: 'reading your sheet answer', redirect: 'reading your redirect', redirect_wait: 'waiting for your ok on the redirect', assemble: 'writing the contract', check: 'readiness check', ready: 'done: H1 next' };
+const CL_STAGE = { readback: 'reading your words back', readback_wait: 'waiting for your ok on the read-back', research: 'researching', sheet_wait: 'waiting for your answer to the decision sheet', interpret: 'reading your sheet answer', redirect: 'reading your redirect', redirect_wait: 'waiting for your ok on the redirect', assemble: 'writing the contract', check: 'readiness check', dispute: 'checking a disputed objection', diagnose: 'diagnosing the readiness loop', ready: 'done: H1 next' };
 const CL_STATUS = { open: 'open', to_decide: 'on the sheet', decided: 'decided', done: 'done', assumed: 'assumed', deferred: 'to design', dropped: 'dropped' };
 const EV_WORD = { repo: 'repo, quote checked', pinned: 'docs for the confirmed version', docs: 'docs (no version to pin)', other_version: 'documents another version: not used', unpinned: 'a moving page (stable/latest): not used', bad_quote: 'quote not at the cited line: not used', unsourced: 'no source quote: not used' };
 function clarifyHtml(job) {

@@ -84,7 +84,7 @@ Learning   distill context · distill write · distill done · lessons list · l
 Console    console [--out file.html] [--job J] [--label "…"] [--data data.json]   (read-only page of every job)
            console --serve [--port 4477] [--job J]   (the same page, live: updates as Copilot works)
 Human only (your terminal, or reply in chat):
-           approve [gate] · deny --reason "…" · resume [step] · proceed (after a clarify cap: go on, gaps shown) · cancel · abandon · waive <floor> --reason "…"
+           approve [gate] · approve ship · deny --reason "…" · resume [step | your answer, e.g. +50%] · proceed (a legacy clarify park: go on, gaps shown) · cancel · abandon · waive <floor> --reason "…"
            merged <commit> · confirm <AC> · lessons accept|reject <L|P> · lessons promote <L> --check "cmd" · reseal
            assumption change <A-n> --value "…" · assumption drop <A-n>   (chat: change A-3 <value> · drop A-3)
            finding accept|dismiss <id> --reason "…"   (a serious finding no verifier settled; chat: dismiss finding code-1 <reason>)
@@ -447,11 +447,14 @@ function run(argv) {
     }
     // ---- human-only, from your terminal
     case 'approve':
+      // approve ship: the push and pull request at the ship review (low/medium risk)
+      if (String(sub || '').toLowerCase() === 'ship') return C('human').approveShip(R(), { jobId: J, channel: tty });
       return C('human').approve(R(), { jobId: J, gate: sub, channel: tty });
     case 'deny':
       return C('human').deny(R(), { jobId: J, reason: opt.reason || pos.slice(1).join(' '), channel: tty });
     case 'resume':
-      return C('human').resume(R(), { jobId: J, step: sub, channel: tty });
+      // resume [step] [your words…]: words after the verb are your answer to the park's question
+      return C('human').resume(R(), { jobId: J, step: pos.slice(1).join(' ') || null, words: opt.words || null, channel: tty });
     case 'proceed':
       return C('clarify').proceed(R(), { jobId: J, channel: tty });
     case 'cancel':

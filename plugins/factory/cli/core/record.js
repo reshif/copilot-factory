@@ -211,9 +211,36 @@ function recReconcile(root, state, env) {
       }
       return { status: 'park', park_kind: 'regression', park_reason: `Reconcile regression: ${last.detail.message || 'merged or fixed lines were dropped'}${again.length ? ` (${again.join(', ')} already rebuilt once on the merged code)` : ''}`, message: 'Parked: integrating would drop work already merged or fixed.' };
     }
-    return { status: 'park', park_reason: `Integration did not complete: ${(d.integrator && d.integrator.summary) || 'no result'}`, message: 'Parked.' };
+    // the integrator came back without a result: retried while it makes progress, on the stronger
+    // model after a round without, and the job parks only with a specific question (loop engine)
+    const fresh1 = job.load(root, state.id);
+    fresh1.loops = fresh1.loops || {};
+    const why = (d.integrator && d.integrator.summary) || 'no result';
+    const pol = require('../lib/util').deepMerge(require('./policy').load(root), state.policy || {});
+    const Loop = require('./loop');
+    const lp = Loop.shouldContinue(fresh1.loops.integrator, [{ key: `integration|${String(why).slice(0, 60)}` }], Loop.policyFor(pol, { ceiling: 3, stall_rounds: 1, diagnose: false }));
+    fresh1.loops.integrator = { ...lp.state, segments: (fresh1.loops.integrator || {}).segments || 0 };
+    job.save(root, fresh1);
+    if (lp.action !== 'stop') return { status: 'retry', recovery: { kind: 'integration', action: lp.action, ...(lp.model ? { model: lp.model } : {}) }, message: `Integration did not complete (${why}): factory next runs reconcile again${lp.model ? ` with the integrator on ${lp.model}` : ''}.` };
+    const q = Loop.question(fresh1.loops.integrator, { what: 'Integration', fallbackOptions: [{ text: 'Run it again with your direction: reply with what the integrator should do (which task wins in the conflicting file)', consequences: 'it resumes with your words' }, { text: 'Amend the plan: give the shared file to one task, or order the tasks', consequences: 'the conflict goes away' }], fallbackRecommendation: 'b' });
+    return { status: 'park', park_kind: 'integration', park_question: q, park_reason: `Integration did not complete after ${fresh1.loops.integrator.rounds} attempt(s), also on the stronger model: ${why}.\n${q.text}`, message: 'Parked.' };
   }
   return { status: 'ok', message: `Integrated at fingerprint ${ctx.b.fingerprint.slice(0, 12)}.` };
+}
+
+// The loop engine's diagnosis of a router loop (fanout-judge --config diagnose): recorded on the
+// loop's state; factory next then asks the human its question, or runs the next round its way.
+function recDiagnose(root, state, env) {
+  const d = env.data || {};
+  const name = d.loop || env.mode;
+  state.loops = state.loops || {};
+  if (!name || !state.loops[name]) return { status: 'stale', message: 'No loop waits for this diagnosis; nothing recorded. Run factory next.' };
+  const segments = state.loops[name].segments || 0;
+  state.loops[name] = { ...require('./loop').recordDiagnosis(state.loops[name], d.diagnosis ? { ...d.diagnosis, by: 'god-eye' } : { cause: 'the diagnosis agent returned nothing', needs_user: true, question: null }), segments };
+  job.save(root, state);
+  const dg = state.loops[name].diagnosis;
+  ledger.append(root, state.id, { kind: 'diagnosis', loop: name, needs_user: dg.needs_user, question: dg.question || null, options: dg.options.length, approach: Boolean(dg.approach), cause: String(dg.cause || '').slice(0, 300) });
+  return { status: 'ok', diagnosis: dg, message: dg.needs_user ? `Diagnosis: ${dg.cause} factory next asks you its question.` : `Diagnosis: ${dg.cause} The next round takes its approach.` };
 }
 
 function recChallenge(root, state, env) {
@@ -235,15 +262,33 @@ function recChallenge(root, state, env) {
     if (!res.ok) return { status: 'retry', ...res, message: 'Post-merge review incomplete (lanes missing or findings unverified); factory next runs it again.' };
     return { status: 'ok', ...res, message: 'Post-merge review passed.' };
   }
-  // A serious finding no verifier could settle is re-verified each round (with twice the time),
-  // never dropped; after max_reverify_rounds tries the job parks for the human.
-  if (!res.ok && !res.confirmed.length && (res.carried || []).length) {
+  // A serious finding no verifier could settle is re-verified (with twice the time, by a second
+  // verifier on the stronger model that reproduces it in the build environment) while the set of
+  // unsettled ones shrinks (the loop engine, cli/core/loop.js). What survives is never dropped and
+  // never parks mid-pipeline: it becomes one accept/dismiss in the ship review (factory next shows it).
+  const fresh0 = job.load(root, state.id);
+  fresh0.loops = fresh0.loops || {};
+  if (!res.ok && !res.confirmed.length && (res.unverified || []).length && !(res.missing || []).length) {
     const L = state.policy.limits || {};
-    const allowed = (L.max_reverify_rounds || 3) + ((state.counters || {}).reverify_bonus || 0);
-    const stuck = res.carried.filter((c) => c.times > allowed);
-    if (stuck.length) {
-      return { status: 'park', park_from: 'reverify', degraded: missingLanes, ...res, park_reason: `Serious review finding(s) still unverified after ${allowed} re-verification round(s): ${stuck.map((c) => c.id).join(', ')}. They block ship until a verifier settles them; "resume" re-verifies once more.`, message: 'Parked: a serious finding could not be verified.' };
+    const ceiling = (L.max_reverify_rounds || 3) + ((state.counters || {}).reverify_bonus || 0);
+    const pol = require('../lib/util').deepMerge(require('./policy').load(root), state.policy || {});
+    const P = require('./loop').policyFor(pol, { ceiling, stall_rounds: 1, diagnose: false });
+    // fingerprinted by what they are (lane, file, rule or summary), not by their ids: ids restart each round
+    const ch0 = ledger.lastStep(root, state.id, 'challenge');
+    const byId = Object.fromEntries((((ch0 && ch0.detail) || {}).findings || []).map((f) => [f.id, f]));
+    const d = require('./loop').shouldContinue(fresh0.loops.reverify, res.unverified.map((id) => (byId[id] ? decisionTable.findingKey(byId[id]) : { key: id.replace(/@r\d+$/, '') })), P);
+    fresh0.loops.reverify = { ...d.state, segments: (fresh0.loops.reverify || {}).segments || 0 };
+    if (d.action === 'stop') {
+      const ch = ledger.lastStep(root, state.id, 'challenge');
+      fresh0.unsettled = { at: nowIso(), fingerprint: ch && ch.bound ? ch.bound.fingerprint : null, findings: res.unverified.slice(), rule: d.rule };
+      job.save(root, fresh0);
+      require('./events').append(root, { event: 'unsettled_findings', job: state.id, findings: res.unverified, rule: d.rule });
+      return { status: 'ship_review', degraded: missingLanes, ...res, unsettled: res.unverified, message: `Serious finding(s) ${res.unverified.join(', ')} stay unverified after a second verifier on the stronger model (${d.rule}). They are not dropped: the ship review asks you once to accept or dismiss each (factory next shows it).` };
     }
+    job.save(root, fresh0);
+  } else if (fresh0.unsettled && res.ok) {
+    fresh0.unsettled = null;
+    job.save(root, fresh0);
   }
   return { status: res.ok ? 'ok' : res.confirmed.length ? 'fix' : 'retry', degraded: missingLanes, ...res, message: res.ok ? 'All required lanes pass.' : res.confirmed.length ? 'Confirmed serious findings: factory next schedules a fix round.' : `Lanes missing or findings unverified (${[...res.missing, ...res.unverified].join(', ')}); factory next runs the review again${(res.carried || []).length ? ', re-verifying the unverified ones with twice the time' : ''}.` };
 }
@@ -291,6 +336,7 @@ function apply(root, { jobId, file, envelope }) {
     case 'fanout-judge':
       if (env.config === 'decide') res = recDecide(root, fresh, env);
       else if (env.config === 'challenge') res = recChallenge(root, fresh, env);
+      else if (env.config === 'diagnose') res = recDiagnose(root, fresh, env);
       else fail(`Unknown config ${env.config}`, 'bad_envelope');
       break;
     case 'ground':
@@ -316,7 +362,7 @@ function apply(root, { jobId, file, envelope }) {
       return e ? e.needs_paths : [];
     };
     const tasks = (res.tasks || []).map((t) => ({ id: t.id, outcome: t.outcome, summary: t.summary || '', needs_paths: lastNeeds(t.id) }));
-    const p = decisionTable.park(root, now, res.park_reason, res.park_from || env.workflow, { tasks, kind: res.park_kind });
+    const p = decisionTable.park(root, now, res.park_reason, res.park_from || env.workflow, { tasks, kind: res.park_kind, ...(res.park_next ? { next: res.park_next } : {}), ...(res.park_question ? { question: res.park_question, loop: 'integrator' } : {}) });
     res.park = { kind: p.kind, next: p.next };
   }
   return { job: state.id, workflow: env.workflow, config: env.config || null, ...res };

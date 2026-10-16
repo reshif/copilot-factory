@@ -72,8 +72,10 @@ function itemFor(root, state, driveStop, plain = false) {
   const d = lastRouting(root, J, plain);
   if (d && d.action === 'wait') {
     if (/merged/.test(d.reason || '') && state.pr && state.pr.merged) return null;
-    if (/merged/.test(d.reason || '')) return { ...base, kind: 'merge', since: d.ts, what: 'merge the job branch yourself', reason: d.reason, reply: ['merged <commit>'], command: `factory merged <commit> --job ${J}`, human_only: true };
+    if (/merged/.test(d.reason || '')) return { ...base, kind: 'merge', since: d.ts, what: 'merge the job branch yourself (the factory notices the merge; no reply is needed)', reason: d.reason, reply: ['(nothing: merge it; factory next sees it)', 'merged <commit>'], command: `factory next --job ${J}`, human_only: false };
     if (d.rule === 'row5.human_confirm') return { ...base, kind: 'confirm', since: d.ts, what: 'check criteria on the build yourself', reason: d.reason, reply: ['confirm AC-n'], command: `factory confirm <AC-n> --job ${J}`, human_only: true };
+    // the one ship review: the human's checks, the unsettled findings, the push approval, in one reply
+    if (d.rule === 'ship.review') return { ...base, kind: 'ship_review', since: d.ts, what: 'the ship review: one reply settles it', reason: d.reason, screen: d.reason, reply: ['confirm AC-n; dismiss finding <id> <why>; approve ship (any of them, in one message)'], command: `factory next --job ${J}`, human_only: true };
     return { ...base, kind: 'wait', since: d.ts, what: d.reason || 'waiting on you', reason: d.reason, reply: ['continue'], command: null, human_only: false };
   }
   // a drive stop that waits on the main session or on you (questions, a degraded run, an amendment)
@@ -106,6 +108,16 @@ function list(root, { plain = false } = {}) {
     }
   } catch {
     /* no proposals file */
+  }
+  // lessons distill proposed: the end-of-job digest, next to the brief proposals (human-only; one
+  // reply may settle several: "accept lesson L4; reject lesson L5 too broad; accept brief P1")
+  try {
+    const doc = readJson(project(root).lessonsFile, null);
+    for (const l of ((doc && doc.lessons) || []).filter((x) => x.status === 'proposed')) {
+      items.push({ job: l.source_job || 'project', title: 'Lessons register (.factory/lessons.json)', kind: 'lesson', lesson: l.id, since: l.created_at || null, what: `accept or reject lesson ${l.id} (${(l.scope || []).join(', ')}): ${String(l.text).slice(0, 300)}`, reply: [`accept lesson ${l.id}`, `reject lesson ${l.id} <why>`], command: `factory lessons accept ${l.id}`, human_only: true });
+    }
+  } catch {
+    /* no lessons file */
   }
   items.sort((a, b) => String(a.since || '').localeCompare(String(b.since || '')));
   const live = drive.liveFor(root);

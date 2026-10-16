@@ -325,7 +325,7 @@ test('console: workflow run templates follow the workflow sources; realize waves
   // clarify v3: the phase texts come from the CLI's stage plan (workflows/clarify.js prints them as `clarify: <text>`)
   const cs = fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'clarify.js'), 'utf8');
   const ph = [...(/const PH = \{([^\n]*)\};/.exec(cs) || ['', ''])[1].matchAll(/'([^']+)'\]/g)].map((m) => m[1]);
-  assert.equal(ph.length, 5, ph.join(' | '));
+  assert.equal(ph.length, 7, ph.join(' | ')); // 0.9.0: + the tie-break and the diagnosis
   assert.match(cs, /'research brief' : `research \(\$\{/);
   for (const t of [...ph, 'research brief', 'research (repo, docs)', 'research (repo)', 'research (docs)']) assert.ok(RS.matchStep(RS.TEMPLATES.clarify, `clarify: ${t}`) >= 0, `clarify: "${t}" has a template step`);
   assert.match(src('clarify.js'), /phase\(`clarify: \$\{\(brief\.phases/, 'the clarify workflow prints the CLI\'s phase texts');
@@ -365,6 +365,8 @@ test('console page: one data slot, self-contained, and a static file says it is 
 
 test('console: clarify v3 — items with who decided them, findings with source and verdict (another version never used), gaps and the stage line per step', () => {
   const root = F.makeRepo();
+  // the read-back turn and a sheet of facts (both off by default since 0.9.0) give the console its waiting lines
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ clarify: { readback: 'wait', facts_sheet: true } }));
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium', '--request', 'fix add on nautobot 2.4 so the cart totals add up']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   const NB = 'https://docs.nautobot.com/projects/core/en';

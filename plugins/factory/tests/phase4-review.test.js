@@ -40,7 +40,7 @@ const calls = (e) => (fs.existsSync(e.log) ? fs.readFileSync(e.log, 'utf8').trim
 
 test('B1: a model the account cannot use is retried once on the session default, logged, and skipped for the rest of the run and later runs', () => {
   const root = F.makeRepo();
-  newJob(root);
+  newJob(root, { clarify: { readback: 'wait' } }); // stops at the read-back turn
   F.cli(root, ['next']);
   const e = env({ FAKE_COPILOT_REJECT_MODELS: 'claude-haiku-5.5' });
   const r = run(root, e, ['run', 'clarify', '--json']);
@@ -79,7 +79,7 @@ test('B1: a model the account cannot use is retried once on the session default,
 
 test('B1: one switch (agents.models_enabled: false, or models: "default") runs every role on the session default, for running jobs too', () => {
   const root = F.makeRepo();
-  newJob(root);
+  newJob(root, { clarify: { readback: 'wait' } }); // stops at the read-back turn
   F.cli(root, ['next']);
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ agents: { models_enabled: false } })); // after the job snapshotted its policy
   const e = env();
@@ -259,6 +259,8 @@ test('m10: runAgent defaults the transient settings itself (a missing transientR
 
 test('M3: drive\'s done stop names the brief proposals waiting for the user', () => {
   const d = require('../cli/core/drive').stopDetail('done', { job: 'J-0001', reason: 'closed' }, { job: 'J-0001', lessons: [], briefs: [{ id: 'P1', job: 'J-0001', edits: 1 }] });
-  assert.match(d.summary, /Project brief changes proposed: P1 \(reply "accept brief Pn"/);
+  // 0.9.0: the end-of-job digest: one reply for every lesson and brief proposal, each still the user's
+  assert.match(d.summary, /Project brief changes proposed: P1 \(they reach every later agent\)\. One reply settles them all, e\.g\. "accept brief P1"/);
+  assert.equal(d.digest.reply, 'accept brief P1');
   assert.deepEqual(d.briefs.map((b) => b.id), ['P1']);
 });

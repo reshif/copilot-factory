@@ -278,7 +278,9 @@ function currentFindings(root, state, task) {
   const all = (rec && rec.detail && rec.detail.findings) || [];
   const serious = all.filter((f) => ['blocker', 'major'].includes(f.severity) && f.status === 'confirmed');
   const owners = (state.fix && state.fix.owners) || null;
-  if (owners) return serious.filter((f) => owners[f.id] === task.id || owners[f.id] === '*').map((f) => (owners[f.id] === '*' ? { ...f, shared: true } : f));
+  // the human's own finding (an HS denial's reason): every reopened task gets it
+  const human = ((state.fix && state.fix.human_findings) || []).map((f) => ({ ...f, shared: true }));
+  if (owners) return [...serious.filter((f) => owners[f.id] === task.id || owners[f.id] === '*').map((f) => (owners[f.id] === '*' ? { ...f, shared: true } : f)), ...human];
   const mine = serious.filter((f) => f.file && matchesAny(f.file, task.allowed_paths));
   return mine.length ? mine : serious;
 }

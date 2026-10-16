@@ -111,7 +111,7 @@ test('M2: an amendment can be approved (or denied) only once the router presente
   assert.match(F.reply(root, 'approve').message, /Approved A/);
 });
 
-test('M3: approving an amendment on a parked job does what resume does: a budget park gets its 50% more, a review-rounds park one more round', () => {
+test('M3: approving an amendment on a parked job does what resume does: a budget park stays parked (the budget is absolute: only "resume +N%" grants more), a review-rounds park starts a new round', () => {
   const root = F.makeRepo();
   const J = toBuild(root);
   F.cli(root, ['next']);
@@ -120,11 +120,16 @@ test('M3: approving an amendment on a parked job does what resume does: a budget
   amendPlan(root, J);
   assert.equal(F.cli(root, ['next']).step, 'A');
   const r = F.reply(root, 'approve');
-  assert.equal(r.resumed, true);
-  const st = stateOf(root, J);
+  assert.ok(!r.resumed, 'approving the amendment grants no budget');
+  assert.match(r.message, /stays parked on its spent budget: reply "resume \+50%"/);
+  let st = stateOf(root, J);
+  assert.equal(st.status, 'parked');
+  assert.equal(st.policy.limits.max_agent_runs_per_job, before, 'no automatic +50%');
+  F.reply(root, 'resume +50%');
+  st = stateOf(root, J);
   assert.equal(st.status, 'active');
-  assert.equal(st.policy.limits.max_agent_runs_per_job, Math.ceil(before * 1.5), 'the budget was raised as resume raises it');
-  assert.deepEqual([st.resumed.from, st.resumed.via], ['budget', 'amendment']);
+  assert.equal(st.policy.limits.max_agent_runs_per_job, Math.ceil(before * 1.5), 'the grant the human named');
+  assert.deepEqual([st.resumed.from, st.resumed.grant], ['budget', 1.5]);
   const resumes = core('decisions').forJob(root, J).filter((d) => d.action === 'human.resume');
   assert.equal(resumes.length, 1);
   // the same rule for review rounds: one more round
@@ -348,10 +353,10 @@ test('a rerun that stops at the same gate notifies once; a failure stop exits 1;
   const h = harness({ env: { FACTORY_NOTIFY: '' } });
   const a = h.drive(root);
   const b = h.drive(root);
-  assert.equal(a.kind, 'clarify');
+  assert.equal(a.kind, 'gate');
   assert.equal(a.__code, 0);
-  assert.equal(b.kind, 'clarify');
-  assert.equal(b.notified, 'repeat', 'the same read-back again: no second notification');
+  assert.equal(b.kind, 'gate');
+  assert.equal(b.notified, 'repeat', 'the same gate again: no second notification');
   const nt = events(root).filter((e) => e.event === 'notify');
   assert.equal(nt.length, 1);
   const root2 = F.makeRepo();

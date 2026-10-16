@@ -37,9 +37,10 @@ test('bug@low: request to closed job, with a fix round and a local merge', () =>
   assert.ok(fs.existsSync(brief.groups[0][0].prompt.split('\n')[1].trim()), 'instruction file exists');
   const rb = { intent: { problem: 'add(2, 3) returns -1', who: 'callers of src/add.js', outcome: 'add returns the sum', success: 'tests/add.test.js passes' }, scope: { in: ['add'], out: [] }, took: [], pins: [], plan: [{ item: 'new', what: 'Whether floats are added too', tag: 'decision', pins: [], impact: 'high' }], questions: [], design_may_choose: [] };
   let r = F.record(root, F.envelope(brief, 'ok', { stage: 'readback', rev: brief.rev, outputs: { 'read-back': rb } }));
-  assert.equal(r.status, 'needs_user');
-  assert.match(r.screen, /Whether floats are added too/);
-  assert.match(F.cli(root, ['clarify', 'reply', 'ok']).message, /Read-back confirmed/);
+  // 0.9.0: nothing on the read-back needs the user (no pin conflict, no question only they can
+  // answer): it is shown on the next screen, and research starts at once
+  assert.equal(r.status, 'continue');
+  assert.equal(r.readback, 'shown');
   // research: one pass (repo + docs researchers, then the brief writer), then one sheet
   brief = F.cli(root, ['wfargs', 'clarify']);
   assert.equal(brief.stage, 'research');

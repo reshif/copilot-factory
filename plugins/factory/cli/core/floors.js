@@ -93,7 +93,8 @@ function check(ctx, floor) {
     case 'no_trial_recipes':
       return recipes.load(state.recipe.id).status === 'proven';
     case 'irreversible_signoff':
-      return steps.approved(ctx, 'HS', b.fingerprint);
+      // local mode pushes nothing outward: the human's own merge is the irreversible step
+      return steps.approved(ctx, 'HS', b.fingerprint) || steps.shipsLocally(ctx);
     default:
       return false;
   }

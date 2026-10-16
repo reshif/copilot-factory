@@ -138,6 +138,8 @@ function record(root, { jobId, payload, step = 'challenge' }) {
           f.notes.push(`${byHuman.status} by you earlier (${byHuman.id}): ${(byHuman.settled && byHuman.settled.reason) || ''}`.trim());
         }
         if (v && v.status) f.verifier_status = String(v.status);
+        // the verifier says the contract or the design is wrong, not the code: an amendment
+        if (v && v.status === 'confirmed' && v.level === 'contract') f.level = 'contract';
         if (v && v.status === 'unverifiable') f.notes.push('the verifier could not settle it either way; it keeps blocking');
         if (v && v.reason) f.verification = v.reason;
         if (v && v.evidence) f.verification_evidence = String(v.evidence).slice(0, 2000);

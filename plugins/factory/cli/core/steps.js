@@ -114,6 +114,28 @@ function lastAtFingerprint(ctx, step) {
   return s.length ? s[s.length - 1] : null;
 }
 
+// Local mode: ship pushes nothing (no "origin" remote, or policy ship.mode "local"), so the
+// irreversible sign-off HS has nothing outward to sign off: the human's own merge (H4) is the step.
+function shipsLocally(ctx) {
+  const { root, state } = ctx;
+  if (state.pr && state.pr.mode) return state.pr.mode === 'local';
+  const live = (() => {
+    try {
+      return require('./policy').load(root);
+    } catch {
+      return {};
+    }
+  })();
+  // the repository's setting (its live policy); a job snapshot from before 0.9.0 has none
+  const ship = live.ship || (state.policy && state.policy.ship) || {};
+  if (ship.mode === 'local') return true;
+  try {
+    return !git.hasRemote(root);
+  } catch {
+    return false;
+  }
+}
+
 function isDone(ctx, stepDef) {
   const { root, state, b } = ctx;
   const id = stepDef.step;
@@ -137,6 +159,7 @@ function isDone(ctx, stepDef) {
     case 'HF': {
       if (id === 'H2' && stepDef.when === 'adr' && !invalidation.hasAdr(root, state.id)) return true;
       if (id === 'H3' && stepDef.auto === 'plan_critique' && fresh('plan_critique', { plan: b.plan })) return true;
+      if (id === 'HS' && shipsLocally(ctx)) return true;
       return approved(ctx, id, gateHash(ctx, id));
     }
     case 'ground':
@@ -178,4 +201,4 @@ function isDone(ctx, stepDef) {
   }
 }
 
-module.exports = { context, isDone, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };
+module.exports = { context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };

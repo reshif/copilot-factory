@@ -4807,7 +4807,7 @@ function researchHtml(x) {
 }
 // Clarify v3 (factory clarify status): where clarify is, every item with who decided it, every
 // finding with its source and the CLI's verdict, the research gaps, drops and redirects.
-const CL_STAGE = { readback: 'reading your words back', readback_wait: 'waiting for your ok on the read-back', research: 'researching', sheet_wait: 'waiting for your answer to the decision sheet', interpret: 'reading your sheet answer', redirect: 'reading your redirect', redirect_wait: 'waiting for your ok on the redirect', assemble: 'writing the contract', check: 'readiness check', ready: 'done: H1 next' };
+const CL_STAGE = { readback: 'reading your words back', readback_wait: 'waiting for your ok on the read-back', research: 'researching', sheet_wait: 'waiting for your answer to the decision sheet', interpret: 'reading your sheet answer', redirect: 'reading your redirect', redirect_wait: 'waiting for your ok on the redirect', assemble: 'writing the contract', check: 'readiness check', dispute: 'checking a disputed objection', diagnose: 'diagnosing the readiness loop', ready: 'done: H1 next' };
 const CL_STATUS = { open: 'open', to_decide: 'on the sheet', decided: 'decided', done: 'done', assumed: 'assumed', deferred: 'to design', dropped: 'dropped' };
 const EV_WORD = { repo: 'repo, quote checked', pinned: 'docs for the confirmed version', docs: 'docs (no version to pin)', other_version: 'documents another version: not used', unpinned: 'a moving page (stable/latest): not used', bad_quote: 'quote not at the cited line: not used', unsourced: 'no source quote: not used' };
 function clarifyHtml(job) {
@@ -5808,6 +5808,9 @@ var RUN_STEPS = (function () {
         { key: 'redirect', label: 'read your redirect back', match: /^clarify: read your redirect back/, roles: ['interviewer'], optional: true, only_when_run: true },
         { key: 'write', label: 'write the contract', match: /^clarify: write the contract/, roles: ['contract-writer'], optional: true, only_when_run: true },
         { key: 'check', label: 'readiness check', match: /^clarify: readiness check/, roles: ['god-eye'], optional: true, only_when_run: true },
+        // 0.9.0: the readiness loop's tie-break on a disputed objection, and its diagnosis
+        { key: 'dispute', label: 'check disputed objections', match: /^clarify: check disputed objections/, roles: ['finding-verifier'], optional: true, only_when_run: true },
+        { key: 'diagnose', label: 'diagnose the readiness loop', match: /^clarify: diagnose the readiness loop/, roles: ['god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
@@ -5827,6 +5830,11 @@ var RUN_STEPS = (function () {
         { key: 'fanout', label: 'review lanes', match: /^challenge: fan-out/, roles: ['code-reviewer', 'test-reviewer', 'security-reviewer', 'ux-reviewer', 'epic-reviewer'] },
         { key: 'verify', label: 'verify findings', match: /^challenge: verify/, roles: ['finding-verifier'] },
       ],
+    },
+    // fanout-judge.js, diagnose (0.9.0): God Eye diagnoses a review-fix or verify-fix loop that stopped making progress
+    'fanout-judge:diagnose': {
+      next: 'a different approach, or one question for you',
+      steps: [{ key: 'diagnose', label: 'diagnose the loop', match: /^diagnose: God Eye/, roles: ['god-eye'] }],
     },
     // ground.js: the probes in parallel
     ground: { next: 'decide', steps: [{ key: 'probes', label: 'research probes', match: /^ground:/, roles: ['researcher'] }] },
@@ -7837,7 +7845,7 @@ function toDisplay(data) {
     // The Clarify block (clarify v3): where clarify is, every item with who decided it, the findings with
     // their source and verdict, research gaps and drops — the latest state, as factory clarify status prints it
     var CL_STATUS = { open: "open", to_decide: "on the sheet", decided: "decided", done: "done", assumed: "assumed", deferred: "to design", dropped: "dropped" };
-    var CL_STAGE = { readback: "reading your words back", readback_wait: "waiting for your ok", research: "researching", sheet_wait: "waiting for your sheet answer", interpret: "reading your answer", redirect: "reading your redirect", redirect_wait: "waiting for your ok on the redirect", assemble: "writing the contract", check: "readiness check", ready: "done: H1 next" };
+    var CL_STAGE = { readback: "reading your words back", readback_wait: "waiting for your ok", research: "researching", sheet_wait: "waiting for your sheet answer", interpret: "reading your answer", redirect: "reading your redirect", redirect_wait: "waiting for your ok on the redirect", assemble: "writing the contract", check: "readiness check", dispute: "checking a disputed objection", diagnose: "diagnosing the readiness loop", ready: "done: H1 next" };
     var EV_WORD = { repo: "repo, quote checked", pinned: "docs for the confirmed version", docs: "docs (no version to pin)", other_version: "another version: not used", unpinned: "a moving page: not used", bad_quote: "quote not at the line: not used", unsourced: "no quote: not used" };
     function clarifyBlock(j) {
       var c = j.clarify, tt = c.totals || {};

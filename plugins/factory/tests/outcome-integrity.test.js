@@ -267,7 +267,7 @@ test('P1.1: an unverified major finding is carried to the next round when the re
   assert.match(rec.confirmed[0], /^code-1 \[major\]/);
 });
 
-test('P1.1: a carried finding refuted by its verifier stops blocking; one never settled parks after the retry cap', () => {
+test('P1.1: a carried finding refuted by its verifier stops blocking; one never settled goes to the ship review (one accept or dismiss), never a park', () => {
   const root = F.makeRepo();
   toProve(root);
   challengeRound(root, { lanes: [{ lane: 'code', findings: [CODE1] }] });
@@ -278,18 +278,33 @@ test('P1.1: a carried finding refuted by its verifier stops blocking; one never 
   const root2 = F.makeRepo();
   toProve(root2);
   let last;
-  for (let i = 0; i < 6; i++) {
+  let rounds = 0;
+  for (let i = 0; i < 8; i++) {
     const n = F.cli(root2, ['next']);
-    if (n.action === 'parked') { last = n; break; }
-    last = challengeRound(root2, { lanes: [{ lane: 'code', findings: i === 0 ? [CODE1] : [] }] }).rec;
-    if (last.status === 'park') break;
+    if (n.action !== 'workflow' || n.config !== 'challenge') { last = n; break; }
+    rounds += 1;
+    // the carried finding's verifier is the second one, on the stronger model, in the build environment
+    if (i > 0) {
+      const b = F.cli(root2, ['wfargs', 'fanout-judge', '--config', 'challenge']);
+      assert.equal(b.verifier.carried_model, 'opus');
+      assert.match(b.verifier.carried_note, /second verifier[\s\S]*Reproduce it/);
+    }
+    const r = challengeRound(root2, { lanes: [{ lane: 'code', findings: i === 0 ? [CODE1] : [] }] }).rec;
+    if (r.status === 'ship_review') { last = F.cli(root2, ['next']); break; }
   }
-  assert.equal(last.status === 'park' || last.action === 'parked', true, JSON.stringify(last));
+  assert.ok(rounds >= 2 && rounds <= 4, `${rounds} review rounds`);
   const st = F.cli(root2, ['job', 'show']);
-  assert.equal(st.status, 'parked');
-  assert.match(st.park.reason, /code-1/);
-  assert.match(F.reply(root2, 'resume').message, /Resumed/);
-  assert.equal(F.cli(root2, ['next']).config, 'challenge', 'resume allows one more re-verification');
+  assert.equal(st.status, 'active', 'never parked');
+  assert.deepEqual(st.unsettled.findings.map((x) => x.replace(/@r\d+$/, '')), ['code-1']);
+  assert.equal(last.action, 'wait', JSON.stringify(last).slice(0, 300));
+  assert.equal(last.rule, 'ship.review');
+  assert.deepEqual(last.ship_review.findings.map((f) => f.id.replace(/@r\d+$/, '')), ['code-1']);
+  assert.match(last.reason, /accept finding code-1[^"]*<why>" \(a known risk that ships\) or "dismiss finding code-1/);
+  // one reply settles it; ship goes on
+  const id = last.ship_review.findings[0].id;
+  assert.match(F.reply(root2, `dismiss finding ${id} the input is validated upstream`).message, /dismissed by you/);
+  const n = F.cli(root2, ['next']);
+  assert.equal(n.skill, 'ship', JSON.stringify(n).slice(0, 300));
 });
 
 test('P1.1: the challenge workflow re-verifies carried findings with twice the time cap', async () => {

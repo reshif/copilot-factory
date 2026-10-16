@@ -17,6 +17,8 @@
 // Clarify v3: while the current job waits on a clarify screen, an unmistakable reply (ok on the
 // read-back or a redirect, a numbered sheet reply such as "ok, but 2 b") is recorded through
 // the same path as `factory clarify reply`; other words are left for the main session.
+// 0.9.0: while the current job is parked, your message is your answer to the park's question:
+// it resumes the job with your words (resume + content).
 
 const fs = require('fs');
 const path = require('path');
@@ -69,6 +71,35 @@ function clarifyReply(root, input) {
   return true;
 }
 
+// A reply to a park: any message of yours while the current job is parked is your answer to the
+// park's question, so it resumes the job with your words (human.replyToPark). Not a question to
+// the assistant (ends with "?"), not a factory command or slash command, not a multi-paragraph text.
+function parkReply(root, input) {
+  const t = String(input.prompt || '').trim();
+  if (!t || /\?\s*$/.test(t) || t.startsWith('/') || isFactoryPrompt(t) || t.includes('\n\n') || t.length > 2000) return false;
+  const events = require('../cli/core/events');
+  const ctx = events.context(root, null);
+  let state;
+  try {
+    state = require('../cli/core/job').resolve(root, ctx.job || undefined);
+  } catch {
+    return false;
+  }
+  if (!state || state.status !== 'parked') return false;
+  const text = t.slice(0, 200);
+  try {
+    const r = require('../cli/core/human').replyToPark(root, { jobId: state.id, text: t, channel: 'chat' });
+    events.append(root, { event: 'reply_applied', reply: 'park', ...ctx });
+    writeLastReply(root, { at: new Date().toISOString(), text, status: 'applied', reply: 'park', job: r.job, decision_id: ctx.decision_id, message: r.message });
+    context(`[factory] Applied your reply to the park: ${r.message} Continue with \`factory next\` (skill factory:start).`, `[factory] Applied your reply: ${String(r.message).slice(0, 200)}`);
+  } catch (e) {
+    events.append(root, { event: 'reply_refused', reply: 'park', code: e.code || null, reason: e.message.slice(0, 200), ...ctx });
+    writeLastReply(root, { at: new Date().toISOString(), text, status: 'refused', reply: 'park', code: e.code || null, job: state.id, decision_id: ctx.decision_id, message: e.message.slice(0, 300) });
+    context(`[factory] Your reply was NOT applied: ${e.message}`, `[factory] Your reply was NOT applied: ${e.message.slice(0, 200)}`);
+  }
+  return true;
+}
+
 safe((input) => {
   if (runnerAgent()) return;
   // Autopilot's own continuation prompt: Autopilot is on. Record it for factory next / doctor.
@@ -103,9 +134,10 @@ safe((input) => {
   }
   const root0 = findRoot(input.cwd);
   const human = require('../cli/core/human');
-  const parsed = human.parseReply(input.prompt);
+  // one exact reply, or several in one message ("confirm AC-2; approve"): the ship review, the digest
+  const parsed = human.parseReply(input.prompt) || human.parseBatch(input.prompt);
   const miss = parsed ? null : human.nearMiss(input.prompt);
-  const applied = !parsed && !miss && root0 ? clarifyReply(root0, input) : false;
+  const applied = !parsed && !miss && root0 ? clarifyReply(root0, input) || parkReply(root0, input) : false;
   if (root0) writeTurn(root0, { at: new Date().toISOString(), session: input.sessionId || null, factory: Boolean(parsed || applied || isFactoryPrompt(input.prompt)) });
   if (applied) return;
   if (!parsed && !miss) return;

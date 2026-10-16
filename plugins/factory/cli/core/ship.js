@@ -150,7 +150,18 @@ function manifest(root, state) {
 }
 
 // Prepare: floors before ship, report, manifest commit. Then push + PR, or local mode.
-function ship(root, { jobId, local = false, title }) {
+// A PR opened without a human in the loop (the drive at low or medium risk, on a repository that
+// opted in with policy ship.auto_pr "draft") is a draft; one the human approved ("approve ship",
+// or HS at high risk) is a normal PR.
+function wantsDraft(root, state, ctx, draft) {
+  if (draft !== undefined && draft !== null) return Boolean(draft);
+  if (state.risk === 'high') return false;
+  if (state.ship_approval && state.ship_approval.fingerprint === ctx.b.fingerprint) return false;
+  // the opt-in is the repository's (its live .factory/policy.json), not a job's snapshot
+  return ((require('./policy').load(root).ship || {}).auto_pr) === 'draft';
+}
+
+function ship(root, { jobId, local = false, title, draft = null }) {
   const state = job.resolve(root, jobId);
   const ctx = steps.context(root, state, job.load);
   const fl = floors.evaluate(ctx, 'before_ship');
@@ -182,11 +193,12 @@ function ship(root, { jobId, local = false, title }) {
     } else {
       const bodyFile = path.join(root, '.factory', 'scratch', `pr-body-${state.id}.md`);
       writeText(bodyFile, prBody(readText(reportFile, '')));
-      const pr = gh(['pr', 'create', '--base', state.base_branch, '--head', state.branch, '--title', title || `${state.id}: ${state.title}`, '--body-file', bodyFile], root);
+      const asDraft = wantsDraft(root, state, ctx, draft);
+      const pr = gh(['pr', 'create', '--base', state.base_branch, '--head', state.branch, '--title', title || `${state.id}: ${state.title}`, '--body-file', bodyFile, ...(asDraft ? ['--draft'] : [])], root);
       if (pr.code !== 0) fail(`gh pr create failed: ${pr.stderr}`, 'pr_failed');
       url = pr.stdout.split('\n').pop();
     }
-    fresh.pr = { mode: 'github', url, fingerprint: ctx.b.fingerprint, head, checks: {}, merged: false, opened_at: nowIso() };
+    fresh.pr = { mode: 'github', url, fingerprint: ctx.b.fingerprint, head, checks: {}, merged: false, opened_at: nowIso(), ...(existing.code !== 0 && wantsDraft(root, state, ctx, draft) ? { draft: true } : {}) };
   } else {
     fresh.pr = { mode: 'local', fingerprint: ctx.b.fingerprint, head, checks: {}, merged: false, prepared_at: nowIso(), why_local: ready.why };
   }
@@ -200,8 +212,8 @@ function ship(root, { jobId, local = false, title }) {
     report: reportFile,
     next:
       fresh.pr.mode === 'github'
-        ? 'Review and merge the PR on GitHub. CI (factory-gate) re-verifies the merge result. Then say "continue".'
-        : `No GitHub PR (${fresh.pr.why_local}). Merge locally: git checkout ${state.base_branch} && git merge --no-ff ${state.branch} — then reply "merged <commit>".`,
+        ? `Review and merge the PR on GitHub${fresh.pr.draft ? ' (a draft: mark it ready for review first)' : ''}. CI (factory-gate) re-verifies the merge result. The factory notices the merge itself (factory next or factory drive syncs the PR); no reply is needed.`
+        : `No GitHub PR (${fresh.pr.why_local}). Merge locally: git checkout ${state.base_branch} && git merge --no-ff ${state.branch} — the factory notices the merge itself the next time it looks (factory next / factory drive); "merged <commit>" also records it.`,
   };
 }
 
@@ -348,4 +360,4 @@ function vendoredStatus(root) {
   return { ok: true, version: v, message: `.github/factory-cli is current (${v})` };
 }
 
-module.exports = { ship, prSync, ciVerify, ciInstall, vendoredStatus, vendorHash, VENDOR_DIRS, report, prBody };
+module.exports = { ship, ghReady, wantsDraft, prSync, ciVerify, ciInstall, vendoredStatus, vendorHash, VENDOR_DIRS, report, prBody };

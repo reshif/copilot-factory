@@ -89,7 +89,9 @@ test('P3.1: factory drive steps a whole bug@low job; it stops only where the hum
     assert.ok(r, `a stop the human can answer: ${JSON.stringify(s)}`);
     assert.equal(r.status, 'applied', JSON.stringify(r));
   }
-  assert.deepEqual(stops, ['clarify readback_wait', 'clarify sheet_wait', 'gate H1', 'wait', 'done']);
+  // 0.9.0: the read-back is shown (at H1), not waited on, and facts alone are no sheet: the human
+  // is needed at H1 and for the merge only
+  assert.deepEqual(stops, ['gate H1', 'wait', 'done']);
   assert.equal(stateOf(root, J).status, 'closed');
   const ev = events(root);
   // the drive never ran a human-only command, and every step it ran is marked via drive
@@ -101,8 +103,8 @@ test('P3.1: factory drive steps a whole bug@low job; it stops only where the hum
   assert.ok(!ev.some((e) => e.event === 'cli' && e.cmd === 'next' && e.via !== 'drive'), 'nobody but the drive ran factory next');
   // every stop: a typed drive_stop event, and a notification attempt logged with it
   const ds = ev.filter((e) => e.event === 'drive_stop');
-  assert.deepEqual(ds.map((e) => e.kind), ['clarify', 'clarify', 'gate', 'wait', 'done']);
-  assert.equal(ds[2].gate, 'H1');
+  assert.deepEqual(ds.map((e) => e.kind), ['gate', 'wait', 'done']);
+  assert.equal(ds[0].gate, 'H1');
   assert.equal(ev.filter((e) => e.event === 'notify').length, ds.length);
   // the inspector finds nothing to say about how the job was driven
   const insp = spawnSync('node', [path.join(F.PLUGIN, '..', 'factory-inspector', 'bin', 'factory-inspect'), 'run', '--job', J], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '' } });
@@ -166,7 +168,7 @@ test('P3.1: a drive that died without a stop (killed) is taken over by the next 
   assert.equal(h.cli(root, ['drive', 'status']).status, 'crashed');
   assert.notEqual(h.cli(root, ['next']).action, 'driving', 'a dead drive does not hold the job');
   const s = h.drive(root);
-  assert.equal(s.kind, 'clarify', JSON.stringify(s));
+  assert.equal(s.kind, 'gate', JSON.stringify(s));
   const start = events(root).filter((e) => e.event === 'drive_start').pop();
   assert.equal(start.recovered_from.pid, 999999);
 });
@@ -261,7 +263,7 @@ test('P3.2: notifications: notify-send on Linux, wsl-notify-send or a PowerShell
 
 test('P3.2: a drive stop notifies through the OS notifier (notify-send on PATH)', async () => {
   const root = F.makeRepo();
-  newJob(root);
+  newJob(root, { clarify: { readback: 'wait' } }); // a clarify turn to stop at
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-bin-'));
   const out = path.join(bin, 'shown.txt');
   fs.writeFileSync(path.join(bin, 'notify-send'), `#!/bin/sh\necho "$@" >> "${out}"\n`, { mode: 0o755 });
@@ -283,8 +285,8 @@ test('P3.2: factory inbox lists what waits on the human across jobs: the gate, t
     if (s.kind === 'gate') break;
     answer(root, J1, s);
   }
-  const J2 = newJob(root);
-  h.drive(root, ['--job', J2]); // stops at clarify's read-back
+  const J2 = newJob(root, { clarify: { readback: 'wait' } });
+  h.drive(root, ['--job', J2]); // stops at clarify's read-back (kept waiting by policy)
   const J3 = newJob(root);
   F.cli(root, ['park', '--job', J3, '--reason', 'waiting for the vendor API']);
   const r = h.cli(root, ['inbox']);
