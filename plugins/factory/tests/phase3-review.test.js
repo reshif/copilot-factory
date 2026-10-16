@@ -148,7 +148,8 @@ test('M4: drive liveness: a live drive on this host is alive however old its hea
   const host = os.hostname();
   const old = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
   const now = new Date().toISOString();
-  assert.equal(D.alive({ pid: process.pid, host, status: 'running', heartbeat_at: old }), true, 'this process (node), heartbeat a week old');
+  // 0.8.1: the recorded process start time says it is this process (pid reuse: fix081.test.js)
+  assert.equal(D.alive({ pid: process.pid, pid_start: D.procStart(process.pid), host, status: 'running', heartbeat_at: old }), process.platform !== 'win32', 'this process, heartbeat a week old');
   assert.equal(D.alive({ pid: 999999, host, status: 'running', heartbeat_at: now }), false, 'a gone pid');
   assert.equal(D.alive({ pid: 999999, host: 'old-container', status: 'running', heartbeat_at: old }), false, 'another host, stale');
   assert.equal(D.alive({ pid: 999999, host: 'other-box', status: 'running', heartbeat_at: now }), true, 'another host, fresh heartbeat');

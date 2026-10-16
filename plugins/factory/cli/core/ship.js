@@ -270,6 +270,39 @@ function ciVerify(root, { manifestDir, jobId, commit }) {
 }
 
 // Copies a self-contained CLI and the GitHub workflow into the repo (run by you, once).
+// What the vendored CLI (.github/factory-cli) needs at run time, with no access to the plugin:
+// every plugin directory cli/ reads through pluginPath() or require('../../…') (schemas: the
+// runner's and wfargs' output schemas; templates: docs and the gate workflow; config, agents and
+// workflows: briefs and the workflow runtime), and plugin.json (the version). The console
+// (`factory console`, 5 MB) is the one directory left out: CI never opens it.
+// tests/fix081.test.js scans cli/ and fails when a directory it reads is missing here.
+const VENDOR_DIRS = ['bin', 'cli', 'policy', 'recipes', 'schemas', 'templates', 'config', 'agents', 'workflows'];
+const VENDOR_FILES = ['plugin.json', 'package.json'];
+
+// A hash of the vendored tree's files (path and content), to tell a stale copy from a current one.
+function vendorHash(base) {
+  const crypto = require('crypto');
+  const h = crypto.createHash('sha256');
+  const walk = (rel) => {
+    const abs = path.join(base, rel);
+    let st;
+    try {
+      st = fs.statSync(abs);
+    } catch {
+      h.update(`missing:${rel}\n`);
+      return;
+    }
+    if (st.isDirectory()) {
+      for (const f of fs.readdirSync(abs).sort()) walk(path.posix.join(rel, f));
+    } else {
+      h.update(`${rel}\n`);
+      h.update(fs.readFileSync(abs));
+    }
+  };
+  for (const d of [...VENDOR_DIRS, ...VENDOR_FILES]) walk(d);
+  return h.digest('hex');
+}
+
 function ciInstall(root) {
   const dest = path.join(root, '.github', 'factory-cli');
   const copy = (src, dst) => {
@@ -279,10 +312,40 @@ function ciInstall(root) {
       for (const f of fs.readdirSync(src)) copy(path.join(src, f), path.join(dst, f));
     } else fs.copyFileSync(src, dst);
   };
-  for (const d of ['bin', 'cli', 'policy', 'recipes']) copy(pluginPath(d), path.join(dest, d));
+  // a fresh copy: files the plugin no longer has must not linger in the vendored CLI
+  fs.rmSync(dest, { recursive: true, force: true });
+  mkdirp(dest);
+  for (const d of [...VENDOR_DIRS, ...VENDOR_FILES]) if (fs.existsSync(pluginPath(d))) copy(pluginPath(d), path.join(dest, d));
   const wf = readText(pluginPath('templates', 'github', 'factory-gate.yml'));
   writeText(path.join(root, '.github', 'workflows', 'factory-gate.yml'), wf);
   return { ok: true, files: ['.github/factory-cli/', '.github/workflows/factory-gate.yml'], next: 'Commit these on your base branch and mark "factory-gate" as a required check.' };
 }
 
-module.exports = { ship, prSync, ciVerify, ciInstall, report, prBody };
+// factory doctor: is the vendored CLI there, does it start on its own, and is it this plugin's?
+// null when the project has none (ci install not run).
+function vendoredStatus(root) {
+  const dest = path.join(root, '.github', 'factory-cli');
+  if (!fs.existsSync(dest)) return null;
+  const { spawnSync } = require('child_process');
+  const os = require('os');
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (/^FACTORY_/.test(k)) delete env[k];
+  const r = spawnSync(process.execPath, [path.join(dest, 'bin', 'factory'), '--version'], { cwd: os.tmpdir(), env, encoding: 'utf8', timeout: 20000 });
+  let v = null;
+  try {
+    v = JSON.parse(r.stdout).version || null;
+  } catch {
+    v = null;
+  }
+  const missing = VENDOR_DIRS.filter((d) => !fs.existsSync(path.join(dest, d)));
+  const want = (require('../lib/util').readJson(pluginPath('plugin.json'), {}) || {}).version || null;
+  if (r.status !== 0 || !v || missing.length) {
+    return { ok: false, broken: true, version: v, missing, message: `.github/factory-cli is broken${missing.length ? ` (missing ${missing.join(', ')})` : ''}${r.status !== 0 ? `: it does not start (${String(r.stderr || r.stdout || '').split('\n').find((l) => /Error|Cannot/.test(l)) || `exit ${r.status}`})` : !v ? ': it predates factory --version' : ''}, so the factory-gate CI check fails. Run factory ci install again in your own terminal and commit the result.` };
+  }
+  if (vendorHash(dest) !== vendorHash(pluginPath())) {
+    return { ok: false, stale: true, version: v, plugin_version: want, message: `.github/factory-cli (${v}) is not this plugin's CLI (${want}${v === want ? ', files differ' : ''}): run factory ci install again in your own terminal and commit the result.` };
+  }
+  return { ok: true, version: v, message: `.github/factory-cli is current (${v})` };
+}
+
+module.exports = { ship, prSync, ciVerify, ciInstall, vendoredStatus, vendorHash, VENDOR_DIRS, report, prBody };

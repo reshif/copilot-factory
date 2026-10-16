@@ -85,7 +85,7 @@ safe((input) => {
       if (why) break;
       why = checkReadTool(root, tool, ti, abs(p), cwd, policy);
     }
-  } else if (tool === 'Bash' && root) why = checkBash(root, input.command, policy, { agent: Boolean(agent), shellInput: /^write_/.test(String(input.runtimeTool || '')) });
+  } else if (tool === 'Bash' && root) why = checkBash(root, input.command, policy, { agent: Boolean(agent), cwd, shellInput: /^write_/.test(String(input.runtimeTool || '')) });
   if (why) {
     // Say what was seen, so a block can be traced to the exact command.
     if (tool === 'Bash' && input.command) {

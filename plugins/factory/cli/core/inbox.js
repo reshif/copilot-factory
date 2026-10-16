@@ -41,6 +41,11 @@ function itemFor(root, state, driveStop, plain = false) {
   const base = { job: J, title: state.title, status: state.status, since: null };
   const pg = state.pending_gate;
   // a submitted amendment pre-empts a park (approving it resumes the job)
+  // Approvable only once presented: until factory next (or the drive) has shown gate A, a chat
+  // "approve" is refused (no_gate), so the inbox says what presents it instead.
+  if (state.amendment && state.amendment.status === 'submitted' && !(pg && pg.id === 'A')) {
+    return { ...base, kind: 'amend', since: state.amendment.submitted_at || null, what: `an amendment waits to be presented for your approval${state.status === 'parked' ? ' (approving it will also resume the parked job)' : ''}`, reply: ['continue (Copilot runs factory drive, which presents gate A)'], command: 'factory drive', human_only: false };
+  }
   if (state.amendment && state.amendment.status === 'submitted') {
     return { ...base, kind: 'gate', gate: 'A', hash: state.amendment.hash, docs: [state.amendment.file], since: state.amendment.submitted_at || null, what: `approve ${GATE_WHAT.A}${state.status === 'parked' ? ' (approving it also resumes the parked job)' : ''}`, reply: ['approve', 'deny <what must change>'], command: `factory approve --job ${J}`, human_only: true };
   }
@@ -72,7 +77,7 @@ function itemFor(root, state, driveStop, plain = false) {
     return { ...base, kind: 'wait', since: d.ts, what: d.reason || 'waiting on you', reason: d.reason, reply: ['continue'], command: null, human_only: false };
   }
   // a drive stop that waits on the main session or on you (questions, a degraded run, an amendment)
-  if (driveStop && driveStop.job === J && ['questions', 'degraded', 'amend', 'evidence', 'skill', 'error', 'copilot_unavailable', 'transient'].includes(driveStop.kind)) {
+  if (driveStop && driveStop.job === J && ['questions', 'degraded', 'amend', 'evidence', 'skill', 'error', 'copilot_unavailable', 'transient', 'step_too_long'].includes(driveStop.kind)) {
     return { ...base, kind: `drive_${driveStop.kind}`, since: driveStop.at, what: driveStop.summary, ...(driveStop.questions ? { questions: driveStop.questions } : {}), reply: driveStop.kind === 'questions' ? ['your answers'] : ['tell Copilot how to go on'], command: driveStop.kind === 'questions' ? `factory answer --job ${J} --question "<question>" --answer "<answer>"` : 'factory drive', human_only: false };
   }
   return null;

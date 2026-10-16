@@ -68,7 +68,6 @@ function pidAlive(pid) {
   }
 }
 
-// A running drive: its process is alive and its heartbeat recent.
 // Is this pid still a node/factory process? true / false, or null where /proc can't tell.
 function nodeProcess(pid) {
   try {
@@ -79,11 +78,42 @@ function nodeProcess(pid) {
   }
 }
 
+// When this pid's process started, as a string that differs for a later process given the same
+// pid, or null where nothing reliable can tell (Windows, no /proc and no ps):
+//   - Linux: /proc/<pid>/stat field 22 (starttime, clock ticks since boot). The command name in
+//     field 2 may hold spaces and parentheses, so the fields are counted after its last ')'.
+//   - elsewhere (macOS, the BSDs): `ps -o lstart= -p <pid>` (a full date to the second).
+function procStart(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const v = rest[19]; // fields 3.. after the name: field 22 is index 19
+    return /^\d+$/.test(v || '') ? `stat:${v}` : null;
+  } catch {
+    /* no /proc (macOS, Windows) or the pid is gone */
+  }
+  if (process.platform === 'win32' || fs.existsSync('/proc/self/stat')) return null;
+  try {
+    const r = require('child_process').spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
+    const v = String(r.stdout || '').trim().replace(/\s+/g, ' ');
+    return r.status === 0 && v ? `lstart:${v}` : null;
+  } catch {
+    return null;
+  }
+}
+
 // A running drive, by what can be known about it:
 //   - another machine (a container, a renamed host): only its heartbeat speaks for it, so a stale
 //     heartbeat there is a dead drive (and its pid means nothing here);
-//   - this machine: its process. A live node/factory process is alive however old its heartbeat
-//     (a laptop that slept: taking it over would make two drives), a gone or reused pid is dead.
+//   - this machine, with a start time recorded and readable now: that pid is the drive exactly
+//     when it started at the recorded time. Then it is alive however old its heartbeat (a laptop
+//     that slept: taking it over would make two drives), and a reused pid (another process given
+//     the same number later) is dead whatever it runs;
+//   - this machine, nothing reliable to compare (a record from before pid_start, Windows): a gone
+//     pid or one that is no node/factory process is dead, and otherwise the heartbeat decides, as
+//     on another machine (the drive beats every 10 s while a step runs, so only a dead or frozen
+//     drive goes stale).
 const sameHost = (st) => !st.host || st.host === require('os').hostname();
 function alive(st) {
   if (!st || st.status !== 'running') return false;
@@ -91,7 +121,10 @@ function alive(st) {
   const fresh = Date.now() - beat <= HEARTBEAT_SEC * STALE_BEATS * 1000;
   if (!sameHost(st)) return fresh;
   if (!pidAlive(st.pid)) return false;
-  return nodeProcess(st.pid) !== false;
+  const now = st.pid_start ? procStart(st.pid) : null;
+  if (st.pid_start && now) return now === st.pid_start;
+  if (nodeProcess(st.pid) === false) return false;
+  return fresh;
 }
 
 // The live drive for this job (or any job when jobId is null), or null.
@@ -242,6 +275,7 @@ const STOP_TITLE = {
   transient: 'Copilot rate-limited or offline',
   interrupted: 'drive interrupted',
   limit: 'drive step limit reached',
+  step_too_long: 'a step keeps getting killed',
 };
 
 // What the human (or the main session) does next, for each kind of stop.
@@ -283,6 +317,8 @@ function stopDetail(kind, n, extra = {}) {
       return { commands: n.commands || [], acs: n.acs || [], summary: `${J}: ${(n.acs || []).join(', ')} need${(n.acs || []).length === 1 ? 's' : ''} a doc/diff record the drive could not pick a file for: check the build and run the command with the real path, then factory drive.` };
     case 'done':
       return { summary: `${J} is done: ${n.reason || 'closed'}${extra.lessons && extra.lessons.length ? ` Lessons proposed: ${extra.lessons.map((l) => l.id).join(', ')} (reply "accept lesson Ln" or "reject lesson Ln <why>").` : ''}${extra.briefs && extra.briefs.length ? ` Project brief changes proposed: ${extra.briefs.map((b) => b.id).join(', ')} (reply "accept brief Pn" or "reject brief Pn <why>"; they reach every later agent).` : ''}`, ...(extra.lessons && extra.lessons.length ? { lessons: extra.lessons } : {}), ...(extra.briefs && extra.briefs.length ? { briefs: extra.briefs } : {}) };
+    case 'step_too_long':
+      return { in_step: extra.in_step || null, kills: extra.kills || null, summary: `${J}: ${extra.message}`, command: extra.detached ? `factory ${extra.in_step || ''}`.trim() : 'factory drive --detach' };
     default:
       return { summary: `${J || 'drive'}: ${extra.message || n.reason || kind}` };
   }
@@ -295,6 +331,22 @@ async function loop(ctx) {
   const fails = {};
   let requeries = 0;
   const perJob = {};
+  // M1: the step two drives in a row were killed in (a shell tool's time limit stops a foreground
+  // drive mid-step; a rerun would start that step again and be killed again, for ever). Checked
+  // before each long step until one of them has run through.
+  const killed = ctx.killed || null;
+  const tooLong = (label) => {
+    if (!killed || killed.kills < 2) return null;
+    if (label !== killed.step) return null;
+    const why = killed.detached
+      ? `factory drive was killed ${killed.kills} times in a row during "${label}" (out of memory, or killed from outside); it was not started again. Run it by hand to see what happens (factory ${label}), then factory drive.`
+      : `factory drive was killed ${killed.kills} times in a row during "${label}": a step this long outlasts a shell tool's time limit, which stops a foreground drive with it. It was not started again. Run factory drive --detach (no tool time limit stops it), or run the step in your own terminal (factory ${label}).`;
+    return ctx.stop('step_too_long', ctx.lastNext || { job: ctx.job }, { message: why, in_step: label, kills: killed.kills, detached: killed.detached });
+  };
+  const ran = () => {
+    ctx.killed = null;
+  };
+  const stepGuard = (label) => (ctx.killed ? tooLong(label) : null);
   for (;;) {
     // lost drive.json to another drive (this one looked dead to it): stop, touching nothing
     if (ctx.lost || !ctx.owns()) {
@@ -320,16 +372,22 @@ async function loop(ctx) {
             // policy.drive.stop_before_ship: the push, the PR or the local merge waits for the user's go
             if (ctx.stopBeforeShip) return ctx.stop('ship', n);
             say('ship');
+            const tl = stepGuard('ship');
+            if (tl) return tl;
             ctx.beat({ step: 'ship' });
             const s = await runChild(ctx, ['ship']);
+            ran();
             if (!s.json || s.json.error) return ctx.stop('error', n, { message: `factory ship failed: ${(s.json && s.json.message) || `exit ${s.code}`}` });
             ctx.shipped = s.json;
             continue;
           }
           if (n.skill === 'distill') {
             say('distill');
+            const tl = stepGuard('distill write');
+            if (tl) return tl;
             ctx.beat({ step: 'distill write' });
             const w = await runChild(ctx, ['distill', 'write']);
+            ran();
             // Copilot unavailable: the distill skill moves on to distill done; any other failure is a stop
             if (!w.json || (w.json.error && w.json.code !== 'copilot_unavailable')) return ctx.stop('error', n, { message: `factory distill write failed: ${(w.json && w.json.message) || `exit ${w.code}`}`, code: w.json && w.json.code });
             if (w.json && Array.isArray(w.json.lessons)) ctx.lessons.push(...w.json.lessons);
@@ -349,8 +407,11 @@ async function loop(ctx) {
         }
         const args = runArgs(n.action === 'skill' ? { workflow: 'clarify' } : n);
         say(args.slice(0, -1).join(' '));
+        const tl = stepGuard(args.slice(0, -1).join(' '));
+        if (tl) return tl;
         ctx.beat({ step: args.slice(0, -1).join(' ') });
         const res = await runChild(ctx, args);
+        ran();
         const j = res.json || {};
         if (!res.json) return ctx.stop('error', n, { message: `factory ${args.join(' ')} printed no result (exit ${res.code})` });
         if (j.error) {
@@ -385,9 +446,15 @@ async function loop(ctx) {
       }
       case 'cli': {
         const w = words(n.command);
+        // a human-only verb is never the drive's to run, whatever factory next names (the same
+        // list the guard refuses: approve, resume, env set, ci install, lessons accept …)
+        if (require('../lib/human-verbs').isHumanOnly(w[0], w[1])) return ctx.stop('error', n, { message: `factory next named "${n.command}", a human-only action: factory drive never runs one. Ask the user to reply in chat or run it in their own terminal.`, code: 'human_only' });
         say(w.join(' '));
+        const tl = stepGuard(w.join(' '));
+        if (tl) return tl;
         ctx.beat({ step: w.join(' ') });
         const res = await runChild(ctx, w);
+        ran();
         const key = n.command;
         if (res.code !== 0 || !res.json || res.json.error) {
           fails[key] = (fails[key] || 0) + 1;
@@ -465,6 +532,21 @@ function acquire(root, jobId, info) {
   return require('./job').withLock(path.join(project(root).dir, 'drive.lock'), () => acquireLocked(root, jobId, info), { waitMs: 10000, staleMs: 30000, what: 'the drive lock' });
 }
 
+// The step the previous drive was killed in, and how many drives in a row were killed there:
+//   - it still says running (alive() said no): it died without a stop, in its step;
+//   - it stopped as interrupted by a signal in a step, in the foreground (a shell tool's time
+//     limit sends SIGTERM or SIGINT; a detached drive is stopped that way only by factory drive
+//     stop or the user, which is not a kill to count).
+// null when it stopped anywhere else: the count starts again.
+function killedIn(prev) {
+  if (!prev) return null;
+  const last = prev.last || {};
+  const step = prev.status === 'running' ? prev.step || null : prev.status === 'stopped' && last.kind === 'interrupted' && !prev.detached ? last.in_step || null : null;
+  if (!step || step === 'next') return null;
+  const before = prev.recovered_from && prev.recovered_from.step === step ? Number(prev.recovered_from.kills) || 1 : 0;
+  return { pid: prev.pid, started_at: prev.started_at, step, kills: before + 1, detached: Boolean(prev.detached) };
+}
+
 function acquireLocked(root, jobId, info) {
   const prev = readState(root);
   if (alive(prev) && prev.pid !== process.pid) {
@@ -472,6 +554,8 @@ function acquireLocked(root, jobId, info) {
   }
   const st = {
     pid: process.pid,
+    // pid reuse: alive() requires the same pid AND the same process start time
+    pid_start: procStart(process.pid),
     host: require('os').hostname(),
     job: jobId,
     status: 'running',
@@ -481,7 +565,7 @@ function acquireLocked(root, jobId, info) {
     log: info.detached ? logFile(root) : null,
     step: null,
     steps: 0,
-    ...(prev && prev.status === 'running' ? { recovered_from: { pid: prev.pid, started_at: prev.started_at, step: prev.step || null } } : {}),
+    ...(killedIn(prev) ? { recovered_from: killedIn(prev) } : prev && prev.status === 'running' ? { recovered_from: { pid: prev.pid, started_at: prev.started_at, step: prev.step || null } } : {}),
     last: prev ? prev.last || null : null,
     stops: prev ? (prev.stops || []).slice(-20) : [],
   };
@@ -509,6 +593,7 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
       }
     })(),
     lessons: [],
+    killed: st.recovered_from && st.recovered_from.kills ? st.recovered_from : null,
     child: null,
     stopped: null,
     err: (m) => {
@@ -554,6 +639,7 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
       decision_id: (n && n.decision_id) || null,
       ...d,
       ...(extra.code ? { code: extra.code } : {}),
+      ...(kind === 'interrupted' && extra.in_step ? { in_step: extra.in_step } : {}),
       ...(n && n.notice ? { notice: n.notice } : {}),
       ...(n && n.last_reply ? { last_reply: n.last_reply } : {}),
       ...(n && n.environment ? { environment: n.environment } : {}),
@@ -581,7 +667,7 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
     const sent = repeat ? { method: 'repeat' } : require('./notify').notify(root, { title, body: rec.summary, job: ctx.job, kind });
     rec.notified = sent.method;
     rec.notify_key = key;
-    events.append(root, { event: 'drive_stop', job: ctx.job, kind, summary: String(rec.summary).slice(0, 500), gate: rec.gate ? rec.gate.id : null, park_kind: rec.park ? rec.park.kind : null, stage: rec.stage || null, decision_id: rec.decision_id, steps: ctx.steps, notified: sent.method, sent: sent.sent === true, pid: process.pid });
+    events.append(root, { event: 'drive_stop', job: ctx.job, kind, summary: String(rec.summary).slice(0, 500), gate: rec.gate ? rec.gate.id : null, park_kind: rec.park ? rec.park.kind : null, ...(kind === 'parked' && n && n.park && n.park.at ? { park_at: n.park.at } : {}), stage: rec.stage || null, decision_id: rec.decision_id, steps: ctx.steps, notified: sent.method, sent: sent.sent === true, pid: process.pid });
     save({ status: 'stopped', step: null, stopped_at: rec.at, last: rec, stops: [...(current.stops || []), { at: rec.at, job: ctx.job, kind, summary: rec.summary }].slice(-20) });
     ctx.err(`[factory drive] stop (${kind}): ${rec.summary}\n`);
     return rec;
@@ -594,9 +680,11 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
   for (const sig of Object.keys(SIG)) {
     if (process.platform === 'win32' && sig === 'SIGHUP') continue;
     handlers[sig] = () => {
+      // the step this signal stopped (a shell tool's time limit kills a foreground drive mid-step)
+      const inStep = ctx.child && ctx.child.exitCode === null && current.step && current.step !== 'next' ? current.step : null;
       const finish = () => {
         try {
-          if (!ctx.stopped) ctx.stop('interrupted', ctx.lastNext || { job: ctx.job }, { message: `drive stopped (${sig}); run factory drive again to continue from where the job is` });
+          if (!ctx.stopped) ctx.stop('interrupted', ctx.lastNext || { job: ctx.job }, { message: `drive stopped (${sig}); run factory drive again to continue from where the job is`, in_step: inStep });
         } finally {
           clearInterval(beat);
           process.exit(128 + SIG[sig]);
@@ -710,7 +798,19 @@ async function status(root, { wait = 0 } = {}) {
 // factory drive stop: SIGTERM the drive (it stops its step, records the stop and exits).
 function stopDrive(root) {
   const st = readState(root);
-  if (!alive(st)) return { stopped: false, ...statusView(root), message: 'No factory drive is running.' };
+  if (!alive(st)) {
+    // A record that still says running but whose drive is gone (killed, crashed, its pid reused
+    // by another process, a stale heartbeat from another machine): clear it, signalling nothing.
+    // Safe for anyone: alive() already says no drive holds it, and the next drive would take it
+    // over the same way.
+    if (st && st.status === 'running') {
+      const at = nowIso();
+      writeState(root, { ...st, status: 'stopped', step: null, stopped_at: at, last: { at, job: st.job, kind: 'interrupted', summary: `cleared a stale drive record (pid ${st.pid}${st.host ? ` on ${st.host}` : ''} is no longer that drive); nothing was signalled` }, stops: [...(st.stops || []), { at, job: st.job, kind: 'interrupted', summary: 'stale record cleared with factory drive stop' }].slice(-20) });
+      events.append(root, { event: 'drive_cleared', job: st.job, pid: st.pid, host: st.host || null, started_at: st.started_at || null });
+      return { stopped: false, cleared: true, pid: st.pid, job: st.job, message: `The drive record for ${st.job} (pid ${st.pid}) was stale: that drive is gone, so nothing was signalled and the record is cleared. Run factory drive to continue from where the job is.` };
+    }
+    return { stopped: false, ...statusView(root), message: 'No factory drive is running.' };
+  }
   if (!sameHost(st)) return { stopped: false, pid: st.pid, host: st.host, message: `The drive was started on ${st.host}, not on this machine: its pid means nothing here, so it was not signalled. Stop it there, or wait a minute: a drive whose heartbeat stopped on another machine counts as gone.` };
   try {
     process.kill(st.pid, 'SIGTERM');
@@ -724,4 +824,4 @@ function stopDrive(root) {
   return { stopped: true, pid: st.pid, job: st.job, message: `Stopped the drive for ${st.job}. Run factory drive to continue from where the job is.` };
 }
 
-module.exports = { drive, detach, status, statusView, stopDrive, liveFor, isDriveChild, drivingAnswer, readState, runArgs, words, evidencePath, stopDetail, alive, driveFile, logFile };
+module.exports = { procStart, killedIn, drive, detach, status, statusView, stopDrive, liveFor, isDriveChild, drivingAnswer, readState, runArgs, words, evidencePath, stopDetail, alive, driveFile, logFile };

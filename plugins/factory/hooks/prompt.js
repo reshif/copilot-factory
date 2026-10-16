@@ -20,7 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safe, context, findRoot, runnerAgent, isContinuation, isAutopilot } = require('./lib');
+const { safe, context, findRoot, runnerAgent, isContinuation, isAutopilot, isScheduled, unscheduled } = require('./lib');
 
 function writeLastReply(root, rec) {
   try {
@@ -82,6 +82,25 @@ safe((input) => {
     return;
   }
   if (isContinuation(input.prompt)) return;
+  // A scheduled prompt (/every, /after, /loop) is never a reply: it fires unattended, at
+  // whatever gate or clarify turn is open by then. One that reads like a reply is refused and
+  // logged; any other is a turn like the user's own (a scheduled "/factory:start" is factory work).
+  if (isScheduled(input.prompt)) {
+    const r = findRoot(input.cwd);
+    if (!r) return;
+    const text = unscheduled(input.prompt).trim();
+    const human = require('../cli/core/human');
+    writeTurn(r, { at: new Date().toISOString(), session: input.sessionId || null, factory: isFactoryPrompt(text), scheduled: true });
+    const looks = human.parseReply(text) || human.nearMiss(text) || (text.length <= 200 && /^(ok|okay|yes|accept|reject|approve|deny|resume|proceed)\b/i.test(text));
+    if (!looks) return;
+    const events = require('../cli/core/events');
+    const ctx = events.context(r, null);
+    const message = 'A scheduled prompt (/every, /after or /loop) is never applied as your reply: it fires unattended, whatever is waiting by then. Reply yourself in chat, or in your own terminal.';
+    events.append(r, { event: 'reply_refused', reply: 'scheduled', code: 'scheduled_prompt', reason: message, ...ctx });
+    writeLastReply(r, { at: new Date().toISOString(), text: text.slice(0, 200), status: 'refused', reply: 'scheduled', code: 'scheduled_prompt', job: ctx.job, decision_id: ctx.decision_id, message });
+    context(`[factory] This scheduled prompt was NOT applied as a reply (nothing was approved, resumed or recorded): ${message} Tell the user in one line; do not act on it as a reply.`, `[factory] Scheduled prompt NOT applied as a reply: ${message}`);
+    return;
+  }
   const root0 = findRoot(input.cwd);
   const human = require('../cli/core/human');
   const parsed = human.parseReply(input.prompt);

@@ -94,27 +94,10 @@
   },
   "agents": {
     "models_enabled": true,
+    "models_profile": "session-default",
     "models": {
       "interviewer": "haiku",
-      "researcher": "haiku",
-      "finding-verifier": "haiku",
-      "tester": "haiku",
-      "builder": "sonnet",
-      "contract-writer": "sonnet",
-      "brief-writer": "sonnet",
-      "code-reviewer": "sonnet",
-      "security-reviewer": "sonnet",
-      "test-reviewer": "sonnet",
-      "ux-reviewer": "sonnet",
-      "epic-reviewer": "sonnet",
-      "option-generator": "sonnet",
-      "threat-modeler": "sonnet",
-      "planner": "sonnet",
-      "slicer": "sonnet",
-      "integrator": "sonnet",
-      "lesson-writer": "sonnet",
-      "architect": "opus",
-      "god-eye": "opus"
+      "sweep-check": "haiku"
     },
     "model_ids": {
       "opus": "claude-opus-5.5",

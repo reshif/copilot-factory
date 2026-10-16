@@ -146,13 +146,24 @@ function jobContext(root, state, gates = []) {
 }
 
 // Which factory agent runs an item, and on which model: policy.agents.models (an alias that
-// model_ids maps to a Copilot id, or an id). default-policy.json ships one per role (fast,
-// standard, strongest); a project overrides any role in .factory/policy.json, and null or
-// "default" runs that role on the Copilot session default (no --model).
+// model_ids maps to a Copilot id, or an id). A role the map does not name runs on the user's
+// Copilot session default (no --model): a judgement role (builder, the reviewers, the
+// finding-verifier, the researchers, God Eye, the architect, the contract-writer …) must never
+// run on a cheaper model than the one the user chose for the session. default-policy.json names
+// only the interviewer and the sweep check (fast tier); a builder still steps up to the strongest
+// tier from attempt 3 (builderSpec). A project sets any role in .factory/policy.json; null or
+// "default" means the session default.
+// LEGACY_080: the tiers factory 0.8.0 shipped. A job created under 0.8.0 carries them in its
+// policy snapshot (no models_profile): a role whose model is still exactly that default runs on
+// the session default now, as a new job would.
+const LEGACY_080 = { interviewer: 'haiku', researcher: 'haiku', 'finding-verifier': 'haiku', tester: 'haiku', builder: 'sonnet', 'contract-writer': 'sonnet', 'brief-writer': 'sonnet', 'code-reviewer': 'sonnet', 'security-reviewer': 'sonnet', 'test-reviewer': 'sonnet', 'ux-reviewer': 'sonnet', 'epic-reviewer': 'sonnet', 'option-generator': 'sonnet', 'threat-modeler': 'sonnet', planner: 'sonnet', slicer: 'sonnet', integrator: 'sonnet', 'lesson-writer': 'sonnet', architect: 'opus', 'god-eye': 'opus' };
+const FAST_ROLES = new Set(['interviewer', 'sweep-check']);
 function roleModel(policy, role) {
   if (require('./models').modelsOff(policy)) return null; // agents.models_enabled: false, or models: "default"
-  const models = ((policy || {}).agents || {}).models;
-  const m = models && typeof models === 'object' ? models[role] : null;
+  const agents = (policy || {}).agents || {};
+  const models = agents.models;
+  let m = models && typeof models === 'object' ? models[role] : null;
+  if (!agents.models_profile && !FAST_ROLES.has(role) && typeof m === 'string' && m.trim() === LEGACY_080[role]) m = null;
   return typeof m === 'string' && m.trim() && m.trim() !== 'default' ? m.trim() : null;
 }
 
@@ -168,6 +179,14 @@ function builderSpec(state) {
   const a = (state.policy && state.policy.agents) || {};
   const from = Number.isInteger(a.builder_escalation_from_attempt) && a.builder_escalation_from_attempt >= 2 ? a.builder_escalation_from_attempt : 3;
   return { ...agentSpec(state, 'builder'), escalate: (Array.isArray(a.builder_escalation) ? a.builder_escalation : []).filter((m) => typeof m === 'string' && m.trim()), escalate_from: from };
+}
+
+// The sweep check runs the tester agent on the fast tier (agents.models["sweep-check"]); it only
+// reports, task verify decides pass. Without a sweep-check model it runs on the tester's.
+function sweepSpec(state) {
+  const spec = agentSpec(state, 'tester');
+  const m = roleModel(state.policy, 'sweep-check');
+  return m ? { ...spec, model: m } : spec;
 }
 
 function inputHash(parts) {
@@ -471,7 +490,7 @@ function realize(root, state, ctx, action) {
       builder: builderSpec(state),
       // policy agents.sweep_check: a cheap agent looks at the places the builder swept, after
       // task verify passed; it never decides pass (task verify's exit code does).
-      ...(sweep ? { sweep: agentSpec(state, 'tester') } : {}),
+      ...(sweep ? { sweep: sweepSpec(state) } : {}),
       builder_prompt: prompt(
         'builder',
         `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\` — its \`packet\` is your part of the approved design: the ADR's Decision and diagram, this task's rows of "How each acceptance criterion is met", the findings on your paths, the interfaces you own or consume, and the other tasks' objectives. Build to it.\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${envNote}${fixNote ? `\n${fixNote}` : ''}`,
@@ -595,4 +614,4 @@ function currentInputHash(root, state, envelope) {
   }
 }
 
-module.exports = { build, currentInputHash, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec, roleModel, builderSpec };
+module.exports = { build, currentInputHash, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec, roleModel, builderSpec, sweepSpec, LEGACY_080 };

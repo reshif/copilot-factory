@@ -364,15 +364,31 @@ function traceError(input, e) {
 // (a non-zero exit would deny every tool in Copilot, hooks.md §5.1).
 function safe(fn) {
   let input = { cwd: process.cwd(), event: process.argv[2] || null };
+  let error = null;
   try {
     input = normalise(readInput(), process.argv[2]);
     current.event = input.event;
     fn(input);
   } catch (e) {
+    error = e;
     if (process.env.FACTORY_HOOK_DEBUG) process.stderr.write(`factory hook error: ${e.stack}\n`);
     traceError(input, e);
   }
+  heartbeat(input, error);
   process.exit(0);
+}
+
+// The hook ran: one line in ~/.factory/hooks.log, and (main session only) its stamp in the
+// repository's .factory/log/hooks.json, which factory doctor reads (cli/lib/hook-health.js).
+function heartbeat(input, error) {
+  try {
+    const H = require('../cli/lib/hook-health');
+    const cwd = (input && input.cwd) || process.cwd();
+    const root = process.env.FACTORY_RUNNER === '1' ? null : findRoot(cwd);
+    H.note({ hook: H.hookName(process.argv[1], process.argv[2]), outcome: error ? 'failed' : 'ok', cwd, root, error: error ? error.message : null });
+  } catch {
+    /* never in the way */
+  }
 }
 
 function realpath(p) {
@@ -411,6 +427,15 @@ const AUTOPILOT_CONTINUE = /^\s*You have not yet marked the task as complete usi
 
 const isAutopilot = (prompt) => AUTOPILOT_CONTINUE.test(String(prompt || ''));
 
+// A prompt the Copilot CLI's scheduler sent (/every, /after, /loop: docs.github.com
+// copilot/how-tos/copilot-cli/automate-copilot-cli/schedule-prompts, "Identifying scheduled
+// prompts": it "precedes the prompt with text such as `[Scheduled prompt #4]`"). Only the user
+// can create a schedule (from the prompt input; no tool creates one), but a schedule fires its
+// text later, unattended, at whatever gate is open then: never a reply to a gate or a clarify turn.
+const SCHEDULED = /^\s*\[Scheduled prompt\b[^\]\n]{0,40}\]\s*/i;
+const isScheduled = (prompt) => SCHEDULED.test(String(prompt || ''));
+const unscheduled = (prompt) => String(prompt || '').replace(SCHEDULED, '');
+
 function isContinuation(prompt) {
   const p = String(prompt || '').trimStart();
   return p.startsWith(STOP_MARK) || /^\[factory\] Not (done|finished):/.test(p) || AUTOPILOT_CONTINUE.test(p);
@@ -421,4 +446,4 @@ function cliCommand() {
   return `node "${path.join(path.resolve(__dirname, '..'), 'bin', 'factory')}"`;
 }
 
-module.exports = { readInput, normalise, toolName, patchFiles, emit, deny, context, block, denyOutput, contextOutput, blockOutput, findRoot, safe, realpath, traceError, cliCommand, runnerAgent, isContinuation, isAutopilot, STOP_MARK, EVENTS, TOOLS };
+module.exports = { readInput, normalise, toolName, patchFiles, emit, deny, context, block, denyOutput, contextOutput, blockOutput, findRoot, safe, realpath, traceError, cliCommand, runnerAgent, isContinuation, isAutopilot, isScheduled, unscheduled, STOP_MARK, EVENTS, TOOLS };

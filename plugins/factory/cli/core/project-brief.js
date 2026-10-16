@@ -279,9 +279,22 @@ function loadProposals(root) {
   return { version: 1, proposals: Array.isArray(d.proposals) ? d.proposals : [], added: Array.isArray(d.added) ? d.added : [] };
 }
 
+// The proposals file is read, changed and written whole under its own lock (two distill runs,
+// or a distill and the user's accept, would otherwise both mint P<n+1> or lose one). Taken
+// before project.md's lock when both are held (decide), never the other way round.
+function withProposals(root, fn) {
+  const f = proposalsFile(root);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  return require('./job').withLock(`${f}.lock`, fn, { waitMs: 10000, staleMs: 30000, what: 'the project brief proposals' });
+}
+
 function propose(root, edits, { job, why } = {}) {
   const out = { id: null, edits: [], refused: [] };
   if (!Array.isArray(edits) || !edits.length) return out;
+  return withProposals(root, () => proposeLocked(root, edits, { job, why }, out));
+}
+
+function proposeLocked(root, edits, { job, why }, out) {
   const doc = loadProposals(root);
   let adds = 0;
   for (const e of edits.slice(0, 20)) {
@@ -340,6 +353,15 @@ function decide(root, { id, accept, reason, channel }) {
   if (!p) fail(`Project brief proposal ${id} not found`, 'bad_input');
   if (p.status !== 'proposed') fail(`Project brief proposal ${p.id} is already ${p.status}`, 'bad_input');
   human.confirmTyped(channel, p.id, `${accept ? 'accept' : 'reject'} it`);
+  // the code was typed outside the lock; the decision is made on the file as it is now
+  return withProposals(root, () => decideLocked(root, { id: p.id, accept, reason }));
+}
+
+function decideLocked(root, { id, accept, reason }) {
+  const doc = loadProposals(root);
+  const p = doc.proposals.find((x) => x.id === id);
+  if (!p) fail(`Project brief proposal ${id} not found`, 'bad_input');
+  if (p.status !== 'proposed') fail(`Project brief proposal ${p.id} is already ${p.status}`, 'bad_input');
   let applied = [];
   if (accept) {
     ensure(root);

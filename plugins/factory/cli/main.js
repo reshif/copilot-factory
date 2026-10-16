@@ -130,7 +130,15 @@ function run(argv) {
   if (opt.root) process.env.FACTORY_ROOT = path.resolve(opt.root);
   const cmd = pos[0];
   const sub = pos[1];
-  if (process.env.FACTORY_RUNNER === '1' && !agentAllowed(cmd, sub)) {
+  // where this CLI lives, for the hook launchers' fallback when the host gives them no plugin
+  // root (cli/lib/hook-health.js; VS Code on Windows/WSL: microsoft/vscode#337374)
+  if (process.env.FACTORY_RUNNER !== '1') require('./lib/hook-health').notePluginRoot(path.resolve(__dirname, '..'));
+  // factory --version: the plugin's version (factory doctor runs the vendored CI copy with it)
+  if (opt.version === true && cmd === undefined) return { version: (require('./lib/util').readJson(path.join(__dirname, '..', 'plugin.json'), {}) || {}).version || null, root: path.resolve(__dirname, '..') };
+  // A factory agent: FACTORY_RUNNER=1 (or the role variables runner.js sets beside it), or, when
+  // a script unset them, the agent process in this process's ancestry (cli/lib/agent-ancestry.js).
+  // Looked up only for a command an agent may not run, so an agent's own commands cost nothing.
+  if (!agentAllowed(cmd, sub) && (process.env.FACTORY_RUNNER === '1' || process.env.FACTORY_AGENT_ROLE || process.env.FACTORY_AGENT_LABEL || require('./lib/agent-ancestry').factoryAgentAncestor())) {
     fail(`"factory ${[cmd, sub].filter(Boolean).join(' ')}" is not for a factory agent: driving the job (next, run, record, ship, close …) is the main session's work and approvals are the human's. Do your role's task and reply with your JSON.`, 'agent_not_allowed');
   }
   const R = () => requireRoot(opt.root);
@@ -215,7 +223,7 @@ function run(argv) {
       if (opt.detach) return D.detach(R(), { jobId: J });
       // a stop that is a failure (not a wait on the human, not done) exits 1; the JSON says which
       return D.drive(R(), { jobId: J, detached: Boolean(opt['detached-child']), maxSteps: opt['max-steps'] ? Number(opt['max-steps']) : undefined }).then((r) => {
-        if (r && ['error', 'copilot_unavailable', 'transient', 'limit', 'interrupted', 'superseded'].includes(r.kind)) process.exitCode = 1;
+        if (r && ['error', 'copilot_unavailable', 'transient', 'limit', 'interrupted', 'superseded', 'step_too_long'].includes(r.kind)) process.exitCode = 1;
         return r;
       }); // async
     }

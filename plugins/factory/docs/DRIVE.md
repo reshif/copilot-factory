@@ -17,6 +17,7 @@ factory drive [--job J] [--max-steps n]       # foreground: prints one JSON stop
 factory drive --detach                        # the same in the background: log in .factory/drive.log
 factory drive status [--wait <seconds>]       # where it is; --wait blocks until it stops (or the wait ends)
 factory drive stop                            # SIGTERM: it stops the step in progress, records the stop, exits
+                                              # (a stale record — that drive is gone — is cleared, nothing signalled)
 ```
 
 Each step runs as its own `factory` child process. These are the same command lines the main session would run, and each is logged in `.factory/log/events.jsonl` with `via: "drive"`. The router, the run lock and the inspector therefore see what they would see for a job driven by hand.
@@ -37,6 +38,7 @@ Every stop has a `kind`:
 | `evidence` | A doc or diff record the drive can't pick a file for | The main session checks the build and records it |
 | `ship` | Only with `policy.drive.stop_before_ship: true`: every pre-ship floor is met, and the push, the PR or the local merge waits for your go | Say to ship; Copilot runs `factory ship`, then the drive again |
 | `done` | The job is closed, cancelled or abandoned | — |
+| `step_too_long` | Two drives in a row were killed in the same step (a shell tool's time limit stops a foreground drive mid-step; see below). The step is not started a third time | Run `factory drive --detach`, or the step in your own terminal |
 | `copilot_unavailable` · `transient` · `error` · `interrupted` · `limit` · `superseded` | Copilot is missing, signed out, or rate-limited; a step failed twice; the drive was stopped; it hit its step limit (per job); another drive took over | Fix the cause, then run `factory drive` again |
 
 A stop that is a failure (`error`, `copilot_unavailable`, `transient`, `limit`, `interrupted`, `superseded`) exits 1; a stop that waits on the human, and `done`, exit 0.
@@ -59,14 +61,19 @@ A stop that is a failure (`error`, `copilot_unavailable`, `transient`, `limit`, 
 - A `factory run` that is still running from before (`run_in_progress`) is waited for. A result already recorded is never run again.
 
 **One drive at a time** per repository. `.factory/drive.json` holds its pid, host and a heartbeat every 10 s, and is taken under an O_EXCL lock file (`.factory/drive.lock`), so two drives started together can't both win. Whether a recorded drive is still running is decided by what can be known about it:
-- on this machine, by its process: a live node/factory process is running however old its heartbeat (a laptop that slept is not taken over), and a gone or reused pid is not;
+- on this machine, by its process: `drive.json` also records the process's start time (`pid_start`: `/proc/<pid>/stat` field 22 on Linux, `ps -o lstart=` on macOS and the BSDs). A live pid that started at that time is the drive, however old its heartbeat (a laptop that slept is not taken over). The same pid with another start time is a later process that reused the number, and the drive is gone, whatever that process runs;
+- on this machine with nothing reliable to compare (Windows, or a record written before 0.8.1): a gone pid, or one that is no node/factory process, is gone; otherwise the heartbeat decides, as on another machine (the drive beats every 10 s while a step runs, so only a dead or frozen drive goes stale);
 - on another machine (a container restarted under a new hostname), only by its heartbeat: a minute without one and it counts as gone, and `factory drive stop` never signals a pid another machine recorded.
+
+A record whose drive is gone never holds the repository: the next `factory drive` takes it over, and `factory drive stop` clears it (status `stopped`, event `drive_cleared`) without signalling anything, so a reused pid is never sent a signal.
 
 Each drive re-reads `drive.json` before every step and every heartbeat. One that finds another drive's pid there has been taken over: it stops (kind `superseded`, event `drive_superseded`) without writing over the new owner's record or touching the job.
 
 While a drive runs, anyone else's `factory next` answers `action: "driving"` (with `factory drive status --wait 600` as the way to wait), and `factory run` is refused with `drive_in_progress`. The stop hook lets the main session end its turn while a drive runs.
 
-**In the chat.** The start skill starts `factory drive --detach` and waits with `factory drive status --wait 240`, under its shell tool's time limit, until the drive stops; then it relays the stop. It never runs the drive in the foreground: a tool's time limit would stop the drive and the build it runs. After you reply, it starts the drive again; an `interrupted` drive is simply started again. It no longer steps `factory next` by hand. That way of working stays in the skill only for hosts that can neither keep a long command running nor background one.
+**In the chat.** The start skill starts `factory drive --detach` and waits with `factory drive status --wait 240`, under its shell tool's time limit, until the drive stops; then it relays the stop. It never runs the drive in the foreground: a tool's time limit would stop the drive and the build it runs. A detached drive runs in its own session and process group, so no tool time limit reaches it, however long a step (`verify run`, `ci verify`, a build) takes; `drive status --wait` only reads `drive.json`, so a wait cut short by a time limit loses nothing.
+
+**A step longer than a tool's time limit.** A drive run in the foreground anyway (by hand under a tool, or a host that can't background) is killed with the tool's call. A rerun would start the same step again and be killed again, without end. So each drive records the step it was killed in: in `drive.json` (`step`, when it died without a stop) or in its `interrupted` stop (`in_step`, when the signal reached it in the foreground). The next drive's `recovered_from` carries the step and how many drives in a row were killed there. When a second drive in a row is killed in the same step, the third does not start it: it stops with kind `step_too_long`, naming the step, and says to run `factory drive --detach` (or the step in your own terminal). Any other stop, or the step running through, starts the count again. A detached drive is counted only when it died without a stop (out of memory, SIGKILL), never for `factory drive stop`. After you reply, it starts the drive again; an `interrupted` drive is simply started again. It no longer steps `factory next` by hand. That way of working stays in the skill only for hosts that can neither keep a long command running nor background one.
 
 ## `factory inbox`
 

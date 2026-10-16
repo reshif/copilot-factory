@@ -202,6 +202,30 @@ function hookNodeChecks(run = (file, args) => spawnSync(file, args, { encoding: 
     if (mj !== null && mj < HOOK_NODE_MIN) out.push({ name: 'hooks node (/usr/bin/node)', ok: false, detail: `/usr/bin/node is ${v}, too old for the factory hooks (they need Node ${HOOK_NODE_MIN}+). A harness that runs hooks with the system PATH (no nvm) gets this one: remove it or install Node ${HOOK_NODE_MIN}+ there` });
     else if (mj !== null) out.push({ name: 'hooks node (/usr/bin/node)', ok: true, detail: `/usr/bin/node ${v}` });
   }
+  // node only where a login shell puts it (~/.local/bin, ~/.nvm, ~/.volta …): a host that runs the
+  // hooks with a plain `bash -c` (no ~/.profile) finds no node at all, and every hook is off
+  const home = require('os').homedir();
+  if (where && home && where.startsWith(home + '/') && !(sys && !sys.error && sys.status === 0)) {
+    const loc = run('/usr/local/bin/node', ['--version']);
+    if (!loc || loc.error || loc.status !== 0) out.push({ name: 'hooks node (non-login shell)', ok: false, detail: `node is only at ${where}, on the PATH a login shell builds (~/.profile, ~/.bashrc): a host that runs the hooks with a plain shell finds no node and the factory hooks are off (the hook log then says node_missing). Link it where every shell looks: sudo ln -s "${where}" /usr/local/bin/node` });
+  }
+  return out;
+}
+
+// Each hook's last heartbeat here (cli/lib/hook-health.js): never seen, failing (and why, with the
+// remedy), or running. The guard never seen means nothing is enforced.
+function hookChecks(root) {
+  const H = require('../lib/hook-health');
+  const rows = H.health(root);
+  const out = [];
+  const label = { session: 'session start', prompt: 'prompt (chat replies)', guard: 'guard (preToolUse)', activity: 'activity', 'subagent-start': 'subagent start', 'subagent-stop': 'subagent stop', stop: 'stop gate' };
+  const any = rows.some((r) => r.status !== 'never');
+  for (const r of rows) {
+    const name = `hook ${r.hook}`;
+    if (r.status === 'ok') out.push({ name, ok: true, detail: `${label[r.hook]}: last ran ${r.last_seen}` });
+    else if (r.status === 'error') out.push({ name, ok: false, detail: `${label[r.hook]}: last run ${r.last_seen} could not start or failed (${r.outcome}${r.error ? `: ${r.error}` : ''}). ${r.remedy}${r.hook === 'guard' ? ' Until it runs, the guard is NOT enforcing anything (agents are not stopped from human-only commands or protected files).' : ''}${r.hook === 'prompt' ? ' Until it runs, chat replies (approve, resume, ok …) do not reach the factory: use the terminal commands factory next prints.' : ''}` });
+    else if (['guard', 'prompt', 'session'].includes(r.hook)) out.push({ name, ok: false, detail: `${label[r.hook]}: never seen running in this repository${any ? '' : ' (no factory hook has run here yet: before the first chat in this repository that is expected)'}.${r.hook === 'guard' ? ' The guard is NOT enforcing anything here until it runs.' : ''} Check: the plugin is enabled (/plugin list in the Copilot CLI; "Chat: Configure Hooks" lists the factory hooks.json in VS Code), chat.useHooks is on and the folder is trusted (VS Code Local harness), and the Output panel channel "GitHub Copilot Chat Hooks" for errors. Hook runs are logged in ${H.logFile()}.` });
+  }
   return out;
 }
 
@@ -236,12 +260,32 @@ function copilotChecks(add, root) {
       const byId = {};
       for (const [r, id] of ids) (byId[id || 'session default'] = byId[id || 'session default'] || []).push(r);
       const map = Object.entries(byId).map(([id, rs]) => `${id}: ${rs.join(', ')}`).join(' · ');
-      add('copilot models', !old.length && !rejected.length, `${old.length ? `this Copilot CLI (${version}) predates ${old.map((x) => `${x.id} (added in ${x.min})`).join(', ')}: update the CLI (copilot update), or set policy.agents.model_ids / models_enabled: false. ` : ''}${rejected.length ? `Copilot refused ${rejected.join(', ')} recently; those roles fall back to your default model (.factory/cache/rejected-models.json). ` : ''}Roles by model: ${map}`, 'warning');
+      // judgement roles a project put on a named model: they may run below the session's model
+      const below = ids.filter(([r, id]) => id && !['interviewer', 'sweep-check'].includes(r)).map(([r, id]) => `${r} (${id})`);
+      const esc = (a.builder_escalation || []).map((al) => (a.model_ids || {})[al] || al);
+      add('copilot models', !old.length && !rejected.length && !below.length, `${old.length ? `this Copilot CLI (${version}) predates ${old.map((x) => `${x.id} (added in ${x.min})`).join(', ')}: update the CLI (copilot update), or set policy.agents.model_ids / models_enabled: false. ` : ''}${rejected.length ? `Copilot refused ${rejected.join(', ')} recently; those roles fall back to your default model (.factory/cache/rejected-models.json). ` : ''}${below.length ? `policy.agents.models pins judgement roles to a model, which may be cheaper than your session's: ${below.join(', ')}. Remove them (or set "default") to run them on your session model. ` : ''}Roles by model: ${map || 'none named'} · every other role: your Copilot session default model${esc.length ? ` · a builder's attempt ${a.builder_escalation_from_attempt || 3}+: ${esc.join(' → ')}` : ''}`, 'warning');
     }
   } catch {
     /* no policy yet */
   }
   const allowAll = String(process.env.COPILOT_ALLOW_ALL || '').trim();
+  // each hook's heartbeat in this repository: never seen, failing (why, the remedy), or running
+  if (root) {
+    try {
+      for (const c of hookChecks(root)) add(c.name, c.ok, c.detail, 'warning');
+    } catch {
+      /* best effort */
+    }
+  }
+  // the CI copy factory ci install vendored: it must start without the plugin and be this version
+  if (root) {
+    try {
+      const vs = require('./ship').vendoredStatus(root);
+      if (vs) add('ci cli', vs.ok, vs.message, 'warning');
+    } catch {
+      /* best effort */
+    }
+  }
   if (allowAll && !/^(0|false|no|off)$/i.test(allowAll)) add('copilot allow-all', false, `COPILOT_ALLOW_ALL=${allowAll} is set: every tool runs without asking in your sessions. Human gates still need your reply, but unset it for factory work`, 'warning');
   const plan = String(process.env.COPILOT_PLAN_THEN_AUTOPILOT || '').trim();
   if (plan && !/^(0|false|no|off)$/i.test(plan)) add('copilot autopilot', false, `COPILOT_PLAN_THEN_AUTOPILOT=${plan} is set: autopilot answers its own questions, so it would approve factory gates. Unset it`, 'warning');
@@ -306,4 +350,4 @@ function shim({ dir, force = false } = {}) {
   return { dir: target, linked, skipped, on_path: onPath, ...(onPath ? {} : { hint: `${target} is not on your PATH: add  export PATH="${target}:$PATH"  to your shell profile` }) };
 }
 
-module.exports = { HOOK_NODE_MIN, hookNodeChecks, init, doctor, shim, ensureExcludes, ensureGitSetup, EXCLUDES };
+module.exports = { hookChecks, HOOK_NODE_MIN, hookNodeChecks, init, doctor, shim, ensureExcludes, ensureGitSetup, EXCLUDES };

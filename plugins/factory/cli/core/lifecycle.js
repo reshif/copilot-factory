@@ -75,7 +75,17 @@ function close(root, { jobId }) {
 // task states set by hand, findings settled by hand, waivers). Each list is capped; `count` is
 // how many items there were in all.
 const CAP = 12;
-const TROUBLE_STOPS = new Set(['parked', 'error', 'transient', 'copilot_unavailable', 'limit', 'degraded']);
+const TROUBLE_STOPS = new Set(['parked', 'error', 'transient', 'copilot_unavailable', 'limit', 'degraded', 'step_too_long']);
+// A drive rerun on a job that is still parked stops at the same park again, minutes later: that
+// is the same park, not another. Its stop says so (notified "repeat", or the same park_at).
+function repeatStop(e, seen) {
+  if (e.event !== 'drive_stop') return false;
+  if (e.notified === 'repeat') return true;
+  if ((e.kind || e.type) !== 'parked' || !e.park_at) return false;
+  if (seen.has(e.park_at)) return true;
+  seen.add(e.park_at);
+  return false;
+}
 const clip = (v, n = 240) => (v === undefined || v === null ? null : String(v).slice(0, n));
 function troubleOf(root, state) {
   const { readJsonl } = require('../lib/util');
@@ -90,7 +100,7 @@ function troubleOf(root, state) {
     ...led.filter((e) => e.kind === 'clarify' && e.outcome === 'park').map((e) => ({ at: e.at, source: 'clarify', type: 'clarify', reason: clip((e.detail || {}).reason) })),
     // typed park events (any name with "park"), and the drive's stops that are trouble (a park, an
     // error, Copilot down, a step limit, a degraded run), never its gate, clarify or done stops
-    ...evs.filter((e) => typeof e.event === 'string' && e.event !== 'cli' && ((/park/i.test(e.event) && !/unpark|resume/i.test(e.event)) || (e.event === 'drive_stop' && TROUBLE_STOPS.has(e.kind || e.type)))).map((e) => ({ at: e.ts, source: e.event, type: typed(e), reason: clip(e.reason || e.summary || e.message || e.park_reason || null) })),
+    ...evs.filter((e) => typeof e.event === 'string' && e.event !== 'cli' && ((/park/i.test(e.event) && !/unpark|resume/i.test(e.event)) || (e.event === 'drive_stop' && TROUBLE_STOPS.has(e.kind || e.type)))).filter(((seen) => (e) => !repeatStop(e, seen))(new Set())).map((e) => ({ at: e.ts, source: e.event, type: typed(e), reason: clip(e.reason || e.summary || e.message || e.park_reason || null) })),
   ]
     .sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')))
     // one park written by several records (its decision row, the workflow result, the drive's stop) counts once

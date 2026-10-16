@@ -67,7 +67,9 @@ test('B1: a model the account cannot use is retried once on the session default,
   const later = calls(e).slice(before);
   assert.ok(later.length > 0);
   assert.ok(!later.some((c) => c.model === 'claude-haiku-5.5'), JSON.stringify(later.map((c) => [c.agent, c.model])));
-  assert.ok(events(root).some((x) => x.event === 'agent_run' && x.model_skipped === 'claude-haiku-5.5'));
+  // (0.8.1: only the interviewer is on the fast tier; a later run's interviewer, if any, skips it)
+  assert.ok(later.filter((c) => c.agent === 'factory:interviewer').every((c) => c.model === null));
+  assert.ok(require('../cli/core/models').loadRejected(root).has('claude-haiku-5.5'));
   // doctor names it
   const d = spawnSync('node', [F.BIN, 'doctor'], { cwd: root, encoding: 'utf8', env: e.env });
   const chk = JSON.parse(d.stdout).checks.find((c) => c.name === 'copilot models');
@@ -109,7 +111,7 @@ test('B1: the model-rejection matcher is conservative; doctor warns on a CLI old
   const chk = JSON.parse(d.stdout).checks.find((c) => c.name === 'copilot models');
   assert.equal(chk.ok, false);
   assert.match(chk.detail, /predates claude-haiku-5\.5 \(added in 1\.0\.94\)/);
-  assert.match(chk.detail, /claude-opus-5\.5: architect, god-eye/);
+  assert.match(chk.detail, /claude-haiku-5\.5: interviewer, sweep-check[\s\S]*every other role: your Copilot session default model[\s\S]*attempt 3\+: claude-opus-5\.5/);
 });
 
 test('M7: builder escalation uses the global attempt number, across factory runs', async () => {

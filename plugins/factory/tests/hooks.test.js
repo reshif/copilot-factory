@@ -114,11 +114,20 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
       // VS Code's Local harness: `command` is its cross-platform field; the same POSIX launcher
       // (the Copilot runtime prefers bash/powershell when they are present).
       assert.equal(h.command, h.bash, ev);
-      // flat root lookup: no nested ${…:-${…}} and no ${PLUGIN_ROOT} / ${CLAUDE_PLUGIN_ROOT} token VS Code would rewrite
-      assert.match(h.bash, /R=\$PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$COPILOT_PLUGIN_ROOT; \[ -n "\$R" \] \|\| R=\$CLAUDE_PLUGIN_ROOT;/);
-      assert.doesNotMatch(h.bash + h.powershell, /\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}|\$\{[^}]*\$\{/);
-      assert.ok(h.bash.endsWith(`.js" ${ev} || { c=$?; V=$(node -v 2>/dev/null); case "$V" in v[0-9].*|v1[0-3].*) echo "[$H] node $V is too old for the factory hooks (they need Node 14 or newer): factory hooks are off (the guard allows everything)" >&2;; *) echo "[$H] hook failed (exit $c); allowed" >&2;; esac; }; exit 0`), 'node, then exit 0 whatever happened (naming a too-old node)');
-      assert.ok(h.powershell.includes("-lt 14) { [Console]::Error.WriteLine(\"[$h] node $v is too old for the factory hooks (they need Node 14 or newer)"), ev);
+      // 0.8.1: the root from the ${PLUGIN_ROOT} / ${CLAUDE_PLUGIN_ROOT} token VS Code substitutes
+      // (shell-quoted: only ever a whole assignment value, never inside quotes), the env vars, or
+      // ~/.factory/plugin-root; no nested ${…:-${…}} and no token with an operator (VS Code
+      // substitutes ${CLAUDE_PLUGIN_ROOT:-.} to nothing: microsoft/vscode#337374)
+      assert.match(h.bash, /R=\$\{PLUGIN_ROOT\}; \[ -n "\$R" \] \|\| R=\$\{CLAUDE_PLUGIN_ROOT\}; \[ -n "\$R" \] \|\| R=\$COPILOT_PLUGIN_ROOT;/);
+      assert.equal((h.bash.match(/\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)[^}]*\}/g) || []).join(' '), '${PLUGIN_ROOT} ${CLAUDE_PLUGIN_ROOT}', 'each token once, bare');
+      for (const t of [h.bash, h.powershell]) {
+        assert.doesNotMatch(t, /\$\{[^}]*\$\{/);
+        for (const m of t.matchAll(/\$\{(PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}/g)) assert.match(t.slice(m.index - 3, m.index), /[rR]=$/, 'a token only as a whole assignment value');
+      }
+      assert.match(h.powershell, /\$r=\$\{PLUGIN_ROOT\}; if \(-not \$r\) \{ \$r=\$\{CLAUDE_PLUGIN_ROOT\} \}; if \(-not \$r\) \{ \$r=\$env:PLUGIN_ROOT \}/);
+      assert.ok(h.bash.includes('R=$(cat "$L/plugin-root" 2>/dev/null)'), 'the CLI-recorded root as the last resort');
+      assert.ok(h.bash.endsWith(`.js" ${ev} || { c=$?; V=$(node -v 2>/dev/null); case "$V" in v[0-9].*|v1[0-3].*) lg "node_old $V"; echo "[$H] node $V is too old for the factory hooks (they need Node 14 or newer): factory hooks are off (the guard allows everything)" >&2;; *) lg "failed exit $c"; echo "[$H] hook failed (exit $c); allowed" >&2;; esac; }; exit 0`), 'node, then exit 0 whatever happened (naming a too-old node)');
+      assert.ok(h.powershell.includes("-lt 14) { lg \"node_old $v\"; [Console]::Error.WriteLine(\"[$h] node $v is too old for the factory hooks (they need Node 14 or newer)"), ev);
       assert.match(h.powershell, /; exit 0$/);
       assert.doesNotMatch(h.bash, /\bexec node\b/);
       const script = h.bash.match(/hooks\/([\w-]+\.js)/)[1];
@@ -128,7 +137,8 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
   assert.equal(H.hooks.preToolUse[0].timeoutSec, 10, 'timeouts fail open: keep the guard short');
   // the bash command really runs the hook through the env var (and exits quietly without it)
   const root = F.makeRepo();
-  const run = (env, bash = H.hooks.preToolUse[0].bash) => spawnSync('bash', ['-c', bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env } });
+  const userDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'factory-userdir-'));
+  const run = (env, bash = H.hooks.preToolUse[0].bash) => spawnSync('bash', ['-c', bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, FACTORY_USER_DIR: userDir, ...env } });
   for (const env of [{ COPILOT_PLUGIN_ROOT: F.PLUGIN }, { PLUGIN_ROOT: F.PLUGIN }, { CLAUDE_PLUGIN_ROOT: F.PLUGIN }]) {
     const r = run(env);
     assert.equal(r.status, 0, JSON.stringify(env));
@@ -162,12 +172,12 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
     if (p) fs.symlinkSync(p, path.join(noNode, b));
   }
   for (const [ev, list] of Object.entries(H.hooks)) {
-    const r = spawnSync(path.join(noNode, 'bash'), ['-c', list[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: noNode, PLUGIN_ROOT: F.PLUGIN } });
+    const r = spawnSync(path.join(noNode, 'bash'), ['-c', list[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: noNode, PLUGIN_ROOT: F.PLUGIN, FACTORY_USER_DIR: userDir } });
     assert.equal(r.status, 0, ev);
     assert.match(r.stderr, /^\[factory:[\w-]+\] node is not on PATH/, ev);
-    assert.ok(list[0].powershell.includes('if (-not (Get-Command node -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine("[$h] node is not on PATH'), ev);
+    assert.ok(list[0].powershell.includes('if (-not (Get-Command node -ErrorAction SilentlyContinue)) { lg \'node_missing\'; [Console]::Error.WriteLine("[$h] node is not on PATH'), ev);
   }
-  const missing = spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: process.env.PATH, PLUGIN_ROOT: '/nonexistent' } });
+  const missing = spawnSync('bash', ['-c', H.hooks.preToolUse[0].bash], { input: '{}', encoding: 'utf8', env: { PATH: process.env.PATH, PLUGIN_ROOT: '/nonexistent', FACTORY_USER_DIR: userDir } });
   assert.deepEqual([missing.status, /^\[factory:guard\] hook script .* not found; hook skipped/.test(missing.stderr)], [0, true]);
   // postToolUse filters in-script what the Claude matcher used to
   const { shouldLog } = require('../hooks/activity');

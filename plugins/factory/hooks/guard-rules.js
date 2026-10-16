@@ -85,6 +85,9 @@ function checkWrite(root, absIn, policy) {
     }
   }
   if (/(^|[\\/])\.git[\\/](hooks|config)([\\/]|$)/.test(abs)) return '.git/hooks and .git/config are off limits.';
+  // the hook launchers' plugin-root fallback and their log (cli/lib/hook-health.js): a planted
+  // plugin-root would run another "guard" where the host gives no plugin root
+  if (/(^|[\\/])\.factory[\\/](plugin-root|hooks\.log)$/.test(abs)) return '~/.factory/plugin-root and ~/.factory/hooks.log belong to the factory CLI and its hooks.';
   if (!root) return null;
   const r = rel(root, abs);
   if (r.startsWith('..')) return null;
@@ -159,7 +162,8 @@ function checkReadTool(root, tool, ti, absFile, cwd, policy) {
 
 // ---- factory CLI recognition -------------------------------------------------------------
 
-const HUMAN_ONLY = new Set(['approve', 'deny', 'resume', 'proceed', 'cancel', 'abandon', 'waive', 'merged', 'confirm', 'reseal', 'assumption', 'finding']);
+// the human-only verbs, shared with factory drive (cli/lib/human-verbs.js)
+const { HUMAN_ONLY, isHumanOnly } = require('../cli/lib/human-verbs');
 // Mirrors cli/main.js parseArgs: --k=v, --k v (unless the flag is boolean or v starts with --), and --.
 // the CLI's own boolean-flag list (cli/lib/args.js): the guard reads a command exactly as the CLI parses it
 const CLI_BOOL = require('../cli/lib/args').BOOL;
@@ -170,7 +174,7 @@ const INTERPRETER = /^(node|nodejs|python[0-9.]*|ruby|perl|php|deno|bun|osascrip
 // Factory state and CLI internals. STRICT: code that loads the CLI's internals or the seal
 // secret could forge state, whatever it does. STATE: the job files; reading them is fine.
 const INTERNALS_STRICT = /cli\/core\/|cli\/lib\/(seal|util)|software-factory\/secret|\.config\/software-factory/;
-const STATE = /\.factory\/(jobs|log|lessons|project\.json|project\.md|project-brief\.proposals\.json|cache\/|policy\.json|environment\.json|current)/;
+const STATE = /\.factory\/(jobs|log|lessons|project\.json|project\.md|project-brief\.proposals\.json|cache\/|policy\.json|environment\.json|current|plugin-root|hooks\.log)/;
 const INTERNALS = new RegExp(`${INTERNALS_STRICT.source}|${STATE.source}`);
 const WRITE_OPS = /writeFile|appendFile|createWriteStream|\bunlink|\brename|\brmSync|\brmdir|\bcopyFile|truncate|\.write\(|open\([^)]*['"][wax+]|json\.dump\(|os\.remove|os\.replace|shutil\.|Path\([^)]*\)\.write_|File\.write|>>?\s*['"]?\.factory/;
 const SECRET_FILE = /software-factory[\\/]secret|\.config[\\/]software-factory/;
@@ -209,10 +213,6 @@ function agentAllowed(a, b) {
   if (!a || !CLI_VERBS.has(a)) return true;
   const ok = AGENT_ALLOWED[a];
   return ok === '*' || (Array.isArray(ok) && ok.includes(b));
-}
-
-function isHumanOnly(a, b) {
-  return HUMAN_ONLY.has(a) || (a === 'lessons' && ['accept', 'reject', 'promote'].includes(b)) || (a === 'ci' && b === 'install') || (a === 'env' && b === 'set');
 }
 
 function humanMessage(a, b) {
@@ -383,6 +383,72 @@ function factoryCall(head, ctx) {
     if (isFactoryPath(a.text) || (av && ctx.names.has(av)) || (asub !== null && isLookupSub(asub))) return { args: head.args.slice(i + 1), how: av || asub !== null ? 'indirect' : 'direct' };
   }
   return null;
+}
+
+// The first subcommand word, when it is built at run time: 'sub' for a command substitution
+// ($(…), `…`), 'var' for a variable the guard can't resolve; null when it is written out.
+function hiddenVerb(args, ctx) {
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i];
+    const t = w.text;
+    if (t === '--') return null;
+    if (t.startsWith('--')) {
+      if (!t.includes('=') && !CLI_BOOL.has(t.slice(2)) && args[i + 1] && !args[i + 1].text.startsWith('--')) i += 1;
+      continue;
+    }
+    if ((w.subs && w.subs.length) || /\$\(|`/.test(t)) return 'sub';
+    const v = varName(t);
+    if (v && !ctx.vars.has(v)) return 'var';
+    if (/\$\{?[A-Za-z_]/.test(t)) return 'var';
+    return null;
+  }
+  return null;
+}
+
+// The script file a command runs: `sh|bash|zsh … <file>` (no -c), `source <file>`, `. <file>`, or
+// a path run directly (./x.sh, scripts/x). null when it is none of these.
+function scriptFile(head, ctx) {
+  const n = head.name;
+  const fs = require('fs');
+  const at = (t) => (t ? path.resolve(ctx.cwd || ctx.root || '.', t) : null);
+  if (SHELLS.test(n) && n !== 'busybox') {
+    const args = head.args.map((a) => a.text);
+    if (args.some((t) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(t))) return null;
+    const f = args.find((t) => !t.startsWith('-') && !t.startsWith('+'));
+    return f ? at(f) : null;
+  }
+  if ((n === 'source' || n === '.') && head.args[0]) return at(head.args[0].text);
+  // a path run directly: only a shell script (.sh, or a shell #! line), never a program
+  const t = head.word.text;
+  if (/[\\/]/.test(t) && !isFactoryPath(t)) {
+    try {
+      const f = at(t);
+      if (!fs.statSync(f).isFile()) return null;
+      if (/\.(sh|bash|zsh|ksh)$/.test(f)) return f;
+      const fd = fs.openSync(f, 'r');
+      const buf = Buffer.alloc(64);
+      const len = fs.readSync(fd, buf, 0, 64, 0);
+      fs.closeSync(fd);
+      return /^#!\s*\S*(\/(ba|z|k|da|mk)?sh|env\s+(ba|z|k|da)?sh)\b/.test(buf.slice(0, len).toString('utf8')) ? f : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// A script's text for the guard to read (at most 256 KB, at most 8 scripts per command), or null.
+function readScript(file, ctx) {
+  if (ctx.scripts >= 8) return null;
+  try {
+    const fs = require('fs');
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > 256 * 1024) return null;
+    const text = fs.readFileSync(file, 'utf8');
+    return text.includes('\0') ? '' : text; // a binary runs no shell commands the guard could read
+  } catch {
+    return null;
+  }
 }
 
 // An expansion we can't resolve, right where the CLI would be, followed by a human-only verb.
@@ -639,6 +705,22 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
         if (why) return why;
       }
     }
+    // A factory agent's script file (sh run.sh, bash ./x.sh, source x.sh, ./x.sh): the guard
+    // reads the file and checks its commands as if typed here. The CLI refuses a factory agent
+    // the driving verbs anyway (cli/main.js, FACTORY_RUNNER and the process ancestry); this is the
+    // first layer.
+    if (agent && !collect) {
+      const file = scriptFile(head, ctx);
+      if (file) {
+        // one it can't read (missing, too big) is left to the CLI's own check
+        const text = readScript(file, ctx);
+        if (text) {
+          ctx.scripts += 1;
+          const why = walk(text, ctx, depth + 1, collect);
+          if (why) return `${why} (in ${path.basename(file)})`;
+        }
+      }
+    }
     if (n === 'find' || n === 'fd') {
       for (let i = 0; i < head.args.length; i++) {
         if (!/^(-exec|-execdir|-ok|-okdir|-x|--exec|-X|--exec-batch)$/.test(head.args[i].text)) continue;
@@ -668,6 +750,11 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
       }
       if (a && isHumanOnly(a, b)) return humanMessage(a, b);
       if (agent && a && !agentAllowed(a, b)) return agentMessage(a, b);
+      // The subcommand built at run time ("$(echo drive)", $(printf approve), `…`, an unknown
+      // variable): what it runs can't be read here. A factory agent names its commands literally;
+      // anyone else may not hide a verb behind a command substitution.
+      const hidden = hiddenVerb(call.args, ctx);
+      if (hidden && (agent || hidden === 'sub')) return agent ? 'Factory agents run factory commands with the subcommand written out (factory task show T1), never built at run time ($(…), `…` or a variable).' : 'The factory subcommand may not come from a command substitution ($(…) or `…`): write it out.';
     } else if (!collect) {
       const why = unknownExpansionHuman(head, ctx);
       if (why) return why;
@@ -742,7 +829,7 @@ const TEST_SEAM = /\bFACTORY_(TEST_HUMAN\w*|SECRET_FILE)\b/;
 
 function checkBash(root, cmd, policy, opts = {}) {
   if (TEST_SEAM.test(String(cmd || ''))) return 'FACTORY_TEST_HUMAN and FACTORY_SECRET_FILE are the test suite\'s seam into human-only actions, never set from here. Human-only actions are the user\'s: their chat reply, or their own terminal.';
-  const ctx = { root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [] };
+  const ctx = { root, cwd: opts.cwd || root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [], scripts: 0 };
   try {
     return walk(String(cmd || ''), ctx, 0);
   } catch {

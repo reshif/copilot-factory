@@ -160,7 +160,9 @@ test('factory run clarify: agents as copilot processes, envelope recorded in-pro
     assert.match(fs.readFileSync(file, 'utf8'), /Reply format \(strict\)/);
     assert.equal(c.env.FACTORY_RUNNER, '1');
     assert.equal(c.env.FACTORY_JOB, J);
-    assert.equal(flagOf(c.argv, '--model'), c.agent === 'factory:god-eye' ? 'claude-opus-5.5' : c.agent === 'factory:interviewer' ? 'claude-haiku-5.5' : flagOf(c.argv, '--model'), 'each role runs on its shipped default model (policy.agents.models → model_ids)');
+    // 0.8.1: only the interviewer has a shipped model (fast tier); judgement roles pass no --model
+    if (c.agent === 'factory:interviewer') assert.equal(flagOf(c.argv, '--model'), 'claude-haiku-5.5', 'the interviewer runs on the fast tier (policy.agents.models → model_ids)');
+    else assert.ok(!c.argv.includes('--model'), `${c.agent} runs on the session default model`);
   }
   // the routing moved on, and the logs show what ran
   assert.equal(F.cli(root, ['next']).step, 'H1');
