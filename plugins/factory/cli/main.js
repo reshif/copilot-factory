@@ -90,7 +90,7 @@ Console    console [--out file.html] [--job J] [--label "…"] [--data data.json
            console --serve [--port 4477] [--job J]   (the same page, live: updates as Copilot works)
 Human only (your terminal, or reply in chat):
            approve [gate] · approve ship · deny --reason "…" · resume [step | your answer, e.g. +50%] · proceed (a legacy clarify park: go on, gaps shown) · cancel · abandon · waive <floor> --reason "…"
-           merged <commit> · confirm <AC> · lessons accept|reject <L|P> · lessons promote <L> --check "cmd" · reseal
+           merged [commit] · confirm <AC> · lessons accept|reject <L|P> · lessons promote <L> --check "cmd" · reseal
            assumption change <A-n> --value "…" · assumption drop <A-n>   (chat: change A-3 <value> · drop A-3)
            finding accept|dismiss <id> --reason "…"   (a serious finding no verifier settled; chat: dismiss finding code-1 <reason>)
 Global     --root <repo> · --job <J-0001>`;

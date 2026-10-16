@@ -492,30 +492,16 @@ function orderAction(ctx, al, { humanAcs = null } = {}) {
   return { ...(ci || stepAction(ctx, s)), rule: ci ? 'order.ci_reverify' : 'order.next_step' };
 }
 
-// Local mode: the human merged the job branch into the base branch (it contains the shipped head):
-// recorded as their merge (H4), with the commit that brought it in. Agents cannot move factory/J-*
-// branches (the guard), so a merge of the job branch is the human's.
+// Local mode: the base branch contains the shipped head. Seen, never recorded: an agent or a
+// script could have made that merge (the guard stops only factory/J-* refs), so H4 stays the
+// human's reply ("merged", which takes this commit). Returns the merge commit, or null.
 function detectLocalMerge(root, state) {
   if (!state.pr || state.pr.merged || state.pr.mode === 'github') return null;
   const head = state.pr.head || state.branch;
   if (!head || !state.base_branch || !git.branchExists(root, state.base_branch)) return null;
   if (!git.isAncestor(root, head, state.base_branch)) return null;
-  const open = require('./floors').openUnverifiedFindings(steps.context(root, state, job.load));
-  if (open.length) return null; // H4 waits for the ship review to settle them, as "merged" does
   const merges = git.run(root, ['rev-list', '--ancestry-path', '--merges', '--reverse', `${head}..${state.base_branch}`], { allowFail: true }).stdout.split('\n').filter(Boolean);
-  const sha = merges[0] || git.revParse(root, state.base_branch);
-  state.pr.merged = true;
-  state.pr.merge_commit = sha;
-  state.pr.merged_at = nowIso();
-  state.pr.merged_via = 'detected';
-  job.save(root, state);
-  try {
-    decisions.write(root, { job: state.id, action: 'merge.detected', chosen: 'merged', rule: 'merge.detected', reason: `${state.base_branch} contains the shipped head ${String(head).slice(0, 12)}; merge commit ${sha.slice(0, 12)}`, commit: sha, during: state.last_decision_id || null });
-  } catch {
-    /* the merge is in the state */
-  }
-  require('./events').append(root, { event: 'merge_detected', job: state.id, commit: sha, mode: 'local' });
-  return sha;
+  return merges[0] || git.revParse(root, state.base_branch);
 }
 
 // Files a build changed outside the allowed paths (or into protected ones): put back as they are
@@ -830,8 +816,8 @@ function route(root, jobId) {
       // local mode: the human merges the job branch; the CLI sees it (the base branch contains the
       // shipped head) and records it; "merged <commit>" still works
       const det = detectLocalMerge(root, state);
-      if (det) return route(root, jobId);
-      action = { ...action, action: 'wait', reason: `Merge the job branch yourself (git checkout ${state.base_branch} && git merge --no-ff ${state.branch}): the factory notices the merge by itself the next time it looks (factory next / factory drive); "merged <commit>" also records it.` };
+      if (det) action = { ...action, action: 'wait', merge_seen: det, reason: `I see ${state.base_branch} contains ${state.id} (merge commit ${det.slice(0, 12)}). If you merged it, reply "merged" to record it as your merge (H4); the factory never records a merge it only sees.` };
+      else action = { ...action, action: 'wait', reason: `Merge the job branch yourself (git checkout ${state.base_branch} && git merge --no-ff ${state.branch}), then reply "merged" (or "merged <commit>").` };
     }
   } else if (action.step === 'children' && (state.children || []).length) {
     const kids = state.children.map((c) => {

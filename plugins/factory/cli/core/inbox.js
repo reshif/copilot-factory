@@ -81,7 +81,7 @@ function itemFor(root, state, driveStop, plain = false) {
   const d = lastRouting(root, J, plain);
   if (d && d.action === 'wait') {
     if (/merged/.test(d.reason || '') && state.pr && state.pr.merged) return null;
-    if (/merged/.test(d.reason || '')) return { ...base, kind: 'merge', since: d.ts, what: 'merge the job branch yourself (the factory notices the merge; no reply is needed)', reason: d.reason, reply: ['(nothing: merge it; factory next sees it)', 'merged <commit>'], command: `factory next --job ${J}`, human_only: false };
+    if (/merged/.test(d.reason || '')) return { ...base, kind: 'merge', since: d.ts, what: 'merge the job branch yourself, then tell the factory', reason: d.reason, reply: ['merged', 'merged <commit>'], command: `factory next --job ${J}`, human_only: false };
     if (d.rule === 'row5.human_confirm') return { ...base, kind: 'confirm', since: d.ts, what: 'check criteria on the build yourself', reason: d.reason, reply: ['confirm AC-n'], command: `factory confirm <AC-n> --job ${J}`, human_only: true };
     // the one ship review: the human's checks, the unsettled findings, the push approval, in one reply
     // a build waiting for its environment (0.10.0): only the human's "confirm environment"

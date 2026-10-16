@@ -17,10 +17,10 @@ Floors and the CI re-verify floor are defined in the start skill's [glossary](..
    - Otherwise it prepares a **local** merge (local mode also skips HS: nothing is pushed, so the user's own merge is the irreversible step).
 2. Tell the user, briefly:
    - GitHub: the PR link; that CI (`factory-gate`) re-verifies on the merge result; that they review and merge on GitHub. No reply is needed: the factory notices the merge (`factory next` or `factory drive` syncs the PR).
-   - Local: the exact commands from the `next` field (`git checkout <base> && git merge --no-ff <branch>`). No reply is needed: the factory sees the base branch contains the job branch and records the merge itself; **`merged <commit>`** still works.
+   - Local: the exact commands from the `next` field (`git checkout <base> && git merge --no-ff <branch>`). Then they reply **`merged`** (or `merged <commit>`): the factory sees when the base branch contains the job branch and asks for that reply, but never records a merge it only sees (an agent or a script could have made it).
 3. **Stop** and wait.
 
 After the merge:
 - GitHub: `factory next` runs `factory pr sync`, which records checks and the merge commit.
-- Local: the next `factory next` (or `factory drive --detach`) detects the merge — the router itself asks for `factory ci verify` (the CI re-verify floor) before distill; don't run it on your own. Only the human merges the job branch (the guard refuses it to Copilot and its agents).
+- Local: once the user replied `merged`, the router itself asks for `factory ci verify` (the CI re-verify floor) before distill; don't run it on your own. Only the human merges the job branch (the guard refuses it to Copilot and its agents).
 - If `factory-gate` isn't set up in the repo, suggest the user run `factory ci install` themselves (it's human-only) and commit it on their base branch. Until then, after a GitHub merge, run `factory ci verify --commit <merge commit>` to re-verify locally, or the user can reply `waive ci_reverify <reason>`.

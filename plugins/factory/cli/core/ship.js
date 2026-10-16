@@ -228,7 +228,7 @@ function ship(root, { jobId, local = false, title, draft = null }) {
     next:
       fresh.pr.mode === 'github'
         ? `Review and merge the PR on GitHub${fresh.pr.draft ? ' (a draft: mark it ready for review first)' : ''}. CI (factory-gate) re-verifies the merge result. The factory notices the merge itself (factory next or factory drive syncs the PR); no reply is needed.`
-        : `No GitHub PR (${fresh.pr.why_local}). Merge locally: git checkout ${state.base_branch} && git merge --no-ff ${state.branch} — the factory notices the merge itself the next time it looks (factory next / factory drive); "merged <commit>" also records it.`,
+        : `No GitHub PR (${fresh.pr.why_local}). Merge locally: git checkout ${state.base_branch} && git merge --no-ff ${state.branch} — then reply "merged" (or "merged <commit>"): the factory records only your reply, never a merge it only sees.`,
   };
 }
 

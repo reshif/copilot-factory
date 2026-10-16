@@ -475,7 +475,7 @@ test('ship review: the human\'s check of a criterion is asked once, after review
   assert.equal(F.cli(root, ['verify', 'run']).acs['AC-2'], 'unproven');
 });
 
-test('local mode: the human merges and the factory notices (no "merged <sha>" needed; it still works); HS is skipped at high risk when ship pushes nothing', () => {
+test('local mode: the human merges, the factory sees it and asks for a bare "merged" (M3: never auto-recorded); HS is skipped at high risk when ship pushes nothing', () => {
   const root = F.makeRepo();
   const J = grounded(root, { ac: '- AC-1: add(2, 3) returns 5 (evidence: test)' });
   F.cli(root, ['plan', 'from-contract']);
@@ -488,16 +488,24 @@ test('local mode: the human merges and the factory notices (no "merged <sha>" ne
   assert.equal(F.cli(root, ['ship']).mode, 'local', 'no remote: local mode');
   let n = next(root);
   assert.equal(n.action, 'wait');
-  assert.match(n.reason, /notices the merge by itself/);
+  assert.match(n.reason, /then reply "merged"/);
   const st = stateOf(root, J);
   F.sh(root, `git checkout -q ${st.base_branch} && git merge -q --no-ff -m "merge ${J}" ${st.branch}`);
+  // M3: seen, not recorded: a merge an agent or a script made must not count as the human's H4
+  n = next(root);
+  assert.equal(n.action, 'wait');
+  assert.equal(n.merge_seen, F.sh(root, 'git rev-parse HEAD').trim());
+  assert.match(n.reason, /I see .* contains J-\d+ \(merge commit [0-9a-f]{12}\)\. If you merged it, reply "merged"/);
+  assert.equal(stateOf(root, J).pr.merged, false, 'nothing recorded by seeing it');
+  assert.equal(next(root).action, 'wait', 'still a prompt on the next look');
+  assert.equal(core('human').parseReply('merged').commit, null);
+  F.reply(root, 'merged');
   n = next(root);
   assert.notEqual(n.action, 'wait', JSON.stringify(n).slice(0, 300));
   const after = stateOf(root, J);
   assert.equal(after.pr.merged, true);
-  assert.equal(after.pr.merged_via, 'detected');
+  assert.notEqual(after.pr.merged_via, 'detected');
   assert.equal(after.pr.merge_commit, F.sh(root, 'git rev-parse HEAD').trim());
-  assert.ok(core('decisions').forJob(root, J).some((x) => x.action === 'merge.detected'));
   assert.match(n.command || '', /ci verify/, 'the CI re-verify floor runs next');
   // HS in local mode: the irreversible sign-off has nothing outward to sign off
   const root2 = F.makeRepo();

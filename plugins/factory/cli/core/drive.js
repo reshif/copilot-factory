@@ -318,8 +318,8 @@ function stopDetail(kind, n, extra = {}) {
         const e = n.environment || {};
         return { environment: e, summary: `${J}: ${String(n.reason || '').split('\n')[0]}`, reply: e.short ? `confirm environment ${e.short} | confirm environment none` : 'confirm environment <hash> | confirm environment none', command: `factory env set${e.short ? ` ${e.short}` : ''} --job ${J}` };
       }
-      const merged = /merged|[Mm]erge the job branch|Merge it on GitHub/.test(n.reason || '');
-      return { summary: `${J}: ${String(n.reason || 'waiting on you').split('\n')[0]}`, reply: merged ? 'nothing: merge it (the factory notices the merge) · or merged <commit>' : (n.acs || []).length ? (n.acs || []).map((a) => `confirm ${a}`).join(' | ') : 'continue', ...(merged ? { command: `factory next --job ${J}`, alt_command: `factory merged <commit> --job ${J}` } : (n.acs || []).length ? { command: `factory confirm ${n.acs[0]} --job ${J}` } : {}) };
+      const merged = /merged|[Mm]erge the job branch|Merge it on GitHub|contains J-/.test(n.reason || '');
+      return { summary: `${J}: ${String(n.reason || 'waiting on you').split('\n')[0]}`, reply: merged ? 'merge it, then: merged (or merged <commit>)' : (n.acs || []).length ? (n.acs || []).map((a) => `confirm ${a}`).join(' | ') : 'continue', ...(merged ? { command: `factory next --job ${J}`, alt_command: `factory merged <commit> --job ${J}` } : (n.acs || []).length ? { command: `factory confirm ${n.acs[0]} --job ${J}` } : {}) };
     }
     case 'ship':
       return { summary: `${J} is ready to ship (every pre-ship floor is met). policy.drive.stop_before_ship holds the push, the pull request or the local merge for your go: say so, and Copilot runs factory ship, then factory drive.`, reply: 'ship it | what to change first', command: `factory ship --job ${J}` };

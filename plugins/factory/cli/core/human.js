@@ -390,6 +390,9 @@ function merged(root, { jobId, commit, channel }) {
   const state = job.resolve(root, jobId);
   if (!state.branch) fail('This job has no branch to merge.', 'bad_input');
   if (!state.pr) fail(`${state.id} has not been shipped yet.`, 'not_shipped');
+  // a bare "merged": the merge the router saw on the base branch
+  if (!commit) commit = require('./decision-table').detectLocalMerge(root, state);
+  if (!commit) fail(`${state.base_branch || 'The base branch'} does not contain ${state.id}'s shipped head yet: merge it first, or name the commit ("merged <commit>").`, 'bad_input');
   let sha;
   try {
     sha = git.revParse(root, `${commit}^{commit}`);
@@ -513,6 +516,7 @@ function parseReply(text) {
   if ((m = t.match(/^(accept|reject)\s+brief\s+(P\d+)(?:\s+(.*))?$/i))) return { cmd: `${m[1].toLowerCase()}_brief`, proposalId: m[2].toUpperCase(), reason: (m[3] || '').trim() };
   if ((m = t.match(new RegExp(`^waive(?:\\s+${J})?\\s+([a-z_:]+)\\s+(.+)$`, 'i')))) return { cmd: 'waive', jobId: m[1] && m[1].toUpperCase(), floor: m[2], reason: m[3].trim() };
   if ((m = t.match(new RegExp(`^merged(?:\\s+${J})?\\s+([0-9a-f]{7,40})$`, 'i')))) return { cmd: 'merged', jobId: m[1] && m[1].toUpperCase(), commit: m[2] };
+  if ((m = t.match(new RegExp(`^merged(?:\\s+${J})?$`, 'i')))) return { cmd: 'merged', jobId: m[1] && m[1].toUpperCase(), commit: null };
   if ((m = t.match(new RegExp(`^confirm\\s+((?:E-)?AC-\\d+)(?:\\s+${J})?$`, 'i')))) return { cmd: 'confirm', ac: m[1], jobId: m[2] && m[2].toUpperCase() };
   if ((m = t.match(new RegExp(`^change(?:\\s+${J})?\\s+(A-\\d+)(?:\\s*[:=\u2014\u2013-]\\s*|\\s+(?:to\\s+)?)(\\S.*)$`, 'i')))) return { cmd: 'change_assumption', jobId: m[1] && m[1].toUpperCase(), id: m[2].toUpperCase(), value: m[3].trim() };
   if ((m = t.match(new RegExp(`^drop(?:\\s+${J})?\\s+(A-\\d+)(?:\\s+${J})?$`, 'i')))) return { cmd: 'drop_assumption', jobId: (m[1] || m[3]) && (m[1] || m[3]).toUpperCase(), id: m[2].toUpperCase() };
@@ -533,7 +537,7 @@ function parseBatch(text) {
 }
 
 // The exact forms, for "that was not applied" hints.
-const REPLY_FORMS = ['approve [J-0001] [H1]', 'approve ship', 'several replies in one message, separated by ";"', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'proceed [J-0001]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] <sha>', 'confirm AC-1 [J-0001]', 'change [J-0001] A-3 <new value>', 'drop [J-0001] A-3', 'accept lesson L4', 'reject lesson L4 [reason]', 'accept brief P1', 'reject brief P1 [reason]', 'accept finding code-1 <reason>', 'dismiss finding code-1 <reason>', 'confirm environment [hash|none]'];
+const REPLY_FORMS = ['approve [J-0001] [H1]', 'approve ship', 'several replies in one message, separated by ";"', 'deny [J-0001] <reason>', 'resume [J-0001] [step]', 'proceed [J-0001]', 'cancel job [J-0001] [reason]', 'abandon job [J-0001] [reason]', 'waive [J-0001] <floor> <reason>', 'merged [J-0001] [sha]', 'confirm AC-1 [J-0001]', 'change [J-0001] A-3 <new value>', 'drop [J-0001] A-3', 'accept lesson L4', 'reject lesson L4 [reason]', 'accept brief P1', 'reject brief P1 [reason]', 'accept finding code-1 <reason>', 'dismiss finding code-1 <reason>', 'confirm environment [hash|none]'];
 const VERBS = ['approve', 'approved', 'deny', 'denied', 'resume', 'proceed', 'cancel', 'abandon', 'waive', 'merged', 'merge', 'confirm', 'accept', 'reject', 'dismiss', 'lgtm'];
 // Common words: only a near miss when the message is about an assumption id ("change A3 x", "drop a-3 now").
 const ASSUMPTION_VERBS = ['change', 'drop'];

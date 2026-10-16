@@ -14,7 +14,7 @@ Floors are the steps no recipe may omit, per risk level ([`policy/floors.json`](
 | `challenge:code` | ✅ | ✅ | ✅ | the code lane passed on the current fingerprint |
 | `no_unverified_serious` | ✅ | ✅ | ✅ | the job's latest review left no blocker/major finding unverified. A finding whose verifier timed out or said `unverifiable` is carried into every later round, whether or not a reviewer raises it again, and re-verified with twice the agent time cap until a verifier confirms or refutes it; after `max_reverify_rounds` (3) the job parks. `ship`, `merged` (H4) and `close` refuse while one is open, and the completion report lists them |
 | `ci_reverify` | ✅ | ✅ | ✅ | the `factory-gate` check succeeded on the merge result (GitHub), or `factory ci verify` passed on the local merge, or you waived it |
-| `human_merge` | ✅ | ✅ | ✅ | the merge commit is recorded (GitHub via `pr sync`, or your `merged <commit>` reply) |
+| `human_merge` | ✅ | ✅ | ✅ | the merge commit is recorded (GitHub via `pr sync`, or your `merged` / `merged <commit>` reply) |
 | `ground` | | ✅ | ✅ | findings recorded for the current contract |
 | `design_record` | | ✅ | ✅ | an ADR / no-adr / contracts record, decided for the current contract |
 | `design_critique` | | ✅ | ✅ | The design critics (God Eye, and the API-conformance critic when the job has dependency source) approved this design hash, or their loop stopped (no progress, or the ceiling) and you approved the design at H2 or at the combined design + plan gate (H3 at medium risk) |

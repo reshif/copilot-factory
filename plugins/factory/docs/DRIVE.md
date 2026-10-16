@@ -33,7 +33,7 @@ Every stop has a `kind`:
 | `questions` | Ground's blocking questions | Answer them; the main session records each answer with `factory answer` |
 | `degraded` | A workflow ran without an angle | Re-run it, or go on without it (`--accept-degraded`) |
 | `parked` | The job parked, with a typed reason and, for a loop or the budget, a specific question (see below) | Your answer in your own words (it resumes the job with them), `resume +50%` for the budget, or the change it suggests |
-| `wait` | The **ship review** (your checks of criteria, unsettled findings, the push: `ship_review`), the merge, or an open PR | One reply for the review (`confirm AC-2; dismiss finding code-1 <why>; approve ship`); merge yourself or on GitHub, and the factory notices (`merged <commit>` still works) |
+| `wait` | The **ship review** (your checks of criteria, unsettled findings, the push: `ship_review`), the merge, or an open PR | One reply for the review (`confirm AC-2; dismiss finding code-1 <why>; approve ship`); merge on GitHub (the factory notices) or locally, then reply `merged` |
 | `amend` | An amendment needs writing (what changed, and who asked) | The main session follows the amend skill |
 | `evidence` | A doc or diff record the drive can't pick a file for | The main session checks the build and records it |
 | `ship` | Only with `policy.drive.stop_before_ship: true`: every pre-ship floor is met, and the push, the PR or the local merge waits for your go | Say to ship; Copilot runs `factory ship`, then the drive again |
@@ -144,7 +144,7 @@ A park the router makes is recorded with its routing decision; a park from a wor
 
 **An amendment pre-empts a park.** `amend submit` on a parked job puts gate A in front of you, and approving it also resumes the job; it needs no separate `resume` (except a budget park: the budget grows only by a grant you name). Denying it keeps the park.
 
-**The merge is noticed.** In local mode the factory sees the base branch contains the shipped job branch and records the merge itself (`merged_via: detected`; only you can merge it: the guard refuses it to Copilot and its agents); in GitHub mode `factory pr sync` records it. No `merged <sha>` or "continue" is needed (both still work).
+**The merge.** In GitHub mode `factory pr sync` records it. In local mode the factory sees when the base branch contains the shipped job branch and asks you to reply `merged` (it takes that merge commit; `merged <sha>` names another): it never records a merge it only sees, since an agent or a script could have moved the base branch.
 
 **The end-of-job digest.** The `done` stop lists the lessons and project-brief proposals together, with `digest.reply`, one reply that accepts them all (`accept lesson L4; accept brief P1`); you may reject any instead. `factory inbox` lists the proposed lessons next to the brief proposals. Nothing applies without your reply.
 
