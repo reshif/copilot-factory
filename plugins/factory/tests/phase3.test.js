@@ -450,12 +450,27 @@ test('P3.3: a reconcile regression on Tn rebuilds Tn on the merged code once, au
   assert.match(stateOf(root, J).park.reason, /T1 already rebuilt once/);
 });
 
-test('P3.3: a dependency_conflict start error restarts the task branch from the job branch on its next start (the once-rebuild)', () => {
-  const T = core('tasks');
-  // restartReason is internal: exercised through start() in outcome-integrity; here its rule
-  const src = fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'tasks.js'), 'utf8');
-  assert.match(src, /se && se\.code === 'dependency_conflict'[\s\S]*reason: 'dependency_conflict'/);
-  assert.ok(T.start);
+test('P3.3: after a dependency_conflict, the task\'s next start restarts its branch from the integrated job branch (the once-rebuild), keeping the old head on a ref', () => {
+  const root = F.makeRepo();
+  const J = toBuild(root);
+  // T1's branch has its own change to src/add.js …
+  const s1 = F.cli(root, ['task', 'start', 'T1'], { allowFail: false });
+  F.write(s1.worktree, 'src/add.js', 'module.exports = (a, b) => a + b; // T1\n');
+  F.sh(s1.worktree, 'git commit -qam T1');
+  // … and the job branch got a clashing one meanwhile (another task, integrated)
+  const jw = core('tasks').ensureJobWorktree(root, stateOf(root, J));
+  F.write(jw, 'src/add.js', 'module.exports = (a, b) => b + a; // integrated\n');
+  F.sh(jw, 'git commit -qam integrated');
+  const c = F.cli(root, ['task', 'start', 'T1']);
+  assert.equal(c.code, 'dependency_conflict', JSON.stringify(c));
+  assert.equal(stateOf(root, J).tasks.T1.start_error.code, 'dependency_conflict');
+  const r = F.cli(root, ['task', 'start', 'T1']);
+  assert.ok(!r.code, JSON.stringify(r));
+  assert.equal(r.restarted.reason, 'dependency_conflict');
+  assert.match(fs.readFileSync(path.join(s1.worktree, 'src/add.js'), 'utf8'), /integrated/, 'rebuilt on the integrated job branch');
+  assert.match(F.sh(root, `git show ${r.restarted.backup}:src/add.js`), /T1/, 'the old head is kept');
+  assert.equal(stateOf(root, J).tasks.T1.start_error, undefined);
+  assert.ok(!F.cli(root, ['task', 'start', 'T1']).restarted, 'once');
 });
 
 // ------------------------------------------------------------------------------ P3.4 DAG
@@ -511,4 +526,33 @@ test('P3.4: a broken integration still stops what would build on it: nothing new
   assert.equal(by.T1, 'exhausted');
   assert.equal(by.T2, 'skipped_dependency', 'its dependent never started');
   assert.ok(!started.some((l) => /T2/.test(l)));
+});
+
+// ------------------------------------------------------------------------------ upgrade
+
+test('upgrade: a 0.7.0 job parked mid-build (a park with no kind, no park rows, no drive.json) continues under factory drive', () => {
+  const root = F.makeRepo();
+  const J = toBuild(root);
+  F.cli(root, ['next']);
+  // the park as 0.7.0 wrote it: reason, at, from; no kind or next, and no decision row
+  const job = core('job');
+  const st = job.load(root, J);
+  st.status = 'parked';
+  st.park = { reason: 'Tasks not done: T1 (blocked). Nothing partial ships.', at: new Date().toISOString(), from: 'realize' };
+  st.pending_gate = { id: 'P', hash: null, docs: [], at: new Date().toISOString() };
+  job.save(root, st);
+  const n = F.cli(root, ['next']);
+  assert.deepEqual([n.action, n.park.kind], ['parked', 'needs_paths']);
+  assert.match(n.park.next, /amend the plan/);
+  const h = harness();
+  const s = h.drive(root);
+  assert.equal(s.kind, 'parked', JSON.stringify(s));
+  assert.equal(s.park.kind, 'needs_paths');
+  assert.equal(h.cli(root, ['inbox']).items[0].park_kind, 'needs_paths');
+  assert.equal(F.cli(root, ['why']).park.reason, st.park.reason);
+  // the human resumes; the drive takes it on to the merge
+  F.reply(root, 'resume');
+  const s2 = h.drive(root);
+  assert.equal(s2.kind, 'wait', JSON.stringify(s2));
+  assert.match(s2.summary, /merged/);
 });

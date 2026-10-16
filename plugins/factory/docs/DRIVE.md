@@ -129,10 +129,10 @@ Realize used to build wave by wave: every task of a wave, its retries included, 
 
 **A broken integration still stops what would build on it.** The failure goes back, with its raw output, to the task whose files it names, and that task is rebuilt on the integrated branch. Until the batch integrates cleanly, nothing new starts and nothing else is integrated on top of it. If it can't be fixed, the tasks not yet started end `skipped_dependency`, as the 0.6.0 wave guarantee did.
 
-**Simulation** (build.md exp3, 1 unit = 1 min):
+**Simulation** (the build audit's scenario, 1 unit = 1 min):
 - T1 builds in 10 min. T2 takes 25 min per attempt and fails twice. T3 depends on T1 and T4 on T3, 10 min each. Verify takes 2 min.
-- Wave by wave, the T1, T3, T4 chain finished at minute 104 and the job at 106.
-- By dependency, T4 was done at minute 37 and the job at 82, bounded by T2's own three attempts.
+- Wave by wave, T4 was built by minute 106–108 and the job ended at 106–109, depending on how long each integration takes (none, 0 min or 1 min).
+- By dependency, T4 was built by minute 36–38, which is the 36-minute critical path. The job ended at 81–83, bounded by T2's own three attempts.
 
 ## Upgrading with a job in flight
 

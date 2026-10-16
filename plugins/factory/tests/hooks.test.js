@@ -343,6 +343,23 @@ test('agentStop: never blocks once the assigned step was attempted, or while a f
   assert.ok(blocked(stop(root2)), 'a stale lock is no run');
 });
 
+test('agentStop: never blocks while factory drive steps the job (P3.1); a dead drive does not count', () => {
+  const root = F.makeRepo();
+  const J = F.cli(root, ['job', 'new', '--title', 'y', '--type', 'bug', '--risk', 'low']).job;
+  prompt(root, '/factory:start');
+  F.cli(root, ['next']);
+  const file = path.join(root, '.factory', 'drive.json');
+  const sleeper = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 20000)'], { stdio: 'ignore' });
+  try {
+    fs.writeFileSync(file, JSON.stringify({ pid: sleeper.pid, host: require('os').hostname(), job: J, status: 'running', started_at: new Date().toISOString(), heartbeat_at: new Date().toISOString() }));
+    assert.equal(stop(root).stdout, '', 'a drive is stepping the job');
+  } finally {
+    sleeper.kill();
+  }
+  fs.writeFileSync(file, JSON.stringify({ pid: 999999, host: require('os').hostname(), job: J, status: 'running', started_at: new Date().toISOString(), heartbeat_at: new Date().toISOString() }));
+  assert.ok(blocked(stop(root)), 'a dead drive is no drive');
+});
+
 test('agentStop: never blocks while the human is the one to act', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']).job;
