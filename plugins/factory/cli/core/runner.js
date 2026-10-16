@@ -50,6 +50,7 @@ const { fail, deepMerge, exists, writeJson, writeText } = require('../lib/util')
 const { pluginPath, taskWorktree, PLUGIN_ROOT } = require('../lib/paths');
 const { validate } = require('../lib/schema');
 const events = require('./events');
+const transcripts = require('./transcripts');
 
 const WORKFLOWS = ['clarify', 'ground', 'fanout-judge', 'decompose', 'realize', 'reconcile'];
 const MAX_OUTPUT = 32 * 1024 * 1024;
@@ -78,6 +79,7 @@ function settings(root, state) {
     // inside the same agent call, so no workflow attempt is spent on them.
     transientRetries: typeof cp.transient_retries === 'number' && cp.transient_retries >= 0 ? Math.floor(cp.transient_retries) : 4,
     transientBackoffSec: typeof cp.transient_backoff_seconds === 'number' && cp.transient_backoff_seconds >= 0 ? cp.transient_backoff_seconds : 10,
+    transcripts: transcripts.limits(cp),
     copilot: cp,
     flags: (Array.isArray(cp.flags) ? cp.flags : []).map((f) => String(f).replace(/\{plugin_root\}/g, PLUGIN_ROOT).replace(/\{root\}/g, root)),
   };
@@ -454,7 +456,8 @@ function onInterrupt(cleanup) {
   };
 }
 
-function spawnCopilot(bin, argv, { cwd, env, timeoutSec }) {
+// `sink` (optional): the agent's transcript (transcripts.open), fed stdout as it arrives.
+function spawnCopilot(bin, argv, { cwd, env, timeoutSec, sink = null }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const [file, args, shell] = command(bin, argv);
@@ -469,6 +472,7 @@ function spawnCopilot(bin, argv, { cwd, env, timeoutSec }) {
       clearTimeout(timer);
       LIVE.delete(child);
       noteAgents();
+      if (sink) sink.flush();
       resolve({ code: code === null || code === undefined ? -1 : code, signal: signal || null, stdout: out, stderr: err + extra, ms: Date.now() - started, timedOut });
     };
     try {
@@ -488,6 +492,7 @@ function spawnCopilot(bin, argv, { cwd, env, timeoutSec }) {
     }, timeoutSec * 1000);
     child.stdout.on('data', (d) => {
       if (out.length < MAX_OUTPUT) out += d;
+      if (sink) sink.write(d);
     });
     child.stderr.on('data', (d) => {
       if (err.length < MAX_OUTPUT) err += d;
@@ -768,6 +773,11 @@ async function runAgent(ctx, prompt, opts) {
     }
     const sessionId = resumedFrom || (S.resumeForRetry ? crypto.randomUUID() : null);
     const perm = toolPermissions(role, agentTools(role), S.copilot);
+    // The agent's Copilot JSONL, streamed to its transcript as it arrives (P4.1), and what the
+    // CLI reported about the run (tool calls, usage) counted from the same stream.
+    const tfile = ctx.transcripts ? transcripts.fileFor(ctx.transcripts, o.label || role, ctx.transcriptNames || (ctx.transcriptNames = new Set())) : null;
+    const tRel = tfile ? path.relative(ctx.root, tfile).split(path.sep).join('/') : null;
+    const sink = transcripts.open(tfile, { maxBytes: (S.transcripts || {}).maxBytes });
     // agent_start now, agent_run (same run_id) when it ends: the console shows the agent as
     // at work in between. No hook does this: each agent is its own `copilot -p` process, not a
     // subagent, so SubagentStart/SubagentStop never fire for it.
@@ -783,9 +793,9 @@ async function runAgent(ctx, prompt, opts) {
         if (retryTurn) closeUnavailable(ctx.unavailable.detail); // its first turn already started it
         throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
       }
-      if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, session_id: sessionId, ...(resumedFrom ? { resumed_session: true } : {}), pid: process.pid });
+      if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, session_id: sessionId, ...(resumedFrom ? { resumed_session: true } : {}), ...(tRel ? { transcript: tRel } : {}), pid: process.pid });
       const argv = copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm });
-      let r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()) });
+      let r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()), sink });
       // Transient (429, 5xx, network): back off with jitter and spawn the same turn again; the
       // workflow never sees the failure, so no attempt is spent. After transient_retries the run
       // stops (nothing recorded) with copilot_transient: the service is down, not the agent wrong.
@@ -801,7 +811,7 @@ async function runAgent(ctx, prompt, opts) {
         events.append(ctx.root, { event: 'agent_transient', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, label: o.label || role, retry: n + 1, wait_ms: waitMs, match: String(why).slice(0, 80), exit: r.code });
         ctx.say(`${o.label || role}: transient failure (${why}); retry ${n + 1} in ${(waitMs / 1000).toFixed(1)}s (no attempt spent)`);
         await new Promise((res) => setTimeout(res, waitMs));
-        r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()) });
+        r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()), sink });
       }
       const u = unavailable(r);
       if (u) {
@@ -860,6 +870,10 @@ async function runAgent(ctx, prompt, opts) {
       }
     }
     const outcome = rawOutcome === 'ok' || !result ? rawOutcome : 'blocked';
+    const seen = sink.result();
+    // A failed run keeps its stderr: the tail in the record, all of it (to the cap) beside the transcript.
+    const stderrAll = rawOutcome === 'ok' ? '' : runs.map((r) => r.stderr || '').filter((x) => x.trim()).join('\n');
+    const stderrFile = stderrAll && tfile ? transcripts.writeStderr(tfile.replace(/\.jsonl$/, '.stderr.log'), stderrAll, { maxBytes: (S.transcripts || {}).maxBytes }) : null;
     const rec = {
       label: o.label || role,
       role,
@@ -879,6 +893,11 @@ async function runAgent(ctx, prompt, opts) {
       ...(wip ? { wip_commit: wip } : {}),
       ...(capSec ? { time_cap_sec: capSec } : {}),
       ...(result && typeof result.verdict === 'string' ? { verdict: result.verdict } : {}), // god-eye's approve/revise, for telemetry
+      ...(tRel ? { transcript: tRel } : {}),
+      tool_calls: seen.tool_calls,
+      ...(seen.last_tool ? { last_tool: seen.last_tool } : {}),
+      usage: seen.usage,
+      ...(stderrAll ? { stderr_tail: transcripts.stderrTail(stderrAll), ...(stderrFile ? { stderr_file: path.relative(ctx.root, stderrFile).split(path.sep).join('/') } : {}) } : {}),
       ...(rawOutcome === 'ok' ? {} : { errors: (runs[0].timedOut ? [`timed out after ${capSec || S.timeoutSec}s${grace ? `; its time-up turn ${last.timedOut ? 'timed out too' : ok(last) ? 'replied without a valid result' : `failed (exit ${last.code})`}` : ''}`] : last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${errorLine(last.stderr)}`] : errors).slice(0, 5) }),
     };
     ctx.runs.push(rec);
@@ -1125,6 +1144,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     const decision = preflight(root, state, workflow, config);
     const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
     const S = settings(root, state);
+    transcripts.prune(root, state.id, Math.max(1, S.transcripts.keepRuns - 1)); // room for this run's folder
     const t0 = Date.now();
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
     const ctx = {
@@ -1140,6 +1160,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
       files: 0,
       unavailable: null,
       scratch: path.join(root, '.factory', 'scratch', 'runner', state.id, `${stamp}-${workflow}${brief.config ? `-${brief.config}` : ''}-${process.pid}`),
+      transcripts: path.join(transcripts.runsDir(root, state.id), `${stamp}-${workflow}${brief.config ? `-${brief.config}` : ''}-${process.pid}`),
       decisionId: decision.id,
       limit: limiter(S.maxParallel),
       say,
@@ -1251,11 +1272,13 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
   if (!d || d.action !== 'skill' || d.skill !== 'distill') fail(`factory next did not ask for distill (its last decision${d ? ` ${d.id}` : ''} says ${d ? `${d.action} "${d.step || d.skill || d.command || ''}"` : 'nothing yet'}). Run factory next and do what it says. Nothing was started.`, 'not_waiting_for_distill', { decision_id: d ? d.id : null });
   const context = require('./lifecycle').distillContext(root, { jobId: state.id });
   const before = new Set(lessons.load(root).lessons.map((l) => l.id));
-  const worth = context.confirmed.length || context.verify_fix_rounds || (context.minor.length && context.minor_in_other_jobs.length);
+  // build trouble counts too (P4.4): parks, retries, scope violations, a broken environment,
+  // timeouts and integration failures are what a process or environment lesson comes from
+  const worth = context.confirmed.length || context.verify_fix_rounds || (context.minor.length && context.minor_in_other_jobs.length) || (context.trouble && context.trouble.count);
   const left = Math.max(0, (context.cap || 0) - context.already_proposed.length);
   const log = (rec) => events.append(root, { event: 'distill_write', job: state.id, decision_id: d.id, ...rec });
   if (!worth || !left) {
-    const why = !left ? `the cap of ${context.cap} lessons is already used` : 'no confirmed findings, no verify-fix rounds, no minor findings repeated in other jobs';
+    const why = !left ? `the cap of ${context.cap} lessons is already used` : 'no confirmed findings, no verify-fix rounds, no minor findings repeated in other jobs, no build trouble (parks, retries, scope violations, environment, timeouts, integration failures)';
     log({ outcome: 'skipped', reason: why, lessons: [] });
     return { job: state.id, skipped: true, reason: `Nothing to learn from: ${why}. No agent was started. Run factory distill done.`, lessons: [], agents: [] };
   }
@@ -1264,6 +1287,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
   try {
     state = job.resolve(root, state.id);
     const S = settings(root, state);
+    transcripts.prune(root, state.id, Math.max(1, S.transcripts.keepRuns - 1));
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
     const ctx = {
       root,
@@ -1275,6 +1299,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
       files: 0,
       unavailable: null,
       scratch: path.join(root, '.factory', 'scratch', 'runner', state.id, `${stamp}-distill-${process.pid}`),
+      transcripts: path.join(transcripts.runsDir(root, state.id), `${stamp}-distill-${process.pid}`),
       decisionId: d.id,
       limit: limiter(1),
       say,
@@ -1285,11 +1310,12 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     };
     const cli = `node "${path.join(PLUGIN_ROOT, 'bin', 'factory')}" --root "${root}"`;
     const role = 'lesson-writer';
-    const model = ((state.policy && state.policy.agents) || {}).models ? state.policy.agents.models[role] || null : null;
+    const model = require('./wfargs').roleModel(state.policy, role);
     const prompt = [
       `# Distill job ${state.id}: ${state.title}`,
       '',
       `You may write at most ${left} lesson(s) from this job. Lessons that already exist: already_proposed below, and ${path.join(root, '.factory', 'lessons', 'lessons.json')}.`,
+      'Learn from the build trouble too (`trouble` below: parks, resumes, retries, scope violations, a broken environment, timeouts, integration failures, blocked or exhausted tasks, manual repairs): a process or environment lesson ("Run the services health check before the first wave", "Tasks that touch src/cli.js are one wiring task") is as good as a code lesson. Scope such a lesson to the paths it is about, or `**` when it is about the whole project.',
       'Record each lesson with exactly this command (one per lesson):',
       `  ${cli} lessons add --job ${state.id} --text "<lesson>" --scope "<glob>,<glob>" --why "<finding id: what went wrong>"`,
       'The command prints the lesson with its id (L<n>). Run no other factory command.',
@@ -1298,6 +1324,13 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
       '```json',
       JSON.stringify(context, null, 2),
       '```',
+      ...(() => {
+        // the project brief, for the edits the lesson-writer may propose (the CLI applies them)
+        const pb = require('./project-brief');
+        pb.ensure(root, state.policy);
+        const text = pb.read(root);
+        return text ? ['', `## Project brief (${pb.file(root)}): propose edits in your reply's project_brief, never edit the file`, '```markdown', text.trim(), '```'] : [];
+      })(),
     ].join('\n');
     // one step, logged like a workflow run's, so the console's Learn bank shows it while it runs
     const t0 = Date.now();
@@ -1329,13 +1362,16 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     const unrecorded = claimed.filter((id) => !added.some((l) => l.id === id));
     const run = ctx.runs[ctx.runs.length - 1] || {};
     const outcome = run.outcome || (reply ? 'ok' : 'invalid');
-    log({ outcome, lessons: added.map((l) => l.id), claimed, unrecorded, agent_ms: run.ms || null });
+    // the lesson-writer's proposed diff to the project brief, applied by the CLI (never by the agent)
+    const brief = reply && reply.project_brief && Array.isArray(reply.project_brief.edits) ? require('./project-brief').applyEdits(root, reply.project_brief.edits, { job: state.id }) : null;
+    log({ outcome, lessons: added.map((l) => l.id), claimed, unrecorded, agent_ms: run.ms || null, ...(brief ? { project_brief: { applied: brief.applied.length, refused: brief.refused.length } } : {}) });
     const out = {
       job: state.id,
       outcome,
       lessons: added.map((l) => ({ id: l.id, text: l.text, scope: l.scope, why: l.why || null })),
       ...(unrecorded.length ? { unrecorded, warning: `The lesson-writer named ${unrecorded.join(', ')} but no such lesson was recorded for ${state.id}; only the lessons listed were recorded.` } : {}),
       ...(reply && reply.note ? { note: reply.note } : {}),
+      ...(brief ? { project_brief: { file: require('./project-brief').file(root), applied: brief.applied, refused: brief.refused, why: reply.project_brief.why || null } } : {}),
       message: added.length ? `${added.length} lesson(s) proposed: ${added.map((l) => l.id).join(', ')}. The user can reply "accept lesson Ln" or "reject lesson Ln <why>". Run factory distill done.` : outcome === 'ok' ? 'The lesson-writer found nothing worth a lesson. Run factory distill done.' : `The lesson-writer did not finish (${outcome}); no lessons were recorded. Run factory distill done to move on, or factory distill write to try again.`,
       copilot: S.bin,
       agents: ctx.runs,
@@ -1405,7 +1441,9 @@ function summaryText(r) {
   for (const a of agents) by[a.outcome] = (by[a.outcome] || 0) + 1;
   L.push(`workflow: ${w.name}${w.config ? ` --config ${w.config}` : ''} → ${w.status}${w.summary ? ` — ${w.summary}` : ''} (${((w.ms || 0) / 1000).toFixed(0)}s)`);
   L.push(`agents: ${agents.length} (${Object.entries(by).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'})`);
-  for (const a of agents.filter((x) => x.outcome !== 'ok')) L.push(`  - ${a.label} (${a.agent_type}) ${a.outcome}${a.errors && a.errors.length ? `: ${String(a.errors[0]).slice(0, 160)}` : ''}`);
+  for (const a of agents.filter((x) => x.outcome !== 'ok')) L.push(`  - ${a.label} (${a.agent_type}) ${a.outcome}${a.errors && a.errors.length ? `: ${String(a.errors[0]).slice(0, 160)}` : ''}${a.transcript ? ` [transcript: ${a.transcript}${a.stderr_file ? `, stderr: ${a.stderr_file}` : ''}]` : ''}`);
+  const cost = transcripts.totals(agents);
+  if (agents.length) L.push(`usage: ${cost.tool_calls} tool call(s)${cost.reported_runs ? `, ${cost.input_tokens ?? '?'} input / ${cost.output_tokens ?? '?'} output tokens${cost.premium_requests !== null ? `, ${cost.premium_requests} premium request(s)` : ''}` : ''}${cost.unreported_runs ? ` (${cost.unreported_runs} run(s) without usage records from the CLI: unknown)` : ''}`);
   L.push(`full result: ${r.result_file} (or run with --json)`);
   return L.join('\n');
 }

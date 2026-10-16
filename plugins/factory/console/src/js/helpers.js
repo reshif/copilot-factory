@@ -1,5 +1,16 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+// A link to an agent's transcript (or stderr log): relative to the page in a snapshot, the
+// server's /files/ route when live. The data carries only .factory/scratch/runs/… paths.
+function fileHref(rel) {
+  if (typeof rel !== 'string' || !/^\.factory\/scratch\/runs\//.test(rel)) return null;
+  return `${(DATA && DATA.files_base) || ''}${rel.split('/').map(encodeURIComponent).join('/')}`;
+}
+function fileLink(rel, text) {
+  const h = fileHref(rel);
+  return h ? `<a class="txl" href="${esc(h)}" target="_blank" rel="noopener" title="${esc(rel)}">${esc(text)}</a>` : '';
+}
+const fmtNum = (n) => (typeof n === 'number' ? (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : String(n)) : '—');
 const NS = 'http://www.w3.org/2000/svg';
 function el(tag, attrs = {}, parent) {
   const e = document.createElementNS(NS, tag);

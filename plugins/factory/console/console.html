@@ -358,6 +358,7 @@ button { font: inherit; color: inherit; }
 .mdot.opus { background: var(--m-opus); } .mdot.sonnet { background: var(--m-sonnet); } .mdot.haiku { background: var(--m-haiku); } .mdot.none { background: transparent; border: 1px dashed var(--rule); color: var(--muted); }
 .arow b { font: 500 12.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .arow .o { font: 500 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.txl { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 .arow .o.bad, .arow .o .bad { color: var(--stop); } .arow .o.good, .arow .o .good { color: var(--track); } .arow .o.warn, .arow .o .warn { color: var(--signal); }
 .log { margin: 0; padding: 0; list-style: none; display: grid; gap: 1px; font-size: 13px; max-height: 260px; overflow-y: auto; }
 .log button { width: 100%; text-align: left; display: grid; grid-template-columns: 70px 66px minmax(0, 1fr); gap: 6px; align-items: baseline; padding: 4px 6px; border: 0; border-left: 3px solid transparent; background: transparent; cursor: pointer; border-radius: 2px; }
@@ -2089,6 +2090,17 @@ const ENFORCE = ['guard hook on every tool call', 'your replies applied by hook'
 // ===================================================================== helpers
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+// A link to an agent's transcript (or stderr log): relative to the page in a snapshot, the
+// server's /files/ route when live. The data carries only .factory/scratch/runs/… paths.
+function fileHref(rel) {
+  if (typeof rel !== 'string' || !/^\.factory\/scratch\/runs\//.test(rel)) return null;
+  return `${(DATA && DATA.files_base) || ''}${rel.split('/').map(encodeURIComponent).join('/')}`;
+}
+function fileLink(rel, text) {
+  const h = fileHref(rel);
+  return h ? `<a class="txl" href="${esc(h)}" target="_blank" rel="noopener" title="${esc(rel)}">${esc(text)}</a>` : '';
+}
+const fmtNum = (n) => (typeof n === 'number' ? (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : String(n)) : '—');
 const NS = 'http://www.w3.org/2000/svg';
 function el(tag, attrs = {}, parent) {
   const e = document.createElementNS(NS, tag);
@@ -3588,7 +3600,10 @@ function agentRowsHtml(list) {
   return `<div class="alist">${list.map((a) => {
     const fam = modelFamily(a.model);
     const verdict = a.verdict && a.verdict !== a.outcome ? a.verdict : null; // agent_run's verdict, when the roster's outcome is not already it
-    return `<div class="arow"><span class="mdot ${fam}" title="${esc(a.model || 'session model')}">${esc(modelLetter(a.model))}</span><b title="${esc(a.label)}">${esc(a.label)}</b><span class="o ${outcomeClass(a.outcome)}">${esc(a.outcome || '')}${verdict ? ` <span class="${outcomeClass(verdict)}">· ${esc(verdict)}</span>` : ''}${a.ms ? ` · ${fmtDur(a.ms)}` : ''}</span></div>`;
+    const u = a.usage && a.usage.reported ? ` · ${fmtNum(a.usage.input_tokens)}/${fmtNum(a.usage.output_tokens)} tok` : '';
+    const tools = typeof a.tool_calls === 'number' ? ` · ${a.tool_calls} tool${a.tool_calls === 1 ? '' : 's'}` : '';
+    const links = [fileLink(a.transcript, 'transcript'), fileLink(a.stderr_file, 'stderr')].filter(Boolean).join(' ');
+    return `<div class="arow"><span class="mdot ${fam}" title="${esc(a.model || 'session model')}">${esc(modelLetter(a.model))}</span><b title="${esc(a.label)}">${esc(a.label)}</b><span class="o ${outcomeClass(a.outcome)}">${esc(a.outcome || '')}${verdict ? ` <span class="${outcomeClass(verdict)}">· ${esc(verdict)}</span>` : ''}${a.ms ? ` · ${fmtDur(a.ms)}` : ''}${esc(tools)}${esc(u)}${links ? ` · ${links}` : ''}</span></div>`;
   }).join('')}</div>`;
 }
 function paintNow(i, S) {
@@ -3615,7 +3630,7 @@ function paintNow(i, S) {
     if (here.length) parts.push(`<div class="label">Agents at ${esc(stepName(pos))} so far</div>${agentRowsHtml(here.slice(-8))}`);
   }
   if (it && it.type === 'result' && it.findings && it.findings.length) parts.push(`<div class="label">Findings</div>${findingsHtml(it.findings)}`);
-  if (i === LV.items.length - 1 && job.running_agents && job.running_agents.length) parts.push(`<div class="label">Running now</div><div class="chips">${job.running_agents.map((a) => `<span class="chip agent">${esc(a.agent_type)}</span>`).join('')}</div>`);
+  if (i === LV.items.length - 1 && job.running_agents && job.running_agents.length) parts.push(`<div class="label">Running now</div><div class="chips">${job.running_agents.map((a) => `<span class="chip agent">${esc(a.agent_type)}${a.transcript ? ` ${fileLink(a.transcript, 'transcript')}` : ''}</span>`).join('')}</div>`);
   if (i === LV.items.length - 1 && job.stale_agents && job.stale_agents.length && job.status !== 'closed') parts.push(`<div class="label">Started, never reported back</div><div class="chips">${job.stale_agents.map((a) => `<span class="chip off" title="started ${esc(fmtDate(a.since))}; its session probably ended">${esc(a.agent_type)} · stale</span>`).join('')}</div>`);
   if (i === LV.items.length - 1 && job.pending_gate && job.pending_gate.id !== 'P') parts.push(`<div class="label">Your move</div><p>Reply <b>approve</b> or <b>deny &lt;what must change&gt;</b> in chat to answer ${esc(job.pending_gate.id)}.</p>`);
   if (i === LV.items.length - 1 && job.status === 'parked') parts.push(`<div class="label">Your move</div><p>Fix what the reason names, then reply <b>resume</b>.</p>`);
@@ -3817,6 +3832,8 @@ function renderBelow(job) {
   const totalMs = crew.reduce((n, a) => n + a.ms, 0);
   const html = [];
   html.push(`<section class="panel"><h3>Crew used</h3>${crew.length ? `<div class="tblwrap"><table class="tbl"><tr><th>Agent</th><th>Runs</th><th>Model</th><th>Retries</th><th>Failed</th><th>Time</th></tr>${crew.map((a) => `<tr><td class="n">${esc(a.role)}</td><td class="n">${a.n}</td><td class="n">${esc(a.models.join(' → ') || 'session')}</td><td class="n">${a.retries || ''}</td><td class="n">${a.fails ? `<span class="stt fail">${a.fails}</span>` : ''}</td><td class="n">${a.ms ? esc(fmtDur(a.ms)) : '—'}</td></tr>`).join('')}</table></div><p class="label">${crew.reduce((n, a) => n + a.n, 0)} runs · ${crew.length} agent types${totalMs ? ` · ${esc(fmtDur(totalMs))} of agent time` : ''}</p>` : '<p class="lede" style="margin:0">No agents have run for this job yet.</p>'}</section>`);
+  const c = job.cost;
+  if (c) html.push(`<section class="panel"><h3>Cost</h3><div class="tblwrap"><table class="tbl"><tr><th>Agent runs</th><th>Agent time</th><th>Tool calls</th><th>Input tokens</th><th>Output tokens</th><th>Premium requests</th><th>Cost (multiplier)</th></tr><tr><td class="n">${c.agent_runs}</td><td class="n">${esc(fmtDur((c.agent_seconds || 0) * 1000))}</td><td class="n">${c.tool_calls}</td><td class="n">${esc(fmtNum(c.input_tokens))}</td><td class="n">${esc(fmtNum(c.output_tokens))}</td><td class="n">${esc(fmtNum(c.premium_requests))}</td><td class="n">${esc(fmtNum(c.cost))}</td></tr></table></div><p class="label" style="text-transform:none;letter-spacing:0">As the Copilot CLI reported it in its JSON output. — means it reported nothing (unknown, not zero)${c.unreported_runs ? `; ${c.unreported_runs} of ${c.agent_runs} runs came back without usage records` : ''}. Each agent row links to its transcript.</p></section>`);
   if (tasks.length) html.push(`<section class="panel"><h3>Tasks</h3><div class="tblwrap"><table class="tbl"><tr><th>Task</th><th>Objective</th><th>Tries</th><th>Outcome</th></tr>${tasks.map((t) => `<tr><td class="n">${esc(t.id)}${t.depends_on.length ? `<br><span class="label">after ${esc(t.depends_on.join(', '))}</span>` : ''}</td><td>${esc(t.objective)}</td><td class="n">${t.attempts || '—'}</td><td class="stt ${t.outcome === 'done' ? 'done' : t.outcome ? 'fail' : ''}">${esc(t.outcome || 'not started')}</td></tr>`).join('')}</table></div></section>`);
   if (lastChallenge) html.push(`<section class="panel"><h3>Latest review</h3><p>${esc(lastChallenge.text)}</p>${findingsHtml(lastChallenge.findings)}</section>`);
   if ((job.lessons || []).length) html.push(`<section class="panel"><h3>Lessons</h3>${job.lessons.map((l) => `<p><span class="mono">${esc(l.id)} · ${esc(l.status)}</span><br>${esc(l.text)}</p>`).join('')}</section>`);

@@ -31,11 +31,13 @@ async function call(prompt, o) {
   return r
 }
 
-// Attempt 1 uses the builder's model; later attempts step through the escalation list.
+// Attempts before escalate_from use the builder's model; from it on, attempts step through
+// the escalation list (a brief without escalate_from escalates from attempt 2, as before).
 function builderModel(spec, attempt) {
   const up = (spec && spec.escalate) || []
-  if (attempt <= 1 || !up.length) return null
-  return up[Math.min(attempt - 2, up.length - 1)]
+  const from = spec && Number.isInteger(spec.escalate_from) && spec.escalate_from >= 2 ? spec.escalate_from : 2
+  if (attempt < from || !up.length) return null
+  return up[Math.min(attempt - from, up.length - 1)]
 }
 
 // The raw `task verify` result as the next attempt's input: the failing command, its exit code

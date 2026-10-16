@@ -160,7 +160,7 @@ test('factory run clarify: agents as copilot processes, envelope recorded in-pro
     assert.match(fs.readFileSync(file, 'utf8'), /Reply format \(strict\)/);
     assert.equal(c.env.FACTORY_RUNNER, '1');
     assert.equal(c.env.FACTORY_JOB, J);
-    assert.ok(!c.argv.includes('--model'), 'no model unless policy names one');
+    assert.equal(flagOf(c.argv, '--model'), c.agent === 'factory:god-eye' ? 'claude-opus-5.5' : c.agent === 'factory:interviewer' ? 'claude-haiku-5.5' : flagOf(c.argv, '--model'), 'each role runs on its shipped default model (policy.agents.models → model_ids)');
   }
   // the routing moved on, and the logs show what ran
   assert.equal(F.cli(root, ['next']).step, 'H1');
@@ -281,7 +281,7 @@ test('a reply that misses the schema gets one corrective turn in the same sessio
   assert.equal(ev[0].retry, true);
   assert.equal(ev[0].spawns, 2);
   assert.equal(ev[0].outcome, 'ok');
-  assert.match(r.__stderr, /read-back \(factory:interviewer\) ok after a format retry/);
+  assert.match(r.__stderr, /read-back \(factory:interviewer, claude-haiku-5\.5\) ok after a format retry/);
 });
 
 test('still invalid after the corrective turn → null, like a failed agent: the stage tries once more, then the job parks with it named', () => {
@@ -343,7 +343,9 @@ test('concurrency is capped by policy.limits.max_parallel_agents', () => {
 
 test('factory run realize: builders start in their task worktree, task verify decides, the result is recorded', () => {
   const root = F.makeRepo();
-  const J = newJob(root, { agents: { builder_escalation: ['opus'] } });
+  // escalation from attempt 2, and the builder on the session default model (the shipped default is
+  // sonnet, escalating from attempt 3: tested in units.test.js), so attempt 1 runs without --model
+  const J = newJob(root, { agents: { models: { builder: 'default' }, builder_escalation: ['opus'], builder_escalation_from_attempt: 2 } });
   F.clarify(root);
   let b;
   F.cli(root, ['next']);
@@ -953,4 +955,238 @@ test('telemetry quality: correction turns, null results and park reasons are cou
   assert.deepEqual(q.roles.judge, { runs: 3, correction_turns: 2, null_results: 1, outcomes: { ok: 2, invalid: 1 }, correction_turn_rate: 0.67, null_result_rate: 0.33 });
   assert.deepEqual(q.god_eye.design, { verdicts: 2, approve: 1, revise: 1, revise_rate: 0.5 });
   assert.deepEqual(q.parks['cap.review_rounds'], { parks: 1, jobs: [J], example: 'Review rounds exhausted' });
+});
+
+test('P4.1 transcripts and cost: each agent streams its JSONL to .factory/scratch/runs/<job>/<run>/<label>.jsonl; agent_run records tool calls, usage, and a failed run keeps its stderr tail', async () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const long = `${'x'.repeat(2000)}\nError: the real cause is here`;
+  const h = harness(`module.exports = (c) => {
+    const base = ${JSON.stringify(CLARIFY)};
+    if (c.agent === 'factory:interviewer') return { json: base[c.agent], usage: { input: 1200, output: 300, cost: 1, premium: 1, nano_aiu: 5000 } };
+    if (c.agent === 'factory:contract-writer') return { exit: 1, stderr: ${JSON.stringify(long)} };
+    return base[c.agent];
+  };`);
+  const rb = h.run(root, ['clarify']);
+  assert.equal(rb.status, 'needs_user', JSON.stringify(rb) + rb.__stderr);
+  const iv = events(root).filter((e) => e.event === 'agent_run' && e.role === 'interviewer')[0];
+  const start = events(root).find((e) => e.event === 'agent_start' && e.run_id === iv.run_id);
+  assert.match(iv.transcript, new RegExp(`^\\.factory/scratch/runs/${J}/[^/]+-clarify-\\d+/read-back\\.jsonl$`));
+  assert.equal(start.transcript, iv.transcript, 'agent_start names the transcript while the agent runs');
+  const text = fs.readFileSync(path.join(root, iv.transcript), 'utf8');
+  assert.match(text, /"type":"tool.execution_start"/);
+  assert.match(text, /"type":"assistant.message"/);
+  assert.equal(iv.tool_calls, 1);
+  assert.equal(iv.last_tool, 'view');
+  assert.equal(iv.session_id && typeof iv.session_id, 'string');
+  assert.equal(typeof iv.ms, 'number');
+  assert.deepEqual([iv.usage.reported, iv.usage.input_tokens, iv.usage.output_tokens, iv.usage.cost, iv.usage.session_premium_requests, iv.usage.session_nano_aiu], [true, 1200, 300, 1, 1, 5000]);
+  // the contract writer crashes: its whole stderr tail is kept, not 300 characters
+  F.cli(root, ['clarify', 'reply', 'ok']);
+  F.cli(root, ['next']);
+  const w = h.run(root, ['clarify']);
+  const cw = events(root).filter((e) => e.event === 'agent_run' && e.role === 'contract-writer');
+  assert.ok(cw.length >= 1, JSON.stringify(w));
+  assert.equal(cw[0].outcome, 'failed');
+  assert.ok(cw[0].stderr_tail.length > 1000 && /the real cause is here/.test(cw[0].stderr_tail), cw[0].stderr_tail.slice(-80));
+  assert.match(fs.readFileSync(path.join(root, cw[0].stderr_file), 'utf8'), /the real cause is here/);
+  assert.deepEqual(cw[0].usage, { reported: false }, 'no usage record from the CLI: unknown, not zero');
+  // telemetry: a Cost section per job
+  const T = require('../cli/core/telemetry');
+  const rep = T.report(root);
+  const cost = rep.per_job.find((m) => m.job === J).cost;
+  assert.equal(cost.input_tokens, 1200);
+  assert.equal(cost.premium_requests, 1);
+  assert.ok(cost.unreported_runs >= 1);
+  assert.equal(cost.by_role.interviewer.input_tokens, 1200);
+  assert.match(T.toMarkdown(rep), /## Cost[\s\S]*\| J-0001 \| bug@low \| \d+ \| \d+ \| \d+ \| 1200 \| 300 \|/);
+  // the console: the job's cost, and the transcript served live from /files/ (that folder only)
+  const C = require('../cli/core/console');
+  const job = C.build(root, { job: J }).jobs[0];
+  assert.equal(job.cost.input_tokens, 1200);
+  const http = require('http');
+  const get = (url) => new Promise((res) => http.get(url, (r) => { let b = ''; r.on('data', (d) => { b += d; }); r.on('end', () => res({ code: r.statusCode, body: b })); }));
+  await new Promise((resolve) => {
+    C.serve(root, { port: 0, onReady: async ({ url, close }) => {
+      const ok = await get(`${url}files/${iv.transcript.split('/').map(encodeURIComponent).join('/')}`);
+      assert.equal(ok.code, 200);
+      assert.match(ok.body, /assistant.message/);
+      assert.equal((await get(`${url}files/.factory/jobs/${J}/state.json`)).code, 404, 'only transcripts are served');
+      assert.equal((await get(`${url}files/.factory/scratch/runs/..%2F..%2Fpolicy.json`)).code, 404);
+      const page = await get(url);
+      assert.match(page.body, /"files_base":"\/files\/"/);
+      close();
+      resolve();
+    } });
+  });
+  // a snapshot links transcripts relative to where the page is written
+  const out = C.run(root, { job: J });
+  assert.match(fs.readFileSync(out.written, 'utf8'), /"files_base":"\.\.\/"/);
+});
+
+test('P4.1 transcript caps: a transcript over the cap rotates to <label>.1.jsonl with complete counts; only the newest runs are kept', () => {
+  const T = require('../cli/core/transcripts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-tx-'));
+  const t = T.open(path.join(dir, 'build_T1_1.jsonl'), { maxBytes: 200 });
+  const ev = (n) => `${JSON.stringify({ type: 'tool.execution_start', data: { toolCallId: `t${n}`, toolName: n % 2 ? 'bash' : 'edit' } })}\n`;
+  for (let i = 1; i <= 10; i++) t.write(ev(i).slice(0, 30)), t.write(ev(i).slice(30)); // lines split across chunks
+  t.write(JSON.stringify({ type: 'assistant.usage', data: { model: 'm', inputTokens: 7 } })); // no newline: counted at flush
+  t.flush();
+  const r = t.result();
+  assert.equal(r.tool_calls, 10);
+  assert.equal(r.last_tool, 'edit');
+  assert.equal(r.usage.input_tokens, 7);
+  assert.ok(fs.existsSync(path.join(dir, 'build_T1_1.1.jsonl')), 'rotated');
+  assert.ok(fs.statSync(path.join(dir, 'build_T1_1.jsonl')).size <= 200 + 100);
+  // a label used twice in one run gets its own file
+  const taken = new Set();
+  assert.notEqual(T.fileFor(dir, 'verify code-1', taken), T.fileFor(dir, 'verify code-1', taken));
+  // prune keeps the newest run folders
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-txr-'));
+  for (const n of ['20260101T000000-a', '20260102T000000-b', '20260103T000000-c']) fs.mkdirSync(path.join(T.runsDir(root, 'J-0001'), n), { recursive: true });
+  assert.equal(T.prune(root, 'J-0001', 2), 1);
+  assert.deepEqual(fs.readdirSync(T.runsDir(root, 'J-0001')).sort(), ['20260102T000000-b', '20260103T000000-c']);
+  // totals: session-wide counters once per session, at their largest; unreported runs never count as zero
+  const tot = T.totals([{ ms: 1000, session_id: 's1', usage: { reported: true, input_tokens: 5, session_premium_requests: 2 } }, { ms: 1000, session_id: 's1', usage: { reported: true, input_tokens: 3, session_premium_requests: 3 } }, { ms: 500, usage: { reported: false } }]);
+  assert.deepEqual([tot.input_tokens, tot.premium_requests, tot.reported_runs, tot.unreported_runs, tot.output_tokens], [8, 3, 2, 1, null]);
+});
+
+test('P4.4 distill learns from build trouble: parks (typed ones read generically), retries, scope violations, environment, verifier timeouts and integration failures start the lesson-writer', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const ev = require('../cli/core/events');
+  const job = require('../cli/core/job');
+  const decisions = require('../cli/core/decisions');
+  const ledger = require('../cli/core/ledger');
+  const L = require('../cli/core/lifecycle');
+  assert.equal(L.distillContext(root, { jobId: J }).trouble.count, 0, 'a clean job has no trouble');
+  decisions.write(root, { id: `${J}-D3`, job: J, action: 'parked', rule: 'cap.verify_fix_rounds', reason: 'verify-fix rounds exhausted' });
+  decisions.write(root, { job: J, action: 'human.resume', from: 'verify' });
+  ev.append(root, { event: 'cli', job: J, cmd: 'record', ok: true, status: 'park', workflow: 'realize' });
+  ev.append(root, { event: 'task_parked', job: J, type: 'dependency_conflict', reason: 'Merging T1 into T2 conflicts' }); // a typed park from a later factory
+  ev.append(root, { event: 'drive_stop', job: J, type: 'needs_human', reason: 'gate H2' });
+  ev.append(root, { event: 'agent_run', job: J, role: 'builder', label: 'build T2 #2', outcome: 'ok' });
+  ev.append(root, { event: 'agent_run', job: J, role: 'finding-verifier', label: 'verify code-1', outcome: 'timeout', time_cap_sec: 240 });
+  ev.append(root, { event: 'environment_broken', job: J, task: 'T1', cmd: 'pip install -e .', code: 1, reason: 'setup failed' });
+  ev.append(root, { event: 'cli', job: J, cmd: 'amend', sub: 'submit', ok: true });
+  ledger.append(root, J, { kind: 'step', step: 'integrate', ok: false, bound: {}, detail: { wave: 2, kind: 'commands', commands: [{ cmd: 'npm test', pass: false, code: 1 }] } });
+  const s = job.load(root, J);
+  s.tasks = { T2: { attempts: 3, outcome: 'exhausted', history: [{ attempt: 1, verify: { pass: false, scope_violations: ['src/index.js'] } }] } };
+  job.save(root, s);
+  const t = L.distillContext(root, { jobId: J }).trouble;
+  assert.deepEqual(t.parks.map((p) => [p.source, p.type]), [['router', 'cap.verify_fix_rounds'], ['realize result', null], ['task_parked', 'dependency_conflict'], ['drive_stop', 'needs_human']]);
+  assert.equal(t.resumes.length, 1);
+  assert.deepEqual(t.retries.map((r) => r.label), ['build T2 #2']);
+  assert.equal(t.verifier_timeouts, 1);
+  assert.deepEqual(t.scope_violations, [{ task: 'T2', attempt: 1, paths: ['src/index.js'] }]);
+  assert.equal(t.environment_broken[0].cmd, 'pip install -e .');
+  assert.deepEqual(t.integration_failures.map((x) => [x.step, x.kind, x.commands]), [['integrate', 'commands', ['npm test']]]);
+  assert.deepEqual(t.tasks.map((x) => [x.task, x.outcome]), [['T2', 'exhausted']]);
+  assert.deepEqual(t.manual_repairs.map((x) => x.what), ['factory amend submit']);
+  assert.equal(t.count, 12);
+  // distill write: no confirmed findings, but the trouble is worth a lesson, so the agent runs and sees it
+  decisions.write(root, { id: 'D-distill-1', job: J, action: 'skill', skill: 'distill', step: 'distill' });
+  const st = job.load(root, J);
+  st.last_decision_id = 'D-distill-1';
+  job.save(root, st);
+  const h = harness({ 'factory:lesson-writer': { lessons: [], nothing_to_learn: true } });
+  const r = spawnSync('node', [F.BIN, 'distill', 'write'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: h.file, FAKE_COPILOT_LOG: path.join(path.dirname(h.file), 'copilot.jsonl') }, timeout: 120000 });
+  const out = JSON.parse(r.stdout);
+  assert.notEqual(out.skipped, true, JSON.stringify(out));
+  const [call] = h.log();
+  assert.equal(call.agent, 'factory:lesson-writer');
+  const brief = fs.readFileSync(flagOf(call.argv, '-p').split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
+  assert.match(brief, /"trouble":/);
+  assert.match(brief, /process or environment lesson/);
+  assert.match(brief, /dependency_conflict/);
+});
+
+test('P4.3 project brief: created at the first job from detection, filled by ground, carried (trimmed) in every brief, its indexes refreshed at distill; your edits kept; distill proposes a diff the CLI applies', () => {
+  const root = F.makeRepo();
+  const PB = require('../cli/core/project-brief');
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ checks: [{ cmd: 'node tests/add.test.js' }] }));
+  const J = newJob(root);
+  const file = path.join(root, '.factory', 'project.md');
+  let text = fs.readFileSync(file, 'utf8');
+  for (const s of PB.SECTIONS) assert.match(text, new RegExp(`^## ${s.replace(/[()]/g, '\\$&')}$`, 'm'), s);
+  assert.match(text, /`src\/` \d+ file\(s\)/, 'the module map, from git ls-files');
+  assert.match(text, /`node tests\/add\.test\.js` \(policy check/, 'the test commands');
+  assert.match(text, /## Environment\n<!-- factory:auto environment -->\n- `none` \(detected/, 'the environment, detected and not confirmed');
+  // your edit outside the CLI's blocks survives every refresh
+  fs.writeFileSync(file, text.replace('## Notes\n', '## Notes\n- Release notes go in CHANGELOG.md, newest first.\n'));
+  // ground fills "What ground found" (once), and every brief carries the project brief
+  F.clarify(root);
+  F.cli(root, ['next']);
+  F.reply(root, 'approve');
+  const g = F.cli(root, ['wfargs', 'ground']);
+  const probe = fs.readFileSync(g.probes[0].prompt.split('\n')[1].trim(), 'utf8');
+  assert.match(probe, /## Project brief \(.*project\.md; shared across jobs, the user may edit it\)\n## Conventions/);
+  assert.match(probe, /Release notes go in CHANGELOG\.md/, 'your edits reach the agents');
+  const history = g.probes.find((p) => /history/.test(p.label || p.id));
+  assert.match(fs.readFileSync(history.prompt.split('\n')[1].trim(), 'utf8'), /earlier factory jobs' ADRs, indexed in .*project\.md[\s\S]*adr-\*\.md/, 'the history probe reads earlier ADRs through the index');
+  F.record(root, F.envelope(g, 'ok', { topics: [{ topic: 'codebase', claims: [{ claim: 'add is one arrow function', source: 'src/add.js:1' }], unknowns: [] }], degraded: [] }));
+  text = fs.readFileSync(file, 'utf8');
+  assert.match(text, new RegExp(`## What ground found\\n<!-- factory:auto ground -->\\n- From ${J}'s ground step [^\\n]*\\n- add is one arrow function \\(\`src/add\\.js:1\`\\)`));
+  assert.match(text, /- Release notes go in CHANGELOG\.md, newest first\./);
+  // distill done: this job's ADR joins the index
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'adr-001-sum.md'), '# ADR-001: add sums its arguments\n');
+  require('../cli/core/lifecycle').distillDone(root, { jobId: J });
+  text = fs.readFileSync(file, 'utf8');
+  assert.match(text, new RegExp(`- ${J} \\(Fix add\\): \`\\.factory/jobs/${J}/adr-001-sum\\.md\` — ADR-001: add sums its arguments`));
+  assert.match(text, /Release notes go in CHANGELOG/);
+  // distill's diff: applied to editable sections only, exact lines only, logged
+  const r = PB.applyEdits(root, [
+    { section: 'Conventions', add: ['Arithmetic helpers live in src/, one per file.'] },
+    { section: 'Notes', remove: ['- Release notes go in CHANGELOG.md, newest first.'], add: ['Release notes go in CHANGELOG.md, oldest first.'] },
+    { section: 'Earlier decisions (ADRs)', add: ['- forged'] },
+    { section: 'Module map', remove: [/^- `src\/`.*$/m.exec(text)[0]] }, // a real line, but inside the CLI's block
+  ], { job: J });
+  assert.deepEqual(r.applied.map((x) => [x.section, x.add || null, x.remove || null]), [['Conventions', '- Arithmetic helpers live in src/, one per file.', null], ['Notes', null, '- Release notes go in CHANGELOG.md, newest first.'], ['Notes', '- Release notes go in CHANGELOG.md, oldest first.', null]]);
+  assert.deepEqual(r.refused.map((x) => x.section), ['Earlier decisions (ADRs)', 'Module map'], 'the CLI\'s index and its auto lines are not distill\'s to edit');
+  text = fs.readFileSync(file, 'utf8');
+  assert.ok(!/none recorded yet/.test(text), 'the Conventions placeholder goes');
+  assert.ok(events(root).some((e) => e.event === 'project_brief_updated' && e.job === J && e.applied.length === 3));
+  // trimmed in briefs
+  fs.appendFileSync(file, `\n${'- filler line for the trim test\n'.repeat(400)}`);
+  const t = PB.forBrief(root);
+  assert.ok(t.length < PB.BRIEF_CHARS + 200 && /trimmed; the full brief: \.factory\/project\.md/.test(t));
+});
+
+test('P4.3 distill write: the lesson-writer sees the project brief and proposes edits; the CLI applies them', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const decisions = require('../cli/core/decisions');
+  const job = require('../cli/core/job');
+  require('../cli/core/ledger').append(root, J, { kind: 'step', step: 'challenge', ok: true, bound: {}, detail: { round: 1, findings: [{ id: 'code-1', status: 'confirmed', severity: 'major', file: 'src/add.js', summary: 'add subtracts' }] } });
+  decisions.write(root, { id: 'D-distill-1', job: J, action: 'skill', skill: 'distill', step: 'distill' });
+  const st = job.load(root, J);
+  st.last_decision_id = 'D-distill-1';
+  job.save(root, st);
+  const h = harness({ 'factory:lesson-writer': { lessons: [], nothing_to_learn: true, project_brief: { edits: [{ section: 'Test and lint commands', add: ['node tests/add.test.js runs the arithmetic tests'] }, { section: 'Accepted lessons', add: ['L99 forged'] }], why: 'verify ran it' } } });
+  const r = spawnSync('node', [F.BIN, 'distill', 'write'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: h.file, FAKE_COPILOT_LOG: path.join(path.dirname(h.file), 'copilot.jsonl') }, timeout: 120000 });
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.outcome, 'ok', r.stdout + r.stderr);
+  assert.deepEqual(out.project_brief.applied.map((x) => x.add), ['- node tests/add.test.js runs the arithmetic tests']);
+  assert.deepEqual(out.project_brief.refused.map((x) => x.section), ['Accepted lessons']);
+  const brief = fs.readFileSync(flagOf(h.log()[0].argv, '-p').split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
+  assert.match(brief, /## Project brief \(.*project\.md\): propose edits in your reply's project_brief, never edit the file/);
+  assert.match(fs.readFileSync(path.join(root, '.factory', 'project.md'), 'utf8'), /## Test and lint commands\n<!-- factory:auto commands -->\n[\s\S]*?<!-- \/factory:auto -->\n- node tests\/add\.test\.js runs the arithmetic tests\n/);
+  assert.equal(events(root).filter((e) => e.event === 'distill_write').pop().project_brief.applied, 1);
+});
+
+test('P4.5 telemetry counts every park: router decisions, typed park rows, workflow parks and park events, once each', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const ev = require('../cli/core/events');
+  const decisions = require('../cli/core/decisions');
+  decisions.write(root, { id: `${J}-D2`, job: J, action: 'parked', rule: 'cap.review_rounds', reason: 'Review rounds exhausted' });
+  ev.append(root, { event: 'cli', job: J, cmd: 'record', ok: true, status: 'park', workflow: 'realize' });
+  const later = (ms) => new Date(Date.now() + ms).toISOString();
+  decisions.write(root, { job: J, action: 'park', rule: 'park.dependency_conflict', park: { kind: 'dependency_conflict' }, reason: 'T2 does not merge', ts: later(60000) });
+  const rep = require('../cli/core/telemetry').report(root);
+  const m = rep.per_job.find((x) => x.job === J);
+  assert.ok(m.parked >= 2, JSON.stringify(rep.quality.parks));
+  assert.ok(rep.quality.parks['cap.review_rounds']);
+  assert.ok(rep.quality.parks.dependency_conflict || rep.quality.parks['realize.park'], JSON.stringify(rep.quality.parks));
 });

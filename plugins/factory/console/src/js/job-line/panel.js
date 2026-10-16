@@ -44,7 +44,10 @@ function agentRowsHtml(list) {
   return `<div class="alist">${list.map((a) => {
     const fam = modelFamily(a.model);
     const verdict = a.verdict && a.verdict !== a.outcome ? a.verdict : null; // agent_run's verdict, when the roster's outcome is not already it
-    return `<div class="arow"><span class="mdot ${fam}" title="${esc(a.model || 'session model')}">${esc(modelLetter(a.model))}</span><b title="${esc(a.label)}">${esc(a.label)}</b><span class="o ${outcomeClass(a.outcome)}">${esc(a.outcome || '')}${verdict ? ` <span class="${outcomeClass(verdict)}">· ${esc(verdict)}</span>` : ''}${a.ms ? ` · ${fmtDur(a.ms)}` : ''}</span></div>`;
+    const u = a.usage && a.usage.reported ? ` · ${fmtNum(a.usage.input_tokens)}/${fmtNum(a.usage.output_tokens)} tok` : '';
+    const tools = typeof a.tool_calls === 'number' ? ` · ${a.tool_calls} tool${a.tool_calls === 1 ? '' : 's'}` : '';
+    const links = [fileLink(a.transcript, 'transcript'), fileLink(a.stderr_file, 'stderr')].filter(Boolean).join(' ');
+    return `<div class="arow"><span class="mdot ${fam}" title="${esc(a.model || 'session model')}">${esc(modelLetter(a.model))}</span><b title="${esc(a.label)}">${esc(a.label)}</b><span class="o ${outcomeClass(a.outcome)}">${esc(a.outcome || '')}${verdict ? ` <span class="${outcomeClass(verdict)}">· ${esc(verdict)}</span>` : ''}${a.ms ? ` · ${fmtDur(a.ms)}` : ''}${esc(tools)}${esc(u)}${links ? ` · ${links}` : ''}</span></div>`;
   }).join('')}</div>`;
 }
 function paintNow(i, S) {
@@ -71,7 +74,7 @@ function paintNow(i, S) {
     if (here.length) parts.push(`<div class="label">Agents at ${esc(stepName(pos))} so far</div>${agentRowsHtml(here.slice(-8))}`);
   }
   if (it && it.type === 'result' && it.findings && it.findings.length) parts.push(`<div class="label">Findings</div>${findingsHtml(it.findings)}`);
-  if (i === LV.items.length - 1 && job.running_agents && job.running_agents.length) parts.push(`<div class="label">Running now</div><div class="chips">${job.running_agents.map((a) => `<span class="chip agent">${esc(a.agent_type)}</span>`).join('')}</div>`);
+  if (i === LV.items.length - 1 && job.running_agents && job.running_agents.length) parts.push(`<div class="label">Running now</div><div class="chips">${job.running_agents.map((a) => `<span class="chip agent">${esc(a.agent_type)}${a.transcript ? ` ${fileLink(a.transcript, 'transcript')}` : ''}</span>`).join('')}</div>`);
   if (i === LV.items.length - 1 && job.stale_agents && job.stale_agents.length && job.status !== 'closed') parts.push(`<div class="label">Started, never reported back</div><div class="chips">${job.stale_agents.map((a) => `<span class="chip off" title="started ${esc(fmtDate(a.since))}; its session probably ended">${esc(a.agent_type)} · stale</span>`).join('')}</div>`);
   if (i === LV.items.length - 1 && job.pending_gate && job.pending_gate.id !== 'P') parts.push(`<div class="label">Your move</div><p>Reply <b>approve</b> or <b>deny &lt;what must change&gt;</b> in chat to answer ${esc(job.pending_gate.id)}.</p>`);
   if (i === LV.items.length - 1 && job.status === 'parked') parts.push(`<div class="label">Your move</div><p>Fix what the reason names, then reply <b>resume</b>.</p>`);

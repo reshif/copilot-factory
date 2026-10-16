@@ -85,6 +85,56 @@ function clarifyMetrics(root, state) {
   };
 }
 
+// Cost per job (P4.1): what `factory run` recorded for each agent run (agent_run lines): agent
+// time, tool calls, and the token and premium-request usage the Copilot CLI reported. Runs whose
+// CLI sent no usage record are counted as unreported, never as zero (transcripts.totals).
+let RUNS = null;
+function agentRuns(root) {
+  if (RUNS && RUNS.root === root) return RUNS.byJob;
+  const byJob = {};
+  for (const e of readEventLog(root)) {
+    if (e.event !== 'agent_run' || !e.job || e.outcome === 'copilot_unavailable') continue;
+    (byJob[e.job] = byJob[e.job] || []).push(e);
+  }
+  RUNS = { root, byJob };
+  return byJob;
+}
+
+function costMetrics(root, state) {
+  const T = require('./transcripts');
+  const runs = agentRuns(root)[state.id] || [];
+  const byRole = {};
+  for (const r of runs) {
+    const role = r.role || String(r.agent_type || '').replace(/^factory:/, '') || 'unknown';
+    (byRole[role] = byRole[role] || []).push(r);
+  }
+  return {
+    ...T.totals(runs),
+    by_role: Object.fromEntries(Object.entries(byRole).map(([role, list]) => {
+      const t = T.totals(list);
+      return [role, { runs: t.agent_runs, agent_seconds: t.agent_seconds, tool_calls: t.tool_calls, input_tokens: t.input_tokens, output_tokens: t.output_tokens, premium_requests: t.premium_requests, unreported_runs: t.unreported_runs }];
+    })),
+  };
+}
+
+// Every park, from every record that says so (P4.5): the router's parked decisions and typed park
+// rows (action "park", park.kind), a workflow result that parked the job, a park by hand, and any
+// event whose name says park, read by its kind / type / rule and reason. One park written by two
+// records at once counts once. The inspector counts parks the same way (rules.parksOf).
+function parkRecords(root) {
+  const out = [];
+  for (const d of decisions.all(root)) {
+    if (d.action === 'parked' || d.action === 'park') out.push({ job: d.job, ts: d.ts, rule: (d.park && d.park.kind) || d.rule || 'parked', reason: d.reason || null });
+  }
+  for (const e of readEventLog(root)) {
+    if (!e.job) continue;
+    if (e.event === 'cli' && e.ok !== false && ((e.cmd === 'record' && e.status === 'park') || e.cmd === 'park')) out.push({ job: e.job, ts: e.ts, rule: e.cmd === 'park' ? 'park.by_hand' : `${e.workflow || 'workflow'}.park`, reason: null });
+    else if (e.event !== 'cli' && typeof e.event === 'string' && /park/i.test(e.event) && !/unpark|resume/i.test(e.event)) out.push({ job: e.job, ts: e.ts, rule: e.kind || e.park_kind || e.type || e.rule || e.event, reason: e.reason || null });
+  }
+  out.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+  return out.filter((p, i) => !out.slice(0, i).some((q) => q.job === p.job && q.ts && p.ts && Math.abs(Date.parse(p.ts) - Date.parse(q.ts)) < 5000));
+}
+
 function reverts(root, state) {
   if (!state.pr || !state.pr.merge_commit) return 0;
   try {
@@ -129,11 +179,12 @@ function jobMetrics(root, state, all) {
     clarify_rounds: state.counters.clarify_rounds,
     gate_denials: (state.denials || []).length,
     amendments: state.amendments_count || 0,
-    parked: decs.filter((d) => d.action === 'parked').length,
+    parked: parkRecords(root).filter((p) => p.job === state.id).length,
     decisions: decs.length,
     lanes: byLane,
     intent: intentMetrics(root, state),
     clarify: clarifyMetrics(root, state),
+    cost: costMetrics(root, state),
   };
 }
 
@@ -211,8 +262,8 @@ function quality(root, { cutoff, jobIds, perJob }) {
     l.unverified_rate = rate(l.unverified, l.verified);
   }
   const parks = {};
-  for (const d of decisions.all(root)) {
-    if (d.action !== 'parked' || !inWindow(d.ts) || (jobIds && !jobIds.has(d.job))) continue;
+  for (const d of parkRecords(root)) {
+    if (!inWindow(d.ts) || (jobIds && !jobIds.has(d.job))) continue;
     const rule = d.rule || 'parked';
     const p = (parks[rule] = parks[rule] || { parks: 0, jobs: [], example: null });
     p.parks += 1;
@@ -223,6 +274,7 @@ function quality(root, { cutoff, jobIds, perJob }) {
 }
 
 function report(root, { sinceDays = 30 } = {}) {
+  RUNS = null; // the event log is read fresh for every report
   const cutoff = Date.now() - sinceDays * DAY;
   const all = job
     .listJobIds(root)
@@ -297,6 +349,14 @@ function toMarkdown(r) {
   L.push('', '## Review lanes', '', '| Recipe | Lane | Raised | Confirmed | Refuted | Unverified | Minor | Precision |', '|---|---|---|---|---|---|---|---|');
   for (const [id, x] of Object.entries(r.by_recipe)) {
     for (const [lane, l] of Object.entries(x.lanes)) L.push(`| ${id} | ${lane} | ${l.raised} | ${l.confirmed} | ${l.refuted} | ${l.unverified} | ${l.minor} | ${l.precision ?? '—'} |`);
+  }
+  const fmt = (v) => (v === null || v === undefined ? '—' : String(v));
+  L.push('', '## Cost', '', 'Per job, from the agent runs `factory run` recorded: agent time, tool calls, and the usage the Copilot CLI reported in its JSON output (tokens summed per model call; premium requests once per Copilot session). "—" means the CLI reported nothing for it (unknown, not zero); "Runs without usage" counts the agent runs it reported nothing for. Transcripts: `.factory/scratch/runs/<job>/`.', '', '| Job | Recipe | Agent runs | Agent time (s) | Tool calls | Input tokens | Output tokens | Cache read tokens | Premium requests | Cost (multiplier) | Runs without usage | Top roles by time |', '|---|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const m of r.per_job || []) {
+    const c = m.cost;
+    if (!c) continue;
+    const top = Object.entries(c.by_role || {}).sort((a, b) => b[1].agent_seconds - a[1].agent_seconds).slice(0, 3).map(([role, x]) => `${role} ${x.agent_seconds}s`).join(', ');
+    L.push(`| ${m.job} | ${m.recipe} | ${c.agent_runs} | ${c.agent_seconds} | ${c.tool_calls} | ${fmt(c.input_tokens)} | ${fmt(c.output_tokens)} | ${fmt(c.cache_read_tokens)} | ${fmt(c.premium_requests)} | ${fmt(c.cost)} | ${c.unreported_runs} | ${top || '—'} |`);
   }
   const q = r.quality;
   if (q) {

@@ -1,6 +1,12 @@
-{ "$comment": "lesson-writer (factory distill write): the lessons it recorded with factory lessons add, by the ids the command printed.",
+{ "$comment": "lesson-writer (factory distill write): the lessons it recorded with factory lessons add, by the ids the command printed, and the edits it proposes to the project brief (.factory/project.md), which the CLI applies.",
   "type": "object", "required": ["lessons"], "properties": {
   "lessons": { "type": "array", "items": { "type": "object", "required": ["id"], "properties": {
     "id": { "type": "string" }, "text": { "type": "string" } } } },
   "nothing_to_learn": { "type": "boolean" },
+  "project_brief": { "type": "object", "required": ["edits"], "properties": {
+    "edits": { "type": "array", "items": { "type": "object", "required": ["section"], "properties": {
+      "section": { "type": "string" },
+      "add": { "type": "array", "items": { "type": "string" } },
+      "remove": { "type": "array", "items": { "type": "string" } } } } },
+    "why": { "type": "string" } } },
   "note": { "type": "string" } } }

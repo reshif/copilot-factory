@@ -81,6 +81,8 @@ function recGround(root, state, env) {
   const idata = intentMod.load(root, state.id);
   const intentRef = idata && !idata.tampered && fs.existsSync(intentMod.files(root, state.id).md) ? { evidence: idata.evidence.length, assumptions: intentMod.liveAssumptions(idata).length } : null;
   writeText(jp.findings, findingsMarkdown(state, topics, answers, intentRef));
+  require('./project-brief').noteGround(root, state, topics); // the first ground fills the project brief's "What ground found"
+
   const answered = new Set(answers.map((a) => a.question));
   const blocking = topics.flatMap((t) => t.unknowns.filter((u) => u.blocking && !answered.has(u.question)).map((u) => u.question));
   const b = invalidation.current(root, state);

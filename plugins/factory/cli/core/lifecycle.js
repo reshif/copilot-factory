@@ -60,6 +60,62 @@ function close(root, { jobId }) {
   return { job: state.id, status: 'closed', next };
 }
 
+// What went wrong while the job was built, for distill (P4.4): parks (every kind, read
+// generically: a router park's rule, a workflow's park, a park by hand, clarify's, and any later
+// event whose name says park or drive stop, by its `type` / `reason`), resumes, retries, scope
+// violations, a broken environment, agents that timed out (finding verifiers among them),
+// integration failures, tasks that ended blocked or exhausted, and manual repairs (amendments,
+// task states set by hand, findings settled by hand, waivers). Each list is capped; `count` is
+// how many items there were in all.
+const CAP = 12;
+const clip = (v, n = 240) => (v === undefined || v === null ? null : String(v).slice(0, n));
+function troubleOf(root, state) {
+  const { readJsonl } = require('../lib/util');
+  const { project } = require('../lib/paths');
+  const evs = readJsonl(project(root).eventsFile).filter((e) => e && e.job === state.id);
+  const decs = decisions.forJob(root, state.id);
+  const led = ledger.all(root, state.id);
+  const typed = (e) => clip(e.kind || e.park_kind || e.type || e.park_type || e.code || e.rule || e.from || null, 80);
+  const parks = [
+    ...decs.filter((d) => d.action === 'parked' || d.action === 'park').map((d) => ({ at: d.ts, source: 'router', type: clip((d.park && d.park.kind) || d.rule || d.type || null, 80), reason: clip(d.reason) })),
+    ...evs.filter((e) => e.event === 'cli' && e.ok !== false && ((e.cmd === 'record' && e.status === 'park') || e.cmd === 'park')).map((e) => ({ at: e.ts, source: e.cmd === 'park' ? 'by hand' : `${e.workflow || 'workflow'} result`, type: clip(e.park_from || e.park_type || null, 80), reason: clip(e.park_reason || e.reason || null) })),
+    ...led.filter((e) => e.kind === 'clarify' && e.outcome === 'park').map((e) => ({ at: e.at, source: 'clarify', type: 'clarify', reason: clip((e.detail || {}).reason) })),
+    // typed park and drive-stop events (any name with "park", or drive_stop): read by their type and reason
+    ...evs.filter((e) => typeof e.event === 'string' && (/park/i.test(e.event) || e.event === 'drive_stop') && e.event !== 'cli').map((e) => ({ at: e.ts, source: e.event, type: typed(e), reason: clip(e.reason || e.message || e.park_reason || null) })),
+  ].sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+  if (state.park && !parks.some((p) => p.reason && state.park.reason && p.reason === clip(state.park.reason))) parks.push({ at: state.park.at, source: 'current', type: clip(state.park.type || state.park.from || null, 80), reason: clip(state.park.reason) });
+  const resumes = decs.filter((d) => d.action === 'human.resume').map((d) => ({ at: d.ts, from: d.from || null, reason: clip(d.reason) }));
+  const runs = evs.filter((e) => e.event === 'agent_run');
+  const retries = runs.filter((e) => e.retry || e.grace_turn || /#([2-9]|\d{2,})$/.test(String(e.label || '')) || /\(retry\)$/.test(String(e.label || ''))).map((e) => ({ label: clip(e.label, 80), role: e.role || null, outcome: e.outcome || null, why: e.retry ? 'format correction' : e.grace_turn ? 'time-up turn' : 'another attempt' }));
+  const timeouts = runs.filter((e) => e.outcome === 'timeout').map((e) => ({ label: clip(e.label, 80), role: e.role || null, cap_sec: e.time_cap_sec || null }));
+  const scope = [];
+  const envBroken = evs.filter((e) => e.event === 'environment_broken').map((e) => ({ task: e.task || null, cmd: clip(e.cmd, 120), reason: clip(e.reason) }));
+  const tasks = [];
+  for (const [id, t] of Object.entries(state.tasks || {})) {
+    for (const h of t.history || []) {
+      const v = h.verify || {};
+      if ((v.scope_violations || []).length) scope.push({ task: id, attempt: h.attempt, paths: v.scope_violations.slice(0, 6) });
+      if (v.refused === 'environment_broken') envBroken.push({ task: id, cmd: null, reason: clip(v.message) });
+    }
+    if (['blocked', 'exhausted', 'skipped_dependency'].includes(t.outcome)) tasks.push({ task: id, outcome: t.outcome, attempts: t.attempts || 0, reason: clip(t.outcome_reason || (t.builder && t.builder.blocked_reason) || null) });
+    else if ((t.attempts || 0) > 1) tasks.push({ task: id, outcome: t.outcome || null, attempts: t.attempts, reason: 'needed more than one attempt' });
+  }
+  const integration = led.filter((e) => e.kind === 'step' && ['integrate', 'reconcile'].includes(e.step) && e.ok === false).map((e) => {
+    const d = e.detail || {};
+    return { step: e.step, kind: d.kind || (d.regression ? 'regression' : null), wave: d.wave || null, task: d.task || null, files: (d.files || (d.regression && d.regression.files) || []).slice(0, 6), commands: (d.commands || []).filter((c) => c.pass === false).map((c) => clip(c.cmd, 120)).slice(0, 4), message: clip(d.message) };
+  });
+  const manual = [
+    ...evs.filter((e) => e.event === 'cli' && e.ok !== false && e.via !== 'run' && ((e.cmd === 'amend' && e.sub === 'submit') || (e.cmd === 'task' && e.sub === 'state'))).map((e) => ({ at: e.ts, what: `factory ${e.cmd} ${e.sub}` })),
+    ...decs.filter((d) => ['human.waive', 'human.accept_finding', 'human.dismiss_finding', 'human.finding'].includes(d.action) || /finding/.test(String(d.action || '')) && /^human\./.test(String(d.action || ''))).map((d) => ({ at: d.ts, what: String(d.action).replace(/^human\./, ''), reason: clip(d.reason) })),
+  ];
+  const lists = { parks, resumes, retries, timeouts, scope_violations: scope, environment_broken: envBroken, integration_failures: integration, tasks, manual_repairs: manual };
+  const count = Object.values(lists).reduce((n, l) => n + l.length, 0);
+  const out = { count };
+  for (const [k, l] of Object.entries(lists)) out[k] = l.slice(-CAP);
+  out.verifier_timeouts = timeouts.filter((t) => t.role === 'finding-verifier').length;
+  return out;
+}
+
 function distillContext(root, { jobId }) {
   const state = job.resolve(root, jobId);
   const recs = ledger.all(root, state.id).filter((e) => e.kind === 'step' && /challenge/.test(e.step) && e.detail && e.detail.findings);
@@ -81,11 +137,18 @@ function distillContext(root, { jobId }) {
     review_fix_rounds: state.counters.review_rounds,
     already_proposed: lessons,
     cap: state.policy.lessons_max_per_job,
+    // build trouble: lessons about the process and the environment, not only the code
+    trouble: troubleOf(root, state),
   };
 }
 
 function distillDone(root, { jobId }) {
   const state = job.resolve(root, jobId);
+  try {
+    require('./project-brief').refresh(root, state.policy); // this job's ADRs and newly accepted lessons join the index
+  } catch {
+    /* a convenience */
+  }
   ledger.append(root, state.id, { kind: 'step', step: 'distill', ok: true, bound: {} });
   return { job: state.id, ok: true };
 }
@@ -162,4 +225,4 @@ function whyMarkdown(w) {
   return L.join('\n');
 }
 
-module.exports = { finalize, close, distillContext, distillDone, followup, why, whyMarkdown, cleanup };
+module.exports = { troubleOf, finalize, close, distillContext, distillDone, followup, why, whyMarkdown, cleanup };

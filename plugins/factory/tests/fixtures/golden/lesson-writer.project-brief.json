@@ -1,0 +1,1 @@
+{"lessons":[{"id":"L2","text":"Every helper in src/** exports exactly one function, named after its file."}],"nothing_to_learn":false,"project_brief":{"edits":[{"section":"Conventions","add":["One exported function per file under src/ (src/add.js, src/greet.js)."]}],"why":"code-1: a second export was added to src/add.js and broke its callers."}}
