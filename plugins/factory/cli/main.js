@@ -8,7 +8,7 @@ const path = require('path');
 const { FactoryError, fail, readText, writeJson } = require('./lib/util');
 const { requireRoot, findRoot, PLUGIN_ROOT } = require('./lib/paths');
 
-const BOOL = new Set(['h1', 'epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default', 'none', 'proposed']);
+const BOOL = new Set(['h1', 'epic', 'local', 'check', 'json', 'plan-fields', 'help', 'threat-model', 'plan-critique', 'no-threat-model', 'accept-degraded', 'serve', 'dry-run', 'force', 'default', 'none', 'proposed', 'detach', 'detached-child']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -50,6 +50,9 @@ const HELP = `factory — Software Factory CLI (plugin at ${PLUGIN_ROOT})
 Setup      init [--base <branch>] · doctor · ci install · shim [--dir ~/.local/bin] [--force]   (links factory, factory-inspect onto PATH)
 Jobs       job new --title "…" --type <work type> --risk low|medium|high [--epic] [--request "<the user's words>"] · job show · job list · use <job>
 Routing    next · why [--format md] · finalize [--mode before_ship|full] [--check]
+Drive      drive [--detach] [--max-steps n]   (steps the job itself: workflows, CLI steps, ship, distill; stops and notifies you
+           at gates, clarify turns, parks, degraded runs and done; never answers for you)
+           drive status [--wait <sec>] · drive stop · inbox [--format md]   (everything waiting on you, across jobs)
 Contract   contract show · contract check [--plan-fields]
            answer "<the user's words>"   (during clarify: the same as clarify reply; after H1: answer --question "…" --answer "…")
 Clarify    clarify reply "<the user's words>"   (read-back ok or edit, sheet answers, a redirect's ok; not a gate verb)
@@ -149,6 +152,11 @@ function run(argv) {
       // async: main() awaits it. Prints the recorded result as a short summary (status first),
       // or the full JSON with --json (--dry-run always prints JSON).
       const runner = C('runner');
+      if (!opt['dry-run']) {
+        const live = C('drive').liveFor(R());
+        const id = J || C('job').current(R());
+        if (live && !C('drive').isDriveChild(live) && (!live.job || live.job === id)) fail(`factory drive (pid ${live.pid}) is running ${live.job}: it runs the workflows itself. Wait for its stop: factory drive status --wait 600. Nothing was started.`, 'drive_in_progress', { pid: live.pid, job: live.job });
+      }
       const p = runner.run(R(), {
         jobId: J,
         workflow: sub,
@@ -189,8 +197,28 @@ function run(argv) {
       C('job').setCurrent(root, sub);
       return { current: sub };
     }
-    case 'next':
-      return C('decision-table').decide(R(), J);
+    case 'next': {
+      // While factory drive steps the job, anyone else's factory next would race it: say so.
+      const root = R();
+      const live = C('drive').liveFor(root);
+      if (live && !C('drive').isDriveChild(live)) {
+        const id = J || C('job').current(root);
+        if (!id || !live.job || live.job === id) return C('drive').drivingAnswer(live, id);
+      }
+      return C('decision-table').decide(root, J);
+    }
+    case 'drive': {
+      const D = C('drive');
+      if (sub === 'status') return D.status(R(), { wait: opt.wait === true ? 600 : opt.wait }); // async
+      if (sub === 'stop') return D.stopDrive(R());
+      if (sub !== undefined) return fail('drive [--detach] | drive status [--wait <sec>] | drive stop', 'bad_input');
+      if (opt.detach) return D.detach(R(), { jobId: J });
+      return D.drive(R(), { jobId: J, detached: Boolean(opt['detached-child']), maxSteps: opt['max-steps'] ? Number(opt['max-steps']) : undefined }); // async
+    }
+    case 'inbox': {
+      const r = C('inbox').list(R());
+      return opt.format === 'md' ? C('inbox').markdown(r) : r;
+    }
     case 'why': {
       const w = C('lifecycle').why(R(), { jobId: J });
       return opt.format === 'md' ? C('lifecycle').whyMarkdown(w) : w;
@@ -473,7 +501,9 @@ const PROSE = new Set(['reason', 'text', 'question', 'answer', 'title', 'note', 
 function logCommand(argv, res, err) {
   try {
     const { pos, opt } = parseArgs(argv);
-    if (['help', 'console', undefined].includes(pos[0])) return; // console is read-only: it leaves no trace (doc is logged; the inspector counts it read-only)
+    // read-only (inbox), or logging itself (drive writes drive_start / drive_stop events, and every
+    // step it runs is its own command line, logged with via "drive")
+    if (['help', 'console', 'inbox', 'drive', undefined].includes(pos[0])) return; // console is read-only: it leaves no trace (doc is logged; the inspector counts it read-only)
     if (pos[0] === 'run' && !err) return; // factory run logs its own wfargs, agent_run and record lines
     const root = findRoot(opt.root ? path.resolve(opt.root) : process.cwd());
     if (!root) return;
@@ -504,7 +534,7 @@ function logCommand(argv, res, err) {
       ok: !err && process.exitCode !== 1 && process.exitCode !== 2,
       code: err ? err.code || 'internal' : null,
       // a deterministic step `factory run` ran itself (realize's task verify), not the driver's command
-      ...(process.env.FACTORY_VIA === 'run' ? { via: 'run' } : {}),
+      ...(process.env.FACTORY_VIA === 'run' ? { via: 'run' } : process.env.FACTORY_DRIVE ? { via: 'drive' } : {}),
       ...extra,
     });
   } catch {

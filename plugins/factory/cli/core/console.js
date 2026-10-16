@@ -494,6 +494,15 @@ function build(root, { job: only, now } = {}) {
       return { findings: f.length, open: f.filter((x) => x.status === 'open').length, runs: (reg.runs || []).length, last_run: (reg.runs || []).slice(-1)[0] ? reg.runs.slice(-1)[0].at || null : null, health };
     })(),
     autopilot: autopilotView(root, nowMs),
+    // what waits on the human across jobs (factory inbox), and the drive's state (P3.1/P3.2)
+    inbox: (() => {
+      try {
+        const ib = require('./inbox').list(root, { plain: true });
+        return { count: ib.count, items: ib.items.map((x) => ({ ...x, screen: x.screen ? short(x.screen, 2000) : undefined })), drive: ib.drive };
+      } catch {
+        return null;
+      }
+    })(),
     // log lines that belong to no job: hooks failing outside a job, unparsed replies, Autopilot sightings
     factory_events: all.events.filter((e) => (!e.job && ['hook_error', 'reply_unparsed', 'stop_block'].includes(e.event)) || e.event === 'autopilot_seen').slice(-100).map((e) => ({ t: e.ts, type: e.event === 'reply_unparsed' ? 'unparsed' : e.event === 'autopilot_seen' ? 'autopilot' : e.event, text: short(e.event === 'hook_error' ? `The ${e.hook || 'factory'} hook failed${e.tool ? ` on ${e.tool}` : ''}: ${e.message || ''}` : e.event === 'reply_unparsed' ? `A message looked like "${e.verb || 'a reply'}" but was not applied ("${e.word || ''}")` : e.event === 'autopilot_seen' ? AUTOPILOT_SEEN : `The stop gate sent the agent back to work`, 200) })),
     integrity: checker.hasKey ? { ...checker.tally, status: checker.tally.invalid ? 'tampered' : 'verified' } : { status: 'not_checked' },
@@ -529,7 +538,7 @@ function run(root, { out, job, label, data: dataFile } = {}) {
 // server can poll every few hundred ms without re-reading the logs.
 function watchedFiles(root) {
   const p = project(root);
-  const files = [p.eventsFile, p.decisionsFile, p.currentFile, p.lessonsFile, path.join(p.dir, 'inspect', 'register.json'), path.join(p.dir, 'autopilot.json')];
+  const files = [p.eventsFile, p.decisionsFile, p.currentFile, p.lessonsFile, path.join(p.dir, 'inspect', 'register.json'), path.join(p.dir, 'autopilot.json'), path.join(p.dir, 'drive.json')];
   let ids = [];
   try { ids = fs.readdirSync(p.jobsDir).filter((d) => /^J-\d+$/.test(d)); } catch { /* no jobs yet */ }
   for (const id of ids) {

@@ -184,6 +184,7 @@ function factoryRanSince(log, at) {
 
 function runInProgress(root, id) {
   try {
+    if (require('../cli/core/drive').liveFor(root, id)) return true; // factory drive steps the job
     return require('../cli/core/runner').lockFileAlive(path.join(root, '.factory', 'jobs', id, 'run.lock'));
   } catch {
     return false;

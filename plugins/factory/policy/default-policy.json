@@ -108,8 +108,11 @@
     "allow_tools": {},
     "deny_tools": {},
     "agent_timeout_seconds": 1800,
-    "resume_for_retry": true
+    "resume_for_retry": true,
+    "transient_retries": 4,
+    "transient_backoff_seconds": 10
   },
+  "notify": true,
   "intent_research": {
     "web": true,
     "search_mcp": null
