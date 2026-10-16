@@ -29,11 +29,11 @@ Every stop has a `kind`:
 | kind | When | What the human or the main session does |
 |---|---|---|
 | `gate` | A human gate: H1, H2, H3, HF, HS, EH1–EH3 or A | Reply `approve` or `deny <what must change>` |
-| `clarify` | Clarify waits on the user: the read-back, the decision sheet, or a redirect read-back | Reply `ok`, or say what to change / answer the sheet |
+| `clarify` | Clarify waits on the user: the decision sheet (it opens with the read-back), a read-back that needs them (a pin conflict, a question only they can answer), or a redirect read-back | Answer the sheet, reply `ok`, or say what to change |
 | `questions` | Ground's blocking questions | Answer them; the main session records each answer with `factory answer` |
 | `degraded` | A workflow ran without an angle | Re-run it, or go on without it (`--accept-degraded`) |
-| `parked` | The job parked, with a typed reason (see below) | `resume`, or the change it suggests |
-| `wait` | The merge, an open PR, or a criterion only you can check | `merged <commit>`, merge on GitHub, or `confirm AC-n` |
+| `parked` | The job parked, with a typed reason and, for a loop or the budget, a specific question (see below) | Your answer in your own words (it resumes the job with them), `resume +50%` for the budget, or the change it suggests |
+| `wait` | The **ship review** (your checks of criteria, unsettled findings, the push: `ship_review`), the merge, or an open PR | One reply for the review (`confirm AC-2; dismiss finding code-1 <why>; approve ship`); merge yourself or on GitHub, and the factory notices (`merged <commit>` still works) |
 | `amend` | An amendment needs writing (what changed, and who asked) | The main session follows the amend skill |
 | `evidence` | A doc or diff record the drive can't pick a file for | The main session checks the build and records it |
 | `ship` | Only with `policy.drive.stop_before_ship: true`: every pre-ship floor is met, and the push, the PR or the local merge waits for your go | Say to ship; Copilot runs `factory ship`, then the drive again |
@@ -43,9 +43,9 @@ Every stop has a `kind`:
 
 A stop that is a failure (`error`, `copilot_unavailable`, `transient`, `limit`, `interrupted`, `superseded`) exits 1; a stop that waits on the human, and `done`, exit 0.
 
-**Stop before ship.** `policy.drive.stop_before_ship` (default `false`) makes the drive stop with kind `ship` instead of running `factory ship`, so nothing is pushed, opened as a PR or prepared for a local merge until you say so. Without it the drive ships as the main session did before: at high risk only after the HS sign-off gate, at low and medium risk at once.
+**Stop before ship.** `policy.drive.stop_before_ship` (default `false`) makes the drive stop with kind `ship` instead of running `factory ship`, so nothing is pushed, opened as a PR or prepared for a local merge until you say so. Without it the drive ships: at high risk only after the HS sign-off gate (skipped in local mode, where nothing is pushed); at low and medium risk, a push and PR need your `approve ship` in the ship review unless the repository opted in once to automatic **draft** PRs (`policy.ship.auto_pr: "draft"`); a local merge is prepared at once.
 
-**It never answers for you.** The drive runs none of the human-only verbs: `approve`, `deny`, `resume`, `proceed`, `cancel`, `abandon`, `waive`, `merged`, `confirm`, `finding accept|dismiss`, `env set`, `assumption`, `reseal` or `lessons accept|reject|promote`. It does not run `clarify reply` or `clarify redirect` either. Those stay yours: your chat reply goes through the prompt hook, or you run the command in your own terminal and type the code shown there. Don't paste that code into a chat. No agent may ask you for it.
+**It never answers for you.** The drive runs none of the human-only verbs: `approve` (and `approve ship`), `deny`, `resume`, `proceed`, `cancel`, `abandon`, `waive`, `merged`, `confirm`, `finding accept|dismiss`, `env set`, `assumption`, `reseal` or `lessons accept|reject|promote`. It does not run `clarify reply` or `clarify redirect` either. Those stay yours: your chat reply goes through the prompt hook, or you run the command in your own terminal and type the code shown there. Don't paste that code into a chat. No agent may ask you for it.
 
 **Evidence the CLI can check.** A doc or diff record is made by the drive only when exactly one file of that kind changed in the tasks that cover the criterion: one documentation file for `doc`, one changed file for `diff`. Its note says so. Otherwise the drive stops with `evidence`.
 
@@ -114,8 +114,10 @@ Before it parks, the factory does what a program can.
 | **`dependency_conflict`** (task start can't merge the job branch or a dependency into Tn) | Tn's next start restarts its branch from the integrated job branch, and realize rebuilds it there **once**, without spending an attempt. A second conflict is the typed `blocked: dependency_conflict` result, and the park suggests the plan change. |
 | **Reconcile regression on Tn** (integrating would drop a line already merged) | Tn is reopened (`needs_work: integration`, with the dropped lines as its failure input) and rebuilt on the merged code **once**, automatically. The same regression again parks with kind `regression`. |
 | **`environment_broken`** | The job parks once with the failing command and the tail of its output; no builder attempt is spent (0.6). |
-| **`scope_violation`** | The task restarts from the job branch (0.6). |
+| **`scope_violation`** | The task restarts from the job branch (0.6). Files outside the allowed paths (or into protected ones) on the job branch are reverted by the CLI to the base commit, with a record, once (0.9.0); the same files again park, asking whether to allow them (an amendment) or keep them out. |
 | **Invalid output** | One correction turn in the same session (0.4). |
+| **A loop that stops converging** (review-fix, verify-fix, re-verify, the integrator; clarify's readiness loop) | The shared loop engine (`cli/core/loop.js`, 0.9.0): the loop goes on while its open problems shrink; after two rounds without, the agents run on the stronger model (`loops.escalate_model`); one more and God Eye diagnoses it; only then the park, with the diagnosis's question, options and recommendation. A serious finding no verifier settles gets a second verifier on the stronger model, then goes to the ship review. Clarify's loop ends at H1, never in a park. |
+| **The integrator returns nothing** | Reconcile runs again (on the stronger model after one more failure); it parks only with a question. |
 
 **Every park is typed.** `state.park` carries `kind` and `next`, the suggested step, for example:
 - `needs_paths`: T2 needs `src/index.js`, so amend the plan to give it those paths;
@@ -129,12 +131,19 @@ Before it parks, the factory does what a program can.
 - `no_progress`;
 - `budget`;
 - `scope_violation`;
-- `clarify`;
+- `clarify` (an agent that failed twice);
+- `integration`;
 - `transient`.
+
+A loop or budget park also carries `question`, `options` and `recommendation`: **any reply of yours is resume + content**. The prompt hook applies a plain message while the job is parked (not a question to the assistant, not a command) as your answer: the job resumes, your words are kept (`state.human_notes`) and every agent that works on it next gets them, and the loop starts a new segment. `factory resume --job J <your words>` does the same in a terminal. **The budget is absolute**: a budget park resumes only with the grant named (`resume +50%`, `resume +100%`, or the question's option `a` / `b`); a bare `resume` is refused and changes nothing, and approving an amendment does not raise it.
 
 A park the router makes is recorded with its routing decision; a park from a workflow result is logged as its own decision row (`action: "park"`, rule `park.<kind>`). `factory why` lists them under `parks`, and `factory why --format md` shows each park with its kind, reason and next step.
 
-**An amendment pre-empts a park.** `amend submit` on a parked job puts gate A in front of you, and approving it also resumes the job; it needs no separate `resume`. Denying it keeps the park.
+**An amendment pre-empts a park.** `amend submit` on a parked job puts gate A in front of you, and approving it also resumes the job; it needs no separate `resume` (except a budget park: the budget grows only by a grant you name). Denying it keeps the park.
+
+**The merge is noticed.** In local mode the factory sees the base branch contains the shipped job branch and records the merge itself (`merged_via: detected`; only you can merge it: the guard refuses it to Copilot and its agents); in GitHub mode `factory pr sync` records it. No `merged <sha>` or "continue" is needed (both still work).
+
+**The end-of-job digest.** The `done` stop lists the lessons and project-brief proposals together, with `digest.reply`, one reply that accepts them all (`accept lesson L4; accept brief P1`); you may reject any instead. `factory inbox` lists the proposed lessons next to the brief proposals. Nothing applies without your reply.
 
 **No false dead-hook notice.** `factory next` on a parked job no longer says chat replies aren't reaching the factory just because it was asked twice; a park is not evidence of a dead hook.
 

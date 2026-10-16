@@ -86,8 +86,17 @@ A redirect can also be given at any time during clarify (`factory clarify redire
 - **The plan** is a list of things to find out, each tagged `repo`, `docs` or `decision`, with
   the pins it must be researched against. Implementation choices (which SSH library, how many
   threads) are not plan items: they are listed as "design may choose".
-- **Reply:** `ok` (or yes, go, looks good …) confirms the read-back. Anything else is an edit:
-  the words are recorded and the interviewer runs again with them (seconds).
+- **Shown, not waited on (0.9.0).** Intake no longer asks the user to confirm its restatement,
+  type and risk: the read-back shows them a minute later. When nothing on the read-back needs the
+  user (no pin conflict, no question only they can answer, no version a redirect changed), research
+  starts at once; the read-back heads the next screen the user sees (the sheet, or H1 when there is
+  no sheet) as **What I understood**, and the intent stays the factory's restatement (`assumed`)
+  until H1 approves it. Words the user sends meanwhile become a redirect (a correction).
+  `clarify.readback: "wait"` restores the blocking read-back.
+- **Reply** (when it waits): `ok` (or yes, go, looks good …) confirms the read-back. Anything else
+  is an edit: the words are recorded and the interviewer runs again with them (seconds).
+- **Scope** in and out are items (kind `scope`): a redirect or a sheet answer can change a scope
+  line by its id, and the change is shown like any other change of the user's words.
 
 ### 2. Research (the only long step)
 
@@ -119,8 +128,9 @@ A redirect can also be given at any time during clarify (`factory clarify redire
   the sheet, into the contract's `## Research gaps` section and onto H1.
 - **Caps:** at most 2 passes per entry into research. A second pass runs only for high-impact
   items left without usable evidence after a transient failure (timeout, failed agent). If the
-  brief writer fails in both passes the job **parks**; `resume` allows one more pass and
-  `proceed` (human-only) goes on to the sheet with every item marked "not researched".
+  brief writer fails in both passes the job **goes on, never parks** (0.9.0): every item it covered
+  is marked "not researched" (a research gap on the sheet, in the contract and at H1) and its
+  decisions are asked without a researched recommendation.
 
 ### 3. Decision sheet (one user turn)
 
@@ -194,10 +204,37 @@ each item answered true or false:
 7. `decisions_closed`: every high-impact decision is decided or explicitly deferred with an owner.
 
 Each objection names its check, `severity` (`blocker` or `note`), the `stage` it concerns, what it
-points at and a fix. **A blocker goes back to its stage; it is never turned into a note.** Notes
-are shown at H1 as remarks. The writer gets at most 2 attempts per readiness cycle; after that the
-job parks with the blockers listed (`resume`: one more attempt; `proceed`: H1 with the blockers
-shown as open objections, recorded as such).
+points at, a fix, and **who can fix it** (`fixable_by`: `writer` from what is settled, or `user`; a
+`user` blocker carries the `question`, its `options` and God Eye's `recommendation`). Without
+`fixable_by` the CLI decides: its own checks by stage (assemble: the writer; sheet or read-back: the
+user); God Eye's `assemble` and `research` blockers, a weak verify command (`acs_testable`) and a
+self-contradiction that points at nothing the user said are the writer's; anything else the user's.
+**A blocker goes back to whoever can fix it; it is never turned into a note.** Notes are shown at
+H1 as remarks.
+
+**The readiness loop (0.9.0, the shared loop engine `cli/core/loop.js`).** Writer blockers go back
+to the contract writer in an automatic round, with God Eye's exact findings and fixes (the brief's
+`round`: `n`, `of`, and the diagnosis's `approach` once there is one). Each round's open blockers
+are fingerprinted (`check|REF`, plus the text of the CLI's own refusals); the loop goes on while
+the set shrinks. After two rounds without shrinking, the writer runs on the stronger model
+(`loops.escalate_model`, "opus"; a model the CLI refuses falls back to the session default); one
+more round without progress and God Eye diagnoses the loop (focus `diagnosis`: the cause, and
+either a different approach for the writer or the one specific question for the user). One more
+round without progress after that ends the loop, as does the ceiling
+(`limits.clarify_writer_rounds`, 5). A loop that ends goes to **H1 with the open objections and
+the diagnosis shown** (`loop_end`), never to a park; a diagnosis that says only the user can
+settle it puts its question (with options and a recommendation) on the sheet instead.
+
+- **Tie-break:** a God Eye blocker raised again after a writer round that was given its fix is
+  checked once by the `finding-verifier` (stage `dispute`, mode dispute: an objection on the
+  contract, not on code). Refuted, it becomes a note (shown at H1 as a remark, never a blocker
+  again); confirmed, the writer gets the verifier's reasoning with it.
+- **User blockers** become one question each on the next sheet, with God Eye's options and
+  recommendation; the writer blockers raised with them wait for the writer that runs after the
+  user's answer.
+- Writer rounds are counted apart from the readiness cycles that reach the user
+  (`counters.writer_rounds`, `writer_loop`); a new cycle (after a user turn, research or a
+  redirect) starts the automatic rounds again.
 
 ### 6. H1
 
@@ -209,7 +246,10 @@ shown as open objections, recorded as such).
 - **the decisions and who made them** (you; your acceptance of a recommendation; pinned evidence;
   deferred to design);
 - **what design may still choose**;
-- **research gaps** and **God Eye objections**;
+- **research gaps** and **God Eye objections** (with `loop_end` when the readiness loop ended
+  without converging: its rule, rounds and the diagnosis);
+- the read-back, when it was shown here and on no sheet;
+- **changed by your later words** and **reworded in the contract** (each change with what it rests on);
 - after a redirect, each clause **done** or **not done**.
 
 H1 approval stays human-only (chat reply or the terminal with its typed code).
@@ -232,7 +272,17 @@ input:
 
 Conservation is checked on the user's text, not sentence by sentence: every part of the redirect
 no clause quotes ("…, and decide how credentials are supplied") becomes its own `instruction`
-clause, verbatim. Two denials given before clarify reads either become one redirect.
+clause, verbatim. Two denials given before clarify reads either become one redirect. The same holds
+for a sheet answer the interviewer reads (interpret): what it returns as `unclear`, word for word,
+and any part of the reply no mapping quotes, become the user's `instruction` items verbatim.
+
+**Later words win (0.9.0).** When the user's later words change what they said before (a clause
+linked to an earlier fact, instruction or scope line by its id), the later words win and the change
+is kept on the item (`changes`) and shown on the next screen: "changed: X → Y because you said …"
+(the sheet, or H1). When the writer rewords a constraint or a non-goal because of it, it lists the
+rewording under `changed` (`from`, `to`, `because`: the `I-n`, the user's words `W-n`, a blocker or
+`R-n`): a cited change, recorded and shown at H1, not a drop. A placeholder ("None") the writer
+replaces is no drop either.
 
 **A version in a redirect** ("we actually run 2.3, not 2.4"): a clause linked to a pin, or a stated
 fact that names a version, restarts at the **read-back**: the pin is reopened, the interviewer
@@ -248,7 +298,7 @@ One sealed file per job, `jobs/<J>/clarify.json`, `version: 3`. The CLI is its o
 
 | Field | What |
 |---|---|
-| `stage` | `readback`, `readback_wait`, `research`, `sheet_wait`, `interpret`, `redirect`, `redirect_wait`, `assemble`, `check`, `ready` |
+| `stage` | `readback`, `readback_wait`, `research`, `sheet_wait`, `interpret`, `redirect`, `redirect_wait`, `assemble`, `check`, `dispute`, `diagnose`, `ready` |
 | `rev` | incremented on every write; part of a run's input hash (a result for an older state is stale) |
 | `words` | `W-n`: everything the user said, verbatim, with how it arrived (`request`, `reply`, `denial`, `redirect`, `migration`) |
 | `items` | `I-n`: the ledger (below) |
@@ -260,7 +310,11 @@ One sealed file per job, `jobs/<J>/clarify.json`, `version: 3`. The CLI is its o
 | `redirects` | `R-n`: the words, clauses `{quote, item, action, stage, outcome}`, status |
 | `checks` | each readiness run: deterministic results, God Eye's checklist and objections |
 | `contract` | the hash the writer produced, and whether it was edited by hand since |
-| `counters` | research passes this entry, writer attempts this cycle, sheets |
+| `counters` | research passes this entry, automatic writer rounds this cycle (`writer_rounds`), readiness cycles, sheets |
+| `writer_loop` | the loop engine's state for the readiness loop: rounds, the open set per round, level (stronger model, diagnosed), the diagnosis |
+| `disputes` | the tie-break verdicts, by blocker fingerprint |
+| `loop_end` | how the readiness loop ended without converging (rule, rounds, findings, diagnosis), shown at H1 |
+| `parked_words` | the user's words sent while the job was parked, read back as a redirect when it resumes |
 | `migration` | the report, for a migrated job |
 
 **An item** (`I-n`): `kind` (`intent`, `scope`, `fact`, `pin`, `decision`, `question`,
@@ -298,7 +352,8 @@ matches items by word overlap.
 | `interviewer` | read-back, redirect, interpret | 1 per user turn that needs words understood | intent-mapper, intent-analyst ×4, judge |
 | `researcher` (repo, docs modes) | research | 1–2 in parallel, time-boxed | the per-unknown scouts |
 | `brief-writer` | research | 1 | (new) |
-| `contract-writer` | contract | 1 (≤ 2 per readiness cycle) | contract-editor |
+| `contract-writer` | contract | 1, then automatic fix rounds while the blockers shrink (ceiling `limits.clarify_writer_rounds`) | contract-editor |
+| `finding-verifier` | dispute | 1 per disputed objection (at most once each) | (new in 0.9.0) |
 | `god-eye` (focus `readiness`) | readiness | 1 | God Eye's intent critique |
 
 Retired: `intent-mapper`, `intent-analyst`, `judge`, `verifier` (evidence verifier: the CLI checks
@@ -313,7 +368,7 @@ repo quotes and versions itself), `contract-editor` (repurposed as `contract-wri
 | `factory answer "<words>"` | main session | the same as `clarify reply` during clarify |
 | `factory clarify redirect "<words>"` | main session, for the user | a redirect at any time during clarify |
 | `factory clarify status [--json] [--h1]` | anyone | the stage, items, sheet, failures, checks; `--h1` prints the H1 view |
-| `factory proceed` / chat `proceed` | human only | after a cap park: go on with the gaps explicit |
+| `factory proceed` / chat `proceed` | human only | after a cap park of a job from before 0.9.0: go on with the gaps explicit |
 | `factory clarify split` | — | kept for migrated jobs: says that v3 has no folded issues |
 
 `clarify reply` and `answer` are not gate verbs, so the main session runs them on the user's
@@ -436,23 +491,27 @@ v2 spent a full round (mapper, scouts, verifier, 4 analysts, judge, God Eye, edi
 minutes) on every reply. v3 spends the long research once; every other turn is one or two short
 calls.
 
-## Caps (fixed, no progress arithmetic)
+## Caps and stop rules (0.9.0: progress first, counts as ceilings)
 
-| Cap | Default | When reached |
+| Loop or cap | Default | When reached |
 |---|---|---|
-| research passes per entry into research | 2 | park: `resume` one more pass, `proceed` to the sheet with gaps marked |
+| research passes per entry into research | 2 | go on: the items are research gaps, the sheet asks without a researched recommendation |
 | decisions per sheet | 5 | the rest wait for the next sheet |
-| writer attempts per readiness cycle | 2 | park: `resume` one more attempt, `proceed` to H1 with the blockers shown |
-| readiness checks that send work back (to the writer, the sheet, research or the read-back) | 3 | park where the work would have gone: `resume` one more cycle, `proceed` to H1 with the blockers shown |
+| the readiness loop (writer ⇄ God Eye) | while the open blockers shrink; 2 rounds without → the stronger model; 1 more → the diagnosis; 1 more → the end; ceiling `limits.clarify_writer_rounds` (5) | **H1** with the open objections and the diagnosis shown (or the diagnosis's question on the sheet) |
+| readiness checks that send work back to the user's stages (the sheet, research, the read-back) | 3 | **H1** with the open objections shown |
 | `ok` on a sheet whose open decisions have no recommendation | the second `ok` | those decisions are deferred to design, recorded as the user's (the sheet warned after the first) |
-| an agent that returns nothing | retried once in the same run | park with the failure named |
+| an agent that returns nothing | retried once in the same run | park with the failure named (the only clarify park left) |
 
-While a job is parked, `clarify reply` and `clarify redirect` are refused: only the user's `resume`
-or `proceed` moves it.
+While a job is parked, `clarify reply` and `clarify redirect` **store the words** (never refused):
+the user's own chat reply is resume + content, and the words are read back as a redirect once the
+job resumes. Resume stays the user's alone.
 
-Policy keys: `clarify.max_research_passes`, `clarify.max_sheet_decisions`,
-`clarify.max_writer_attempts`, `clarify.max_readiness_cycles`, `clarify.research_minutes.{low,medium,high}`. The web switch and
-search tool stay `intent_research.web` and `intent_research.search_mcp`.
+Policy keys: `clarify.readback` (`show` | `wait`), `clarify.facts_sheet`, `clarify.tiebreak`,
+`clarify.max_research_passes`, `clarify.max_sheet_decisions`, `clarify.max_readiness_cycles`,
+`clarify.research_minutes.{low,medium,high}`, `limits.clarify_writer_rounds`, and the shared loop
+engine's `loops.{ceiling, stall_rounds, escalate_model, diagnose}`. The web switch and search tool
+stay `intent_research.web` and `intent_research.search_mcp`. (`clarify.max_writer_attempts` is gone:
+the writer's rounds are the loop's.)
 
 ## Who said it
 
@@ -498,7 +557,11 @@ A job whose contract is approved keeps its v2 record; ground and decide read it 
 - The 4-analyst panel, the judge and the round loop (`fanout-judge --config clarify`).
 - Token-overlap identity, subjects, aliases and folds; `clarify split` (a no-op message now).
 - Progress-parking arithmetic (`clarify_no_progress_rounds`, ceilings, bonus rounds, degraded
-  streaks); replaced by the fixed caps above and the human `proceed`.
+  streaks); replaced by the fixed caps above and the human `proceed`. (0.9.0 brings progress back
+  as one set comparison on the ids the CLI assigns, in the shared loop engine, and ends at H1
+  rather than in a park: no arithmetic, no word overlap.)
+- (0.9.0) Intake's own confirmation question, the facts-only sheet, the writer-attempt park and
+  the readiness-cycle park.
 - "Settled is final" for the user.
 - The guard's clarify lock on `contract.md`.
 - The question protocol module (`questions.js`) and the evidence verifier agent.
