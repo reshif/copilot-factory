@@ -171,7 +171,37 @@ async function runTask(id) {
     st[id].prepared = true
     if (r && !r.ok && !envBroken) envBroken = { task: r.task || id, ...(r.broken || { reason: 'environment broken' }) }
   }
-  while (st[id].outcome === 'pending' && !envBroken) await attempt(id)
+  while (st[id].outcome === 'pending' && !envBroken) {
+    if (!(await gate(id))) break
+    active += 1
+    try {
+      await attempt(id)
+    } finally {
+      active -= 1
+      wake()
+    }
+  }
+}
+
+// The barrier every attempt passes, the first and every retry: no attempt starts (its builder's
+// task start would merge the job branch) while an integration's checks run or while a failed
+// integration is being repaired, except the repair itself; none starts on top of a broken
+// integrated build; and at most max_parallel_tasks attempts are at work at once. Returns false
+// when the task must not go on (the build environment or the integrated build is broken).
+let active = 0
+const waiters = []
+function wake() {
+  for (const w of waiters.splice(0)) w()
+}
+async function gate(id) {
+  for (;;) {
+    if (envBroken) return false
+    const repair = repairing.has(id)
+    if (brokenIntegration && !repair) return false
+    const held = Boolean(integrating) || (repairing.size > 0 && !repair)
+    if (!held && active < cap) return true
+    await new Promise((r) => waiters.push(r))
+  }
 }
 
 // ---------------------------------------------------------------- scheduling (P3.4)
@@ -251,8 +281,8 @@ async function integrateDone() {
     brokenIntegration = why
     return
   }
+  // the main loop launches them (they pass the attempt barrier; other tasks wait at it)
   phase(`realize: rebuilding ${again.join(', ')} on the integrated branch`)
-  for (const id of again) launch(id)
 }
 
 const running = new Map()
@@ -264,6 +294,7 @@ function launch(id) {
     // A task rebuilt for an integration that still failed leaves its broken merge in the job
     // branch: the integrated build stays broken, whatever the other tasks' checks say.
     if (st[id].reopened && st[id].outcome !== 'done' && integrateOn && !brokenIntegration) brokenIntegration = `${id} could not fix the integrated build`
+    wake()
   })
   running.set(id, p)
 }
@@ -272,17 +303,26 @@ phase(`realize: ${order.filter((id) => st[id] && st[id].outcome === 'pending').l
 let integrating = null
 for (;;) {
   skipDependents()
-  if (brokenIntegration) skipAfterBrokenIntegration(brokenIntegration)
+  if (brokenIntegration) {
+    skipAfterBrokenIntegration(brokenIntegration)
+    wake()
+  }
   const repairOpen = [...repairing].some((id) => st[id].outcome === 'pending')
+  // integrate first: a task launched in the same turn then waits at the barrier for its checks
+  if (!integrating && !repairOpen && integrateOn && !envBroken && !brokenIntegration && order.some((id) => st[id] && st[id].outcome === 'done' && !integrated.has(id))) {
+    integrating = integrateDone().then(() => {
+      integrating = null
+      wake()
+    })
+  }
+  // a failed integration's repair: its reopened tasks (other tasks wait at the barrier)
+  for (const id of order) if (repairing.has(id) && st[id].outcome === 'pending' && !running.has(id) && !envBroken && !brokenIntegration) launch(id)
   if (!envBroken && !brokenIntegration && !integrating && !repairing.size) {
     for (const id of order) {
       if (running.size >= cap) break
       if (!st[id] || st[id].outcome !== 'pending' || running.has(id)) continue
       if (depsOf(id).every(depReady)) launch(id)
     }
-  }
-  if (!integrating && !repairOpen && integrateOn && !envBroken && !brokenIntegration && order.some((id) => st[id] && st[id].outcome === 'done' && !integrated.has(id))) {
-    integrating = integrateDone().then(() => { integrating = null })
   }
   const waiting = [...running.values()].concat(integrating ? [integrating] : [])
   if (!waiting.length) break
