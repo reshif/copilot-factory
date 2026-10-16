@@ -71,6 +71,11 @@ not told.
 | Model precedence: custom agent frontmatter `model`, then `--model`, then `COPILOT_MODEL`, then `model` in `settings.json`, then the default. | PR "Model precedence" |
 | `--effort=LEVEL` / `--reasoning-effort=LEVEL`: `low`, `medium`, `high`, `xhigh`, `max`. | CR "Command-line options" |
 | 1.0.98 adds "support for Gemini 4 Argon" (newer than the 1.0.97 the factory targets). | CL 1.0.98 |
+| 1.0.64: "Add model family aliases like opus, sonnet, haiku, gpt, and gemini in the model setting". Documented for the `model` **setting** only; neither reference says `--model` takes them. | CL 1.0.64 |
+| 1.0.89: "Adding support for claude-opus-5.5"; 1.0.94: "Add Claude Haiku 5.5 to model selection and --model completions". No entry names claude-sonnet-5.5 (**unknown** since when). | CL 1.0.89, 1.0.94 |
+| 0.0.421: "Error when --model flag specifies an unavailable model". The wording of that error is **not documented** anywhere. | CL 0.0.421 |
+
+**Model safety (review B1).** Because the ids are not accepted everywhere (an older CLI, an org that has not enabled a model, a plan, BYOK), `factory run` treats a refusal as recoverable: a non-zero exit with no assistant reply and a line that names the model (the word or the id) with a refusal word ("not available", "unsupported", "not enabled" …) re-spawns the same turn once with no `--model`, logs `agent_model_fallback` and remembers the id for three days (`cli/core/models.js`). `factory doctor` warns below 1.0.89 / 1.0.94. The factory keeps passing ids rather than the CLI's family aliases, which are documented for the setting only.
 
 The CLI takes model **ids**; `opus`, `sonnet` and `haiku` are the factory's own aliases, mapped by
 `policy.agents.model_ids` (defaults `claude-opus-5.5`, `claude-sonnet-5.5`, `claude-haiku-5.5`, all in
