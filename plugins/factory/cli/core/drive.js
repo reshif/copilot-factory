@@ -69,12 +69,29 @@ function pidAlive(pid) {
 }
 
 // A running drive: its process is alive and its heartbeat recent.
+// Is this pid still a node/factory process? true / false, or null where /proc can't tell.
+function nodeProcess(pid) {
+  try {
+    const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return /factory|node/.test(cmd);
+  } catch {
+    return null;
+  }
+}
+
+// A running drive, by what can be known about it:
+//   - another machine (a container, a renamed host): only its heartbeat speaks for it, so a stale
+//     heartbeat there is a dead drive (and its pid means nothing here);
+//   - this machine: its process. A live node/factory process is alive however old its heartbeat
+//     (a laptop that slept: taking it over would make two drives), a gone or reused pid is dead.
+const sameHost = (st) => !st.host || st.host === require('os').hostname();
 function alive(st) {
   if (!st || st.status !== 'running') return false;
-  if (st.host && st.host !== require('os').hostname()) return true;
-  if (!pidAlive(st.pid)) return false;
   const beat = Date.parse(st.heartbeat_at || st.started_at || '') || 0;
-  return Date.now() - beat <= HEARTBEAT_SEC * STALE_BEATS * 1000;
+  const fresh = Date.now() - beat <= HEARTBEAT_SEC * STALE_BEATS * 1000;
+  if (!sameHost(st)) return fresh;
+  if (!pidAlive(st.pid)) return false;
+  return nodeProcess(st.pid) !== false;
 }
 
 // The live drive for this job (or any job when jobId is null), or null.
@@ -171,6 +188,7 @@ function runArgs(n) {
 // the tasks covering the criterion changed. Anything else (none, several) is the main session's
 // judgement and a stop.
 const DOC_FILE = /(^|\/)(docs?|documentation)\/|\.(md|mdx|markdown|rst|adoc|txt)$|(^|\/)README[^/]*$/i;
+const ac0 = (x) => String(x || '').toUpperCase();
 function evidencePath(root, jobId, ac, type) {
   try {
     const job = require('./job');
@@ -189,7 +207,16 @@ function evidencePath(root, jobId, ac, type) {
     }
     const inBuild = new Set(git.changedFiles(root, state.base_commit, state.branch));
     const cands = [...changed].filter((f) => inBuild.has(f) && (type !== 'doc' || DOC_FILE.test(f)));
-    return cands.length === 1 ? { path: cands[0], tasks: tasks.map((t) => t.id) } : null;
+    if (cands.length !== 1) return null;
+    // and the criterion itself names that file (its path, or its name: "the README documents …"):
+    // a lone CHANGELOG.md is not evidence for a README criterion
+    const C = require('./contract');
+    const crit = C.parse(C.read(root, jobId)).acs.find((a) => a.id === ac0(ac));
+    const text = String((crit && crit.text) || '').toLowerCase();
+    const f = cands[0].toLowerCase();
+    const stem = path.basename(f).replace(/\.[^.]+$/, '');
+    if (!text || !(text.includes(f) || (stem.length >= 3 && new RegExp(`\\b${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text)))) return null;
+    return { path: cands[0], tasks: tasks.map((t) => t.id) };
   } catch {
     return null;
   }
@@ -208,6 +235,8 @@ const STOP_TITLE = {
   evidence: 'evidence needs a look',
   skill: 'a step needs the main session',
   done: 'job done',
+  ship: 'ready to ship: waits for your go',
+  superseded: 'drive superseded',
   error: 'drive stopped on an error',
   copilot_unavailable: 'Copilot unavailable',
   transient: 'Copilot rate-limited or offline',
@@ -246,6 +275,8 @@ function stopDetail(kind, n, extra = {}) {
       const merged = /merged/.test(n.reason || '');
       return { summary: `${J}: ${n.reason || 'waiting on you'}`, reply: merged ? 'merged <commit>' : (n.acs || []).length ? (n.acs || []).map((a) => `confirm ${a}`).join(' | ') : 'continue', ...(merged ? { command: `factory merged <commit> --job ${J}` } : (n.acs || []).length ? { command: `factory confirm ${n.acs[0]} --job ${J}` } : {}) };
     }
+    case 'ship':
+      return { summary: `${J} is ready to ship (every pre-ship floor is met). policy.drive.stop_before_ship holds the push, the pull request or the local merge for your go: say so, and Copilot runs factory ship, then factory drive.`, reply: 'ship it | what to change first', command: `factory ship --job ${J}` };
     case 'amend':
       return { summary: `${J}: ${n.reason || 'an amendment is needed'} The main session follows the amend skill (what changed and who asked), then factory drive continues.` };
     case 'evidence':
@@ -263,9 +294,17 @@ async function loop(ctx) {
   const job = require('./job');
   const fails = {};
   let requeries = 0;
+  const perJob = {};
   for (;;) {
+    // lost drive.json to another drive (this one looked dead to it): stop, touching nothing
+    if (ctx.lost || !ctx.owns()) {
+      ctx.lost = true;
+      return ctx.stop('superseded', { job: ctx.job });
+    }
     ctx.steps += 1;
-    if (ctx.steps > ctx.maxSteps) return ctx.stop('limit', { job: ctx.job }, { message: `stopped after ${ctx.maxSteps} steps without reaching a stop (a loop?): read factory why --format md` });
+    // the step limit is per job (an epic's slices each get their own)
+    perJob[ctx.job] = (perJob[ctx.job] || 0) + 1;
+    if (perJob[ctx.job] > ctx.maxSteps) return ctx.stop('limit', { job: ctx.job }, { message: `stopped after ${ctx.maxSteps} steps on ${ctx.job} without reaching a stop (a loop?): read factory why --format md` });
     ctx.beat({ step: 'next' });
     const r = await runChild(ctx, ['next']);
     const n = r.json;
@@ -278,6 +317,8 @@ async function loop(ctx) {
       case 'skill': {
         if (n.action === 'skill' && n.skill !== 'clarify') {
           if (n.skill === 'ship') {
+            // policy.drive.stop_before_ship: the push, the PR or the local merge waits for the user's go
+            if (ctx.stopBeforeShip) return ctx.stop('ship', n);
             say('ship');
             ctx.beat({ step: 'ship' });
             const s = await runChild(ctx, ['ship']);
@@ -289,6 +330,8 @@ async function loop(ctx) {
             say('distill');
             ctx.beat({ step: 'distill write' });
             const w = await runChild(ctx, ['distill', 'write']);
+            // Copilot unavailable: the distill skill moves on to distill done; any other failure is a stop
+            if (!w.json || (w.json.error && w.json.code !== 'copilot_unavailable')) return ctx.stop('error', n, { message: `factory distill write failed: ${(w.json && w.json.message) || `exit ${w.code}`}`, code: w.json && w.json.code });
             if (w.json && Array.isArray(w.json.lessons)) ctx.lessons.push(...w.json.lessons);
             const d = await runChild(ctx, ['distill', 'done']);
             if (!d.json || d.json.error) return ctx.stop('error', n, { message: `factory distill done failed: ${(d.json && d.json.message) || `exit ${d.code}`}` });
@@ -299,7 +342,8 @@ async function loop(ctx) {
         if (n.action === 'skill') {
           const c = n.clarify || {};
           if (c.error) return ctx.stop('error', n, { message: c.error });
-          if (c.waiting_for_user || !c.run) return ctx.stop('clarify', n);
+          if (c.waiting_for_user) return ctx.stop('clarify', n);
+          if (!c.run) return ctx.stop('error', n, { message: `clarify is at stage ${c.stage || 'unknown'}, which neither runs agents nor waits on the user: factory clarify status shows it` });
         }
         const args = runArgs(n.action === 'skill' ? { workflow: 'clarify' } : n);
         say(args.slice(0, -1).join(' '));
@@ -321,7 +365,11 @@ async function loop(ctx) {
             continue;
           }
           if (j.code === 'copilot_unavailable') return ctx.stop('copilot_unavailable', n, { message: j.message });
-          if (j.code === 'copilot_transient') return ctx.stop('transient', n, { message: j.message });
+          if (j.code === 'copilot_transient') {
+            // a transient failure that kept coming back across runs parked the job (typed transient)
+            if (j.details && j.details.parked) continue;
+            return ctx.stop('transient', n, { message: j.message });
+          }
           return ctx.stop('error', n, { message: `factory ${args.slice(0, -1).join(' ')}: ${j.message}`, code: j.code });
         }
         fails.not_waiting = 0;
@@ -410,7 +458,12 @@ async function loop(ctx) {
 
 // ---------------------------------------------------------------- the lock and the run
 
+// Taken under an O_EXCL lock file, so two drives starting together can't both win.
 function acquire(root, jobId, info) {
+  return require('./job').withLock(path.join(project(root).dir, 'drive.lock'), () => acquireLocked(root, jobId, info), { waitMs: 10000, staleMs: 30000, what: 'the drive lock' });
+}
+
+function acquireLocked(root, jobId, info) {
   const prev = readState(root);
   if (alive(prev) && prev.pid !== process.pid) {
     fail(`factory drive is already running (pid ${prev.pid}, ${prev.job}, since ${prev.started_at}). Watch it with factory drive status --wait 600, or stop it with factory drive stop.`, 'drive_in_progress', { pid: prev.pid, job: prev.job });
@@ -431,9 +484,6 @@ function acquire(root, jobId, info) {
     stops: prev ? (prev.stops || []).slice(-20) : [],
   };
   writeState(root, st);
-  // another drive raced us between the read and the write: the last writer wins, the other sees it
-  const now = readState(root);
-  if (!now || now.pid !== process.pid) fail('Another factory drive started at the same moment; watch it with factory drive status.', 'drive_in_progress');
   return st;
 }
 
@@ -447,6 +497,15 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
     steps: 0,
     maxSteps,
     followParents,
+    // policy.drive.stop_before_ship (default false): stop before factory ship instead of running it
+    stopBeforeShip: (() => {
+      try {
+        const pol = require('../lib/util').deepMerge(require('./policy').load(root), state.policy || {});
+        return Boolean(pol.drive && pol.drive.stop_before_ship === true);
+      } catch {
+        return false;
+      }
+    })(),
     lessons: [],
     child: null,
     stopped: null,
@@ -456,7 +515,20 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
   };
   events.append(root, { event: 'drive_start', job: state.id, pid: process.pid, detached, ...(st.recovered_from ? { recovered_from: st.recovered_from } : {}) });
   let current = st;
+  // Never write over another drive's record: one that took over (this one looked dead) owns
+  // drive.json now, and this one stops at its next step without touching it.
+  const owns = () => {
+    const now = readState(root);
+    return Boolean(now && now.pid === process.pid && (now.host || '') === (st.host || ''));
+  };
+  ctx.owns = owns;
   const save = (patch) => {
+    if (ctx.lost || !owns()) {
+      if (!ctx.supersededLogged) events.append(root, { event: 'drive_superseded', job: ctx.job, pid: process.pid, by: (readState(root) || {}).pid || null });
+      ctx.supersededLogged = true;
+      ctx.lost = true;
+      return;
+    }
     current = { ...current, ...patch, heartbeat_at: nowIso() };
     writeState(root, current);
   };
@@ -491,9 +563,22 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
       ...(n && n.action ? { next: n } : {}),
     };
     ctx.stopped = rec;
+    if (ctx.lost || !owns()) {
+      if (!ctx.supersededLogged) events.append(root, { event: 'drive_superseded', job: ctx.job, pid: process.pid, by: (readState(root) || {}).pid || null });
+      ctx.supersededLogged = true;
+      ctx.lost = true;
+      rec.kind = 'superseded';
+      rec.summary = `${ctx.job}: another factory drive took over this one; it stopped without touching the job.`;
+      return rec;
+    }
+    // A rerun that stops at the same gate, park or clarify turn again tells the human once only.
+    const key = [ctx.job, kind, rec.gate ? `${rec.gate.id}:${rec.gate.hash}` : '', rec.stage || '', kind === 'parked' ? (n && n.park && n.park.at) || (n && n.reason) || '' : '', kind === 'wait' ? (n && n.reason) || '' : ''].join('|');
+    const prevLast = current.last || null;
+    const repeat = prevLast && prevLast.notify_key === key && ['gate', 'parked', 'clarify', 'wait'].includes(kind);
     const title = `Factory ${ctx.job}: ${STOP_TITLE[kind] || kind}`;
-    const sent = require('./notify').notify(root, { title, body: rec.summary, job: ctx.job, kind });
+    const sent = repeat ? { method: 'repeat' } : require('./notify').notify(root, { title, body: rec.summary, job: ctx.job, kind });
     rec.notified = sent.method;
+    rec.notify_key = key;
     events.append(root, { event: 'drive_stop', job: ctx.job, kind, summary: String(rec.summary).slice(0, 500), gate: rec.gate ? rec.gate.id : null, park_kind: rec.park ? rec.park.kind : null, stage: rec.stage || null, decision_id: rec.decision_id, steps: ctx.steps, notified: sent.method, pid: process.pid });
     save({ status: 'stopped', step: null, stopped_at: rec.at, last: rec, stops: [...(current.stops || []), { at: rec.at, job: ctx.job, kind, summary: rec.summary }].slice(-20) });
     ctx.err(`[factory drive] stop (${kind}): ${rec.summary}\n`);
@@ -507,20 +592,28 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
   for (const sig of Object.keys(SIG)) {
     if (process.platform === 'win32' && sig === 'SIGHUP') continue;
     handlers[sig] = () => {
-      try {
-        if (ctx.child) {
-          try {
-            ctx.child.kill('SIGTERM');
-          } catch {
-            /* gone */
-          }
-          const until = Date.now() + 8000;
-          while (Date.now() < until && ctx.child && ctx.child.exitCode === null && pidAlive(ctx.child.pid)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      const finish = () => {
+        try {
+          if (!ctx.stopped) ctx.stop('interrupted', ctx.lastNext || { job: ctx.job }, { message: `drive stopped (${sig}); run factory drive again to continue from where the job is` });
+        } finally {
+          clearInterval(beat);
+          process.exit(128 + SIG[sig]);
         }
-        if (!ctx.stopped) ctx.stop('interrupted', ctx.lastNext || { job: ctx.job }, { message: `drive stopped (${sig}); run factory drive again to continue from where the job is` });
-      } finally {
-        clearInterval(beat);
-        process.exit(128 + SIG[sig]);
+      };
+      const child = ctx.child;
+      if (!child || child.exitCode !== null) return finish();
+      // the step in progress stops too (a factory run stops its agents and releases its lock);
+      // wait for it to close, at most 8 s, without blocking the event loop
+      const t = setTimeout(finish, 8000);
+      child.once('close', () => {
+        clearTimeout(t);
+        finish();
+      });
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        clearTimeout(t);
+        finish();
       }
     };
     process.on(sig, handlers[sig]);
@@ -556,6 +649,9 @@ function detach(root, { jobId } = {}) {
     st = readState(root);
     if (st && st.pid === child.pid) break;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  if (!st || st.pid !== child.pid) {
+    fail(`The background drive (pid ${child.pid}) did not start: ${tailOf(logFile(root), 6).join(' | ') || 'no output'} (log: ${logFile(root)}).`, 'drive_not_started', { pid: child.pid, log: logFile(root) });
   }
   return {
     job: state.id,
@@ -613,6 +709,7 @@ async function status(root, { wait = 0 } = {}) {
 function stopDrive(root) {
   const st = readState(root);
   if (!alive(st)) return { stopped: false, ...statusView(root), message: 'No factory drive is running.' };
+  if (!sameHost(st)) return { stopped: false, pid: st.pid, host: st.host, message: `The drive was started on ${st.host}, not on this machine: its pid means nothing here, so it was not signalled. Stop it there, or wait a minute: a drive whose heartbeat stopped on another machine counts as gone.` };
   try {
     process.kill(st.pid, 'SIGTERM');
   } catch (e) {
