@@ -624,7 +624,7 @@ function setEnvironment(root, { file, none = false, expectHash = null, channel }
   if (state) log(root, state, 'set_environment', { channel, environment: r.environment.name || null, hash: r.hash });
   require('./events').append(root, { event: 'environment_set', channel, name: r.environment.name || null, hash: r.hash, job: state ? state.id : null });
   const E = r.environment;
-  const runs = envMod.schemaOf(E) === 2 ? (envMod.inert(E) ? 'Worktrees need no setup.' : `Dependencies install once per lockfile into .factory/envs (shared); each worktree gets a cheap overlay: ${envMod.describe(E)}.`) : (E.setup || []).length ? `Each worktree runs: ${E.setup.join(' && ')}.` : 'Worktrees need no setup.';
+  const runs = (E.setup || []).length ? `Each worktree builds its own environment: ${envMod.describe(E)}.` : 'Worktrees need no setup.';
   return { ...r, message: `Build environment set: ${E.name || '(unnamed)'} (${r.hash})${E.tool ? `, built with ${E.tool}` : ''}. ${runs} Copilot continues with factory next.` };
 }
 

@@ -46,40 +46,83 @@ function save(root, state) {
 // Load, change and save the job state under a lock, for writes that run in parallel: builders'
 // task start, the runner recording their replies, task verify for several tasks at once, the
 // per-wave integration. Without it, two load-modify-save cycles lose one update (an attempt
-// count, a task's evidence). The lock is a file created exclusively, naming its holder: one
-// whose holder process is gone (killed inside mutate: Ctrl+C on factory run stops its task
-// verify children) is taken over at once; one older than 60 s is taken over too (a holder on
-// another machine, or a hung one).
-function lockHolderGone(file) {
+// count, a task's evidence). The lock is a file created exclusively, naming its holder (pid, the
+// process's start time, host and a token): one whose holder process is gone (killed inside mutate:
+// Ctrl+C on factory run stops its task verify children), or whose pid now belongs to another
+// process, is taken over at once. A living holder is never taken over (0.12 review M-7: a build
+// environment's lock is held for minutes); only a holder that cannot be checked (another host,
+// an unreadable file) is taken over after staleMs.
+function procStart(pid) {
   try {
-    const held = JSON.parse(require('fs').readFileSync(file, 'utf8'));
-    if (!held || !Number.isInteger(held.pid) || held.pid <= 0 || held.host !== require('os').hostname()) return false;
-    try {
-      process.kill(held.pid, 0);
-      return false;
-    } catch (e) {
-      return e.code === 'ESRCH';
-    }
+    return require('fs').readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop().split(' ')[19] || null;
   } catch {
-    return false; // being written, or released meanwhile
+    return null;
   }
 }
+function holderState(file) {
+  let held = null;
+  try {
+    held = JSON.parse(require('fs').readFileSync(file, 'utf8'));
+  } catch {
+    return 'unknown'; // being written, or released meanwhile
+  }
+  if (!held || !Number.isInteger(held.pid) || held.pid <= 0 || held.host !== require('os').hostname()) return 'unknown';
+  try {
+    process.kill(held.pid, 0);
+  } catch (e) {
+    return e.code === 'ESRCH' ? 'gone' : 'alive';
+  }
+  if (held.start) {
+    const now = procStart(held.pid);
+    if (now !== null && now !== String(held.start)) return 'gone'; // the pid was reused
+  }
+  return 'alive';
+}
 
-// An exclusive lock file naming its holder, held while fn runs. A holder whose process is gone
-// (on this host) is taken over at once; one older than staleMs too (another machine, or hung).
-// Waits up to waitMs, then fails with state_locked.
+// Break a lock judged stale: moved aside under a unique name (only one waiter's rename can take
+// it), then checked to be the very lock that was judged; one that was not (another waiter took the
+// lock meanwhile) is put back when nothing replaced it.
+function breakLock(file, judged) {
+  const fs = require('fs');
+  const aside = `${file}.stale-${process.pid}-${require('crypto').randomBytes(3).toString('hex')}`;
+  try {
+    fs.renameSync(file, aside);
+  } catch {
+    return; // gone meanwhile
+  }
+  let text = null;
+  try {
+    text = fs.readFileSync(aside, 'utf8');
+  } catch {
+    text = null;
+  }
+  if (judged !== null && text !== judged) {
+    try {
+      fs.linkSync(aside, file);
+    } catch {
+      /* a new holder took it */
+    }
+  }
+  fs.rmSync(aside, { force: true });
+}
+
+// An exclusive lock file naming its holder, held while fn runs (see above for takeover). Waits up
+// to waitMs, then fails with state_locked.
 function withLock(file, fn, { waitMs = 30000, staleMs = 60000, what = file } = {}) {
   const fs = require('fs');
   const until = Date.now() + waitMs;
   let fd = null;
+  const mine = JSON.stringify({ pid: process.pid, start: procStart(process.pid), host: require('os').hostname(), at: new Date().toISOString(), token: require('crypto').randomBytes(6).toString('hex') });
   while (fd === null) {
     try {
       fd = fs.openSync(file, 'wx');
-      fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: require('os').hostname(), at: new Date().toISOString() }));
+      fs.writeSync(fd, mine);
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
       try {
-        if (Date.now() - fs.statSync(file).mtimeMs > staleMs || lockHolderGone(file)) fs.rmSync(file, { force: true });
+        const judged = fs.readFileSync(file, 'utf8');
+        const st = holderState(file);
+        if (st === 'gone' || (st === 'unknown' && Date.now() - fs.statSync(file).mtimeMs > staleMs)) breakLock(file, judged);
       } catch {
         /* released meanwhile */
       }
@@ -92,7 +135,8 @@ function withLock(file, fn, { waitMs = 30000, staleMs = 60000, what = file } = {
   } finally {
     try {
       fs.closeSync(fd);
-      fs.rmSync(file, { force: true });
+      // only our own lock is released
+      if (fs.readFileSync(file, 'utf8') === mine) fs.rmSync(file, { force: true });
     } catch {
       /* gone */
     }

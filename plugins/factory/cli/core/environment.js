@@ -25,22 +25,21 @@
 //     "timeout_seconds": 1200
 //   }
 //
-// Schema version 2 (0.12, the shared model; docs/ENVIRONMENT.md): dependencies are installed ONCE
-// per lockfile into a factory-owned shared environment, and each worktree only gets a cheap
-// overlay of it (cli/core/envstore.js). Instead of setup and cache_key:
+// Schema version 2 (0.12, docs/ENVIRONMENT.md): every worktree still builds its OWN environment
+// with setup, exactly like version 1 (its own .factory-venv or node_modules, its own code). What
+// is new is the shared package CACHE the factory gives those installs (cli/core/envcache.js) and
+// the record of how and why:
 //     "tool": "uv", "reason": "uv is installed: …",  how it is built and why (machine.pythonTool)
-//     "deps": ["uv venv -q --allow-existing {env}/venv", "uv pip install … -r pyproject.toml"],
-//                                                  once per key, in {env}/src (a copy of the
-//                                                  worktree's tracked files); {env} is
-//                                                  .factory/envs/<key>
-//     "deps_key": ["pyproject.toml", "uv.lock"],   files whose content (with deps, tool, env and
-//                                                  this machine) keys the shared environment
-//     "overlay": "python",                         python: <worktree>/.factory-venv, a thin venv
-//                                                  over {env}/venv; node: <worktree>/node_modules
-//                                                  linked to {env}/src/node_modules; none
-//     "project": ["uv pip install … --no-deps -e ."],  each worktree, after the overlay: cheap
-// A sealed version-1 environment (0.11) keeps working as it did (setup in every worktree) until
-// the human confirms a version-2 one; factory next offers it.
+//     "cache": "uv",                               uv | pip | poetry | npm | pnpm | yarn | docker |
+//                                                  none: which installer's cache the setup uses.
+//                                                  uv, pip, poetry, npm, yarn and pnpm read the
+//                                                  shared caches under .factory/envcache; pip also
+//                                                  installs from a hash-checked wheelhouse
+//                                                  (.factory/wheelhouse/<key>) without the network
+//                                                  once one worktree has set up; uv runs offline
+//                                                  first once a key has installed.
+// A sealed version-1 environment (0.11) keeps working as it did; factory next offers the same
+// setup, unchanged, as version 2 with the cache.
 // The repository's own .venv (and the root checkout) is never set up, changed or removed.
 //
 // Placeholders in every command and value: {worktree} {root} {job} {task} ("job" for the
@@ -62,29 +61,26 @@ const git = require('../lib/git');
 
 const FILE = (root) => path.join(root, '.factory', 'environment.json');
 const PROPOSED = (root) => path.join(root, '.factory', 'environment.proposed.json');
-const KEYS = ['version', 'name', 'tool', 'reason', 'setup', 'cache_key', 'deps', 'deps_key', 'overlay', 'project', 'env', 'prefix', 'services', 'teardown', 'ignore', 'timeout_seconds', 'notes'];
-const V2_ONLY = ['deps', 'deps_key', 'overlay', 'project'];
-const V1_ONLY = ['setup', 'cache_key'];
+const KEYS = ['version', 'name', 'tool', 'reason', 'cache', 'setup', 'cache_key', 'env', 'prefix', 'services', 'teardown', 'ignore', 'timeout_seconds', 'notes'];
+const V2_ONLY = ['tool', 'reason', 'cache'];
+const CACHES = ['uv', 'pip', 'poetry', 'npm', 'pnpm', 'yarn', 'docker', 'none'];
 const DOC = 'docs/ENVIRONMENT.md';
 const DOC_PATH = path.join(__dirname, '..', '..', DOC);
 
-// The schema an environment is written in: its version, else 2 when it uses the shared fields.
+// The schema an environment is written in: its version, else 2 when it names its tool or cache.
 function schemaOf(e) {
   if (!e) return 1;
   if (e.version === 1 || e.version === 2) return e.version;
   return V2_ONLY.some((k) => e[k] !== undefined) ? 2 : 1;
 }
 // Every command an environment runs before a verify command (lint, the network check, notices).
-const commandsOf = (e) => [...((e && e.setup) || []), ...((e && e.deps) || []), ...((e && e.project) || [])];
+const commandsOf = (e) => [...((e && e.setup) || [])];
 // One line saying what runs where.
 function describe(e) {
   if (!e) return 'none';
-  if (schemaOf(e) === 2) {
-    const d = (e.deps || []).join(' && ');
-    const p = (e.project || []).join(' && ');
-    return `${d ? `once per ${(e.deps_key || []).join(', ') || 'environment'} (shared in .factory/envs): ${d}` : 'no shared dependencies'}; each worktree: ${e.overlay === 'python' ? '.factory-venv (a thin venv over the shared one)' : e.overlay === 'node' ? 'node_modules linked to the shared one' : 'no overlay'}${p ? ` + ${p}` : ''}`;
-  }
-  return `setup in every worktree: ${(e.setup || []).join(' && ') || '(none)'}`;
+  const s = `setup in every worktree: ${(e.setup || []).join(' && ') || '(none)'}`;
+  if (schemaOf(e) === 2 && e.cache && e.cache !== 'none') return `${s} (with the shared ${e.cache} cache${e.cache === 'pip' ? ' and wheelhouse' : ''}: downloads once per key)`;
+  return s;
 }
 
 // The schema check: the smallest set that covers a plain venv repo and a compose-based one.
@@ -96,15 +92,9 @@ function problems(e) {
     if (v === undefined) return;
     if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || !x.trim())) out.push(`${name} must be a list of non-empty strings`);
   };
-  if (e.version !== undefined && e.version !== 1 && e.version !== 2) out.push('version must be 1 (setup in every worktree) or 2 (deps shared, project per worktree)');
-  const ver = schemaOf(e);
-  if (ver === 2) for (const k of V1_ONLY) if (e[k] !== undefined) out.push(`${k} is a version-1 field: version 2 splits setup into deps (installed once, shared) and project (each worktree), and cache_key into deps_key`);
-  if (ver === 1) for (const k of V2_ONLY) if (e[k] !== undefined) out.push(`${k} needs version 2 (the shared model)`);
-  strs(e.deps, 'deps');
-  strs(e.deps_key, 'deps_key');
-  strs(e.project, 'project');
-  if (e.overlay !== undefined && !['python', 'node', 'none'].includes(e.overlay)) out.push('overlay must be python, node or none');
-  if (e.overlay === 'python' && !(e.deps || []).length) out.push('overlay python needs deps that make the shared venv at {env}/venv');
+  if (e.version !== undefined && e.version !== 1 && e.version !== 2) out.push('version must be 1 (0.11) or 2 (with tool, reason and the shared package cache)');
+  if (schemaOf(e) === 1) for (const k of V2_ONLY) if (e[k] !== undefined) out.push(`${k} needs version 2`);
+  if (e.cache !== undefined && !CACHES.includes(e.cache)) out.push(`cache must be one of ${CACHES.join(', ')}`);
   for (const k of ['tool', 'reason']) if (e[k] !== undefined && e[k] !== null && typeof e[k] !== 'string') out.push(`${k} must be a string`);
   strs(e.setup, 'setup');
   strs(e.cache_key, 'cache_key');
@@ -165,8 +155,10 @@ const has = (root, f) => exists(path.join(root, f));
 // fix 0.10.1: with this machine's tool inventory (cli/core/machine.js): a Python environment is
 // made with uv when it is installed, else poetry (a poetry repo), virtualenv, and python3 -m venv
 // only when it really works here; pip installs retry; never a tool that is missing or needs sudo.
-const PIP = '{env}/venv/bin/python -m pip install -q --retries 5 --timeout 60';
-const OV = '{worktree}/.factory-venv';
+// Each worktree's own venv: .factory-venv (not .venv: the ignore pattern for it can never hide
+// your own .venv in the root checkout's git status).
+const VENV = '.factory-venv';
+const PIP = `${VENV}/bin/python -m pip install -q --retries 5 --timeout 60`;
 function machineOf(given) {
   if (given !== undefined) return given;
   try {
@@ -194,19 +186,13 @@ function buildRequires(py) {
   const reqs = m ? [...m[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1].trim()) : ['setuptools>=61', 'wheel'];
   return reqs.filter(plainReq);
 }
-function projectName(py) {
-  const t = section(py, 'project') || section(py, 'tool.poetry') || '';
-  const n = (/^\s*name\s*=\s*["']([A-Za-z0-9._-]+)["']/m.exec(t) || [])[1];
-  return n || null;
-}
-const q = (r) => `'${r}'`;
 
 // What the factory would choose for this repo on this machine, and why (factory doctor and
 // factory env status show it; the proposal records it as tool and reason).
 function toolChoice(root, { machine: given } = {}) {
   const py = read(root, 'pyproject.toml');
   const tasksPy = read(root, 'tasks.py');
-  if (py && /nautobot/i.test(py) && tasksPy && /invoke/.test(tasksPy)) return { kind: 'nautobot', tool: 'invoke', reason: 'a Nautobot app (cookiecutter layout): invoke builds the development docker image once; each worktree runs its own compose project with its code mounted' };
+  if (py && /nautobot/i.test(py) && tasksPy && /invoke/.test(tasksPy)) return { kind: 'nautobot', tool: 'invoke', reason: 'a Nautobot app (cookiecutter layout): invoke builds the development docker image (docker\'s layer cache makes later builds quick); each worktree runs its own compose project with its code mounted' };
   const reqs = fs.existsSync(root) ? fs.readdirSync(root).filter((f) => /^requirements[\w.-]*\.txt$/.test(f)) : [];
   if (py || reqs.length || has(root, 'setup.py') || has(root, 'setup.cfg')) {
     const poetryRepo = has(root, 'poetry.lock') || Boolean(py && /^\[tool\.poetry\]/m.test(py));
@@ -216,17 +202,18 @@ function toolChoice(root, { machine: given } = {}) {
   const pkg = read(root, 'package.json');
   if (pkg) {
     const tool = has(root, 'pnpm-lock.yaml') ? 'pnpm' : has(root, 'yarn.lock') ? 'yarn' : 'npm';
-    let ws = false;
-    try {
-      ws = Boolean(JSON.parse(pkg).workspaces);
-    } catch {
-      ws = false;
-    }
-    const pnp = has(root, '.pnp.cjs') || has(root, '.yarnrc.yml');
-    if (ws || has(root, 'pnpm-workspace.yaml') || pnp) return { kind: 'node', tool, shared: false, reason: `${tool} (${tool === 'npm' ? 'package-lock.json or none' : `${tool} lockfile`}); ${pnp ? 'Yarn Plug\'n\'Play keeps no node_modules to share' : 'the repo declares workspaces, whose links point into each worktree'}, so each worktree installs (from the package manager\'s cache)` };
-    return { kind: 'node', tool, shared: true, reason: `${tool === 'npm' ? (has(root, 'package-lock.json') ? 'package-lock.json: npm ci' : 'no lockfile: npm install') : `${tool} lockfile: ${tool}`} installs node_modules once; each worktree links it` };
+    return { kind: 'node', tool, reason: `${tool === 'npm' ? (has(root, 'package-lock.json') ? 'package-lock.json: npm ci' : 'no lockfile: npm install') : `${tool} lockfile: ${tool} install --frozen-lockfile`} in each worktree, from the shared ${tool} cache (offline first)` };
   }
   return { kind: 'none', tool: null, reason: 'no dependency manifest (pyproject.toml, requirements*.txt, setup.py, package.json)' };
+}
+
+// Is a path already ignored by the repository's own rules (.gitignore, your global excludes)?
+function ignoredByRepo(root, p) {
+  try {
+    return git.run(root, ['check-ignore', '-q', '--no-index', p], { allowFail: true }).code === 0;
+  } catch {
+    return false;
+  }
 }
 
 function detect(root, { machine: given } = {}) {
@@ -239,9 +226,9 @@ function detect(root, { machine: given } = {}) {
   const choice = toolChoice(root, { machine: given });
   if (choice.kind === 'nautobot') {
     // A Nautobot app (the cookiecutter layout): tests run in docker compose through invoke,
-    // with Postgres and Redis. The development image is built once per lockfile (deps, shared by
-    // its tag); each worktree gets its own compose project (its own containers and database,
-    // the worktree's code mounted), named by INVOKE_<APP>_PROJECT_NAME.
+    // with Postgres and Redis. One compose project per worktree (its own containers and
+    // database, the worktree's code mounted), named by INVOKE_<APP>_PROJECT_NAME. Each worktree
+    // runs `invoke build`; docker's layer cache makes every build after the first quick.
     const ns = (/Collection\(\s*["']([\w]+)["']\s*\)/.exec(tasksPy) || [])[1] || ((/^name\s*=\s*["']([\w-]+)["']/m.exec(py) || [])[1] || 'app').replace(/-/g, '_');
     const V = `INVOKE_${ns.toUpperCase()}`;
     evidence.push('pyproject.toml (nautobot)', 'tasks.py (invoke)');
@@ -251,17 +238,16 @@ function detect(root, { machine: given } = {}) {
       name: 'nautobot-app-invoke',
       tool: choice.tool,
       reason: choice.reason,
-      deps: ['invoke build'],
-      deps_key: ['poetry.lock', 'pyproject.toml', 'development/Dockerfile', 'development/*.yml', 'development/*.env'],
-      overlay: 'none',
-      project: [],
+      cache: 'docker',
+      setup: ['invoke build'],
+      cache_key: ['poetry.lock', 'pyproject.toml', 'development/Dockerfile', 'development/*.yml', 'development/*.env'],
       env: { [`${V}_PROJECT_NAME`]: 'factory-{slug}', [`${V}_LOCAL`]: 'false' },
       prefix: '',
       // invoke unittest leaves the project's database and redis containers running
       teardown: 'invoke destroy',
       ignore: [],
       timeout_seconds: 1800,
-      notes: `The development image (nautobot and the app's dependencies) is built once per poetry.lock / Dockerfile (deps, from a copy of the repo under .factory/envs), not once per worktree. Each worktree gets its own compose project (${V}_PROJECT_NAME=factory-{slug}): its own Postgres, Redis and Nautobot containers, with that worktree's code mounted. Verify commands look like "invoke unittest --failfast --label ${ns}.tests.test_x". Each project is removed with "invoke destroy" (teardown) when the job closes; for a cancelled job, run it in each .factory/worktrees/<job>-<task> yourself. See the factory's ${DOC}.`,
+      notes: `Each worktree gets its own compose project (${V}_PROJECT_NAME=factory-{slug}): its own Postgres, Redis and Nautobot containers, with that worktree's code mounted. Each runs "invoke build"; docker's layer cache makes builds after the first quick while poetry.lock and the Dockerfile are unchanged. Verify commands look like "invoke unittest --failfast --label ${ns}.tests.test_x". Each project is removed with "invoke destroy" (teardown) when the job closes; for a cancelled job, run it in each .factory/worktrees/<job>-<task> yourself. See the factory's ${DOC}.`,
       evidence,
     };
   }
@@ -271,37 +257,33 @@ function detect(root, { machine: given } = {}) {
     const poetryRepo = Boolean(py && /^\[tool\.poetry\]/m.test(py));
     const installable = pep621 || poetryRepo || has(root, 'setup.py') || has(root, 'setup.cfg');
     const reqFiles = reqs.filter((f) => /dev|test/.test(f) || reqs.length === 1);
-    const name = py ? projectName(py) : null;
-    const backend = installable ? buildRequires(py) : [];
     const inv = machineOf(given);
     const how = choice.tool;
-    const env = { VIRTUAL_ENV: OV, PATH: `${OV}/bin:$PATH` };
+    const env = { VIRTUAL_ENV: `{worktree}/${VENV}`, PATH: `{worktree}/${VENV}/bin:$PATH` };
     const target = dev ? "'.[dev]'" : '.';
-    let deps;
-    let project;
+    let setup;
+    let cache;
     if (how === 'poetry') {
-      const mk = choice.maker === 'uv' ? 'uv venv -q --seed --allow-existing {env}/venv' : choice.maker === 'virtualenv' ? 'virtualenv -q {env}/venv' : 'python3 -m venv {env}/venv';
-      // poetry installs into the venv VIRTUAL_ENV names (not one of its own): the main and dev groups, never the project itself
-      deps = [mk, 'VIRTUAL_ENV={env}/venv poetry install --no-root --no-interaction', ...(backend.length ? [`${PIP} ${backend.map(q).join(' ')}`] : []), ...reqFiles.map((f) => `${PIP} -r ${f}`)];
-      project = installable ? [`${OV}/bin/python -m pip install -q --no-deps --no-build-isolation --no-index -e .`] : [];
+      // poetry installs into the venv VIRTUAL_ENV names (this worktree's .factory-venv); its
+      // artifacts come from the shared poetry cache, checked against poetry.lock's hashes
+      const mk = choice.maker === 'uv' ? `uv venv -q --seed --allow-existing ${VENV}` : choice.maker === 'virtualenv' ? `virtualenv -q ${VENV}` : `python3 -m venv ${VENV}`;
+      setup = [mk, 'poetry install --no-interaction', ...reqFiles.map((f) => `${PIP} -r ${f}`)];
+      cache = 'poetry';
     } else if (how === 'uv') {
-      const uvPip = 'uv pip install -q --python {env}/venv/bin/python';
-      const fromLock = has(root, 'uv.lock') && pep621;
-      deps = [
-        'uv venv -q --allow-existing {env}/venv',
-        ...(fromLock ? [`UV_PROJECT_ENVIRONMENT={env}/venv uv sync -q --frozen --no-install-project${dev ? ' --extra dev' : ''}`] : pep621 ? [`${uvPip} -r pyproject.toml${dev ? ' --extra dev' : ''}`] : installable ? [`${uvPip} ${target}`, ...(name ? [`uv pip uninstall -q --python {env}/venv/bin/python ${name}`] : [])] : []),
-        ...(backend.length ? [`${uvPip} ${backend.map(q).join(' ')}`] : []),
-        ...reqFiles.map((f) => `${uvPip} -r ${f}`),
-      ];
-      project = installable ? [`uv pip install -q --python ${OV}/bin/python --no-deps --no-build-isolation -e .`] : [];
+      const uvPip = `uv pip install -q --python ${VENV}/bin/python`;
+      if (has(root, 'uv.lock') && pep621) {
+        // uv sync into this worktree's venv: the project and every workspace member editable from
+        // this worktree; packages hard-linked from the shared uv cache
+        setup = [`uv sync -q --frozen${dev ? ' --extra dev' : ''}`];
+        env.UV_PROJECT_ENVIRONMENT = `{worktree}/${VENV}`;
+      } else setup = [`uv venv -q --seed --allow-existing ${VENV}`, ...(installable ? [`${uvPip} -e ${target}`] : []), ...reqFiles.map((f) => `${uvPip} -r ${f}`)];
       // uv retries on its own; its HTTP timeout is raised for slow indexes
       env.UV_HTTP_TIMEOUT = '60';
+      cache = 'uv';
     } else {
-      const mk = how === 'virtualenv' ? 'virtualenv -q {env}/venv' : 'python3 -m venv {env}/venv';
-      // pip cannot install only a project's dependencies: it installs the project (built in the
-      // copy under {env}/src) and removes it again, so the shared venv never holds a worktree's code
-      deps = [mk, `${PIP} --upgrade pip`, ...(backend.length ? [`${PIP} ${backend.map(q).join(' ')}`] : []), ...(installable ? [`${PIP} ${target}`, ...(name ? [`{env}/venv/bin/python -m pip uninstall -q -y ${name}`] : [])] : []), ...reqFiles.map((f) => `${PIP} -r ${f}`)];
-      project = installable ? [`${OV}/bin/python -m pip install -q --no-deps --no-build-isolation --no-index -e .`] : [];
+      const mk = how === 'virtualenv' ? `virtualenv -q ${VENV}` : `python3 -m venv ${VENV}`;
+      setup = [mk, `${PIP} --upgrade pip`, ...(installable ? [`${PIP} -e ${target}`] : []), ...reqFiles.map((f) => `${PIP} -r ${f}`)];
+      cache = 'pip';
     }
     if (py) evidence.push('pyproject.toml');
     evidence.push(...reqs, ...['setup.py', 'setup.cfg', 'poetry.lock', 'uv.lock'].filter((f) => has(root, f)));
@@ -311,15 +293,17 @@ function detect(root, { machine: given } = {}) {
       name: how === 'uv' ? 'python-uv' : how === 'poetry' ? 'python-poetry' : 'python-venv',
       tool: how || 'none-available',
       reason: choice.reason,
-      deps,
-      deps_key: ['pyproject.toml', 'setup.py', 'setup.cfg', 'requirements*.txt', 'poetry.lock', 'uv.lock'],
-      overlay: 'python',
-      project,
+      cache,
+      setup,
+      cache_key: ['pyproject.toml', 'setup.py', 'setup.cfg', 'requirements*.txt', 'requirements/*.txt', 'constraints*.txt', 'poetry.lock', 'uv.lock', '.python-version'],
       env,
       prefix: '',
-      ignore: ['/.factory-venv/', '*.egg-info/'],
+      // an editable setuptools install writes <name>.egg-info into the worktree: kept out of git
+      // status only when the repository does not ignore it already (doctor says the pattern also
+      // applies to your checkout)
+      ignore: [`/${VENV}/`, ...(installable && !ignoredByRepo(root, 'x.egg-info/') ? ['/*.egg-info/'] : [])],
       timeout_seconds: 1200,
-      notes: `Dependencies are installed once per ${['pyproject.toml', 'poetry.lock', 'uv.lock', ...reqFiles].filter((f) => has(root, f)).join(' / ') || 'manifest'} into a shared venv under .factory/envs/<key>/ (built with ${how || 'python3 -m venv'}). Each worktree gets .factory-venv, a thin venv that sees the shared packages and has that worktree's project installed in editable mode (no dependencies, no network), so python, pytest and console scripts import the worktree's code. Your own .venv is never touched. Write verify commands as "python -m pytest …" or "pytest …". See the factory's ${DOC}.${how ? '' : ' python3 -m venv does not work on this machine (no ensurepip) and neither uv nor virtualenv is installed: install uv (no sudo), then propose again.'}`,
+      notes: `Each worktree gets its own ${VENV} with the project installed in editable mode from that worktree (workspace members and path dependencies too), so python, pytest and console scripts import the worktree's code. Downloads are shared: the ${cache} cache under .factory/envcache${cache === 'pip' ? ', and a hash-checked wheelhouse per lockfile, so a later worktree installs without the network' : ''}. Your own .venv is never touched. Write verify commands as "python -m pytest …" or "pytest …". See the factory's ${DOC}.${how ? '' : ' python3 -m venv does not work on this machine (no ensurepip) and neither uv nor virtualenv is installed: install uv (no sudo), then propose again.'}`,
       evidence,
     };
   }
@@ -333,13 +317,27 @@ function detect(root, { machine: given } = {}) {
       deps = false;
     }
     evidence.push('package.json', ...['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'].filter((f) => has(root, f)));
-    if (!deps && !lock) return { version: 2, name: 'none', tool: null, reason: 'package.json has no dependencies', deps: [], project: [], notes: 'package.json has no dependencies: worktrees need no setup.', evidence };
-    const install = lock || 'npm install --no-audit --no-fund';
-    const common = { version: 2, name: 'node', tool: choice.tool, reason: choice.reason, deps_key: ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', '.npmrc'], env: { PATH: '{worktree}/node_modules/.bin:$PATH' }, prefix: '', timeout_seconds: 900, evidence };
-    if (!choice.shared) return { ...common, deps: [], overlay: 'none', project: [install], ignore: ['node_modules/'], notes: `Each worktree installs its own node_modules (${choice.reason}). See the factory's ${DOC}.` };
-    return { ...common, deps: [install], overlay: 'node', project: [], ignore: ['/node_modules'], notes: `node_modules is installed once per lockfile under .factory/envs/<key>/ and each worktree links it (node_modules -> the shared one). See the factory's ${DOC}.` };
+    if (!deps && !lock) return { version: 2, name: 'none', tool: null, reason: 'package.json has no dependencies', cache: 'none', setup: [], notes: 'package.json has no dependencies: worktrees need no setup.', evidence };
+    // node_modules in each worktree: kept out of git status only when the repository does not
+    // already ignore it (the pattern would also apply to your checkout's node_modules)
+    const ignore = ignoredByRepo(root, 'node_modules/') ? [] : ['/node_modules/'];
+    return {
+      version: 2,
+      name: 'node',
+      tool: choice.tool,
+      reason: choice.reason,
+      cache: choice.tool,
+      setup: [lock || 'npm install --no-audit --no-fund'],
+      cache_key: ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', '.npmrc'],
+      env: { PATH: '{worktree}/node_modules/.bin:$PATH' },
+      prefix: '',
+      ignore,
+      timeout_seconds: 900,
+      notes: `Each worktree installs its own node_modules; the packages come from the shared ${choice.tool} cache under .factory/envcache (offline first; the lockfile's integrity hashes are checked). See the factory's ${DOC}.`,
+      evidence,
+    };
   }
-  return { version: 2, name: 'none', tool: null, reason: choice.reason, deps: [], project: [], notes: 'No dependency manifest found: worktrees need no setup.', evidence: [] };
+  return { version: 2, name: 'none', tool: null, reason: choice.reason, cache: 'none', setup: [], notes: 'No dependency manifest found: worktrees need no setup.', evidence: [] };
 }
 
 // ---------------------------------------------------------------- lint against this machine
@@ -424,38 +422,39 @@ function proposal(root) {
   if (p) return { ...p, source: 'factory env propose' };
   const { env: conf } = loadSafe(root);
   const up = conf ? upgradeOf(root, conf) : null;
-  if (up && up.env) return { ...up.env, source: 'the 0.12 shared model, from your sealed 0.11 environment' };
+  if (up && up.env) return { ...up.env, source: 'your sealed 0.11 environment, unchanged, with the 0.12 shared package cache' };
   return { ...detect(root), source: 'detected from the repo files' };
 }
 
-// The version-2 environment that replaces a sealed version-1 one: the detected shared model, with
-// what the old one added kept (services, teardown, prefix, its other env variables, a longer
-// timeout). Only when every old setup step is one the shared model covers (making a venv,
-// installing dependencies, invoke build, npm ci …); a custom step (a script of the repo's) is not
-// guessed at. { env } or { why } or null (nothing to upgrade).
-const COVERED = /^(python3?(\.\d+)?\s+-m\s+venv|virtualenv|uv\s+venv|uv\s+pip\s+install|uv\s+sync|(\.venv\/bin\/)?(pip3?|python3?\s+-m\s+pip)\s+install|\.venv\/bin\/python3?\s+-m\s+pip\s+install|poetry\s+install|npm\s+(ci|install|i)|pnpm\s+(install|i)|yarn(\s+install)?|invoke\s+build)\b/;
+// The version-2 environment that replaces a sealed version-1 one: the SAME environment, every
+// field and every setup step exactly as sealed (pins, extras, constraints and requirement files
+// included), plus the tool it uses, the reason, and the cache the factory gives its installs.
+// Nothing is re-detected. Offered only when the setup uses an installer the cache serves.
+// { env } or { why } or null (nothing to upgrade).
+function cacheOf(cmds) {
+  const t = cmds.join('\n');
+  if (/\buv\s+(sync|pip\s+install|venv)\b/.test(t)) return 'uv';
+  if (/\bpoetry\s+install\b/.test(t)) return 'poetry';
+  if (/\bpip3?\s+install\b|-m\s+pip\s+install\b/.test(t)) return 'pip';
+  if (/\bpnpm\s+(install|i)\b/.test(t)) return 'pnpm';
+  if (/\byarn(\s+install)?\b/.test(t)) return 'yarn';
+  if (/\bnpm\s+(ci|install|i)\b/.test(t)) return 'npm';
+  if (/\binvoke\s+build\b|\bdocker(-compose|\s+compose)?\s+build\b/.test(t)) return 'docker';
+  return 'none';
+}
 function upgradeOf(root, conf) {
   if (!conf || schemaOf(conf) !== 1 || isNone(conf) || !(conf.setup || []).length) return null;
-  const steps = (conf.setup || []).flatMap((c) => segments(c));
-  const odd = steps.filter((c) => !COVERED.test(c));
-  if (odd.length) return { why: `its setup has steps the shared model does not cover by itself (${odd.slice(0, 3).join('; ')}): split them into deps (once) and project (each worktree) yourself (factory env propose --file, see ${DOC_PATH})` };
-  let d;
-  try {
-    d = detect(root);
-  } catch {
-    return null;
-  }
-  if (isNone(d)) return null;
-  const { evidence: _e, ...base } = d;
-  const extra = Object.fromEntries(Object.entries(conf.env || {}).filter(([k]) => !['VIRTUAL_ENV', 'PATH', 'POETRY_VIRTUALENVS_IN_PROJECT'].includes(k)));
+  const cache = cacheOf(conf.setup || []);
+  if (cache === 'none') return { why: 'its setup uses no installer the shared cache serves (uv, pip, poetry, npm, pnpm, yarn, docker build): nothing to speed up' };
+  const { seal: _s, confirmed: _c, source: _src, evidence: _ev, hash: _h, problems: _p, ...same } = conf;
+  const tool = cache === 'docker' ? 'docker' : cache;
   return {
     env: {
-      ...base,
-      env: { ...extra, ...(base.env || {}) },
-      ...(conf.services ? { services: conf.services } : {}),
-      ...(conf.teardown ? { teardown: conf.teardown } : {}),
-      ...(conf.prefix ? { prefix: conf.prefix } : {}),
-      ...(Math.max(conf.timeout_seconds || 0, base.timeout_seconds || 0) ? { timeout_seconds: Math.max(conf.timeout_seconds || 0, base.timeout_seconds || 0) } : {}),
+      ...same,
+      version: 2,
+      tool,
+      reason: `your sealed 0.11 setup, unchanged (every step as you sealed it); its ${cache} installs now share the factory's package cache${cache === 'pip' ? ' and a hash-checked wheelhouse' : ''}`,
+      cache,
     },
   };
 }
@@ -526,25 +525,28 @@ function broken(step, cmd, r) {
 
 // The cache key for a worktree: setup, env and prefix, plus the content of every cache_key
 // file present in that worktree.
-function cacheKey(e, wt) {
+function cacheFiles(e, wt) {
   const files = [];
   const pats = e.cache_key || [];
-  if (pats.length) {
-    let tracked = [];
+  if (!pats.length) return files;
+  let tracked = [];
+  try {
+    tracked = git.out(wt, ['ls-files']).split('\n').filter(Boolean);
+  } catch {
+    tracked = [];
+  }
+  for (const f of tracked.filter((x) => matchesAny(x, pats)).sort()) {
     try {
-      tracked = git.out(wt, ['ls-files']).split('\n').filter(Boolean);
+      files.push([f, hash(fs.readFileSync(path.join(wt, f)))]);
     } catch {
-      tracked = [];
-    }
-    for (const f of tracked.filter((x) => matchesAny(x, pats)).sort()) {
-      try {
-        files.push([f, hash(fs.readFileSync(path.join(wt, f)))]);
-      } catch {
-        /* listed but missing */
-      }
+      /* listed but missing */
     }
   }
-  return hash({ setup: e.setup || [], env: e.env || {}, prefix: e.prefix || '', files });
+  return files;
+}
+function cacheKey(e, wt) {
+  const files = cacheFiles(e, wt);
+  return hash({ setup: e.setup || [], env: e.env || {}, prefix: e.prefix || '', files, ...(schemaOf(e) === 2 ? { cache: e.cache || null } : {}) });
 }
 
 function markerFile(wt) {
@@ -555,9 +557,11 @@ function markerFile(wt) {
 // What setup creates (.venv/, node_modules/) must not make the worktree dirty: the common
 // info/exclude applies to every worktree. A version-1 environment's patterns are appended as they
 // were (0.11). A version-2 one's go into one block the factory owns and rewrites, marked so a
-// person reading .git/info/exclude sees where they came from; they name what exists only in
-// factory worktrees (/.factory-venv/), so the root checkout's git status (your own .venv
-// included) is not changed by them.
+// person reading .git/info/exclude sees where they came from. The python templates name only what
+// exists in factory worktrees (/.factory-venv/), so your own .venv stays visible; a node template
+// adds /node_modules/ only when the repository does not ignore it already (and doctor says that it
+// also applies to your checkout). Only the sealed environment writes the block: a proposal's check
+// or the probe never rewrites it (review m-2).
 const BLOCK_START = '# >>> copilot-factory: worktree build environments (managed; factory docs/ENVIRONMENT.md)';
 const BLOCK_END = '# <<< copilot-factory';
 function excludeFile(root) {
@@ -568,7 +572,7 @@ function ensureIgnored(root, e) {
   const f = excludeFile(root);
   const cur = exists(f) ? fs.readFileSync(f, 'utf8') : '';
   if (schemaOf(e) === 2) {
-    const want = [...new Set([...(e.overlay === 'python' ? ['/.factory-venv/'] : []), ...list])];
+    const want = [...new Set(list)];
     const re = new RegExp(`${BLOCK_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n[\\s\\S]*?${BLOCK_END}\\n?`);
     const block = `${BLOCK_START}\n${want.join('\n')}\n${BLOCK_END}\n`;
     const m = re.exec(cur);
@@ -602,7 +606,16 @@ function excludeReport(root) {
   const managed = i >= 0 && j > i ? lines.slice(i + 1, j).filter(Boolean) : [];
   // a 0.11 environment appended `.venv/`: it also hides the root checkout's .venv from git status
   const legacy = lines.filter((l, k) => (k < i || k > j || i < 0) && /^\.venv\/?$/.test(l));
-  return { file: excludeFile(root), managed, legacy_venv: legacy.length > 0 };
+  // managed patterns that also match something in your checkout (e.g. /node_modules/)
+  let top = [];
+  try {
+    top = fs.readdirSync(root);
+  } catch {
+    top = [];
+  }
+  const { matchesAny: mm } = require('../lib/glob');
+  const alsoRoot = managed.filter((m) => { const g = m.replace(/^\/|\/$/g, ''); return top.some((n) => n === g || mm(n, [g])); });
+  return { file: excludeFile(root), managed, also_hides_in_checkout: alsoRoot, legacy_venv: legacy.length > 0 };
 }
 
 // Job-level services: up once per job (recorded in the job state), health checked every time.
@@ -656,130 +669,147 @@ function servicesUp(root, state, e, v) {
   return { ok: true };
 }
 
+// Where a worktree's own environment lives, when the environment says (its VIRTUAL_ENV) or the
+// templates put it: the marker's check that it is still there (review M-6: a `git clean -fdx` in
+// the worktree removes it, and a cached marker must not call that ready).
+function envDirs(e, v, wt) {
+  const out = [];
+  const ve = (e.env || {}).VIRTUAL_ENV || (e.env || {}).UV_PROJECT_ENVIRONMENT;
+  if (ve) out.push(path.join(path.resolve(wt, expand(ve, v)), 'bin', 'python'));
+  if (['npm', 'pnpm', 'yarn'].includes(e.cache) || /\b(npm\s+(ci|install)|pnpm\s+install|yarn(\s+install)?)\b/.test((e.setup || []).join('\n'))) out.push(path.join(wt, 'node_modules'));
+  return out;
+}
+function venvPython(e, v, wt) {
+  for (const f of envDirs(e, v, wt)) if (/bin\/python$/.test(f) && exists(f)) return f;
+  for (const d of ['.factory-venv', '.venv']) if (exists(path.join(wt, d, 'bin', 'python'))) return path.join(wt, d, 'bin', 'python');
+  return null;
+}
+
 // Make the environment ready in one worktree: services (once per job), then setup, cached by
 // the key above. { ok, env, vars, ran, cached, key } or { ok: false, broken }.
-// Version 2: the shared dependency environment (built once per key, cli/core/envstore.js), this
-// worktree's overlay of it, then the project commands (cached per worktree).
+// Every worktree builds its own environment. Version 2 adds the shared package cache
+// (cli/core/envcache.js): uv, pip, poetry, npm, pnpm and yarn caches; for pip a hash-checked
+// wheelhouse installed from without the network (falling back to the index when it lacks a wheel);
+// for uv an offline attempt once a key has installed.
+// One setup per worktree at a time (a lock naming its holder's pid and start time, never taken
+// over while that process lives); setup's processes carry a tag, so a run whose owner was killed
+// is ended (its processes too) before the next one starts (review M-7).
 function ensure(root, state, { taskId = null, wt, env: given } = {}) {
   const e = given !== undefined ? given : load(root);
   const v = vars(root, state, taskId, wt);
   if (!e || inert(e)) return { ok: true, env: e, vars: v, ran: [], cached: false, key: null, none: true };
   // never the user's own checkout (or the .venv in it): only factory worktrees are set up
   if (wt && path.resolve(wt) === path.resolve(root)) fail('The factory never sets up the root checkout (your own .venv stays yours): environments are made in factory worktrees only.', 'bad_input');
-  ensureIgnored(root, e);
+  const readOnly = Boolean(BASE_ENV);
+  if (!readOnly) ensureIgnored(root, e);
   const svc = ensureServices(root, state, e, v);
   if (!svc.ok) return { ok: false, broken: svc.broken, env: e, vars: v };
-  if (schemaOf(e) === 2) return ensureShared(root, state, e, v, wt, taskId);
   const key = cacheKey(e, wt);
+  const run = () => setupIn(root, e, v, wt, key, { readOnly, state, taskId });
+  if (readOnly) return run();
+  let lockFile = null;
+  try {
+    lockFile = `${markerFile(wt)}.lock`;
+  } catch {
+    lockFile = null;
+  }
+  if (!lockFile) return run();
+  const T = e.timeout_seconds || 1200;
+  const wait = (T * Math.max(1, (e.setup || []).length) + 600) * 1000;
+  return require('./job').withLock(lockFile, run, { waitMs: wait, staleMs: wait, what: `the build environment of ${path.basename(wt)}` });
+}
+
+function setupIn(root, e, v, wt, key, { readOnly, state, taskId }) {
   let marker = null;
   try {
     marker = readJson(markerFile(wt), null);
   } catch {
     marker = null;
   }
-  if (marker && marker.key === key && marker.ok) return { ok: true, env: e, vars: v, ran: [], cached: true, key };
-  const ran = [];
+  // a run that never finished: its owner died (the lock was free); end what it left running
+  if (marker && marker.building && marker.tag) {
+    try {
+      require('./probe').survivors(marker.tag, { wt: null });
+    } catch {
+      /* nothing left */
+    }
+  }
+  const present = envDirs(e, v, wt).every((f) => exists(f));
+  if (marker && marker.key === key && marker.ok && present) return { ok: true, env: e, vars: v, ran: [], cached: true, key };
+  const C = require('./envcache');
+  const v2 = schemaOf(e) === 2 && e.cache && e.cache !== 'none';
   const T = e.timeout_seconds || 1200;
   const penv = processEnv(e, v);
-  for (const step of e.setup || []) {
-    const cmd = expand(step, v);
-    const r = sh(`${preamble(e, v)}${cmd}`, wt, T, penv);
-    ran.push({ cmd, code: r.code, ms: r.ms });
-    if (r.code !== 0) {
-      try {
-        writeJson(markerFile(wt), { key, ok: false, at: nowIso(), failed: cmd });
-      } catch {
-        /* no marker: setup runs again next time anyway */
-      }
-      return { ok: false, broken: broken('setup', cmd, r), env: e, vars: v, ran };
+  const tag = `envbuild-${require('crypto').randomBytes(6).toString('hex')}`;
+  // the wheelhouse / offline key: the cache_key files' content, the setup, the tool, the python
+  const files = cacheFiles(e, wt);
+  const wkey = v2 ? C.keyOf(e, files, readOnly ? BASE_ENV : process.env) : null;
+  const shared = v2 && !readOnly ? C.cacheEnv(root) : {};
+  let offline = {};
+  let wh = null;
+  if (v2 && e.cache === 'pip') {
+    wh = C.verify(root, wkey);
+    if (wh.ok) {
+      offline = { PIP_NO_INDEX: '1', PIP_FIND_LINKS: wh.dir };
+      C.touch(wh.dir);
     }
   }
+  if (v2 && e.cache === 'uv' && !readOnly && readJson(path.join(C.CACHE(root), 'uv-installed.json'), {})[wkey]) offline = { UV_OFFLINE: '1' };
   try {
-    writeJson(markerFile(wt), { key, ok: true, at: nowIso(), name: e.name || null, ran });
+    writeJson(markerFile(wt), { key, ok: false, building: true, tag, owner: { pid: process.pid, start: (require('./probe').procStat(process.pid) || {}).start || null }, at: nowIso() });
   } catch {
-    /* cache is a convenience */
+    /* no marker: setup runs again next time anyway */
   }
-  return { ok: true, env: e, vars: v, ran, cached: false, key };
-}
-
-function ensureShared(root, state, e, v0, wt, taskId) {
-  const S = require('./envstore');
-  const T = e.timeout_seconds || 1200;
-  const key = S.keyOf(e, wt);
-  const readOnly = Boolean(BASE_ENV);
-  const who = { job: state ? state.id : null, task: taskId || 'job', worktree: wt, at: nowIso() };
-  // the deps commands: {worktree} is the copy they run in ({env}/src)
-  const runDeps = (step, src, dir) => {
-    const dv = { ...v0, worktree: src, env: dir, task: key.slice(0, 8), slug: `env-${key.slice(0, 8)}`, db: `factory_env_${key.slice(0, 8)}` };
-    const cmd = expand(step, dv);
-    const r = sh(`${preamble(e, dv)}${cmd}`, src, T, processEnv(e, dv));
-    return { cmd, code: r.code, ms: r.ms, timed_out: r.timed_out, broken: r.code === 0 ? null : broken('deps', cmd, r) };
+  const attempt = (extra) => {
+    const ran = [];
+    for (const step of e.setup || []) {
+      const cmd = expand(step, v);
+      const r = sh(`${preamble(e, v)}${cmd}`, wt, T, { ...shared, ...penv, ...extra, ...(readOnly ? {} : { FACTORY_PROBE_ID: tag }) });
+      ran.push({ cmd: C.redact(cmd), code: r.code, ms: r.ms });
+      if (r.code !== 0) return { ok: false, ran, broken: broken('setup', cmd, r) };
+    }
+    return { ok: true, ran };
   };
-  // the worktree marker: this worktree's overlay and project commands, for this shared env
-  const wtKey = hash({ key, overlay: e.overlay || 'none', project: e.project || [], env: e.env || {}, prefix: e.prefix || '' });
-  let marker = null;
-  try {
-    marker = readJson(markerFile(wt), null);
-  } catch {
-    marker = null;
+  const started = Date.now();
+  let res = attempt(offline);
+  let fallback = null;
+  if (!res.ok && Object.keys(offline).length) {
+    // the wheelhouse (or uv's cache) lacks something: the index this time, then a fuller one
+    fallback = { offline_failed: res.broken.cmd };
+    const first = res.ran;
+    res = attempt({});
+    res.ran = [...first.map((x) => ({ ...x, offline: true })), ...res.ran];
   }
-  const sharedDir = S.dirOf(root, key);
-  const privateDir = path.join(wt, '.factory-probe', `env-${key.slice(0, 16)}`);
-  if (marker && marker.ok && marker.key === wtKey && marker.env_dir && S.healthy(e, marker.env_dir) && (marker.env_dir === sharedDir || marker.env_dir === privateDir)) {
-    const v = { ...v0, env: marker.env_dir };
-    if (!readOnly && marker.env_dir === sharedDir) S.touch(sharedDir);
-    return { ok: true, env: e, vars: v, ran: [], cached: true, key, shared: { key: key.slice(0, 16), dir: marker.env_dir, built: false, reused: true } };
+  const ms = Date.now() - started;
+  if (!res.ok) {
+    try {
+      writeJson(markerFile(wt), { key, ok: false, at: nowIso(), failed: C.redact(res.broken.cmd) });
+    } catch {
+      /* runs again next time */
+    }
+    if (!readOnly) C.recordLast(root, { at: nowIso(), ok: false, phase: 'setup', worktree: wt, job: state ? state.id : null, task: taskId || 'job', cmd: res.broken.cmd, code: res.broken.code, tail: res.broken.tail, ms });
+    return { ok: false, broken: { ...res.broken, cmd: C.redact(res.broken.cmd), tail: C.redact(res.broken.tail), reason: C.redact(res.broken.reason) }, env: e, vars: v, ran: res.ran };
   }
-  let sh0;
-  try {
-    sh0 = S.ensureShared(root, e, { key, wt, run: runDeps, timeoutSec: T, readOnly, privateDir, who });
-  } catch (err) {
-    return { ok: false, env: e, vars: v0, ran: [], broken: { step: 'deps', cmd: 'wait for the shared environment', code: null, tail: '', reason: `environment broken: ${err.message}` } };
-  }
-  const v = { ...v0, env: sh0.dir };
-  const ran = [...(sh0.ran || [])];
-  const shared = { key: key.slice(0, 16), dir: sh0.dir, built: Boolean(sh0.built), reused: Boolean(sh0.reused), waited_ms: sh0.waited_ms || 0, ...(sh0.private ? { private: true } : {}) };
-  if (!sh0.ok) return { ok: false, broken: sh0.broken, env: e, vars: v, ran, shared };
-  const procEnv = { ...(BASE_ENV || process.env), ...processEnv(e, v) };
-  const o = S.overlay(e, sh0.dir, wt, key, procEnv);
-  if (!o.ok) {
-    const b = { step: 'overlay', cmd: `overlay ${e.overlay}`, code: null, tail: o.why, reason: `environment broken: the ${e.overlay} overlay of the shared environment: ${o.why}` };
-    if (!readOnly) recordFailure(root, { phase: 'overlay', key, wt, cmd: b.cmd, tail: o.why });
-    return { ok: false, broken: b, env: e, vars: v, ran, shared };
-  }
-  for (const step of e.project || []) {
-    const cmd = expand(step, v);
-    const r = sh(`${preamble(e, v)}${cmd}`, wt, T, processEnv(e, v));
-    ran.push({ cmd, code: r.code, ms: r.ms, phase: 'project' });
-    if (r.code !== 0) {
-      try {
-        writeJson(markerFile(wt), { key: wtKey, env_key: key, env_dir: sh0.dir, ok: false, at: nowIso(), failed: cmd });
-      } catch {
-        /* runs again next time */
-      }
-      const b = broken('project', cmd, r);
-      if (!readOnly) recordFailure(root, { phase: 'project', key, wt, cmd, code: r.code, tail: b.tail });
-      return { ok: false, broken: b, env: e, vars: v, ran, shared };
+  let cacheInfo = null;
+  if (v2) {
+    cacheInfo = { kind: e.cache, offline: Boolean(Object.keys(offline).length) && !fallback, ...(fallback ? { fallback: true } : {}), ...(wh && wh.ok ? { wheelhouse: wkey.slice(0, 16) } : {}) };
+    if (!readOnly && e.cache === 'pip' && (!wh || !wh.ok || fallback)) {
+      const b = C.buildWheelhouse(root, wkey, { python: venvPython(e, v, wt), buildRequires: buildRequires(read(wt, 'pyproject.toml')), env: { ...process.env, ...shared, ...penv }, timeoutSec: T });
+      cacheInfo.wheelhouse_built = b.ok ? `${wkey.slice(0, 16)} (${b.count || 0} wheels)` : `not built: ${b.why}`;
+    }
+    if (!readOnly && e.cache === 'uv') {
+      const f = path.join(C.CACHE(root), 'uv-installed.json');
+      const cur = readJson(f, {}) || {};
+      if (!cur[wkey]) writeJson(f, { ...cur, [wkey]: nowIso() });
     }
   }
   try {
-    writeJson(markerFile(wt), { key: wtKey, env_key: key, env_dir: sh0.dir, ok: true, at: nowIso(), name: e.name || null, overlay: e.overlay || 'none', ran });
+    writeJson(markerFile(wt), { key, ok: true, at: nowIso(), name: e.name || null, ran: res.ran, ...(cacheInfo ? { cache: cacheInfo } : {}) });
   } catch {
     /* cache is a convenience */
   }
-  return { ok: true, env: e, vars: v, ran, cached: false, key, shared };
-}
-
-function recordFailure(root, { phase, key, wt, cmd, code = null, tail }) {
-  const S = require('./envstore');
-  try {
-    const f = S.LAST(root);
-    const cur = readJson(f, {}) || {};
-    const rec = { at: nowIso(), ok: false, phase, key: key.slice(0, 16), worktree: wt, cmd, code, tail: S.redact(tail).slice(-2000) };
-    writeJson(f, { ...cur, last_build: rec, last_failure: rec });
-  } catch {
-    /* status is a convenience */
-  }
+  if (!readOnly) C.recordLast(root, { at: nowIso(), ok: true, phase: 'setup', worktree: wt, job: state ? state.id : null, task: taskId || 'job', ms, ...(cacheInfo ? { cache: cacheInfo } : {}) });
+  return { ok: true, env: e, vars: v, ran: res.ran, cached: false, key, ms, ...(cacheInfo ? { cache: cacheInfo } : {}) };
 }
 
 // ---------------------------------------------------------------- commands
@@ -794,11 +824,11 @@ function show(root) {
     ...(error ? { error } : {}),
     proposed: { ...p, hash: short(p), problems: pp },
     status: e ? 'confirmed' : 'proposed',
-    ...(e ? { schema: schemaOf(e) === 2 ? 'shared (0.12)' : 'per-worktree (0.11)', runs: describe(e) } : {}),
+    ...(e ? { schema: schemaOf(e) === 2 ? '0.12 (own environment per worktree, shared package cache)' : '0.11 (own environment per worktree, no shared cache)', runs: describe(e) } : {}),
     proposed_runs: describe(p),
     guide: DOC_PATH,
     how: e && schemaOf(e) === 1 && schemaOf(p) === 2 && !readJson(PROPOSED(root), null)
-      ? `Your environment (0.11) runs its whole setup in every worktree. The proposal (${short(p)}) is the 0.12 shared model of it: dependencies once per lockfile, a thin overlay per worktree. Reply "confirm environment ${short(p)}" to switch, or leave it: the old one keeps working.`
+      ? `Your environment (0.11) downloads every dependency again in every worktree. The proposal (${short(p)}) is the same environment, every setup step unchanged, with the 0.12 shared package cache (downloads once per lockfile${p.cache === 'pip' ? '; later worktrees install from a hash-checked wheelhouse without the network' : ''}). Reply "confirm environment ${short(p)}" to switch, or leave it: the old one keeps working.`
       : e
       ? 'Change it: edit a copy and run factory env set --file <copy> in your terminal (or factory env propose --file <copy>, then reply "confirm environment").'
       : `Nothing is set up in worktrees until you confirm an environment: reply "confirm environment" (or run factory env set in your terminal) to use the proposal (${short(p)}), or "confirm environment none" for bare worktrees.`,
@@ -1017,8 +1047,8 @@ function essence(e) {
 }
 const fullHash = (e) => hash(essence(e));
 // Nothing to do in a worktree (whatever its name).
-const inert = (e) => !e || (!commandsOf(e).length && !e.services && !Object.keys(e.env || {}).length && !e.prefix && !(e.overlay && e.overlay !== 'none'));
-const isNone = (e) => !e || ((e.name === 'none' || !e.name) && !commandsOf(e).length && !e.services && !Object.keys(e.env || {}).length && !e.prefix && !(e.overlay && e.overlay !== 'none'));
+const inert = (e) => !e || (!commandsOf(e).length && !e.services && !Object.keys(e.env || {}).length && !e.prefix);
+const isNone = (e) => !e || ((e.name === 'none' || !e.name) && !commandsOf(e).length && !e.services && !Object.keys(e.env || {}).length && !e.prefix);
 
 // The environment a job's plan gate binds: { status, hash, env, source, file? }
 //   confirmed  the sealed environment.json is what the plan runs in (nothing to seal)
@@ -1063,9 +1093,8 @@ function notice(root) {
       status: 'upgrade',
       name: p.name,
       hash: short(p),
-      deps: p.deps || [],
-      project: p.project || [],
-      message: `Speed-up: your build environment (sealed under 0.11) reinstalls every dependency in every worktree; the shared model installs them once per lockfile and gives each worktree a thin overlay (seconds, not minutes). Reply "confirm environment ${short(p)}" to switch (factory env show shows it, ${DOC_PATH} explains it); until then the old setup keeps working as before.`,
+      cache: p.cache,
+      message: `Speed-up: your build environment (sealed under 0.11) downloads every dependency again in every worktree; the same setup, unchanged, with the 0.12 shared ${p.cache} cache downloads once per lockfile and installs later worktrees from it. Reply "confirm environment ${short(p)}" to switch (factory env show shows it, ${DOC_PATH} explains it); until then the old setup keeps working as before.`,
     };
   }
   const p = proposal(root);
@@ -1074,7 +1103,8 @@ function notice(root) {
     status: 'proposed',
     name: p.name,
     hash: short(p),
-    ...(schemaOf(p) === 2 ? { tool: p.tool || null, reason: p.reason || null, deps: p.deps || [], project: p.project || [] } : { setup: p.setup }),
+    setup: p.setup,
+    ...(schemaOf(p) === 2 ? { tool: p.tool || null, reason: p.reason || null, cache: p.cache || null } : {}),
     env: p.env || {},
     services: p.services || null,
     evidence: p.evidence || [],
@@ -1082,11 +1112,11 @@ function notice(root) {
   };
 }
 
-// `factory env status` (read-only): which tool is used and why, where the shared environments
-// live (size, key, built when, used by which worktrees), the last check and the last failure with
-// the exact next step. Builds nothing, scans nothing (the cached machine inventory only).
+// `factory env status` (read-only): which tool is used and why, the shared caches and wheelhouses
+// (where, how big, built when), each worktree's own environment, the last check and the last
+// failure with the exact next step. Builds nothing, scans nothing (the cached inventory only).
 function status(root, { jobId = null } = {}) {
-  const S = require('./envstore');
+  const C = require('./envcache');
   const M = require('./machine');
   const { env: conf, error } = loadSafe(root);
   const inv = (() => {
@@ -1099,54 +1129,59 @@ function status(root, { jobId = null } = {}) {
   const choice = toolChoice(root, { machine: inv });
   const e = conf || null;
   const ver = e ? schemaOf(e) : null;
-  let currentKey = null;
-  if (e && ver === 2 && !inert(e)) {
-    try {
-      currentKey = S.keyOf(e, root).slice(0, 16);
-    } catch {
-      currentKey = null;
-    }
-  }
-  const envs = S.list(root);
-  const last = readJson(S.LAST(root), {}) || {};
-  // the newest env check of any job (or of the job named)
+  const last = readJson(C.LAST(root), {}) || {};
   let check = null;
   try {
     const ER = require('./env-repair');
     const ids = jobId ? [jobId] : require('./job').listJobIds(root);
     for (const id of ids) {
       const c = ER.readCheck(root, id);
-      if (c && (!check || String(c.at) > String(check.at))) check = { job: id, ok: c.ok, at: c.at, hash: c.hash, ...(c.ok ? {} : { cmd: c.broken ? c.broken.cmd : null, tail: S.redact((c.broken && c.broken.tail) || (c.problems || []).join('; ')).slice(-1200) }) };
+      if (c && (!check || String(c.at) > String(check.at))) check = { job: id, ok: c.ok, at: c.at, hash: c.hash, ...(c.ok ? {} : { cmd: c.broken ? C.redact(c.broken.cmd) : null, tail: C.redact((c.broken && c.broken.tail) || (c.problems || []).join('; ')).slice(-1200) }) };
     }
   } catch {
     check = null;
   }
-  const fail0 = last.last_failure || null;
-  const failNewer = Boolean(fail0 && last.last_build && !last.last_build.ok);
-  const nextStep = (f) => {
-    if (!f) return null;
-    if (f.phase === 'project') return `the per-worktree step failed in ${f.worktree}: fix the cause shown (usually the project's build backend missing from deps), then factory env check --job <J> (factory next names it)`;
-    if (f.phase === 'overlay') return 'the shared environment has no usable venv at {env}/venv: its deps must make one there; fix deps (factory env propose --file, then confirm), then factory env check --job <J>';
-    return `fix the cause shown (a missing tool: install it, then factory doctor --machine; a dependency: change the lockfile or deps), then factory env check --job <J> builds it again (only this key; nothing else is reinstalled)`;
-  };
+  // each factory worktree's own environment (from its marker; no git process)
+  const worktrees = [];
+  try {
+    const base = path.join(root, '.factory', 'worktrees');
+    for (const n of fs.readdirSync(base)) {
+      const wt = path.join(base, n);
+      let gd = null;
+      try {
+        const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(path.join(wt, '.git'), 'utf8'));
+        if (m) gd = path.resolve(wt, m[1].trim());
+      } catch {
+        gd = null;
+      }
+      if (!gd) continue;
+      const mk = readJson(path.join(gd, 'factory-env.json'), null);
+      if (!mk) continue;
+      const own = ['.factory-venv', '.venv', 'node_modules'].filter((d) => exists(path.join(wt, d)));
+      worktrees.push({ name: n, ok: Boolean(mk.ok), building: Boolean(mk.building), at: mk.at || null, own_env: own, ...(mk.cache ? { cache: mk.cache } : {}), ...(mk.failed ? { failed: C.redact(mk.failed) } : {}) });
+    }
+  } catch {
+    /* no worktrees */
+  }
+  const f0 = last.last_failure || null;
   const userVenv = path.join(root, '.venv');
   return {
     environment: error
       ? { status: 'tampered', error }
       : e
-        ? { status: 'confirmed', name: e.name || null, hash: short(e), schema: ver === 2 ? 'shared (0.12: deps once per key, an overlay per worktree)' : 'per-worktree (0.11: setup runs in every worktree)', runs: describe(e), confirmed: e.confirmed || null }
-        : { status: 'none confirmed', proposed: (() => { const p = proposal(root); return { name: p.name, hash: short(p), runs: describe(p) }; })() },
-    tool: e && ver === 2 ? { chosen: e.tool || null, reason: e.reason || null, recorded_in: 'the sealed environment' } : { chosen: choice.tool, reason: choice.reason, recorded_in: 'not sealed yet: what the factory would choose on this machine now' },
+        ? { status: 'confirmed', name: e.name || null, hash: short(e), schema: ver === 2 ? '0.12: own environment per worktree, shared package cache' : '0.11: own environment per worktree, no shared cache', runs: C.redact(describe(e)), confirmed: e.confirmed || null }
+        : { status: 'none confirmed', proposed: (() => { const p = proposal(root); return { name: p.name, hash: short(p), runs: C.redact(describe(p)) }; })() },
+    tool: e && ver === 2 ? { chosen: e.tool || null, reason: e.reason || null, cache: e.cache || null, recorded_in: 'the sealed environment' } : { chosen: choice.tool, reason: choice.reason, recorded_in: 'not sealed yet: what the factory would choose on this machine now' },
     machine_now: { tool: choice.tool, reason: choice.reason, inventory: inv ? `scanned ${M.ageText(inv)}` : 'no machine scan cached (factory doctor --machine scans)', python3_venv: inv ? (inv.venv && inv.venv.works ? 'works' : `does not work${inv.venv && inv.venv.why ? `: ${inv.venv.why}` : ''}`) : 'unknown' },
-    shared_envs: { store: S.STORE(root), keep: S.KEEP(), current_key: currentKey, current_built: currentKey ? envs.some((x) => x.key === currentKey && x.ok) : null, envs },
-    worktrees: S.worktreeUses(root),
+    cache: { dir: C.CACHE(root), used: Boolean(e && ver === 2 && e.cache && e.cache !== 'none'), caches: C.caches(root), wheelhouses: C.wheelhouses(root), keep: C.KEEP() },
+    worktrees,
     last_check: check,
     last_build: last.last_build || null,
-    last_failure: fail0 ? { ...fail0, current: Boolean(failNewer), next_step: nextStep(fail0) } : null,
-    your_venv: { path: userVenv, exists: exists(userVenv), note: 'The factory never creates, changes or deletes your .venv, and never sets up the root checkout: worktrees get their own .factory-venv overlay.' },
+    last_failure: f0 ? { ...f0, current: Boolean(last.last_build && !last.last_build.ok), next_step: `fix the cause shown (a missing tool: install it, then factory doctor --machine; a dependency: the lockfile or the setup), then factory env check --job <J> (factory next names it); only that worktree's environment is built again` } : null,
+    your_venv: { path: userVenv, exists: exists(userVenv), note: 'The factory never creates, changes or deletes your .venv, and never sets up the root checkout: each worktree builds its own .factory-venv.' },
     ...(e && ver === 1 ? { upgrade: (() => { const u = upgradeOf(root, e); return u && u.env ? { hash: short(u.env), message: notice(root) ? notice(root).message : null } : u ? { why: u.why } : null; })() } : {}),
     doc: DOC_PATH,
   };
 }
 
-module.exports = { sweepChecks, DOC_PATH, status, upgradeOf, toolChoice, describe, schemaOf, commandsOf, inert, excludeReport, ensureIgnored, DOC, KEYS, lint, readsOf, withBaseEnv, gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };
+module.exports = { buildRequires, cacheOf, envDirs, sweepChecks, DOC_PATH, status, upgradeOf, toolChoice, describe, schemaOf, commandsOf, inert, excludeReport, ensureIgnored, DOC, KEYS, lint, readsOf, withBaseEnv, gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };

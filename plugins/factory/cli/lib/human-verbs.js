@@ -25,7 +25,8 @@ function agentFlagRefusal(a, b, has, { computed = false } = {}) {
   return null;
 }
 // The same steps inside inline code (node -e, python -c …) or a script's text (review m-2).
-const MACHINE_STEP_TEXT = /\bfactory\b[^\n;|&]*?\b(doctor\b[^\n;|&]*--machine|env\s+check\b(?![^\n;|&]*--proposed))/;
+// the words may be separate items of an argv list (['factory', 'env', 'check', …]): review m-1
+const MACHINE_STEP_TEXT = /\bfactory\b[^\n;|&]*?\b(doctor\b[^\n;|&]*--machine|env['"\s,]+check\b(?![^\n;|&]*--proposed))/;
 function machineStepInText(text) {
   return MACHINE_STEP_TEXT.test(String(text || '')) ? 'Code or a script that runs "factory doctor --machine" or "factory env check" (other than --proposed) is not allowed for factory agents: those are the main session\'s steps (factory drive runs them).' : null;
 }

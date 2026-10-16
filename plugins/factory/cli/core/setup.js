@@ -153,7 +153,7 @@ function doctor(cwd, opts = {}) {
     add('current job', true, cur || '(none)');
   }
   // The build environment (0.12): one section that says what WILL be used and why, where the
-  // shared environments live, that your own .venv is never touched, and the last check. The full
+  // shared package cache lives, that your own .venv is never touched, and the last check. The full
   // machine inventory (every tool found) is under factory doctor --machine.
   let build = null;
   try {
@@ -229,21 +229,18 @@ function buildSection(root, { refresh = false } = {}) {
     summary.python3_venv = { works, scanned: inv.at || null };
   } else add('build environment: python3 -m venv', true, 'not scanned yet (factory doctor --machine scans)');
   if (root) {
-    // 4. the shared environments
-    const S = require('./envstore');
-    const envs = S.list(root);
-    const total = envs.reduce((n, x) => n + (x.size_bytes || 0), 0);
-    if (conf && E.schemaOf(conf) === 1) add('build environment: shared', true, `not used: the sealed environment is 0.11's per-worktree setup${envs.length ? ` (${envs.length} shared environment(s) from earlier, ${S.human(total)}, in ${S.STORE(root)})` : ''}`);
-    else if (!envs.length) add('build environment: shared', true, `none built yet: the first env check or task builds one in ${S.STORE(root)} (once per lockfile)`);
-    else {
-      const top = envs[0];
-      add('build environment: shared', envs.some((x) => x.ok), `${envs.length} in ${S.STORE(root)} (${S.human(total)}); newest ${top.key}: ${top.ok ? `built ${top.built_at} with ${top.tool || '?'} in ${Math.round((top.build_ms || 0) / 1000)} s` : `FAILED at ${(top.failure || {}).cmd || '?'}`}, used by ${top.used_by.length} worktree(s). factory env gc removes old ones (kept: newest ${S.KEEP()} and any in use)`);
-    }
-    summary.shared = { store: S.STORE(root), count: envs.length, size: S.human(total), envs: envs.map((x) => ({ key: x.key, ok: x.ok, size: x.size, built_at: x.built_at, used_by: x.used_by.length })) };
+    // 4. the shared package cache and the wheelhouses
+    const C = require('./envcache');
+    const cs = C.caches(root);
+    const whs = C.wheelhouses(root);
+    const total = [...cs, ...whs].reduce((n, x) => n + (x.size_bytes || 0), 0);
+    const v2 = conf && E.schemaOf(conf) === 2 && conf.cache && conf.cache !== 'none';
+    add('build environment: cache', true, `${v2 ? `each worktree builds its own environment; its ${conf.cache} installs share ${C.CACHE(root)}` : conf ? 'not used: the sealed environment is 0.11 (each worktree downloads everything again; factory env show offers the cache)' : 'not used yet'}${cs.length || whs.length ? `. Now: ${cs.map((c) => `${c.name} ${c.size}`).join(', ') || 'no package caches'}; ${whs.length} wheelhouse(s)${whs.length ? ` (newest ${whs[0].key}: ${whs[0].wheels} wheels, built ${whs[0].built_at})` : ''}; ${C.human(total)} in all. factory env gc removes old wheelhouses (--caches empties the caches)` : ''}`);
+    summary.cache = { dir: C.CACHE(root), caches: cs.map((c) => ({ name: c.name, size: c.size })), wheelhouses: whs.map((w) => ({ key: w.key, wheels: w.wheels, size: w.size, built_at: w.built_at })), size: C.human(total) };
     // 5. your own .venv
     const uv = require('path').join(root, '.venv');
     const ex = E.excludeReport(root);
-    add('build environment: your .venv', true, `${exists(uv) ? `${uv} exists` : 'no .venv in the repository root'}: the factory never creates, changes or deletes it and never sets up the root checkout; each worktree gets its own .factory-venv.${ex.legacy_venv ? ` Note: ${ex.file} has a ".venv/" line (a 0.11 environment added it): it also hides your root .venv from git status; remove that line if you want to see it.` : ''}`);
+    add('build environment: your .venv', true, `${exists(uv) ? `${uv} exists` : 'no .venv in the repository root'}: the factory never creates, changes or deletes it and never sets up the root checkout; each worktree builds its own .factory-venv.${ex.legacy_venv ? ` Note: ${ex.file} has a ".venv/" line (a 0.11 environment added it): it also hides your root .venv from git status; remove that line if you want to see it.` : ''}${(ex.also_hides_in_checkout || []).length ? ` The factory's block in ${ex.file} (${ex.also_hides_in_checkout.join(', ')}) also hides that path in your checkout's git status.` : ''}`);
     summary.your_venv = { path: uv, exists: exists(uv), touched_by_factory: false, exclude_hides_it: ex.legacy_venv };
     // 6. the last check
     let check = null;

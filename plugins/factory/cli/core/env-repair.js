@@ -130,7 +130,7 @@ function brief(root, state, { agentSpec, prompt, schema, jobContext }) {
     plan_tasks: (plan.tasks || []).map((t) => ({ id: t.id, bootstrap: Boolean(t.bootstrap), allowed_paths: t.allowed_paths })),
   };
   const out = REPAIR(root, state.id);
-  const text = `${jobContext}\n- Mode: **environment repair**. The build environment the human sealed does not set up on this machine (the CLI ran it in a scratch worktree). Write a repaired environment to ${out} (the fields of .factory/environment.json, in the schema version the failing one uses: version 2 — name, tool, reason, deps (installed once into the shared {env}, a venv at {env}/venv), deps_key, overlay (python, node or none), project (cheap, per worktree) — or version 1 — name, setup, cache_key; and env, prefix, services {up, health, down}, teardown, ignore, timeout_seconds, notes) and return its path. Fix the cause the failure shows; change nothing else, and say in reason why the tool is the right one. Rules: use only tools the machine has (poetry for a poetry repo with poetry.lock when installed, else uv, else virtualenv, else python3 -m venv only when it works), never sudo, never the repository's own .venv; every pip install from the index gets --retries 5 --timeout 60 (uv retries itself); deps and project read only files the base commit has or the bootstrap task creates (install from pins directly otherwise); a service health check waits with a deadline (a retry loop, docker compose up --wait), never runs once. The CLI checks your file in a scratch worktree; the human seals it. Never edit .factory/environment.json.\n\nREPAIR INPUT (JSON):\n${JSON.stringify(input, null, 1)}`;
+  const text = `${jobContext}\n- Mode: **environment repair**. The build environment the human sealed does not set up on this machine (the CLI ran it in a scratch worktree). Write a repaired environment to ${out} (the fields of .factory/environment.json, in the schema version the failing one uses — version 2 adds tool, reason and cache — : name, setup (run in every worktree, building its own environment), cache_key, env, prefix, services {up, health, down}, teardown, ignore, timeout_seconds, notes) and return its path. Fix the cause the failure shows; change nothing else, and say in reason why the tool is the right one. Rules: use only tools the machine has (poetry for a poetry repo with poetry.lock when installed, else uv, else virtualenv, else python3 -m venv only when it works), never sudo, never the repository's own .venv; every pip install from the index gets --retries 5 --timeout 60 (uv retries itself); setup reads only files the base commit has or the bootstrap task creates (install from pins directly otherwise); a service health check waits with a deadline (a retry loop, docker compose up --wait), never runs once. The CLI checks your file in a scratch worktree; the human seals it. Never edit .factory/environment.json.\n\nREPAIR INPUT (JSON):\n${JSON.stringify(input, null, 1)}`;
   return {
     config: 'env_repair',
     mode: null,
@@ -151,9 +151,7 @@ const SENSITIVE = {
   prefix: 'prefix runs in front of EVERY verify command, with your full environment',
   ignore: 'ignore is appended to the repository\'s .git/info/exclude: matching files disappear from git status and the drift check',
   cache_key: 'cache_key decides when setup runs again',
-  deps_key: 'deps_key decides when the shared dependencies are installed again',
-  deps: 'deps install the shared dependencies once per key on this machine',
-  project: 'project runs in every worktree',
+  cache: 'cache decides which shared package cache (and, for pip, which wheelhouse) the setup installs from',
   env: 'env is set for every setup, build and verify command',
 };
 function fullDiff(a, b) {
@@ -514,7 +512,8 @@ function runManaged(root, jobId, kind, { deadline = null, foreground = false } =
   const same = st && st.kind === kind && st.key === t.key;
   let interrupted = same ? st.interrupted || 0 : 0;
   if (same && !st.finished) {
-    const alive = P.sameProcess(st.pid, st.pid_start);
+    // a run whose pid is not recorded yet is starting (review m-9)
+    const alive = P.sameProcess(st.pid, st.pid_start) || (!st.pid && Date.now() - Date.parse(st.at) < 30000);
     const overdue = Date.now() > Date.parse(st.deadline_at) + 120000;
     if (alive && !overdue && !foreground) return waitFor(root, state.id, kind, st, until);
     killRun(root, st);
@@ -534,18 +533,22 @@ function runManaged(root, jobId, kind, { deadline = null, foreground = false } =
   }
   if (until - Date.now() < MIN_START_MS()) return { job: state.id, pending: true, started: false, ok: false, message: 'The environment check needs a fresh call to start (too little of this call\'s time is left): run it again (factory drive does).' };
   const id = require('crypto').randomBytes(8).toString('hex');
+  // its own deadline: every command's cap (setup, services, prefix, teardown), plus a margin
+  const per = Number(t.timeout) > 0 ? Number(t.timeout) : 1200;
+  const cap = Math.min(4 * 3600, (Math.max(1, t.steps) + 5) * per + 120);
+  // the record names the run before the child starts (review m-9: a child that read the file
+  // first would refuse as stale); its pid follows right after the spawn
+  writeJson(STARTED(root, state.id), seal({ version: 1, job: state.id, kind, key: t.key, id, pid: null, pid_start: null, at: nowIso(), deadline_at: new Date(Date.now() + cap * 1000).toISOString(), interrupted, finished: false }));
   const logFile = path.join(jobPaths(root, state.id).dir, 'env-check.log');
   const out = fs.openSync(logFile, 'w');
   const { spawn } = require('child_process');
   const child = spawn(process.execPath, [path.join(__dirname, '..', '..', 'bin', 'factory'), '--root', root, 'env', 'check', '--job', state.id, ...(kind === 'repair' ? ['--repair'] : []), '--child', id], { cwd: root, detached: true, stdio: ['ignore', out, out], env: { ...process.env, FACTORY_ENVCHECK_CHILD: id }, windowsHide: true });
   fs.closeSync(out);
   child.unref();
-  // its own deadline: every command's cap (setup, services, prefix, teardown), plus a margin
-  const per = Number(t.timeout) > 0 ? Number(t.timeout) : 1200;
-  const cap = Math.min(4 * 3600, (Math.max(1, t.steps) + 5) * per + 120);
   const ps = P.procStat(child.pid);
   st = seal({ version: 1, job: state.id, kind, key: t.key, id, pid: child.pid, pid_start: ps ? ps.start : null, at: nowIso(), deadline_at: new Date(Date.now() + cap * 1000).toISOString(), interrupted, finished: false });
-  writeJson(STARTED(root, state.id), st);
+  const cur = readStarted(root, state.id);
+  if (!cur || (cur.id === id && !cur.finished)) writeJson(STARTED(root, state.id), st);
   require('./events').append(root, { event: 'environment_check_started', job: state.id, kind, pid: child.pid, interrupted });
   return waitFor(root, state.id, kind, st, until);
 }

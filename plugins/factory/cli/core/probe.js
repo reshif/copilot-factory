@@ -533,7 +533,7 @@ function run(root, { jobId } = {}) {
           if (!E.ok) {
             setup = { status: 'broken', cmd: E.broken.cmd, code: E.broken.code, tail: redact(String(E.broken.tail || '').slice(-800)) };
             problems.push(`The build environment does not set up: ${redact(E.broken.reason.slice(0, 600))}. Fix environment.proposed.json (deps, project, env, services) so every worktree can build.`);
-          } else setup = { status: 'ok', ran: (E.ran || []).map((x) => ({ cmd: x.cmd, code: x.code })), cached: Boolean(E.cached), ...(E.shared ? { shared: { key: E.shared.key, reused: Boolean(E.shared.reused), private: Boolean(E.shared.private) } } : {}) };
+          } else setup = { status: 'ok', ran: (E.ran || []).map((x) => ({ cmd: x.cmd, code: x.code })), cached: Boolean(E.cached), ...(E.cache ? { cache: E.cache } : {}) };
         }
         if (!e || (E && E.ok)) {
           const penv = probeEnv(root, probeId, E && E.env ? envMod.processEnv(E.env, E.vars) : {}, homeEnv);
