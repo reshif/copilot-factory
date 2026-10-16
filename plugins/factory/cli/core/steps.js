@@ -9,8 +9,23 @@ const ledger = require('./ledger');
 const invalidation = require('./invalidation');
 const recipes = require('./recipes');
 
+// The recipe a job runs is the one it locked at creation (recipe.lock.json, sealed): a job in
+// flight keeps its steps and gates when the plugin's recipes change (an upgrade). A job with no
+// valid lock for its recipe id and version runs the current file, as before.
+function lockedRecipe(root, state) {
+  try {
+    const lock = readJson(jobPaths(root, state.id).recipeLock, null);
+    if (!lock || !lock.recipe || !require('../lib/seal').valid(lock)) return null;
+    if (lock.id !== state.recipe.id || lock.version !== state.recipe.version || lock.recipe.id !== state.recipe.id) return null;
+    if (recipes.check(lock.recipe).length) return null;
+    return lock.recipe;
+  } catch {
+    return null;
+  }
+}
+
 function context(root, state, loadJob) {
-  const recipe = recipes.load(state.recipe.id);
+  const recipe = lockedRecipe(root, state) || recipes.load(state.recipe.id);
   const b = invalidation.current(root, state, loadJob);
   return { root, state, recipe, b, loadJob };
 }
@@ -244,4 +259,4 @@ function isDone(ctx, stepDef) {
   }
 }
 
-module.exports = { combinedOf, combinedParts, context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };
+module.exports = { lockedRecipe, combinedOf, combinedParts, context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };

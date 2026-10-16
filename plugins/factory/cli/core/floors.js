@@ -94,7 +94,7 @@ function check(ctx, floor) {
     case 'H3':
       return steps.approved(ctx, 'H3', steps.gateHash(ctx, 'H3')) && a.H3.via !== 'policy';
     case 'no_trial_recipes':
-      return recipes.load(state.recipe.id).status === 'proven';
+      return ctx.recipe.status === 'proven';
     case 'irreversible_signoff':
       // local mode pushes nothing outward: the human's own merge is the irreversible step
       return steps.approved(ctx, 'HS', b.fingerprint) || steps.shipsLocally(ctx);

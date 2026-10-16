@@ -1,6 +1,6 @@
 {
   "id": "standard@medium",
-  "version": 1,
+  "version": 2,
   "status": "proven",
   "outcome": "change",
   "description": "Default for medium risk: pinned dependency source, grounded design with evidence-based critics, a probed plan, one human gate for design + plan + build environment, three review lanes.",

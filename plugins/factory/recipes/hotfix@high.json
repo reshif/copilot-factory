@@ -1,6 +1,6 @@
 {
   "id": "hotfix@high",
-  "version": 1,
+  "version": 2,
   "status": "proven",
   "outcome": "change",
   "description": "Hotfix: high-risk floors kept, grounding scoped to the failing path, no-adr allowed, extra post-merge review.",

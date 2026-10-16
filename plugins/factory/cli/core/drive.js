@@ -286,7 +286,8 @@ function stopDetail(kind, n, extra = {}) {
     case 'gate':
       return {
         gate: g ? { id: g.id, hash: g.hash, docs: g.docs || [] } : null,
-        summary: `${J} waits at gate ${g ? g.id : n.step}${g && g.hash ? ` (hash ${String(g.hash).slice(0, 12)})` : ''}${n.resumes_park ? '; approving it also resumes the parked job' : ''}.`,
+        summary: `${J} waits at gate ${g ? g.id : n.step}${g && g.hash ? ` (hash ${String(g.hash).slice(0, 12)})` : ''}${n.review && (n.review.approves || []).length ? `: one approval for ${n.review.approves.join(' + ')}${n.review.environment && n.review.environment.status === 'proposed' ? ' (it also confirms the build environment)' : ''}` : ''}${n.review && n.review.objections ? `; ${n.review.objections}` : ''}${n.resumes_park ? '; approving it also resumes the parked job' : ''}.`,
+        ...(n.review ? { review: n.review } : {}),
         reply: 'approve | deny <what must change>',
         command: g && g.id === 'A' ? `factory approve --job ${J}` : `factory approve ${g ? g.id : ''} --job ${J}`.replace('  ', ' '),
         alt_command: `factory deny --job ${J} --reason "<what must change>"`,
@@ -311,6 +312,11 @@ function stopDetail(kind, n, extra = {}) {
         const r = n.ship_review;
         const parts = [...(r.acs || []).map((a) => `confirm ${a}`), ...(r.findings || []).map((f) => `accept|dismiss finding ${f.id} <why>`), ...(r.push ? ['approve ship'] : [])];
         return { ship_review: r, screen: n.reason || null, summary: `${J}: the ship review waits on you (${[r.acs.length ? `${r.acs.length} check(s) of yours` : '', r.findings.length ? `${r.findings.length} unsettled finding(s)` : '', r.push ? 'the push' : ''].filter(Boolean).join(', ')}); one reply settles it.`, reply: parts.join('; '), command: (r.acs || []).length ? `factory confirm ${r.acs[0]} --job ${J}` : r.push ? `factory approve ship --job ${J}` : `factory finding dismiss ${(r.findings[0] || {}).id} --job ${J} --reason "<why>"` };
+      }
+      // a build that waits for its environment (0.10.0): only the human confirms it
+      if (n.rule === 'env.unconfirmed') {
+        const e = n.environment || {};
+        return { environment: e, summary: `${J}: ${String(n.reason || '').split('\n')[0]}`, reply: e.short ? `confirm environment ${e.short} | confirm environment none` : 'confirm environment <hash> | confirm environment none', command: `factory env set${e.short ? ` ${e.short}` : ''} --job ${J}` };
       }
       const merged = /merged|[Mm]erge the job branch|Merge it on GitHub/.test(n.reason || '');
       return { summary: `${J}: ${String(n.reason || 'waiting on you').split('\n')[0]}`, reply: merged ? 'nothing: merge it (the factory notices the merge) · or merged <commit>' : (n.acs || []).length ? (n.acs || []).map((a) => `confirm ${a}`).join(' | ') : 'continue', ...(merged ? { command: `factory next --job ${J}`, alt_command: `factory merged <commit> --job ${J}` } : (n.acs || []).length ? { command: `factory confirm ${n.acs[0]} --job ${J}` } : {}) };

@@ -99,6 +99,9 @@
                 "environment"
               ]
             }
+          },
+          "plan_probe": {
+            "type": "boolean"
           }
         }
       }

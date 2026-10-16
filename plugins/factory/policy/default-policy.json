@@ -91,6 +91,9 @@
     "probe_command_seconds": 120,
     "probe_timeout_seconds": 900
   },
+  "decompose": {
+    "plan_probe": true
+  },
   "deps": {
     "enabled": true,
     "max_packages": 20,

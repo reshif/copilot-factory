@@ -1,6 +1,6 @@
 {
   "id": "spike",
-  "version": 1,
+  "version": 2,
   "status": "proven",
   "outcome": "findings",
   "description": "Research question: grounded findings and a recommendation, no code shipped.",

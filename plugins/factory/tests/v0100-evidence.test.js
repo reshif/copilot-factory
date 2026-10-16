@@ -233,6 +233,7 @@ function decideBrief(extra = {}) {
     critique: { id: 'god-eye', ...spec('god-eye'), max_rounds: 3, revise: { ...spec('architect'), prompt: 'REVISE' } },
     critics: [{ id: 'god-eye', ...spec('god-eye') }, { id: 'api-conformance', ...spec('api-conformance') }],
     verifier: { prompt_template: 'VERIFY {{finding}}', schema: {}, agent_type: 'factory:finding-verifier' },
+    diagnosis: { prompt: 'DIAGNOSE', schema: {}, agent_type: 'factory:god-eye' },
     ...extra,
   };
 }
@@ -266,10 +267,17 @@ test('decide: God Eye and the API critic run in parallel; serious items are veri
 test('decide: the loop stops on no progress (after its revise) or at the ceiling, and goes to the gate with the objections; record never parks on it', async (t) => {
   const W = path.join(F.PLUGIN, 'workflows', 'fanout-judge.js');
   const stuck = await H.run(W, decideBrief(), (prompt, o) => (o.agentType === 'factory:architect' ? design : o.agentType === 'factory:api-conformance' ? { verdict: 'revise', items: [blocker('same')] } : o.agentType === 'factory:finding-verifier' ? { finding_id: 'x', status: 'confirmed', evidence: 'e', reason: 'r' } : o.agentType === 'factory:god-eye' ? { verdict: 'approve', items: [] } : { title: 'o' }));
+  // 0.9.0's loop engine: the same item twice → the next round on the stronger model → at the
+  // ceiling a diagnosis writes the question → the gate (never a park)
   assert.equal(stuck.result.data.stop, 'no_progress');
-  assert.equal(stuck.result.data.critiques.length, 2, 'two rounds with the same open item');
+  assert.equal(stuck.result.data.critiques.length, 3);
   assert.equal(stuck.result.data.revised_after_last, true);
-  assert.equal(stuck.calls.filter((c) => /architect · revise/.test(c.opts.label)).length, 2, 'a revise after every critique, the last one included');
+  assert.equal(stuck.calls.filter((c) => /architect · revise/.test(c.opts.label)).length, 3, 'a revise after every critique, the last one included');
+  assert.ok(stuck.calls.some((c) => c.opts.label === 'architect · revise #2 (escalated)' && c.opts.model === 'opus'), 'escalated to the stronger model');
+  assert.ok(stuck.calls.some((c) => c.opts.label === 'api-conformance · design #3' && c.opts.model === 'opus'));
+  assert.ok(stuck.calls.some((c) => c.opts.label === 'god-eye · diagnosis (design)'), 'a diagnosis before it stops');
+  assert.match(stuck.result.data.question.text, /The design critique loop: stopped because/);
+  assert.equal(stuck.result.data.loop.escalated, true);
   let n = 0;
   const shrinking = await H.run(W, decideBrief(), (prompt, o) => {
     if (o.agentType === 'factory:api-conformance') { n += 1; return { verdict: 'revise', items: Array.from({ length: 5 - n }, (_, i) => blocker(`${n}-${i}`)) }; }
@@ -455,6 +463,10 @@ test('combined gate: medium H3 binds design + plan + environment; approving it s
   assert.match(n.review.environment.note, /Approving this gate also confirms this build environment/);
   assert.ok(n.gate.docs.some((d) => d.endsWith('environment.proposed.json')));
   assert.equal(core('environment').load(root), null, 'nothing confirmed before the gate');
+  // the inbox and the drive's stop say what the one approval covers
+  const item = core('inbox').list(root).items.find((x) => x.job === J);
+  assert.equal(item.what, 'approve the design, the plan and the build environment (one approval)');
+  assert.match(core('drive').stopDetail('gate', n).summary, /one approval for design \+ plan \+ environment \(it also confirms the build environment\)/);
   // an agent may not approve, and a changed environment makes the shown gate stale
   assert.equal(F.cli(root, ['approve'], { env: { FACTORY_RUNNER: '1' } }).code, 'agent_not_allowed');
   F.reply(root, 'approve');
@@ -564,4 +576,78 @@ test('realize: an exhausted task first gets one escalated attempt (strongest mod
   assert.match(rec.park.next, /T1 did not pass task verify in 3 attempt\(s\) this run, the last one escalated[\s\S]*It ended on: [\s\S]*node tests\/add\.test\.js[\s\S]*Which is it\? \(a\)[\s\S]*\(b\)[\s\S]*\(c\)/);
   assert.ok(core('job').load(root, J).tasks.T1.escalated_at, 'escalated once per task: a resumed run does not escalate again');
   assert.equal(F.cli(root, ['wfargs', 'realize']).tasks.T1.escalated, true);
+});
+
+// ------------------------------------------------------------------ merge with 0.9.0: probe switch, isolation, in-flight jobs
+
+test('plan probe: off by policy (decompose.plan_probe: false) or by the recipe, it never runs; on, its commands write only inside the scratch worktree and a write outside is reported', (t) => {
+  const P = core('probe');
+  const root = F.makeRepo(t);
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'feature', '--risk', 'medium']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', objective: 'fix', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: ['echo probe > "$HOME/marker" && echo t > "$TMPDIR/t" && node tests/add.test.js'] }] }));
+  const state = core('job').load(root, J);
+  assert.equal(P.enabled(root, state), true);
+  let r = F.cli(root, ['plan', 'probe']);
+  assert.equal(r.ok, true, r.problems.join('\n'));
+  assert.ok(!fs.existsSync(path.join(os.homedir(), 'marker')) || fs.readFileSync(path.join(os.homedir(), 'marker'), 'utf8') !== 'probe\n', 'HOME points inside the scratch worktree');
+  // a command that writes into the checkout is reported, and the worktree is still removed
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', objective: 'fix', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: ['touch ../../../outside.txt; node tests/add.test.js'] }] }));
+  r = F.cli(root, ['plan', 'probe']);
+  assert.match(r.problems.join('\n'), /changed files in your checkout, outside its scratch worktree/);
+  assert.equal(F.sh(root, 'git worktree list').split('\n').filter((l) => /_probe-/.test(l)).length, 0);
+  fs.rmSync(path.join(root, 'outside.txt'), { force: true });
+  // off by policy: no probe, no record, and the decompose brief does not ask for one
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { plan_probe: false } }));
+  fs.rmSync(P.FILE(root, J), { force: true });
+  assert.equal(P.enabled(root, state), false);
+  r = F.cli(root, ['plan', 'probe']);
+  assert.equal(r.skipped, true);
+  assert.ok(!fs.existsSync(P.FILE(root, J)), 'nothing ran, nothing recorded');
+  // off by the recipe: a decompose step with "plan_probe": false
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), '{}');
+  const ctx = core('steps').context(root, state, core('job').load);
+  const off = { ...ctx, recipe: { ...ctx.recipe, steps: ctx.recipe.steps.map((s) => (s.step === 'decompose' ? { ...s, plan_probe: false } : s)) } };
+  assert.equal(P.enabled(root, state, off), false);
+  assert.deepEqual(core('recipes').check(off.recipe), [], 'plan_probe is a recipe step option');
+  // bug@low plans from the contract: never probed
+  const J2 = F.cli(root, ['job', 'new', '--title', 'y', '--type', 'bug', '--risk', 'low']).job;
+  assert.equal(P.enabled(root, core('job').load(root, J2)), false);
+});
+
+test('upgrade: a medium job sitting at H3 under 0.8.2 keeps the recipe it locked (H2, plain H3, no deps step) — no re-plan, no combined gate', (t) => {
+  const { seal } = require('../cli/lib/seal');
+  const root = F.makeRepo(t);
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'feature', '--risk', 'medium']).job;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  // 0.8.2-shaped: the job locked standard@medium v1 (H2 when there is an ADR, plain H3)
+  const old = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'standard@medium.v1.json'), 'utf8'));
+  const lockFile = path.join(F.jobDir(root, J), 'recipe.lock.json');
+  const { seal: _s, ...lock } = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+  fs.writeFileSync(lockFile, JSON.stringify(seal({ ...lock, version: 1, recipe: old })));
+  const st0 = core('job').load(root, J);
+  st0.recipe = { ...st0.recipe, version: 1 };
+  st0.policy.limits.max_design_critique_rounds = 2;
+  core('job').save(root, st0);
+  F.clarify(root);
+  assert.equal(next(root).step, 'H1');
+  F.reply(root, 'approve');
+  assert.equal(next(root).workflow, 'ground', 'no deps step: the job runs the recipe it started with');
+  const g = F.cli(root, ['wfargs', 'ground']);
+  F.record(root, F.envelope(g, 'ok', { topics: [{ topic: 'codebase', claims: [], unknowns: [] }], degraded: [] }));
+  F.write(F.jobDir(root, J), 'no-adr.md', F.noAdrText({ job: J }));
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
+  F.record(root, F.envelope(b, 'ok', { options: [], degraded: [], judge: { kind: 'no-adr', paths: [path.join(F.jobDir(root, J), 'no-adr.md')], summary: 's' }, critiques: [{ verdict: 'approve', items: [] }] }));
+  // the plan as 0.8.2 recorded it: bound to the plan only (no design binding)
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', objective: 'fix', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: ['node tests/add.test.js'] }] }));
+  assert.equal(F.cli(root, ['plan', 'validate']).valid, true);
+  const cur = core('invalidation').current(root, core('job').load(root, J));
+  core('ledger').append(root, J, { kind: 'step', step: 'decompose', ok: true, bound: { plan: cur.plan, contract: cur.contract }, detail: { tasks: 1, waves: [['T1']] } });
+  const n = next(root);
+  assert.equal(n.step, 'H3', JSON.stringify(n).slice(0, 300));
+  assert.equal(n.gate.hash, cur.plan, 'the plain H3: bound to the plan alone');
+  assert.equal((n.review || {}).approves, undefined, 'not the combined gate');
+  F.reply(root, 'approve');
+  const after = next(root);
+  assert.equal(after.workflow, 'realize', 'approved: it builds, with no re-plan forced by the upgrade');
+  assert.equal(core('job').load(root, J).recipe.version, 1);
 });

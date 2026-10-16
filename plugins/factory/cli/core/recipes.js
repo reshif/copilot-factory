@@ -156,6 +156,8 @@ const RECIPE_SCHEMA = {
           // a gate that approves more than its own document (0.10.0): H3 at medium risk binds
           // the design, the plan and the build environment (approving it seals the environment)
           combined: { type: 'array', items: { enum: ['design', 'plan', 'environment'] } },
+          // on decompose: false turns the plan probe off for this recipe (0.10.0)
+          plan_probe: { type: 'boolean' },
         },
       },
     },

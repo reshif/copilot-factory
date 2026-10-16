@@ -62,7 +62,16 @@ function itemFor(root, state, driveStop, plain = false) {
   }
   if (state.status !== 'active') return null;
   if (pg && pg.id && pg.id !== 'P') {
-    return { ...base, kind: 'gate', gate: pg.id, hash: pg.hash, docs: pg.docs || [], since: pg.at || null, what: `approve ${GATE_WHAT[pg.id] || `gate ${pg.id}`}`, reply: ['approve', 'deny <what must change>'], command: pg.id === 'A' ? `factory approve --job ${J}` : `factory approve ${pg.id} --job ${J}`, human_only: true };
+    // a combined gate (0.10.0) approves more than its document: say what, in one line
+    let what = GATE_WHAT[pg.id] || `gate ${pg.id}`;
+    try {
+      const steps = require('./steps');
+      const list = steps.combinedOf(steps.context(root, state, job.load), pg.id);
+      if (list) what = `${list.map((x) => ({ design: 'the design', plan: 'the plan', environment: 'the build environment' })[x]).join(', ').replace(/, ([^,]*)$/, ' and $1')} (one approval)`;
+    } catch {
+      /* the plain label */
+    }
+    return { ...base, kind: 'gate', gate: pg.id, hash: pg.hash, docs: pg.docs || [], since: pg.at || null, what: `approve ${what}`, reply: ['approve', 'deny <what must change>'], command: pg.id === 'A' ? `factory approve --job ${J}` : `factory approve ${pg.id} --job ${J}`, human_only: true };
   }
   const cw = clarifyWait(root, state, plain);
   if (cw) {
@@ -75,6 +84,8 @@ function itemFor(root, state, driveStop, plain = false) {
     if (/merged/.test(d.reason || '')) return { ...base, kind: 'merge', since: d.ts, what: 'merge the job branch yourself (the factory notices the merge; no reply is needed)', reason: d.reason, reply: ['(nothing: merge it; factory next sees it)', 'merged <commit>'], command: `factory next --job ${J}`, human_only: false };
     if (d.rule === 'row5.human_confirm') return { ...base, kind: 'confirm', since: d.ts, what: 'check criteria on the build yourself', reason: d.reason, reply: ['confirm AC-n'], command: `factory confirm <AC-n> --job ${J}`, human_only: true };
     // the one ship review: the human's checks, the unsettled findings, the push approval, in one reply
+    // a build waiting for its environment (0.10.0): only the human's "confirm environment"
+    if (d.rule === 'env.unconfirmed') return { ...base, kind: 'environment', since: d.ts, what: 'confirm the build environment before the build starts', reason: d.reason, reply: ['confirm environment <hash>', 'confirm environment none'], command: `factory env set --job ${J}`, human_only: true };
     if (d.rule === 'ship.review') return { ...base, kind: 'ship_review', since: d.ts, what: 'the ship review: one reply settles it', reason: d.reason, screen: d.reason, reply: ['confirm AC-n; dismiss finding <id> <why>; approve ship (any of them, in one message)'], command: `factory next --job ${J}`, human_only: true };
     return { ...base, kind: 'wait', since: d.ts, what: d.reason || 'waiting on you', reason: d.reason, reply: ['continue'], command: null, human_only: false };
   }

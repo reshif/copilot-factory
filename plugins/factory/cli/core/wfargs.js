@@ -354,7 +354,10 @@ function decide(root, state, ctx, action) {
     severities: ['blocker', 'major'],
   };
   const priorOut = targeted ? { kind: designPaths.some((f) => /adr-\d+/.test(f)) ? 'adr' : designPaths.some((f) => /no-adr\.md$/.test(f)) ? 'no-adr' : 'contracts', paths: designPaths, summary: `The design record the human denied at ${targeted.gate}.` } : null;
-  return base(root, state, 'fanout-judge', { config: 'decide', mode, input_hash: inputHash({ contract: ctx.b.contract, findings: ctx.b.findings }), fanout, judge, critique, critics, verifier, threat_model: threat, ...(targeted ? { targeted, prior_design: priorOut } : {}) });
+  // the loop engine's policy (cli/core/loop.js) and its diagnosis agent, for the design loop
+  const loopPolicy = require('./loop').policyFor(state.policy);
+  const diagnosis = { ...agentSpec(state, 'god-eye'), prompt: prompt('god-eye', `${jc}\n- Focus: **diagnosis**. The design critique loop below stopped making progress (the critics' objections came back after the architect's revisions, also on a stronger model). Read the design record and the dependency source the objections cite, and say why and what ends it: a different approach for the architect, or the one question only the user can settle.`), schema: schema('diagnosis') };
+  return base(root, state, 'fanout-judge', { config: 'decide', mode, input_hash: inputHash({ contract: ctx.b.contract, findings: ctx.b.findings }), fanout, judge, critique, critics, verifier, loop: { stall_rounds: 1, escalate_model: loopPolicy.escalate_model, diagnose: loopPolicy.diagnose }, diagnosis, threat_model: threat, ...(targeted ? { targeted, prior_design: priorOut } : {}) });
 }
 
 // ---------------------------------------------------------------- fanout-judge: diagnose
@@ -563,7 +566,7 @@ function decompose(root, state, ctx, action) {
   const critique = !slices || action.plan_critique
     ? { ...agentSpec(state, 'god-eye'), prompt: prompt('god-eye', `${jc}\n- Focus: **plan**. The document is ${jp.plan}.${slices ? '' : ` The plan probe's record (what each verify command did when the CLI dry-ran it in the proposed build environment) is under INPUTS; the proposed environment is ${envFile} when the planner wrote one.`}`), schema: schema('critique'), max_rounds: 2 }
     : null;
-  return base(root, state, 'decompose', { mode: slices ? 'slices' : 'plan', input_hash: inputHash({ contract: ctx.b.contract, design: ctx.b.design }), planner, critique, probe: !slices, max_probe_rounds: 3 });
+  return base(root, state, 'decompose', { mode: slices ? 'slices' : 'plan', input_hash: inputHash({ contract: ctx.b.contract, design: ctx.b.design }), planner, critique, probe: !slices && require('./probe').enabled(root, state, ctx), max_probe_rounds: 3, loop: { escalate_model: require('./loop').policyFor(state.policy).escalate_model } });
 }
 
 // ---------------------------------------------------------------- realize

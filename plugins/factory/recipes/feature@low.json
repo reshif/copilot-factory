@@ -1,6 +1,6 @@
 {
   "id": "feature@low",
-  "version": 1,
+  "version": 2,
   "status": "proven",
   "outcome": "change",
   "description": "Low-risk features and refactors: planned tasks, plan approval may be automatic after a God Eye plan critique.",

@@ -787,6 +787,11 @@ function workflowApi(ctx) {
     checkLedger: (entries) => checkLedgerStep(ctx, entries),
     probe: () => probeStep(ctx),
     grant: (taskId, paths) => grantStep(ctx, taskId, paths),
+    // 0.9.0's shared loop engine, for the workflows' own loops (design and plan critique, the
+    // plan probe): pure functions, run in-process
+    loop: (state, blockers, policy) => require('./loop').shouldContinue(state, blockers, policy),
+    recordDiagnosis: (state, d) => require('./loop').recordDiagnosis(state, d),
+    loopQuestion: (state, opts) => require('./loop').question(state, opts),
   };
 }
 

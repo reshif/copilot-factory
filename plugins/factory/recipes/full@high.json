@@ -1,6 +1,6 @@
 {
   "id": "full@high",
-  "version": 1,
+  "version": 2,
   "status": "proven",
   "outcome": "change",
   "description": "High risk: threat model, human approval of design and plan, every review lane before merge, ship sign-off.",

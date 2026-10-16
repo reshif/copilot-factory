@@ -130,7 +130,7 @@ function recDecide(root, state, env) {
   // whether the architect revised after the last critique, for the gate to show
   const openIds = new Set(Array.isArray(d.open) ? d.open.map((x) => (typeof x === 'string' ? x : x && x.id)) : last && Array.isArray(last.open) ? last.open : []);
   const openItems = last ? (last.items || []).filter((it) => it && it.id && openIds.has(it.id)) : [];
-  writeJson(path.join(jp.critiquesDir, 'design.json'), seal({ hash: b.design, verdict: last ? last.verdict : 'none', items: last ? last.items : [], rounds: critiques.length, ...(d.stop ? { stop: d.stop, revised_after_last: Boolean(d.revised_after_last), open: openItems, verifications: (last && last.verifications) || [] } : {}), ...(d.targeted ? { targeted: true } : {}), at: nowIso() }));
+  writeJson(path.join(jp.critiquesDir, 'design.json'), seal({ hash: b.design, verdict: last ? last.verdict : 'none', items: last ? last.items : [], rounds: critiques.length, ...(d.stop ? { stop: d.stop, revised_after_last: Boolean(d.revised_after_last), open: openItems, verifications: (last && last.verifications) || [] } : {}), ...(d.targeted ? { targeted: true } : {}), ...(d.question && d.question.question ? { question: { question: d.question.question, options: d.question.options || [], recommendation: d.question.recommendation || null, cause: d.question.cause || null, diagnosed: Boolean(d.question.diagnosed) } } : {}), ...(d.loop ? { loop: d.loop } : {}), at: nowIso() }));
   // The design record must follow templates/docs (front matter, sections in order, an AC
   // table, a Mermaid architecture diagram in an ADR, a data-flow diagram in a threat model).
   const docProblems = docMod.designProblems(root, state);
@@ -194,7 +194,7 @@ function recDecompose(root, state, env) {
   // without it (or a plan that changed since) is probed here. Problems go back to the planner
   // once more, unless they are the ones it already could not fix: then they go to the gate.
   let probeRec = null;
-  if (!state.epic) {
+  if (!state.epic && require('./probe').enabled(root, state)) {
     const P = require('./probe');
     probeRec = P.current(root, state) || P.run(root, { jobId: state.id });
     const prev = ledger.lastStep(root, state.id, 'decompose');

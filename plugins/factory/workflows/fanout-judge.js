@@ -104,20 +104,40 @@ if (degraded.length) log(`No result after retry: ${degraded.join(', ')}`)
 // always once more after the last critique, so the gate never shows an unrevised critique — and
 // the loop stops when the open set stops shrinking, or at the ceiling. Every stop goes to the
 // human gate with the open objections shown; decide never parks on its critique.
-// TODO(0.9.0): noProgress() is a local stand-in for 0.9.0's shared progress-based loop engine
-// (fingerprinted open sets, escalation before stopping); swap it in at merge.
-function noProgress(history) {
-  if (history.length < 2) return false
-  const [a, b] = history.slice(-2)
-  return b.length >= a.length && b.every((k) => a.includes(k))
+// The loop's stop rule is 0.9.0's shared engine (cli/core/loop.js shouldContinue, through
+// factory.loop): it goes on while the open set shrinks, escalates to the stronger model when it
+// stalls, runs a diagnosis agent before it stops, and stops with a specific question. For the
+// design loop a stop never parks: it goes to the gate with the objections and that question.
+// Without the factory API (another runtime) a minimal local rule stands in.
+function localLoop(state, blockers) {
+  const s = state || { rounds: 0, best: null }
+  const open = [...new Set(blockers)].sort()
+  if (!open.length) return { action: 'done', rule: 'resolved', open, state: s }
+  const progress = s.best === null || open.length < s.best
+  const next = { rounds: s.rounds + 1, best: Math.min(s.best === null ? Infinity : s.best, open.length) }
+  return { action: progress ? 'continue' : 'stop', rule: progress ? 'progress' : 'no_progress', open, state: next }
+}
+// One step of a loop: the engine's verdict, with its diagnosis run when it asks for one.
+// `diag(v)` runs the diagnosis agent and returns its answer (or null).
+async function loopStep(loopState, blockers, policy, diag) {
+  const F = typeof factory !== 'undefined' && factory && factory.loop ? factory : null
+  if (!F) return localLoop(loopState, blockers)
+  let v = await F.loop(loopState, blockers, policy)
+  if (v.action === 'diagnose') {
+    const d = diag ? await diag(v) : null
+    const ls = await F.recordDiagnosis(v.state, d || { cause: 'the diagnosis agent returned nothing', needs_user: true, approach: '', question: '', options: [], recommendation: '' })
+    v = await F.loop(ls, blockers, policy)
+    v.diagnosed = Boolean(d)
+  }
+  return v
 }
 const SERIOUS = ['blocker', 'major']
 const itemKey = (it) => `${it.critic}:${String(it.symbol || it.issue || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80)}`
 
-async function critiqueRound(design, round) {
+async function critiqueRound(design, round, model = null) {
   const critics = brief.critics && brief.critics.length ? brief.critics : [brief.critique]
   phase(`decide: critics round ${round} (${critics.map((c) => c.id || 'god-eye').join(' + ')})`)
-  const outs = await pipeline(critics, (c) => one(`${c.prompt}\n\nINPUTS:\n${JSON.stringify({ design }, null, 2)}`, c, `${c.id || 'god-eye'} · design #${round}`))
+  const outs = await pipeline(critics, (c) => one(`${c.prompt}\n\nINPUTS:\n${JSON.stringify({ design }, null, 2)}`, model ? { ...c, model } : c, `${c.id || 'god-eye'} · design #${round}`))
   const items = []
   const verdicts = {}
   critics.forEach((c, i) => {
@@ -168,26 +188,43 @@ if (brief.config === 'decide') {
   }
   if (!design) return envelope('error', 'The architect returned nothing twice.', { options: inputs, degraded })
   const critiques = []
-  const history = []
   const max = Math.max(1, brief.critique.max_rounds || 3)
+  // the engine's ceiling counts the rounds before this one: max critiques, then a diagnosis
+  const policy = { stall_rounds: 1, ...(brief.loop || {}), ceiling: Math.max(1, max - 1) }
+  let loopState = null
+  let model = null
+  let approach = null
   let stop = 'ceiling'
+  let question = null
   let revisedAfterLast = false
-  for (let round = 1; round <= max; round++) {
-    const c = await critiqueRound(design, round)
+  const withModel = (spec) => (model ? { ...spec, model } : spec)
+  for (let round = 1; round <= max + 1; round++) {
+    const c = await critiqueRound(design, round, model)
     critiques.push(c)
     revisedAfterLast = false
     if (!c.open.length) { stop = c.missing.length ? 'critic_failed' : 'approved'; break }
-    history.push(c.open.map(itemKey))
+    const v = await loopStep(loopState, c.open.map(itemKey), policy, brief.diagnosis ? async () => {
+      phase(`decide: diagnosis (round ${round})`)
+      return one(`${brief.diagnosis.prompt}\n\nDIAGNOSIS INPUT (JSON):\n${JSON.stringify({ focus: 'diagnosis', loop: 'the design critique loop: the critics object, the architect revises, the critics check again', rounds: critiques.map((x) => ({ round: x.round, open: x.open.map((it) => ({ id: it.id, critic: it.critic, severity: it.severity, issue: it.issue, evidence: it.evidence })) })), design }, null, 2)}`, brief.diagnosis, `god-eye · diagnosis (design)`)
+    } : null)
+    loopState = v.state
+    if (v.model) model = v.model
+    if (v.approach) approach = v.approach
     // always one revise after the last critique: the gate gets the design with these addressed
     phase(`decide: architect revises (round ${round})`)
-    const revised = await one(`${brief.critique.revise.prompt}\n\nINPUTS:\n${JSON.stringify({ critique: { verdict: 'revise', items: c.open.map((it) => ({ id: it.id, critic: it.critic, severity: it.severity, symbol: it.symbol, issue: it.issue, evidence: it.evidence, suggestion: it.suggestion, verified: it.verified })) }, your_previous_output: design }, null, 2)}`, brief.critique.revise, `architect · revise #${round}`)
+    const revised = await one(`${brief.critique.revise.prompt}\n\nINPUTS:\n${JSON.stringify({ critique: { verdict: 'revise', items: c.open.map((it) => ({ id: it.id, critic: it.critic, severity: it.severity, symbol: it.symbol, issue: it.issue, evidence: it.evidence, suggestion: it.suggestion, verified: it.verified })) }, ...(approach ? { approach_from_diagnosis: approach } : {}), your_previous_output: design }, null, 2)}`, withModel(brief.critique.revise), `architect · revise #${round}${model ? ' (escalated)' : ''}`)
     if (revised) { design = revised; revisedAfterLast = true }
-    if (noProgress(history)) { stop = 'no_progress'; break }
+    if (v.action === 'stop' || round >= max) {
+      const shrank = critiques.length > 1 && c.open.length < critiques[critiques.length - 2].open.length
+      stop = v.action === 'stop' && v.rule === 'ceiling' && shrank ? 'ceiling' : v.action === 'stop' ? 'no_progress' : 'ceiling'
+      question = typeof factory !== 'undefined' && factory && factory.loopQuestion ? await factory.loopQuestion(loopState, { what: 'The design critique loop', blockers: c.open.map(itemKey), fallbackOptions: ['Approve the design with these objections open', 'Deny naming the defect: a targeted revise', 'Deny rethink: new options'], fallbackRecommendation: 'b' }) : null
+      break
+    }
   }
   const last = critiques[critiques.length - 1]
   // the shape recDecide has always read (verdict, items per round), plus the evidence
   const out = critiques.map((c) => ({ round: c.round, verdict: c.verdict, verdicts: c.verdicts, items: c.items, verifications: c.verifications, open: c.open.map((it) => it.id), ...(c.missing.length ? { missing: c.missing } : {}) }))
-  return envelope('ok', `Design: ${design.kind} (${(design.paths || []).join(', ')}). Critics: ${last ? last.verdict : 'none'} after ${critiques.length} round(s)${stop !== 'approved' ? ` (${stop === 'no_progress' ? 'no progress' : stop === 'critic_failed' ? `no result from ${last.missing.join(', ')}` : 'ceiling'}; ${last.open.length} open${stop === 'critic_failed' ? '' : ', revised after the last critique'}: shown at the gate)` : ''}.`, { options: inputs, degraded, judge: design, critiques: out, stop, revised_after_last: revisedAfterLast, open: last ? last.open : [], targeted: Boolean(brief.targeted) }, { threat_model: Boolean(brief.threat_model) })
+  return envelope('ok', `Design: ${design.kind} (${(design.paths || []).join(', ')}). Critics: ${last ? last.verdict : 'none'} after ${critiques.length} round(s)${stop !== 'approved' ? ` (${stop === 'no_progress' ? 'no progress' : stop === 'critic_failed' ? `no result from ${last.missing.join(', ')}` : 'ceiling'}; ${last.open.length} open${stop === 'critic_failed' ? '' : ', revised after the last critique'}: shown at the gate)` : ''}.`, { options: inputs, degraded, judge: design, critiques: out, stop, revised_after_last: revisedAfterLast, ...(question ? { question } : {}), ...(loopState ? { loop: { rounds: loopState.rounds, escalated: Boolean(model), diagnosed: Boolean(loopState.diagnosis) } } : {}), open: last ? last.open : [], targeted: Boolean(brief.targeted) }, { threat_model: Boolean(brief.threat_model) })
 }
 
 if (brief.config === 'challenge') {

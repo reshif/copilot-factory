@@ -133,11 +133,30 @@ function settings(state) {
   return { perCommand: Math.max(5, Math.min(L.probe_command_seconds || 120, L.command_timeout_seconds || 600)), budget: Math.max(30, L.probe_timeout_seconds || 900) };
 }
 
+// Is the probe on for this job? policy decompose.plan_probe (the live .factory/policy.json wins,
+// then the job's snapshot; default on), and only when the job's recipe plans with the decompose
+// workflow and does not turn the probe off for it (`"plan_probe": false` on the step).
+function enabled(root, state, ctx = null) {
+  let live = {};
+  try {
+    live = (require('./policy').load(root) || {}).decompose || {};
+  } catch {
+    live = {};
+  }
+  const snap = ((state && state.policy) || {}).decompose || {};
+  const flag = live.plan_probe !== undefined ? live.plan_probe : snap.plan_probe;
+  if (flag === false) return false;
+  const c = ctx || require('./steps').context(root, state, require('./job').load);
+  const step = c.recipe.steps.find((x) => x.step === 'decompose');
+  return Boolean(step && String(step.run).startsWith('workflow:') && step.plan_probe !== false && !state.epic);
+}
+
 function run(root, { jobId } = {}) {
   const job = require('./job');
   const envMod = require('./environment');
   const planMod = require('./plan');
   const state = job.resolve(root, jobId);
+  if (!enabled(root, state)) return { job: state.id, ok: true, skipped: true, problems: [], commands: [], lint: [], message: 'The plan probe is off for this job (policy decompose.plan_probe, or its recipe).' };
   const jp = jobPaths(root, state.id);
   const plan = readJson(jp.plan, null);
   if (!plan || !Array.isArray(plan.tasks)) return { job: state.id, ok: false, problems: ['No plan.json to probe.'], commands: [], lint: [] };
@@ -191,7 +210,13 @@ function run(root, { jobId } = {}) {
           } else setup = { status: 'ok', ran: (E.ran || []).map((x) => ({ cmd: x.cmd, code: x.code })), cached: Boolean(E.cached) };
         }
         if (!e || (E && E.ok)) {
-          const penv = E && E.env ? envMod.processEnv(E.env, E.vars) : {};
+          // the dry-run writes only into its scratch worktree: home, temp and the usual caches
+          // point inside it (an OS sandbox it is not: a command could still name a path outside,
+          // which the check after the run reports)
+          const box = path.join(wt, '.factory-probe');
+          for (const d of ['home', 'tmp', 'cache']) fs.mkdirSync(path.join(box, d), { recursive: true });
+          const penv = { ...(E && E.env ? envMod.processEnv(E.env, E.vars) : {}), HOME: path.join(box, 'home'), TMPDIR: path.join(box, 'tmp'), TMP: path.join(box, 'tmp'), TEMP: path.join(box, 'tmp'), XDG_CACHE_HOME: path.join(box, 'cache'), npm_config_cache: path.join(box, 'cache', 'npm'), PIP_CACHE_DIR: path.join(box, 'cache', 'pip') };
+          const before = rootStatus(root);
           for (const t of plan.tasks) {
             for (const c of t.verify_commands || []) {
               const cmd = cmdOf(c);
@@ -207,6 +232,8 @@ function run(root, { jobId } = {}) {
               git.run(wt, ['checkout', '--', '.'], { allowFail: true });
             }
           }
+          const after = rootStatus(root);
+          if (after !== before) problems.push(`The dry-run changed files in your checkout, outside its scratch worktree (git status before: ${before ? before.split('\n').length : 0} line(s), after: ${after ? after.split('\n').length : 0}): a verify command writes outside the repository's worktree; make it write only under its own directory.`);
         }
       } finally {
         try {
@@ -252,6 +279,14 @@ function run(root, { jobId } = {}) {
   return { job: state.id, file: FILE(root, state.id), ...doc };
 }
 
+function rootStatus(root) {
+  try {
+    return git.run(root, ['status', '--porcelain', '--untracked-files=all'], { allowFail: true }).stdout;
+  } catch {
+    return '';
+  }
+}
+
 function dependsOn(tasks, id, on, seen = new Set()) {
   if (seen.has(id)) return false;
   seen.add(id);
@@ -274,4 +309,4 @@ function problemKey(p) {
   return sha256(stableStringify([...((p && p.problems) || [])].map((x) => String(x).replace(/Output \(tail\):.*$/, '')).sort()));
 }
 
-module.exports = { run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
+module.exports = { enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };

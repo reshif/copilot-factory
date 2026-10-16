@@ -66,6 +66,9 @@ function realFactory(brief) {
         return { ok: false, granted: [], refused: (paths || []).map((p) => ({ path: p, why: e.message })) };
       }
     },
+    loop: async (state, blockers, policy) => require('../../cli/core/loop').shouldContinue(state, blockers, policy),
+    recordDiagnosis: async (state, d) => require('../../cli/core/loop').recordDiagnosis(state, d),
+    loopQuestion: async (state, o) => require('../../cli/core/loop').question(state, o),
     prepare: async (id) => {
       const job = require('../../cli/core/job');
       const state = job.load(brief.root, brief.job);
@@ -98,7 +101,9 @@ async function run(file, args, agentImpl, factoryImpl) {
   const forbidden = new Proxy({}, { get: () => () => { throw new Error('Date/Math.random are not allowed in workflows'); } });
   const brief0 = typeof args === 'string' ? JSON.parse(args) : args;
   const verifies = [];
-  const base = factoryImpl || (brief0 && brief0.root ? realFactory(brief0) : {});
+  const L = require('../../cli/core/loop');
+  const engine = { loop: async (st, b, p) => L.shouldContinue(st, b, p), recordDiagnosis: async (st, d) => L.recordDiagnosis(st, d), loopQuestion: async (st, o) => L.question(st, o) };
+  const base = { ...engine, ...(factoryImpl || (brief0 && brief0.root ? realFactory(brief0) : {})) };
   const factory = { ...base, verify: async (id) => { verifies.push(id); if (!base.verify) throw new Error('this test gives realize no factory.verify'); return base.verify(id); } };
   const result = await fn(typeof args === 'string' ? args : JSON.stringify(args), agent, pipeline, () => {}, () => {}, factory, forbidden, mathNoRandom());
   calls.verifies = verifies;

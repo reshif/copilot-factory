@@ -43,6 +43,6 @@ Shape: [`schemas/recipe.json`](../schemas/recipe.json).
 1. Copy the closest recipe, bump `version`, change steps **above the floor**.
 2. Run `factory recipe check` — the CLI refuses any recipe that omits a floor step for a risk it applies to, or puts steps in an impossible order (e.g. ship before challenge).
 3. Add or change a rule in `_selection.json` if it should be picked automatically.
-4. Running jobs keep the recipe they locked at creation.
+4. Running jobs keep the recipe they locked at creation: the router reads the sealed `recipe.lock.json` (its steps and gates), so a job in flight across an upgrade keeps its gates; bump `version` whenever a recipe changes (the inspector flags an unversioned edit).
 
 Use the monthly review (`/factory:review`) for the evidence behind a change, and a paired A/B (same task, same base commit, three runs each) for a specific question.
