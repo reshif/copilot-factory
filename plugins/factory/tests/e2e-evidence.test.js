@@ -160,6 +160,9 @@ test('e2e: a medium job reaches ONE combined gate (design + plan + environment);
   assert.equal(require('../cli/core/environment').load(root), null);
   F.reply(root, 'approve');
   assert.equal(require('../cli/core/environment').load(root).name, 'node-test');
+  // fix 0.10.1: the sealed environment sets up once in a scratch worktree before any task
+  assert.equal(F.cli(root, ['next']).step, 'env_check');
+  assert.equal(F.cli(root, ['env', 'check', '--job', J]).ok, true);
   const n = F.cli(root, ['next']);
   assert.equal(n.workflow, 'realize', JSON.stringify(n).slice(0, 400));
   assert.equal(F.sh(root, 'git worktree list').split('\n').filter((l) => /_probe-/.test(l)).length, 0, 'the probe left no worktree behind');

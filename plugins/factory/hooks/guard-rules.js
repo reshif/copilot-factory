@@ -27,7 +27,7 @@ const path = require('path');
 const { realpath, deny: denyOut } = require('./lib');
 const { parse } = require('./shell');
 
-const JOB_DOCS = /^(contract\.md|threat-model\.md|no-adr\.md|recommendation\.md|adr-\d+[^/]*\.md|contracts\.md|contracts\.json|plan\.json|slices\.json|environment\.proposed\.json)$/;
+const JOB_DOCS = /^(contract\.md|threat-model\.md|no-adr\.md|recommendation\.md|adr-\d+[^/]*\.md|contracts\.md|contracts\.json|plan\.json|slices\.json|environment\.proposed\.json|environment\.repair\.json)$/;
 
 // Copilot preToolUse deny: the documented flat JSON on stdout, exit 0 (lib.deny).
 function deny(reason) {

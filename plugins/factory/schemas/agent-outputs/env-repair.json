@@ -1,0 +1,4 @@
+{ "$comment": "planner, environment repair mode (fix 0.10.1): the repaired build environment it wrote (path), what it changed and why. The CLI checks the file in a scratch worktree; only the human seals it.",
+  "type": "object", "required": ["path", "summary"], "properties": {
+  "path": { "type": "string" }, "summary": { "type": "string" },
+  "changes": { "type": "array", "items": { "type": "string" } } } }

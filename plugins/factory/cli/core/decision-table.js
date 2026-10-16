@@ -43,6 +43,7 @@ const PARK_NEXT = {
   integration: 'Answer the question above in your own words (it resumes the job with them), or amend the plan.',
   epic_gate: 'Decide: a new slice (amend the epic) or a fix job for a merged slice.',
   plan_probe: 'The plan probe was interrupted twice before it finished: answer the question (a: lint only, b: run factory plan probe in your own terminal, then resume, c: no probe for this job).',
+  environment_repair: 'A repaired build environment passed its check in a scratch worktree: reply "approve environment" (or yes) to seal it, or say what is wrong with it.',
   manual: 'Parked by hand: reply "resume" when ready, or "cancel job".',
   other: 'Read factory why --format md, then reply "resume", "cancel job" or "abandon job".',
 };
@@ -489,6 +490,12 @@ function orderAction(ctx, al, { humanAcs = null } = {}) {
   if (!ci && s.step === 'realize' && require('./environment').needsConfirmation(ctx.root, state.id)) {
     const g = require('./environment').gateProposal(ctx.root, state.id);
     return { step: 'realize', run: 'human:confirm environment', action: 'wait', environment: g, reason: g.status === 'tampered' ? `${g.message} The build waits until it is set again from your terminal (factory env set).` : `The build environment is not confirmed, so no task is built: ${g.env.name || 'proposed'} (${g.source || 'proposed'}) — setup: ${(g.env.setup || []).join(' && ') || '(none)'}. Reply "confirm environment ${g.short}" to accept it (or "confirm environment none" for bare worktrees).`, rule: 'env.unconfirmed' };
+  }
+  // fix 0.10.1: the sealed environment sets up once in a scratch worktree before any task; a
+  // failure is repaired (an agent proposes, the CLI checks, the human seals), never built on
+  if (!ci && s.step === 'realize') {
+    const ea = require('./env-repair').routerAction(ctx);
+    if (ea) return ea;
   }
   return { ...(ci || stepAction(ctx, s)), rule: ci ? 'order.ci_reverify' : 'order.next_step' };
 }

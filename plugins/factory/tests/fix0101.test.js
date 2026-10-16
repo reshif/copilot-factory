@@ -416,3 +416,234 @@ test('m6: a budget grant is the whole reply ("+N%", "resume +N%", "budget +N%", 
   assert.equal(g('also try +20% and see'), null);
   assert.equal(g('the budget 40 is fine', 16), null);
 });
+
+// ------------------------------------------------------------------ machine-aware build environments
+
+const MH = require('./helpers/machine');
+const T = require('./helpers/tmp');
+
+// PATH shims: a python3 whose venv lacks ensurepip (WSL Ubuntu 22.04 without python3.10-venv),
+// virtualenv, a docker that needs sudo, a curl that reaches the index, a sudo that wants a password.
+function shims(t) {
+  const dir = T.mkdtemp('factory-shims-', t);
+  const sh = (name, body) => {
+    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`);
+    fs.chmodSync(path.join(dir, name), 0o755);
+  };
+  sh('python3', 'case "$1" in --version) echo "Python 3.10.12";; -m) if [ "$2" = venv ]; then echo "The virtual environment was not created successfully because ensurepip is not" >&2; echo "available.  On Debian/Ubuntu systems, you need to install the python3-venv" >&2; echo "package using the following command." >&2; echo "    apt install python3.10-venv" >&2; exit 1; fi;; esac');
+  sh('virtualenv', 'echo "virtualenv 20.25.0 from /usr/lib/python3/dist-packages/virtualenv/__init__.py"');
+  sh('docker', 'case "$1" in --version) echo "Docker version 24.0.7";; compose) echo "Docker Compose version v2.21.0";; info) echo "permission denied while trying to connect to the Docker daemon socket" >&2; exit 1;; esac');
+  sh('curl', 'echo "200 0.052"');
+  sh('sudo', 'exit 1');
+  return dir;
+}
+
+test('machine inventory (PATH shims): python versions, a venv that fails for want of ensurepip, virtualenv but no uv, docker needing sudo, sudo with a password, the index reachable; cached per machine; doctor shows it with remedies', (t) => {
+  const dir = shims(t);
+  const cache = T.mkdtemp('factory-cache-', t);
+  const env = { FACTORY_MACHINE_PATH: dir, XDG_CACHE_HOME: cache, FACTORY_MACHINE_FILE: '' };
+  const run = (code) => JSON.parse(spawnSync(process.execPath, ['-e', `process.stdout.write(JSON.stringify(${code}))`], { cwd: F.PLUGIN, encoding: 'utf8', env: { ...process.env, ...env } }).stdout);
+  const inv = run("require('./cli/core/machine').inventory()");
+  assert.deepEqual(inv.python.map((p) => [p.cmd, p.version]), [['python3', '3.10.12']]);
+  assert.equal(inv.venv.works, false);
+  assert.match(inv.venv.why, /ensurepip is not|python3-venv|apt install/);
+  assert.ok(inv.tools.virtualenv && !inv.tools.uv && !inv.tools.poetry);
+  assert.deepEqual(inv.docker, { present: true, compose: 'docker compose', daemon: 'needs_sudo' });
+  assert.equal(inv.sudo, 'password');
+  assert.deepEqual([inv.network.pypi.ok, inv.network.pypi.code, inv.network.pypi.ms], [true, 200, 52]);
+  assert.equal(run("require('./cli/core/machine').pythonInstaller(require('./cli/core/machine').inventory())"), 'virtualenv');
+  // cached: the second call is the first's scan
+  assert.equal(run("require('./cli/core/machine').inventory().at"), inv.at);
+  assert.ok(fs.readdirSync(path.join(cache, 'factory')).some((f) => /^machine-[0-9a-f]+\.json$/.test(f)));
+  // doctor
+  const root = F.makeRepo(t);
+  const d = F.cli(root, ['doctor', '--machine'], { env });
+  const c = (n) => d.checks.find((x) => x.name === `machine: ${n}`);
+  assert.equal(c('python3 -m venv').ok, false);
+  assert.match(c('python3 -m venv').detail, /Remedy: environments use virtualenv instead/);
+  assert.match(c('docker').detail, /daemon needs_sudo[\s\S]*docker group/);
+  assert.match(c('python tools').detail, /virtualenv/);
+  assert.equal(c('python3 -m venv').level, 'warning', 'a machine fact never blocks the doctor by itself');
+});
+
+test('environment proposals use the machine: uv first, poetry for a poetry repo, virtualenv, python3 -m venv only when it works; pip retries', (t) => {
+  const E = core('environment');
+  const root = F.makeRepo(t);
+  F.write(root, 'pyproject.toml', '[project]\nname = "x"\n');
+  F.write(root, 'requirements-dev.txt', 'pytest==8.2.0\n');
+  F.sh(root, 'git add -A && git commit -qm py');
+  const d = (inv) => E.detect(root, { machine: inv });
+  const uv = d(MH.inventory({ venv: false, tools: { uv: true, virtualenv: true } }));
+  assert.equal(uv.name, 'python-uv');
+  assert.deepEqual(uv.setup, ['uv venv -q --allow-existing .venv', 'uv pip install -q --python .venv/bin/python -e .', 'uv pip install -q --python .venv/bin/python -r requirements-dev.txt']);
+  assert.equal(uv.env.UV_HTTP_TIMEOUT, '60');
+  const ve = d(MH.inventory({ venv: false, tools: { virtualenv: true } }));
+  assert.equal(ve.setup[0], 'virtualenv -q .venv');
+  assert.ok(ve.setup.slice(1).every((s) => /--retries 5 --timeout 60/.test(s)), JSON.stringify(ve.setup));
+  assert.deepEqual(E.lint(ve, { root, machine: MH.inventory({ venv: false, tools: { virtualenv: true } }) }), [], 'what the factory proposes passes its own lint');
+  assert.equal(d(MH.inventory({ venv: true })).setup[0], 'python3 -m venv .venv');
+  const none = d(MH.inventory({ venv: false }));
+  assert.match(none.notes, /install uv \(no sudo\)/);
+  assert.equal(E.lint(none, { root, machine: MH.inventory({ venv: false }) })[0].rule, 'venv_no_ensurepip');
+  F.write(root, 'pyproject.toml', '[tool.poetry]\nname = "x"\n');
+  F.write(root, 'poetry.lock', '\n');
+  const po = d(MH.inventory({ venv: true, tools: { poetry: true, virtualenv: true } }));
+  assert.equal(po.name, 'python-poetry');
+  assert.deepEqual(po.setup, ['poetry install --no-interaction']);
+  assert.equal(po.env.POETRY_VIRTUALENVS_IN_PROJECT, 'true');
+  // the planner is told the machine and the rules
+  assert.match(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'wfargs.js'), 'utf8'), /This machine \(its tool inventory/);
+});
+
+// The J-0001 environment: python3 -m venv without ensurepip, requirements.txt written by T1, a
+// Postgres health check that runs once, pip without retries.
+const J0001_ENV = {
+  version: 1,
+  name: 'django-postgres',
+  setup: ['python3 -m venv .venv', '.venv/bin/pip install -r requirements.txt'],
+  env: { PATH: '{worktree}/.venv/bin:$PATH' },
+  services: { up: 'docker compose -f dev/compose.yml up -d db', health: 'pg_isready -h localhost -p 5432', down: 'docker compose -f dev/compose.yml down' },
+};
+const J0001_PLAN = [
+  { id: 'T1', objective: 'scaffold', allowed_paths: ['requirements.txt', 'app/**'], criteria_ids: ['AC-1'], verify_commands: ['python -m pytest -q app'] },
+  { id: 'T2', objective: 'feature', allowed_paths: ['app/views.py'], depends_on: ['T1'], criteria_ids: ['AC-1'], verify_commands: ['python -m pytest -q app'] },
+];
+
+test('lint (J-0001 reproduced): venv without ensurepip, a missing tool, sudo, setup reading a file T1 creates, a single-shot health check, pip without retries; caught by the plan probe in lint-only mode, before the gate', (t) => {
+  const root = F.makeRepo(t);
+  F.write(root, 'dev/compose.yml', 'services: {}\n');
+  F.sh(root, 'git add -A && git commit -qm compose');
+  const J = newJob(root);
+  const inv = MH.inventory({ venv: false, tools: { virtualenv: true, docker: true } });
+  const mf = MH.use(inv);
+  t.after(() => delete process.env.FACTORY_MACHINE_FILE);
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { plan_probe: 'lint' } }));
+  fs.writeFileSync(core('environment').JOB_PROPOSED(root, J), JSON.stringify({ ...J0001_ENV, setup: [...J0001_ENV.setup, 'uv pip install -q --python .venv/bin/python ruff', 'sudo apt-get install -y libpq-dev'] }));
+  writePlan(root, J, J0001_PLAN);
+  const r = F.cli(root, ['plan', 'probe'], { env: { FACTORY_MACHINE_FILE: mf } });
+  assert.equal(r.mode, 'lint');
+  assert.equal(r.ok, false);
+  const rules = r.lint.filter((l) => l.task === 'environment').map((l) => l.rule).sort();
+  assert.deepEqual([...new Set(rules)], ['missing_tool', 'needs_sudo', 'pip_no_retries', 'setup_reads_plan_file', 'single_health_check', 'venv_no_ensurepip']);
+  const p = r.problems.join('\n');
+  assert.match(p, /reads requirements\.txt, which T1 creates \(not a bootstrap task\)[\s\S]*Install from pins directly/);
+  assert.match(p, /`python3 -m venv` does not work on this machine[\s\S]*use `virtualenv \.venv`/);
+  assert.match(p, /health check runs once/);
+  assert.match(p, /`uv` is not installed on this machine/);
+  assert.equal(r.machine.python3_venv_works, false, 'the record carries the machine it was linted for');
+  // the repaired proposal passes the lint: virtualenv, pins installed directly with retries, a health loop
+  const FIXED = { ...J0001_ENV, setup: ['virtualenv -q .venv', ".venv/bin/pip install -q --retries 5 --timeout 60 'django==5.0.6' 'psycopg[binary]==3.1.19' pytest==8.2.0"], services: { ...J0001_ENV.services, health: 'for i in $(seq 60); do pg_isready -h localhost -p 5432 && exit 0; sleep 1; done; exit 1' } };
+  fs.writeFileSync(core('environment').JOB_PROPOSED(root, J), JSON.stringify(FIXED));
+  const r2 = F.cli(root, ['plan', 'probe'], { env: { FACTORY_MACHINE_FILE: mf } });
+  assert.deepEqual(r2.lint.filter((l) => l.task === 'environment'), [], JSON.stringify(r2.lint));
+  // with a bootstrap T1 the requirements file is fine
+  writePlan(root, J, [{ ...J0001_PLAN[0], bootstrap: true }, J0001_PLAN[1]]);
+  assert.ok(!core('environment').lint(J0001_ENV, { root, plan: { tasks: [{ ...J0001_PLAN[0], bootstrap: true }] }, machine: inv }).some((l) => l.rule === 'setup_reads_plan_file'));
+});
+
+// A job at H3 of a medium feature with this environment proposed (the probe off, as in J-0001).
+function toCombinedGate(t, env) {
+  const root = F.makeRepo(t);
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { plan_probe: false } }));
+  const J = newJob(root);
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
+  F.clarify(root);
+  next(root);
+  F.reply(root, 'approve');
+  F.cli(root, ['deps', 'fetch']);
+  const g = F.cli(root, ['wfargs', 'ground']);
+  F.record(root, F.envelope(g, 'ok', { topics: [{ topic: 'codebase', claims: [], unknowns: [] }], degraded: [] }));
+  F.write(F.jobDir(root, J), 'adr-001-x.md', F.adrText({ job: J }));
+  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
+  F.record(root, F.envelope(b, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-x.md')], summary: 's' }, critiques: [{ verdict: 'approve', items: [] }] }));
+  b = F.cli(root, ['wfargs', 'decompose']);
+  writePlan(root, J, [{ id: 'T1', objective: 'fix', allowed_paths: ['src/add.js', 'requirements.txt'], criteria_ids: ['AC-1'], verify_commands: ['node tests/add.test.js'] }]);
+  fs.writeFileSync(core('environment').JOB_PROPOSED(root, J), JSON.stringify(env));
+  assert.equal(F.record(root, F.envelope(b, 'ok', { planner: { valid: true, errors: [], path: 'plan.json' }, critique: { verdict: 'approve', items: [] } })).status, 'ok');
+  assert.equal(next(root).step, 'H3');
+  return { root, J };
+}
+
+test('J-0001 after H3: the sealed environment is checked before any task; it fails (no ensurepip, requirements.txt from T1, a slow DB checked once); the repair loop escalates, a repair passes in a scratch worktree, one question seals it, the gate is not asked again; no attempt spent', (t) => {
+  const dir = shims(t);
+  const box = T.mkdtemp('factory-db-', t);
+  const ready = path.join(box, 'ready');
+  // the slow database: it is ready a moment after it starts
+  const BROKEN = { version: 1, name: 'django-postgres', setup: [`${dir}/python3 -m venv .venv`, '.venv/bin/pip install -r requirements.txt'], services: { up: `rm -f ${ready}; (sleep 1; touch ${ready}) >/dev/null 2>&1 &`, health: `test -f ${ready}`, down: `rm -f ${ready}` } };
+  const { root, J } = toCombinedGate(t, BROKEN);
+  const mf = MH.use(MH.inventory({ venv: false, tools: { virtualenv: true, git: true } }));
+  t.after(() => delete process.env.FACTORY_MACHINE_FILE);
+  const env = { FACTORY_MACHINE_FILE: mf };
+  F.reply(root, 'approve');
+  const sealed = core('environment').load(root);
+  assert.equal(sealed.name, 'django-postgres');
+  const approvedH3 = core('job').load(root, J).approvals.H3.hash;
+  // 1. the check, before any task
+  let n = F.cli(root, ['next'], { env });
+  assert.equal(n.step, 'env_check');
+  assert.equal(n.command, `factory env check --job ${J}`);
+  const ck = F.cli(root, ['env', 'check', '--job', J], { env });
+  assert.equal(ck.ok, false);
+  assert.match(ck.broken.reason, /test -f \S*ready exit 1/, 'the database was checked once, before it was ready');
+  // 2. the repair loop: the planner in repair mode, with the failure and the machine
+  n = F.cli(root, ['next'], { env });
+  assert.equal(n.step, 'env_repair');
+  let b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'env_repair'], { env });
+  const text = fs.readFileSync(b.judge.prompt.split('\n')[1].trim(), 'utf8');
+  assert.match(text, /"python3_venv_works": false/);
+  for (const rule of ['single_health_check', 'pip_no_retries', 'venv_no_ensurepip', 'setup_reads_plan_file']) assert.match(text, new RegExp(`"rule": "${rule}"`), rule);
+  assert.equal(b.judge.model || null, null, 'first round on the planner\'s own model');
+  const R = core('env-repair').REPAIR(root, J);
+  // round 1: the agent changes nothing useful: no progress, the next round escalates
+  fs.writeFileSync(R, JSON.stringify(BROKEN));
+  let rec = F.record(root, F.envelope(b, 'ok', { repair: { path: R, summary: 'same' } }));
+  assert.equal(rec.status, 'retry', JSON.stringify(rec));
+  assert.equal(core('job').load(root, J).status, 'active');
+  b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'env_repair'], { env });
+  assert.ok(b.judge.model, 'escalated to the stronger model');
+  // round 2: virtualenv, pins installed directly with retries (no requirements.txt), a health loop
+  const FIXED = { ...BROKEN, setup: ['mkdir -p .venv/bin'], services: { ...BROKEN.services, health: `for i in $(seq 100); do test -f ${ready} && exit 0; sleep 0.1; done; exit 1` } };
+  fs.writeFileSync(R, JSON.stringify(FIXED));
+  rec = F.record(root, F.envelope(b, 'ok', { repair: { path: R, summary: 'wait for the database' } }));
+  assert.equal(rec.status, 'park', JSON.stringify(rec));
+  assert.equal(rec.park.kind, 'environment_repair');
+  let st = core('job').load(root, J);
+  assert.match(st.park.question, /- setup: .*python3 -m venv[\s\S]*\+ setup: mkdir -p \.venv\/bin[\s\S]*\+ services\.health: for i in/);
+  assert.deepEqual(core('environment').load(root).setup, BROKEN.setup, 'not sealed until the human says so');
+  // 3. one question, one reply: chat "yes" seals it (the human's channel)
+  const ans = core('human').replyToPark(root, { jobId: J, text: 'yes', channel: 'chat' });
+  assert.equal(ans.resumed, true);
+  assert.deepEqual(core('environment').load(root).setup, FIXED.setup);
+  st = core('job').load(root, J);
+  assert.notEqual(st.approvals.H3.hash, approvedH3, 'the gate\'s approval moved with the sealed repair');
+  assert.ok(st.approvals.H3.environment_repaired);
+  n = F.cli(root, ['next'], { env });
+  assert.equal(n.step, 'env_check', 'the gate is not asked again; the sealed fix is checked');
+  assert.equal(F.cli(root, ['env', 'check', '--job', J], { env }).ok, true);
+  n = F.cli(root, ['next'], { env });
+  assert.equal(n.workflow, 'realize');
+  assert.equal(Object.values(core('job').load(root, J).tasks || {}).reduce((a, x) => a + (x.attempts || 0), 0), 0, 'no task attempt was spent on the environment');
+});
+
+test('environment repair: without progress the loop stops with a specific question (never a bare resume); "approve environment" with nothing to seal is refused', (t) => {
+  const root = F.makeRepo(t);
+  const J = newJob(root);
+  const BAD = { version: 1, name: 'bad', setup: ['echo "No matching distribution found for nautobot==9.9" >&2; exit 3'] };
+  core('environment').confirm(root, { env: BAD, channel: 'tty' });
+  const ER = core('env-repair');
+  ER.checkForJob(root, core('job').load(root, J));
+  assert.equal(ER.routerAction({ root, state: core('job').load(root, J) }).step, 'env_repair');
+  let last = null;
+  for (let i = 0; i < 6; i++) {
+    fs.writeFileSync(ER.REPAIR(root, J), JSON.stringify(BAD));
+    last = ER.record(root, core('job').load(root, J), {});
+    if (last.status === 'park') break;
+  }
+  assert.equal(last.status, 'park');
+  assert.equal(last.park_kind, 'environment_broken');
+  assert.match(last.park_question.question, /still does not set up on this machine \(echo "No matching distribution/);
+  assert.equal(last.park_question.options.length, 3);
+  assert.throws(() => F.reply(root, 'approve environment'), /no repaired build environment waiting/);
+  assert.equal(core('human').parseReply('approve environment').cmd, 'approve_environment');
+  assert.ok(core('human').readReply('approve environment').reply);
+});

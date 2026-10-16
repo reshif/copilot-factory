@@ -381,6 +381,20 @@ function run(root, { jobId } = {}) {
   }
   const e = gate.env && !envMod.isNone(gate.env) ? gate.env : null;
   const base = state.base_commit || 'HEAD';
+  // the proposed environment against this machine (fix 0.10.1): lint, so it is caught before the
+  // gate even when nothing runs (lint-only mode); a confirmed one is the human's and is not linted
+  let machine = null;
+  if (e && gate.status === 'proposed') {
+    try {
+      machine = require('./machine').inventory();
+    } catch {
+      machine = null;
+    }
+    for (const l of envMod.lint(e, { root, base, plan, machine })) {
+      lint.push({ task: 'environment', cmd: l.cmd, rule: l.rule, message: l.message });
+      problems.push(`environment: \`${l.cmd}\` ${l.message} (${l.rule})`);
+    }
+  }
   const green = greenfield(root, base, e);
   const boot = plan.tasks.filter((t) => t.bootstrap === true);
   if (green) {
@@ -490,6 +504,7 @@ function run(root, { jobId } = {}) {
     environment_name: (gate.env && gate.env.name) || null,
     greenfield: green,
     mode: runMode,
+    ...(machine ? { machine: require('./machine').summary(machine) } : {}),
     ok: problems.length === 0,
     ms: Date.now() - started,
     setup,

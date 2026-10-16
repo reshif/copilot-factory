@@ -10,6 +10,8 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const F = require('./helpers/fixture');
+// the machine these tests assume: python3 -m venv works; no uv, poetry or virtualenv (fix 0.10.1)
+require('./helpers/machine').use(require('./helpers/machine').VENV_ONLY);
 const P = require('./helpers/pyrepo');
 
 const FAKE = path.join(__dirname, 'helpers', 'fake-copilot.js');
@@ -80,9 +82,10 @@ test('P2.1 detection: a likely environment from the repo files (venv, Nautobot a
   F.write(root, 'pyproject.toml', '[project]\nname = "x"\n[project.optional-dependencies]\ndev = ["pytest"]\n');
   let d = env.detect(root);
   assert.equal(d.name, 'python-venv');
-  assert.ok(d.setup.includes("'.venv/bin/pip install -q -e '.[dev]'".slice(1)) || d.setup.some((s) => /pip install -q -e '\.\[dev\]'/.test(s)), JSON.stringify(d.setup));
+  assert.ok(d.setup.includes("'.venv/bin/pip install -q -e '.[dev]'".slice(1)) || d.setup.some((s) => /pip install -q --retries 5 --timeout 60 -e '\.\[dev\]'/.test(s)), JSON.stringify(d.setup));
   assert.equal(d.env.PATH, '{worktree}/.venv/bin:$PATH');
-  assert.deepEqual(d.evidence, ['pyproject.toml']);
+  // fix 0.10.1: the machine it was proposed for is part of the evidence
+  assert.deepEqual(d.evidence, ['pyproject.toml', 'this machine: venv (python3 -m venv works)']);
   F.write(root, 'pyproject.toml', '[tool.poetry]\nname = "nautobot-app-golden"\n[tool.poetry.dependencies]\nnautobot = "^2.0"\n');
   F.write(root, 'tasks.py', 'from invoke import Collection, task\nnamespace = Collection("nautobot_golden")\n');
   F.write(root, 'development/docker-compose.postgres.yml', 'services: {}\n');
@@ -153,7 +156,10 @@ test('P2.1 acceptance: the builder runs inside the worktree\'s venv and its work
   const root = P.makePyRepo();
   const { J } = toRealize(root);
   terminal(root, ['env', 'set', '--file', writeEnv(root, P.ENV)]);
-  assert.equal(F.cli(root, ['next']).workflow, 'realize', 'confirmed: the build may start');
+  // fix 0.10.1: confirmed, the environment is checked once in a scratch worktree, then the build starts
+  assert.equal(F.cli(root, ['next']).step, 'env_check');
+  assert.equal(F.cli(root, ['env', 'check', '--job', J]).ok, true);
+  assert.equal(F.cli(root, ['next']).workflow, 'realize', 'confirmed and checked: the build may start');
   const wt = path.join(root, '.factory', 'worktrees', `${J}-T1`);
   // Before: the root venv's runner tests the ROOT's code, wherever it is run from.
   const fixture = JSON.stringify(path.join(__dirname, 'helpers', 'fixture.js'));
@@ -201,12 +207,19 @@ test('P2.1 acceptance: the builder runs inside the worktree\'s venv and its work
   assert.equal(proof.ok, true, JSON.stringify(proof));
 });
 
-test('P2.1 acceptance: a broken setup parks the job once, with the reason, before any builder spends an attempt; fixed and resumed, it builds', () => {
+test('P2.1 acceptance (fix 0.10.1): a broken sealed setup is checked before any builder, repaired (agent proposes, CLI checks, human seals), and only then built; no attempt is spent', () => {
   const root = P.makePyRepo();
   const { J } = toRealize(root);
   const BROKEN = { ...P.ENV, setup: ['bash scripts/mkenv.sh', 'echo "ERROR: No matching distribution found for nautobot==9.9" >&2; exit 3'] };
   terminal(root, ['env', 'set', '--file', writeEnv(root, BROKEN)]);
-  assert.equal(F.cli(root, ['next']).workflow, 'realize');
+  // the router checks it first and repairs it, never starts a builder on it
+  assert.equal(F.cli(root, ['next']).step, 'env_check');
+  const ck = F.cli(root, ['env', 'check', '--job', J]);
+  assert.equal(ck.ok, false);
+  assert.equal(ck.__code, 0, 'a failing check is a result, not an error of the drive\'s step');
+  const n = F.cli(root, ['next']);
+  assert.equal(n.step, 'env_repair', 'builders never start on a failing environment');
+  assert.equal(n.config, 'env_repair');
   const fixture = JSON.stringify(path.join(__dirname, 'helpers', 'fixture.js'));
   const h = harness(`const F = require(${fixture});
   module.exports = (c) => {
@@ -215,22 +228,29 @@ test('P2.1 acceptance: a broken setup parks the job once, with the reason, befor
     F.sh(c.cwd, 'git commit -qam fix');
     return { status: 'done', summary: 'fixed', swept: [] };
   };`);
-  const r = h.run(root, ['realize']);
-  assert.equal(r.status, 'park', JSON.stringify(r).slice(0, 2000));
-  assert.match(r.park_reason, /^environment broken: echo "ERROR: No matching distribution found for nautobot==9\.9" >&2; exit 3 exit 3: ERROR: No matching distribution found for nautobot==9\.9/);
-  assert.match(r.park_reason, /no builder attempt was spent/);
-  assert.equal(h.log().length, 0, 'no builder was started');
-  const st = core('job').load(root, J);
-  assert.equal(st.status, 'parked');
-  assert.equal(st.park.from, 'environment');
-  assert.equal((st.tasks.T1 || {}).attempts || 0, 0, 'no attempt was used');
-  assert.equal(events(root).filter((e) => e.event === 'environment_broken').length, 1, 'parked once');
-  assert.equal(F.cli(root, ['next']).action, 'parked');
-  // fix the environment (the human), resume: it builds
-  terminal(root, ['env', 'set', '--file', writeEnv(root, P.ENV)]);
-  F.reply(root, 'resume');
-  assert.equal(F.cli(root, ['next']).workflow, 'realize');
-  const r2 = h.run(root, ['realize', '--scope', 'resume']);
+  assert.equal(h.run(root, ['realize']).code, 'not_waiting_for_workflow', 'factory run refuses realize while the environment fails');
+  // the repair agent writes a fixed environment; recording it, the CLI checks it in a scratch worktree
+  const b = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'env_repair']);
+  assert.equal(b.judge.agent_type, 'factory:planner');
+  assert.match(fs.readFileSync(b.judge.prompt.split('\n')[1].trim(), 'utf8'), /environment repair[\s\S]*No matching distribution found for nautobot==9\.9/);
+  fs.writeFileSync(core('env-repair').REPAIR(root, J), JSON.stringify(P.ENV));
+  const rec = F.record(root, F.envelope(b, 'ok', { repair: { path: core('env-repair').REPAIR(root, J), summary: 'drop the failing install' } }));
+  assert.equal(rec.status, 'park', JSON.stringify(rec));
+  assert.equal(rec.park.kind, 'environment_repair');
+  let st = core('job').load(root, J);
+  assert.match(st.park.question, /- setup: echo "ERROR: No matching distribution/, 'the diff of the commands is shown');
+  assert.equal(core('environment').load(root).setup[1], BROKEN.setup[1], 'nothing is sealed by the agent or the CLI');
+  assert.equal(F.cli(root, ['resume', 'a'], { env: { FACTORY_RUNNER: '1' } }).code, 'agent_not_allowed', 'an agent never seals');
+  // the human seals it with one reply
+  F.reply(root, 'approve environment');
+  st = core('job').load(root, J);
+  assert.equal(st.status, 'active');
+  assert.deepEqual(core('environment').load(root).setup, P.ENV.setup);
+  assert.equal(F.cli(root, ['next']).step, 'env_check');
+  assert.equal(F.cli(root, ['env', 'check', '--job', J]).ok, true);
+  const n2 = F.cli(root, ['next']);
+  assert.equal(n2.workflow, 'realize');
+  const r2 = h.run(root, ['realize', ...(n2.scope ? ['--scope', n2.scope] : [])]);
   assert.equal(r2.status, 'ok', JSON.stringify(r2).slice(0, 2000) + r2.__stderr);
   assert.equal(h.log().length, 1, 'one builder, one attempt');
   assert.equal(core('job').load(root, J).tasks.T1.attempts, 1);

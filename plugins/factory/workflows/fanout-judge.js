@@ -265,4 +265,12 @@ if (brief.config === 'diagnose') {
   return envelope('ok', d ? `Diagnosis of the ${brief.mode} loop: ${d.needs_user ? 'a question for the human' : 'a different approach'}.` : 'The diagnosis agent returned nothing.', { loop: brief.mode, diagnosis: d || null })
 }
 
+// fix 0.10.1: the sealed build environment failed its check; the planner (repair mode) writes a
+// repaired one, the CLI checks it when this is recorded, the human seals it
+if (brief.config === 'env_repair') {
+  phase('env_repair: planner')
+  const d = await one(brief.judge.prompt, brief.judge, 'environment repair')
+  return envelope('ok', d ? `Environment repair: ${d.summary || d.path}.` : 'The repair agent returned nothing.', { repair: d || null })
+}
+
 throw new Error(`Unknown config ${brief.config}`)

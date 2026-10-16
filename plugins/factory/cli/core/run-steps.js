@@ -61,6 +61,11 @@ var RUN_STEPS = (function () {
       next: 'a different approach, or one question for you',
       steps: [{ key: 'diagnose', label: 'diagnose the loop', match: /^diagnose: God Eye/, roles: ['god-eye'] }],
     },
+    // fanout-judge.js, env_repair (fix 0.10.1): the planner repairs a sealed build environment that failed its check
+    'fanout-judge:env_repair': {
+      next: 'the CLI checks the repair, then your seal (approve environment)',
+      steps: [{ key: 'repair', label: 'repair the build environment', match: /^env_repair: planner/, roles: ['planner'] }],
+    },
     // ground.js: the probes in parallel
     ground: { next: 'decide', steps: [{ key: 'probes', label: 'research probes', match: /^ground:/, roles: ['researcher'] }] },
     // decompose.js: planner rounds until valid → the plan probe (the CLI dry-runs every verify

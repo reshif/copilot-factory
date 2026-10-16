@@ -47,7 +47,7 @@ function readStdin() {
 
 const HELP = `factory — Software Factory CLI (plugin at ${PLUGIN_ROOT})
 
-Setup      init [--base <branch>] · doctor · ci install · shim [--dir ~/.local/bin] [--force]   (links factory, factory-inspect onto PATH)
+Setup      init [--base <branch>] · doctor [--machine] · ci install · shim [--dir ~/.local/bin] [--force]   (links factory, factory-inspect onto PATH)
 Jobs       job new --title "…" --type <work type> --risk low|medium|high [--epic] [--request "<the user's words>"] · job show · job list · use <job>
 Routing    next · why [--format md] · finalize [--mode before_ship|full] [--check]
 Drive      drive [--detach] [--max-steps n]   (steps the job itself: workflows, CLI steps, ship, distill; stops and notifies you
@@ -159,7 +159,7 @@ function run(argv) {
     case 'init':
       return C('setup').init(opt.root || process.cwd(), { baseBranch: opt.base });
     case 'doctor':
-      return C('setup').doctor(opt.root || process.cwd());
+      return C('setup').doctor(opt.root || process.cwd(), { refreshMachine: Boolean(opt.machine) });
     case 'shim':
       return C('setup').shim({ dir: opt.dir, force: Boolean(opt.force) });
     case 'run': {
@@ -508,6 +508,9 @@ function run(argv) {
       const E = C('environment');
       if (sub === 'show') return E.show(R());
       if (sub === 'check') {
+        // --job: the sealed environment's check before any task (the router's env.check step):
+        // recorded for the job; a failure is a result the repair loop takes up, not an error
+        if (opt.job && !opt.proposed) return C('env-repair').checkForJob(R(), C('job').resolve(R(), J));
         const r = E.check(R(), { proposed: Boolean(opt.proposed) });
         if (!r.ok) process.exitCode = 1;
         return r;

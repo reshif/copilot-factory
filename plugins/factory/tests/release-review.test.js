@@ -7,6 +7,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const F = require('./helpers/fixture');
+// the machine these tests assume: python3 -m venv works; no uv, poetry or virtualenv (fix 0.10.1)
+require('./helpers/machine').use(require('./helpers/machine').VENV_ONLY);
 
 const core = (m) => require(`../cli/core/${m}`);
 const stateOf = (root, J) => core('job').load(root, J);
@@ -147,7 +149,7 @@ test('environment detection never builds a setup command from a file name that c
   F.write(root, 'requirements-test;touch pwned;.txt', 'x\n');
   const p = core('environment').detect(root);
   assert.equal(p.name, 'python-venv');
-  assert.ok(p.setup.includes('.venv/bin/pip install -q -r requirements-dev.txt'), JSON.stringify(p.setup));
+  assert.ok(p.setup.includes('.venv/bin/pip install -q --retries 5 --timeout 60 -r requirements-dev.txt'), JSON.stringify(p.setup));
   for (const c of p.setup) assert.doesNotMatch(c, /[;$`|&()]/, c);
   assert.ok(!p.evidence.some((e) => /[;$]/.test(e)), JSON.stringify(p.evidence));
 });

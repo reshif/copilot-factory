@@ -545,6 +545,7 @@ function decompose(root, state, ctx, action) {
             ? `- Build environment (proposed, not confirmed yet — ${envGate.source}): ${envGate.env.name || 'proposed'} — setup: ${(envGate.env.setup || []).join(' && ') || '(none)'}${envGate.env.notes ? `. Notes: ${envGate.env.notes}` : ''}`
             : '- Build environment: none yet (worktrees are bare: only what the repository already has runs).',
         `- Propose the build environment the plan needs, with the plan: write ${envFile} (the fields of .factory/environment.json: name, setup, cache_key, env, prefix, services {up, health, down}, teardown, ignore, timeout_seconds, notes) whenever the verify commands need anything the environment above does not give them (a venv, installed dependencies, settings, a database, a server). Keep it unchanged when the one above is right. The human accepts it at the plan gate; nothing runs it before then except the CLI's probe in a scratch worktree.`,
+        `- This machine (its tool inventory, factory doctor shows it): ${(() => { try { return JSON.stringify(require('./machine').summary(require('./machine').inventory())); } catch { return 'unknown'; } })()}. The environment must use tools this machine has, never sudo: make the venv with uv when it is there (uv venv; uv pip install --python .venv/bin/python …), else poetry for a poetry repo, else virtualenv, and python3 -m venv only when python3_venv_works is true; give every pip install --retries 5 --timeout 60. Setup must read only files the base commit has or the bootstrap task creates (install from pins directly in setup rather than from a requirements file a later task writes). A service's health command waits with a deadline (a retry loop, docker compose up --wait), never a single check.`,
         '- Greenfield (the environment\'s setup needs manifests no commit has yet): make the task that creates them the bootstrap task ("bootstrap": true, no depends_on), first, and make every other task depend on it.',
         '- Verify commands run in parallel worktrees, inside that environment: no fixed ports, no sleep-based waits, no background processes; a framework test gets its settings and database from the environment, not from the developer\'s machine.',
       ].join('\n');
@@ -715,7 +716,8 @@ function build(root, { jobId, workflow, config, mode, scope, lanes, threatModel,
       if (config === 'decide') return decide(root, state, ctx, action);
       if (config === 'challenge') return challenge(root, state, ctx, action);
       if (config === 'diagnose') return diagnose(root, state, ctx, action);
-      return fail('fanout-judge needs --config clarify|decide|challenge|diagnose', 'bad_input');
+      if (config === 'env_repair') return base(root, state, 'fanout-judge', require('./env-repair').brief(root, state, { agentSpec, prompt, schema, jobContext: jobContext(root, state) }));
+      return fail('fanout-judge needs --config clarify|decide|challenge|diagnose|env_repair', 'bad_input');
     case 'ground':
       return ground(root, state, ctx, action);
     case 'decompose':
@@ -743,6 +745,7 @@ function currentInputHash(root, state, envelope) {
     case 'fanout-judge':
       if (envelope.config === 'decide') return inputHash({ contract: ctx.b.contract, findings: ctx.b.findings });
       if (envelope.config === 'diagnose') return inputHash({ loop: envelope.mode, open: (((state.loops || {})[envelope.mode]) || {}).last || [] });
+      if (envelope.config === 'env_repair') return require('./env-repair').inputHash(state, require('./env-repair').readCheck(root, state.id));
       return inputHash({ fingerprint: ctx.b.fingerprint, children: ctx.b.children, mode: envelope.mode || null });
     case 'ground':
       return inputHash({ contract: ctx.b.contract, answers: answers.length });

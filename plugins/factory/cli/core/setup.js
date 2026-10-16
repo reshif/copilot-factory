@@ -132,7 +132,7 @@ function init(cwd, { baseBranch } = {}) {
   return { root, created, ...report, base_branch: readJson(p.projectFile).base_branch, doctor: doctor(root) };
 }
 
-function doctor(cwd) {
+function doctor(cwd, opts = {}) {
   const checks = [];
   const add = (name, ok, detail, level = 'error') => checks.push({ name, ok, level: ok ? 'ok' : level, detail });
   const major = parseInt(process.versions.node.split('.')[0], 10);
@@ -162,6 +162,15 @@ function doctor(cwd) {
       const p = envMod.proposal(root);
       add('build environment', p.name === 'none', p.name === 'none' ? 'none needed (no dependency manifest)' : `none confirmed; proposed ${p.name}: ${(p.setup || []).join(' && ')}. Reply "confirm environment ${envMod.short(p)}" or run factory env set; until then worktrees are bare`, 'warning');
     }
+  }
+  // this machine's tools (cli/core/machine.js, cached for a day; factory doctor --machine scans
+  // again): what a build environment can use here, with the remedy where something is missing
+  try {
+    const M = require('./machine');
+    const inv = M.inventory({ refresh: Boolean(opts.refreshMachine) });
+    for (const l of M.lines(inv)) add(`machine: ${l.name}`, l.ok, l.ok || !l.remedy ? l.detail : `${l.detail}. Remedy: ${l.remedy}`, 'warning');
+  } catch (e) {
+    add('machine', false, `could not take the tool inventory: ${String(e.message).slice(0, 200)}`, 'warning');
   }
   copilotChecks(add, root);
   for (const c of hookNodeChecks()) add(c.name, c.ok, c.detail, 'warning');

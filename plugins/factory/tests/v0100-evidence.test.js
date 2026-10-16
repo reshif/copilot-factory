@@ -443,7 +443,7 @@ test('plan probe: lint (fixed ports, sleep, background) and a dry-run of every v
 test('plan probe: greenfield needs a bootstrap task first (setup waits for it); realize prepares the bootstrap worktree bare', (t) => {
   const root = F.makeRepo(t);
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'greenfield', '--risk', 'medium']).job;
-  const env = { version: 1, name: 'python-venv', setup: ['python3 -m venv .venv', '.venv/bin/pip install -q -e .'], cache_key: ['pyproject.toml'], env: { PATH: '{worktree}/.venv/bin:$PATH' } };
+  const env = { version: 1, name: 'python-venv', setup: ['python3 -m venv .venv', '.venv/bin/pip install -q --retries 5 --timeout 60 -e .'], cache_key: ['pyproject.toml'], env: { PATH: '{worktree}/.venv/bin:$PATH' } };
   fs.writeFileSync(core('environment').JOB_PROPOSED(root, J), JSON.stringify(env));
   const T1 = { id: 'T1', objective: 'scaffold', allowed_paths: ['pyproject.toml', 'app/__init__.py'], criteria_ids: ['AC-1'], verify_commands: ['python -c "import app"'] };
   const T2 = { id: 'T2', objective: 'feature', allowed_paths: ['app/x.py'], criteria_ids: ['AC-1'], verify_commands: ['pytest -q'] };
@@ -562,6 +562,9 @@ test('combined gate: medium H3 binds design + plan + environment; approving it s
   assert.match(conf.confirmed.gate, new RegExp(`${J} H3`));
   const st = core('job').load(root, J);
   assert.equal(st.approvals.H3.plan, core('invalidation').current(root, st).plan);
+  // fix 0.10.1: sealed by the gate, checked once in a scratch worktree, then the build starts
+  assert.equal(next(root).step, 'env_check');
+  assert.equal(F.cli(root, ['env', 'check', '--job', J]).ok, true);
   n = next(root);
   assert.equal(n.workflow, 'realize', 'sealed by the gate: the build starts without a "confirm environment"');
   assert.equal(n.environment, undefined);

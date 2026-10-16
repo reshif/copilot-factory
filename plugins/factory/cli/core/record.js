@@ -421,6 +421,7 @@ function apply(root, { jobId, file, envelope }) {
       if (env.config === 'decide') res = recDecide(root, fresh, env);
       else if (env.config === 'challenge') res = recChallenge(root, fresh, env);
       else if (env.config === 'diagnose') res = recDiagnose(root, fresh, env);
+      else if (env.config === 'env_repair') res = require('./env-repair').record(root, fresh, env);
       else fail(`Unknown config ${env.config}`, 'bad_envelope');
       break;
     case 'ground':
