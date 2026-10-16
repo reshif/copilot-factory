@@ -27,7 +27,7 @@ const path = require('path');
 const { realpath, deny: denyOut } = require('./lib');
 const { parse } = require('./shell');
 
-const JOB_DOCS = /^(contract\.md|threat-model\.md|no-adr\.md|recommendation\.md|adr-\d+[^/]*\.md|contracts\.md|contracts\.json|plan\.json|slices\.json)$/;
+const JOB_DOCS = /^(contract\.md|threat-model\.md|no-adr\.md|recommendation\.md|adr-\d+[^/]*\.md|contracts\.md|contracts\.json|plan\.json|slices\.json|environment\.proposed\.json)$/;
 
 // Copilot preToolUse deny: the documented flat JSON on stdout, exit 0 (lib.deny).
 function deny(reason) {
@@ -65,11 +65,15 @@ function taskScope(root, worktreeName) {
   const { readJson } = require('../cli/lib/util');
   const plan = readJson(path.join(root, '.factory', 'jobs', m[1], 'plan.json'), null);
   if (!plan || !plan.tasks) return { paths: [], job: m[1], task: m[2] || null };
+  // plus the paths realize granted a task inside the contract (cli/core/tasks.js grant), kept in
+  // the job's sealed state
+  const st = readJson(path.join(root, '.factory', 'jobs', m[1], 'state.json'), null) || {};
+  const granted = (id) => (((st.tasks || {})[id] || {}).granted_paths || []).filter((x) => typeof x === 'string');
   if (m[2]) {
     const t = plan.tasks.find((x) => x.id === m[2]);
-    return { paths: t ? t.allowed_paths : [], job: m[1], task: m[2] };
+    return { paths: t ? [...(t.allowed_paths || []), ...granted(t.id)] : [], job: m[1], task: m[2] };
   }
-  return { paths: plan.tasks.flatMap((t) => t.allowed_paths || []), job: m[1], task: null };
+  return { paths: plan.tasks.flatMap((t) => [...(t.allowed_paths || []), ...granted(t.id)]), job: m[1], task: null };
 }
 
 // Returns a deny reason or null.
@@ -197,6 +201,7 @@ const AGENT_ALLOWED = {
   intent: ['show'],
   clarify: ['status'],
   env: ['show', 'check'],
+  deps: ['show', 'check'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
   reconcile: ['run', 'continue', 'abort'],
@@ -207,7 +212,7 @@ const AGENT_ALLOWED = {
 };
 
 // Every top-level factory command (cli/main.js): an agent is refused only a real command.
-const CLI_VERBS = new Set(['help', 'init', 'doctor', 'shim', 'run', 'console', 'job', 'use', 'next', 'why', 'finalize', 'contract', 'intent', 'clarify', 'env', 'answer', 'wfargs', 'record', 'plan', 'task', 'reconcile', 'verify', 'evidence', 'report', 'ship', 'pr', 'ci', 'close', 'followup', 'doc', 'distill', 'lessons', 'amend', 'park', 'epic', 'telemetry', 'recipe', 'drive', 'inbox', ...HUMAN_ONLY]);
+const CLI_VERBS = new Set(['help', 'init', 'doctor', 'shim', 'run', 'console', 'job', 'use', 'next', 'why', 'finalize', 'contract', 'intent', 'clarify', 'env', 'deps', 'answer', 'wfargs', 'record', 'plan', 'task', 'reconcile', 'verify', 'evidence', 'report', 'ship', 'pr', 'ci', 'close', 'followup', 'doc', 'distill', 'lessons', 'amend', 'park', 'epic', 'telemetry', 'recipe', 'drive', 'inbox', ...HUMAN_ONLY]);
 
 function agentAllowed(a, b) {
   if (!a || !CLI_VERBS.has(a)) return true;
@@ -825,10 +830,10 @@ function ownJobDir(jobId) {
 
 // The CLI's test-only human seam and the seal-secret override are for the test suite: a shell
 // command that sets them (bash, env, export, PowerShell $env:) is never an agent's business.
-const TEST_SEAM = /\bFACTORY_(TEST_HUMAN\w*|SECRET_FILE)\b/;
+const TEST_SEAM = /\bFACTORY_(TEST_HUMAN\w*|SECRET_FILE|DEPS_FETCH_\w+)\b/;
 
 function checkBash(root, cmd, policy, opts = {}) {
-  if (TEST_SEAM.test(String(cmd || ''))) return 'FACTORY_TEST_HUMAN and FACTORY_SECRET_FILE are the test suite\'s seam into human-only actions, never set from here. Human-only actions are the user\'s: their chat reply, or their own terminal.';
+  if (TEST_SEAM.test(String(cmd || ''))) return 'FACTORY_TEST_HUMAN, FACTORY_SECRET_FILE and FACTORY_DEPS_FETCH_* are the test suite\'s seams (into human-only actions, and the dependency fetch), never set from here. Human-only actions are the user\'s: their chat reply, or their own terminal.';
   const ctx = { root, cwd: opts.cwd || root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [], scripts: 0 };
   try {
     return walk(String(cmd || ''), ctx, 0);

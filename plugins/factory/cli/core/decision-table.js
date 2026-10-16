@@ -324,10 +324,18 @@ function deniedShip(ctx) {
   return { ...stepAction(ctx, realize), scope: 'fix', denied: { gate: 'HS', reason: denied.reason || '', at: denied.at }, reason: `You denied HS: "${denied.reason || ''}". Your reason is the finding of a fix round (every task reopened with it); then prove and review run again and HS is shown on the new build.` };
 }
 
+// A deny at the combined design + plan gate (0.10.0) goes to the stage it names: the plan (its
+// tasks, verify commands, environment) to decompose, anything else to decide, which re-plans.
+function combinedProducer(ctx, gate, hash) {
+  const d = (ctx.state.denials || []).filter((x) => x.gate === gate && x.hash === hash).pop();
+  return require('./critics').denyTarget(d ? d.reason : '');
+}
+
 function deniedReroute(ctx, gate) {
   const { root, state } = ctx;
   if (gate === 'HS') return deniedShip(ctx);
-  const from = PRODUCER[gate];
+  const combined = gate === 'H3' && (steps.combinedOf(ctx, gate) || []).includes('design');
+  const from = combined ? combinedProducer(ctx, gate, steps.gateHash(ctx, gate)) : PRODUCER[gate];
   const producer = from && ctx.recipe.steps.find((s) => s.step === from);
   if (!producer || producer.run.startsWith('cli:')) return null;
   const hash = steps.gateHash(ctx, gate);
@@ -475,6 +483,12 @@ function orderAction(ctx, al, { humanAcs = null } = {}) {
   // a review waiting on the human, with steps before ship still to run (none in the shipped
   // recipes): the step runs, the review waits
   const ci = localReverify(ctx, s);
+  // 0.10.0: no build starts in an environment the human has not accepted (its setup runs on
+  // this machine); an approved combined gate has sealed it already
+  if (!ci && s.step === 'realize' && require('./environment').needsConfirmation(ctx.root, state.id)) {
+    const g = require('./environment').gateProposal(ctx.root, state.id);
+    return { step: 'realize', run: 'human:confirm environment', action: 'wait', environment: g, reason: g.status === 'tampered' ? `${g.message} The build waits until it is set again from your terminal (factory env set).` : `The build environment is not confirmed, so no task is built: ${g.env.name || 'proposed'} (${g.source || 'proposed'}) — setup: ${(g.env.setup || []).join(' && ') || '(none)'}. Reply "confirm environment ${g.short}" to accept it (or "confirm environment none" for bare worktrees).`, rule: 'env.unconfirmed' };
+  }
   return { ...(ci || stepAction(ctx, s)), rule: ci ? 'order.ci_reverify' : 'order.next_step' };
 }
 
@@ -789,6 +803,14 @@ function route(root, jobId) {
       job.save(root, state);
     }
     action.gate = state.pending_gate;
+    // what the gate shows besides its documents: the parts a combined gate approves, the critics'
+    // open objections, the API ledger (0.10.0, cli/core/critics.js)
+    try {
+      const view = require('./critics').gateView(ctx, action.step);
+      if (view) action.review = view;
+    } catch {
+      /* the view is advice; the gate stands without it */
+    }
     // H1 / EH1: what the contract alone does not show (checked against the user's words,
     // decisions and who made them, gaps, drops and why, God Eye's objections)
     if (['H1', 'EH1'].includes(action.step)) {

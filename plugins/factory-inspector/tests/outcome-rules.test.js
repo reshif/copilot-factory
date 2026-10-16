@@ -31,7 +31,7 @@ function history() {
   const H2 = head();
   F.sh(root, `git checkout -q -b other ${B} && git commit -q --allow-empty -m "S0"`);
   const S0 = head();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'insp-job-'));
+  const dir = require('../../factory/tests/helpers/tmp').mkdtemp('insp-job-');
   const evFile = (id, h) => {
     const p = path.join(dir, `${id}.json`);
     fs.writeFileSync(p, JSON.stringify({ id, head: h, pass: true }));
@@ -167,7 +167,7 @@ test('R24 (review M5): an export moved to another file, and renamed tests, are n
   F.write(root, 'tests/test_a.py', 'def test_parse_rows():\n    pass\n');
   F.sh(root, 'git add -A && git commit -qm T2');
   const H2 = head();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'insp-mv-'));
+  const dir = require('../../factory/tests/helpers/tmp').mkdtemp('insp-mv-');
   const ev = (id, h) => { const p = path.join(dir, `${id}.json`); fs.writeFileSync(p, JSON.stringify({ head: h, pass: true })); return p; };
   const tasks = { T1: { outcome: 'done', start_commit: B, evidence: { pass: true, file: ev('T1', H1), at: at(2) } }, T2: { outcome: 'done', start_commit: H1, evidence: { pass: true, file: ev('T2', H2), at: at(3) } } };
   const ledger = (ship) => [{ kind: 'step', step: 'reconcile', ok: true, at: at(4), detail: { task_heads: { T1: H1, T2: H2 } } }, { kind: 'step', step: 'ship', ok: true, at: at(5), detail: { head: ship } }];

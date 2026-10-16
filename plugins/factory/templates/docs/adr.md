@@ -85,6 +85,19 @@ sequenceDiagram
   S-->>A: {{response}}
 ```
 
+## External API usage
+<!-- rule: optional; ledger -->
+<!-- Every call this design makes into a library or service outside this repository, one row
+     each: the symbol (function, class, flag, default), how the design uses it (the arguments
+     and flags it passes, the behaviour it relies on), and the API ledger entry (L-n, from
+     api-ledger.json / findings.md "API ledger") that shows that behaviour in the pinned
+     dependency source. Required, and checked, when ground recorded an API ledger: a row
+     without a ledger id, or with an id the ledger does not have, fails `factory doc check`.
+     Write "None: this design calls no external API." when that is true. -->
+| Symbol | How the design uses it | Ledger |
+|---|---|---|
+| {{library.function(arg, flag=…)}} | {{what it passes and relies on}} | {{L-1}} |
+
 ## Consequences
 <!-- What becomes easier and harder, operational cost, performance, what follow-up
      work this creates or rules out. Be honest about the negatives. -->

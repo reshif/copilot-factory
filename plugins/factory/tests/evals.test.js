@@ -68,7 +68,7 @@ test('firedFrom / judged / caseResult / summarize score runs as the report needs
 });
 
 test('a whole trigger run against a fake copilot: skipped when not signed in, scored when it answers', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-evals-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-evals-');
   const fake = path.join(dir, 'copilot.js');
   // Fires `why` for prompts that mention why and the factory; with FAKE_AUTH unset it can't sign in.
   fs.writeFileSync(fake, `const a = process.argv.slice(2); const p = a[a.indexOf('-p') + 1] || '';
@@ -142,7 +142,7 @@ test('scoreChallenge / scoreClarify: recall, precision, verifier agreement, inje
 });
 
 test('eval-outcomes --dry-run: every fixture reaches its step and plans the right agents (no model)', () => {
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-outcomes-'));
+  const out = require('./helpers/tmp').mkdtemp('factory-outcomes-');
   const r = spawnSync('node', [path.join(REPO, 'scripts', 'eval-outcomes.js'), '--dry-run', '--json', '--out', out], { encoding: 'utf8', timeout: 600000 });
   assert.equal(r.status, 0, r.stderr);
   const rep = JSON.parse(r.stdout);

@@ -95,24 +95,99 @@ const degraded = degradedNow()
 const inputs = inputsNow()
 if (degraded.length) log(`No result after retry: ${degraded.join(', ')}`)
 
+// ---- decide: critics with evidence (0.10.0) ----
+// The design is critiqued by God Eye and, when the job has dependency source, the API-conformance
+// critic, in parallel. Every serious (blocker/major) item goes to a finding verifier, as review
+// findings do in challenge; refuted items cost no revise. An API item must carry evidence (a
+// dependency file:line with its quote, or a probe's output); a source quote the CLI cannot find
+// at its line does not count as serious. While serious items stay open the architect revises —
+// always once more after the last critique, so the gate never shows an unrevised critique — and
+// the loop stops when the open set stops shrinking, or at the ceiling. Every stop goes to the
+// human gate with the open objections shown; decide never parks on its critique.
+// TODO(0.9.0): noProgress() is a local stand-in for 0.9.0's shared progress-based loop engine
+// (fingerprinted open sets, escalation before stopping); swap it in at merge.
+function noProgress(history) {
+  if (history.length < 2) return false
+  const [a, b] = history.slice(-2)
+  return b.length >= a.length && b.every((k) => a.includes(k))
+}
+const SERIOUS = ['blocker', 'major']
+const itemKey = (it) => `${it.critic}:${String(it.symbol || it.issue || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80)}`
+
+async function critiqueRound(design, round) {
+  const critics = brief.critics && brief.critics.length ? brief.critics : [brief.critique]
+  phase(`decide: critics round ${round} (${critics.map((c) => c.id || 'god-eye').join(' + ')})`)
+  const outs = await pipeline(critics, (c) => one(`${c.prompt}\n\nINPUTS:\n${JSON.stringify({ design }, null, 2)}`, c, `${c.id || 'god-eye'} · design #${round}`))
+  const items = []
+  const verdicts = {}
+  critics.forEach((c, i) => {
+    const o = outs[i]
+    const id = c.id || 'god-eye'
+    verdicts[id] = o ? o.verdict : null
+    ;((o && o.items) || []).forEach((it, k) => items.push({ ...it, critic: id, id: it.id || `${id}-${round}-${k + 1}` }))
+  })
+  // evidence first: an API item with a source quote is checked by the CLI like a ledger entry
+  const sourced = items.filter((it) => it.critic !== 'god-eye' && SERIOUS.includes(it.severity) && it.evidence && it.evidence.kind === 'source')
+  if (sourced.length && typeof factory !== 'undefined' && factory && factory.checkLedger) {
+    const asEntries = sourced.map((it) => { const m = /^(.*):(\d+)$/.exec(String(it.evidence.ref || '')); return { probe: it.id, symbol: it.symbol || it.id, file: m ? m[1] : String(it.evidence.ref || ''), line: m ? Number(m[2]) : 0, quote: it.evidence.quote || '' } })
+    const chk = await factory.checkLedger(asEntries)
+    for (const r of chk.rejected || []) {
+      const it = items.find((x) => x.id === r.probe)
+      if (it) { it.severity = 'minor'; it.evidence_rejected = r.why }
+    }
+  }
+  for (const it of items) {
+    if (it.critic !== 'god-eye' && SERIOUS.includes(it.severity) && !(it.evidence && it.evidence.ref)) { it.severity = 'minor'; it.evidence_rejected = 'a serious API finding must cite dependency source (file:line and quote) or a probe\'s output' }
+  }
+  const serious = items.filter((it) => SERIOUS.includes(it.severity))
+  let verifications = []
+  if (serious.length && brief.verifier) {
+    phase(`decide: verify ${serious.length} serious item(s)`)
+    const res = await fan(serious.map((it) => ({ prompt: brief.verifier.prompt_template.replace('{{finding}}', () => JSON.stringify({ id: it.id, critic: it.critic, severity: it.severity, symbol: it.symbol, issue: it.issue, evidence: it.evidence, suggestion: it.suggestion }, null, 2)), schema: brief.verifier.schema, agent_type: brief.verifier.agent_type, model: brief.verifier.model, label: `verify ${it.id}` })))
+    verifications = res.map((r, i) => (r ? { ...r, finding_id: serious[i].id } : { finding_id: serious[i].id, status: 'unverifiable', evidence: '', reason: 'the verifier returned nothing' }))
+  }
+  const status = (it) => { const v = verifications.find((x) => x.finding_id === it.id); return v ? v.status : brief.verifier ? 'unverifiable' : 'confirmed' }
+  for (const it of serious) it.verified = status(it)
+  const open = serious.filter((it) => it.verified !== 'refuted')
+  // a critic that returned nothing (twice) approved nothing: the round is not an approval
+  const missing = critics.filter((c, i) => !outs[i]).map((c) => c.id || 'god-eye')
+  const verdict = open.length || missing.length ? 'revise' : 'approve'
+  return { round, verdict, verdicts, items, verifications, open, missing }
+}
+
 if (brief.config === 'decide') {
-  phase('decide: architect')
-  let design = await one(`${brief.judge.prompt}\n\nINPUTS:\n${JSON.stringify(inputs, null, 2)}`, brief.judge, 'architect')
+  let design
+  if (brief.targeted && brief.prior_design) {
+    // a deny that names a defect: the architect fixes it, the critics re-check (no new options)
+    phase('decide: architect revises for your deny')
+    design = await one(`${brief.critique.revise.prompt}\n\nINPUTS:\n${JSON.stringify({ human_denial: brief.targeted, your_previous_output: brief.prior_design }, null, 2)}`, brief.critique.revise, 'architect · revise (deny)')
+    if (!design) design = brief.prior_design
+  } else {
+    phase('decide: architect')
+    design = await one(`${brief.judge.prompt}\n\nINPUTS:\n${JSON.stringify(inputs, null, 2)}`, brief.judge, 'architect')
+  }
   if (!design) return envelope('error', 'The architect returned nothing twice.', { options: inputs, degraded })
   const critiques = []
-  const max = Math.max(1, brief.critique.max_rounds || 2)
+  const history = []
+  const max = Math.max(1, brief.critique.max_rounds || 3)
+  let stop = 'ceiling'
+  let revisedAfterLast = false
   for (let round = 1; round <= max; round++) {
-    phase(`decide: God Eye (design) round ${round}`)
-    const c = await one(`${brief.critique.prompt}\n\nINPUTS:\n${JSON.stringify({ design }, null, 2)}`, brief.critique, `god-eye · design #${round}`)
-    if (!c) break
+    const c = await critiqueRound(design, round)
     critiques.push(c)
-    if (c.verdict === 'approve' || round === max) break
+    revisedAfterLast = false
+    if (!c.open.length) { stop = c.missing.length ? 'critic_failed' : 'approved'; break }
+    history.push(c.open.map(itemKey))
+    // always one revise after the last critique: the gate gets the design with these addressed
     phase(`decide: architect revises (round ${round})`)
-    const revised = await one(`${brief.critique.revise.prompt}\n\nINPUTS:\n${JSON.stringify({ critique: c, your_previous_output: design }, null, 2)}`, brief.critique.revise, `architect · revise #${round}`)
-    if (revised) design = revised
+    const revised = await one(`${brief.critique.revise.prompt}\n\nINPUTS:\n${JSON.stringify({ critique: { verdict: 'revise', items: c.open.map((it) => ({ id: it.id, critic: it.critic, severity: it.severity, symbol: it.symbol, issue: it.issue, evidence: it.evidence, suggestion: it.suggestion, verified: it.verified })) }, your_previous_output: design }, null, 2)}`, brief.critique.revise, `architect · revise #${round}`)
+    if (revised) { design = revised; revisedAfterLast = true }
+    if (noProgress(history)) { stop = 'no_progress'; break }
   }
   const last = critiques[critiques.length - 1]
-  return envelope('ok', `Design: ${design.kind} (${design.paths.join(', ')}). Critique: ${last ? last.verdict : 'none'} after ${critiques.length} round(s).`, { options: inputs, degraded, judge: design, critiques }, { threat_model: Boolean(brief.threat_model) })
+  // the shape recDecide has always read (verdict, items per round), plus the evidence
+  const out = critiques.map((c) => ({ round: c.round, verdict: c.verdict, verdicts: c.verdicts, items: c.items, verifications: c.verifications, open: c.open.map((it) => it.id), ...(c.missing.length ? { missing: c.missing } : {}) }))
+  return envelope('ok', `Design: ${design.kind} (${(design.paths || []).join(', ')}). Critics: ${last ? last.verdict : 'none'} after ${critiques.length} round(s)${stop !== 'approved' ? ` (${stop === 'no_progress' ? 'no progress' : stop === 'critic_failed' ? `no result from ${last.missing.join(', ')}` : 'ceiling'}; ${last.open.length} open${stop === 'critic_failed' ? '' : ', revised after the last critique'}: shown at the gate)` : ''}.`, { options: inputs, degraded, judge: design, critiques: out, stop, revised_after_last: revisedAfterLast, open: last ? last.open : [], targeted: Boolean(brief.targeted) }, { threat_model: Boolean(brief.threat_model) })
 }
 
 if (brief.config === 'challenge') {

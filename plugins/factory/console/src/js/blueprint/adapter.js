@@ -23,7 +23,7 @@ const BP_SIDES = [
 // the recipe step the router chose → the state the job is in while it runs
 const BP_STEP_STATE = {
   request: 'received', clarify: 'intent', H1: 'awaiting_intent_approval', EH1: 'awaiting_intent_approval',
-  ground: 'designing', decide: 'designing', H2: 'awaiting_design_approval', EH2: 'awaiting_design_approval', HF: 'awaiting_findings_approval',
+  deps: 'designing', ground: 'designing', decide: 'designing', H2: 'awaiting_design_approval', EH2: 'awaiting_design_approval', HF: 'awaiting_findings_approval',
   decompose: 'planning', plan_critique: 'planning', H3: 'awaiting_plan_approval', EH3: 'awaiting_plan_approval',
   realize: 'building', children: 'building', reconcile: 'integrating', prove: 'verifying', challenge: 'reviewing', epic_gate: 'verifying',
   ship: 'ready_to_ship', HS: 'awaiting_ship_approval', H4: 'pr_open', post_merge_challenge: 'post_merge_review', distill: 'learning', close: 'learning',
@@ -248,6 +248,8 @@ function toDisplay(data) {
       clarify: j.clarify || null,
       // at H1 / EH1: what clarify adds to the contract (God Eye's objections, drops, research gaps)
       h1: j.h1 || null,
+      // at the design / combined gate: the critics' open objections, the API ledger, the plan probe
+      gate_review: j.gate_review || null,
     });
     activity = activity.concat(bpActivity(j, hist));
     for (const l of j.lessons || []) {

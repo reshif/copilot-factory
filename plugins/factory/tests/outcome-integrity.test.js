@@ -385,7 +385,7 @@ test('P1.5: killing factory run kills its agents\' process groups, logs workflow
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   F.cli(root, ['next']);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-kill-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-kill-');
   const pidFile = path.join(dir, 'grandchild.pid');
   // each agent starts a grandchild (as Copilot starts shells) and then hangs
   const script = path.join(dir, 'script.js');
@@ -430,7 +430,7 @@ test('P1.5: a run killed with SIGKILL (no handler runs) leaves a lock naming its
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'bug', '--risk', 'low']).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   F.cli(root, ['next']);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-kill9-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-kill9-');
   const script = path.join(dir, 'script.js');
   fs.writeFileSync(script, 'module.exports = () => ({ sleep_ms: 600000, json: {} });');
   const env = { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: path.join(__dirname, 'helpers', 'fake-copilot.js'), FAKE_COPILOT_SCRIPT: script };

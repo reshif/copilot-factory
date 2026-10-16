@@ -39,6 +39,33 @@ function realFactory(brief) {
         return { ok: false, kind: 'error', message: e.message, route: {} };
       }
     },
+    fetchDeps: async (specs) => {
+      try {
+        return require('../../cli/core/deps').fetch(brief.root, { jobId: brief.job, add: specs || [] });
+      } catch (e) {
+        return { packages: [], error: e.message };
+      }
+    },
+    checkLedger: async (entries) => {
+      const D = require('../../cli/core/deps');
+      const state = require('../../cli/core/job').load(brief.root, brief.job);
+      const r = D.checkLedger(brief.root, state, JSON.parse(JSON.stringify(entries || [])));
+      return { ok: !r.rejected.length, verified: r.verified.length, rejected: r.rejected.map((x) => ({ probe: x.entry && x.entry.probe, symbol: x.entry && x.entry.symbol, file: x.entry && x.entry.file, line: x.entry && x.entry.line, why: x.why })) };
+    },
+    probe: async () => {
+      try {
+        return require('../../cli/core/probe').run(brief.root, { jobId: brief.job });
+      } catch (e) {
+        return { ok: false, problems: [e.message], commands: [] };
+      }
+    },
+    grant: async (id, paths) => {
+      try {
+        return require('../../cli/core/tasks').grant(brief.root, brief.job, id, paths);
+      } catch (e) {
+        return { ok: false, granted: [], refused: (paths || []).map((p) => ({ path: p, why: e.message })) };
+      }
+    },
     prepare: async (id) => {
       const job = require('../../cli/core/job');
       const state = job.load(brief.root, brief.job);

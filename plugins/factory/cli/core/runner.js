@@ -230,10 +230,18 @@ const correction = (schema, errors) =>
 
 // The folders an agent may touch besides its cwd: the project (job folder, briefs, prompt
 // files) and the plugin (bin/factory, templates). Copilot also allows the system temp dir.
-function addDirs(root) {
+// The job's fetched dependency source (.factory/deps/<job>/, read-only) is inside the project
+// and so covered already; it is named on its own too, so a role that reads it (researchers,
+// option generators, the architect, God Eye, the API-conformance critic, the finding verifier)
+// can never be refused it by a narrower project dir.
+function addDirs(root, jobId = null) {
   const dirs = [path.resolve(root)];
   const plugin = path.resolve(PLUGIN_ROOT);
   if (!dirs.includes(plugin)) dirs.push(plugin);
+  if (jobId) {
+    const deps = path.join(path.resolve(root), '.factory', 'deps', String(jobId));
+    if (exists(deps)) dirs.push(deps);
+  }
   return dirs;
 }
 
@@ -311,7 +319,7 @@ const permissionArgs = (perm) =>
         ...perm.deny.map((p) => `--deny-tool=${p}`),
       ];
 
-function copilotArgs({ prompt, agentType, model, root, sessionId, flags, permissions }) {
+function copilotArgs({ prompt, agentType, model, root, sessionId, flags, permissions, jobId = null }) {
   return [
     '-p', prompt,
     '--agent', agentType,
@@ -320,7 +328,7 @@ function copilotArgs({ prompt, agentType, model, root, sessionId, flags, permiss
     '-s',
     '--no-ask-user',
     ...permissionArgs(permissions),
-    ...addDirs(root).flatMap((d) => ['--add-dir', d]),
+    ...addDirs(root, jobId).flatMap((d) => ['--add-dir', d]),
     ...(sessionId ? ['--session-id', sessionId] : []),
     ...flags,
   ];
@@ -727,11 +735,58 @@ async function integrateWave(ctx, ids, wave) {
   return out;
 }
 
+// 0.10.0 deterministic steps a workflow asks the CLI for (critics with evidence):
+//   factory.fetchDeps(specs)     ground: download pinned packages a probe asked for (never run;
+//                                a failure is a gap) → { packages }
+//   factory.checkLedger(entries) ground: each API ledger quote against the fetched source
+//                                → { ok, verified, rejected: [{ probe, symbol, file, line, why }] }
+//   factory.probe()              decompose: lint + dry-run every verify command in a scratch
+//                                worktree inside the proposed environment → the probe record
+//   factory.grant(taskId, paths) realize: give a blocked task paths inside the contract's
+//                                allowed paths that no other task owns (never widening)
+let ledgerFiles = 0;
+async function fetchDepsStep(ctx, specs) {
+  const r = await cliChild(ctx, ['deps', 'fetch', '--add', (specs || []).map(String).join(',')]);
+  const j = r.json || {};
+  ctx.checks.push({ step: 'deps', ok: !j.error, ms: r.ms });
+  return j.error ? { packages: [], error: j.message || j.code } : j;
+}
+async function checkLedgerStep(ctx, entries) {
+  ledgerFiles += 1;
+  const f = path.join(ctx.scratch, `ledger-${process.pid}-${ledgerFiles}.json`);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify(entries || []));
+  const r = await cliChild(ctx, ['deps', 'check', '--file', f]);
+  const j = r.json || {};
+  ctx.checks.push({ step: 'ledger', ok: Boolean(j.ok), rejected: (j.rejected || []).length, ms: r.ms });
+  if (j.error) return { ok: false, verified: 0, rejected: [], error: j.message || j.code };
+  ctx.say(`API ledger: ${j.verified} verified, ${(j.rejected || []).length} rejected`);
+  return j;
+}
+async function probeStep(ctx) {
+  const r = await cliChild(ctx, ['plan', 'probe'], { timeoutSec: 3600 });
+  const j = r.json || {};
+  ctx.checks.push({ step: 'probe', ok: Boolean(j.ok), problems: (j.problems || []).length, ms: r.ms });
+  ctx.say(`plan probe: ${j.error ? `refused (${j.code})` : j.ok ? 'every verify command can run' : `${(j.problems || []).length} problem(s)`}`);
+  return j.error ? { ok: false, problems: [`the plan probe could not run: ${j.message || j.code}`], commands: [], error: j.code } : j;
+}
+async function grantStep(ctx, taskId, paths) {
+  const r = await cliChild(ctx, ['task', 'grant', String(taskId), '--paths', (paths || []).map(String).join(',')]);
+  const j = r.json || {};
+  ctx.checks.push({ step: 'grant', task: taskId, ok: Boolean(j.ok), ms: r.ms });
+  if (!j.error) ctx.say(`grant ${taskId}: ${j.ok ? `granted ${(j.granted || []).join(', ')}` : `refused: ${(j.refused || []).map((x) => `${x.path} (${x.why})`).join('; ')}`}`);
+  return j.error ? { ok: false, granted: [], refused: (paths || []).map((p) => ({ path: p, why: j.message || j.code })) } : j;
+}
+
 function workflowApi(ctx) {
   return {
     verify: (taskId) => verifyTask(ctx, String(taskId)),
     prepare: (taskId) => prepareTask(ctx, String(taskId)),
     integrate: (ids, wave) => integrateWave(ctx, (ids || []).map(String), wave),
+    fetchDeps: (specs) => fetchDepsStep(ctx, specs),
+    checkLedger: (entries) => checkLedgerStep(ctx, entries),
+    probe: () => probeStep(ctx),
+    grant: (taskId, paths) => grantStep(ctx, taskId, paths),
   };
 }
 
@@ -832,7 +887,7 @@ async function runAgent(ctx, prompt, opts) {
         throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
       }
       if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, session_id: sessionId, ...(resumedFrom ? { resumed_session: true } : {}), ...(tRel ? { transcript: tRel } : {}), pid: process.pid });
-      let argv = copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm });
+      let argv = copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm, jobId: ctx.brief && ctx.brief.job });
       let r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()), sink });
       logStderr(r);
       // The CLI refused the turn because of its --model (an id this CLI, plan or org can't use):
@@ -846,7 +901,7 @@ async function runAgent(ctx, prompt, opts) {
         require('./models').noteRejected(ctx.root, model, refused);
         events.append(ctx.root, { event: 'agent_model_fallback', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, label: o.label || role, role, model: o.model || null, model_id: model, detail: refused, exit: r.code });
         model = null;
-        argv = copilotArgs({ prompt: argv[argv.indexOf('-p') + 1], agentType, model: null, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm });
+        argv = copilotArgs({ prompt: argv[argv.indexOf('-p') + 1], agentType, model: null, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm, jobId: ctx.brief && ctx.brief.job });
         r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()), sink });
         logStderr(r);
       }

@@ -335,7 +335,7 @@ function verify(root, jobId, taskId) {
   if (missingDeps.length) fail(`${taskId}'s branch does not contain ${missingDeps.join(', ')} as built now; run task start ${taskId} again to bring ${missingDeps.length > 1 ? 'them' : 'it'} in, then build and verify.`, 'dependency_not_merged', { missing: missingDeps });
   const head = git.revParse(wt, 'HEAD');
   const changed = t.start_commit ? ownChangedFiles(wt, t.start_commit, head) : [];
-  const scopeViolations = changed.filter((f) => !matchesAny(f, task.allowed_paths) || matchesAny(f, state.policy.protected_paths));
+  const scopeViolations = changed.filter((f) => !matchesAny(f, taskPaths(state, task)) || matchesAny(f, state.policy.protected_paths));
   // The build environment (.factory/environment.json): set up in this worktree (cached by its
   // lockfiles), and every command runs inside it, against this worktree's code. A broken
   // environment is not the build's failure: it refuses with environment_broken.
@@ -381,6 +381,62 @@ function verify(root, jobId, taskId) {
   };
 }
 
+// A task's allowed paths as they are now: the plan's, plus the paths realize granted it inside
+// the contract's allowed paths (grant below). The guard and the drift check use the same union.
+function taskPaths(state, task) {
+  const t = ((state && state.tasks) || {})[task.id] || {};
+  return [...(task.allowed_paths || []), ...(t.granted_paths || [])];
+}
+
+// `factory task grant <T> --paths a,b` (factory run's own step in realize, 0.10.0): a builder
+// blocked with needs_paths gets those paths when every one of them is a plain path inside the
+// contract's allowed paths, not protected, not a secret, and no other task's: never a widening of
+// the contract, never another task's file. All or nothing; at most a few per task. Anything else
+// stays a needs_paths park (an amendment the human approves).
+const MAX_GRANTS = 6;
+function grant(root, jobId, taskId, paths) {
+  const state = job.resolve(root, jobId);
+  const { plan, task } = planTask(root, state, taskId);
+  const allowed = contractMod.parse(contractMod.read(root, state.id)).allowedPaths || [];
+  const pol = state.policy || {};
+  const refused = [];
+  const want = [];
+  for (const raw of (paths || []).map(String)) {
+    const p = raw.trim().replace(/\\/g, '/').replace(/^\.\/+/, '');
+    const why = !p
+      ? 'empty'
+      : /[*?[\]{}]/.test(p)
+        ? 'a glob: only plain paths are granted'
+        : p.startsWith('/') || p.split('/').includes('..')
+          ? 'not a path inside the repository'
+          : p.startsWith('.factory/') || p.startsWith('.git/')
+            ? 'factory or git state'
+            : matchesAny(p, pol.protected_paths || [])
+              ? 'a protected path (policy.protected_paths)'
+              : matchesAny(p, pol.secret_paths || []) && !matchesAny(p, pol.secret_exempt || [])
+                ? 'looks like a secret (policy.secret_paths)'
+                : !matchesAny(p, allowed)
+                  ? `outside the contract's allowed paths (${allowed.join(', ') || 'none'}): only an amendment the human approves widens them`
+                  : (() => {
+                      const other = plan.tasks.find((x) => x.id !== taskId && matchesAny(p, taskPaths(state, x)));
+                      return other ? `${other.id}'s path: give it to one task by amending the plan` : null;
+                    })();
+    if (why) refused.push({ path: p || raw, why });
+    else if (!matchesAny(p, taskPaths(state, task))) want.push(p);
+  }
+  const t = state.tasks[taskId] || {};
+  if (!refused.length && (t.granted_paths || []).length + want.length > MAX_GRANTS) refused.push({ path: want.join(', '), why: `more than ${MAX_GRANTS} granted paths for one task: amend the plan instead` });
+  if (refused.length) return { job: state.id, task: taskId, ok: false, granted: [], refused };
+  if (want.length) {
+    job.mutate(root, state.id, (fresh) => {
+      const ft = fresh.tasks[taskId] || {};
+      fresh.tasks[taskId] = { ...ft, granted_paths: [...new Set([...(ft.granted_paths || []), ...want])], grants: [...(ft.grants || []), { at: nowIso(), paths: want, by: 'realize (inside the contract\'s allowed paths)' }] };
+    });
+    require('./events').append(root, { event: 'paths_granted', job: state.id, task: taskId, paths: want });
+  }
+  return { job: state.id, task: taskId, ok: true, granted: want, refused: [], message: want.length ? `${taskId} may now change ${want.join(', ')} (inside the contract's allowed paths, owned by no other task); recorded in the job and shown in the completion report.` : `${taskId} already may change them.` };
+}
+
 function setState(root, jobId, taskId, value, reason) {
   if (!['blocked', 'exhausted'].includes(value)) fail('task state must be blocked or exhausted', 'bad_input');
   const id = job.resolve(root, jobId).id;
@@ -390,4 +446,4 @@ function setState(root, jobId, taskId, value, reason) {
   return { job: id, task: taskId, state: value };
 }
 
-module.exports = { startBase, start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, legacyAttempt, lastFailures, noteAttempt, FAILED };
+module.exports = { taskPaths, grant, startBase, start, show, verify, setState, ensureJobWorktree, planTask, prepareWorktree, ownChangedFiles, afterBuilder, legacyAttempt, lastFailures, noteAttempt, FAILED };

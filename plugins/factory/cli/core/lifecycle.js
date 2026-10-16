@@ -52,6 +52,12 @@ function close(root, { jobId }) {
   } catch {
     /* a convenience */
   }
+  // the job's fetched dependency source is a cache: removed with the job's worktrees
+  try {
+    require('./deps').cleanup(root, state.id);
+  } catch {
+    /* a convenience */
+  }
   const down = require('./environment').servicesDown(root, state);
   if (down) require('./events').append(root, { event: 'environment_services_down', job: state.id, cmd: down.cmd, code: down.code });
   state.status = 'closed';

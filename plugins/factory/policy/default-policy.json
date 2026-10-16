@@ -69,7 +69,7 @@
   ],
   "checks": [],
   "limits": {
-    "max_design_critique_rounds": 2,
+    "max_design_critique_rounds": 3,
     "max_plan_validate_rounds": 3,
     "retry_limit": 3,
     "max_review_rounds": 5,
@@ -87,7 +87,15 @@
     "flaky_reruns": 1,
     "command_timeout_seconds": 600,
     "integrate_each_wave": true,
-    "clarify_writer_rounds": 5
+    "clarify_writer_rounds": 5,
+    "probe_command_seconds": 120,
+    "probe_timeout_seconds": 900
+  },
+  "deps": {
+    "enabled": true,
+    "max_packages": 20,
+    "max_unpacked_mb": 200,
+    "timeout_seconds": 180
   },
   "lessons_max_per_job": 3,
   "ci": {
@@ -107,6 +115,7 @@
     },
     "builder_escalation": ["opus"],
     "builder_escalation_from_attempt": 3,
+    "escalate_before_park": true,
     "sweep_check": false
   },
   "copilot": {

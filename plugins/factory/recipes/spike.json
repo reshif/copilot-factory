@@ -8,6 +8,7 @@
   "steps": [
     { "step": "clarify", "run": "skill:clarify" },
     { "step": "H1", "run": "gate" },
+    { "step": "deps", "run": "cli:deps fetch" },
     { "step": "ground", "run": "workflow:ground" },
     { "step": "decide", "run": "workflow:fanout-judge", "config": "decide", "mode": "recommendation", "threat_model": false },
     { "step": "HF", "run": "gate" },

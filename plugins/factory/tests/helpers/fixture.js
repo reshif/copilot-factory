@@ -30,8 +30,8 @@ function write(root, rel, text) {
   fs.writeFileSync(p, text);
 }
 
-function makeRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-test-'));
+function makeRepo(t = null) {
+  const root = require('./tmp').mkdtemp('factory-test-', t);
   sh(root, 'git init -q -b main && git config user.email t@example.com && git config user.name Tester && git config commit.gpgsign false');
   write(root, 'src/add.js', "module.exports = (a, b) => a - b; // bug: should add\n");
   write(root, 'tests/add.test.js', "const add = require('../src/add');\nif (add(2, 3) !== 5) { console.error('add(2,3) =', add(2, 3)); process.exit(1); }\nconsole.log('ok');\n");

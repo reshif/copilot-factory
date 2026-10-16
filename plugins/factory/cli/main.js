@@ -71,8 +71,13 @@ Workflows  wfargs <clarify|ground|fanout-judge|decompose|realize|reconcile> [--c
                COPILOT_BIN, policy.copilot.flags, policy.limits.max_parallel_agents, policy.agents.model_ids
 Env        env show · env check [--proposed]   (the build environment each worktree runs in; read-only, agents may run them)
            env propose --file f   (the main session's proposal) · env set [--file f | --none] [hash]   (human-only: confirm it)
-Plan       plan validate · plan from-contract
+Deps       deps fetch [--add pypi:name==1.2.3,npm:name@1.2.3]   (the job's pinned packages, downloaded without running them,
+           unpacked read-only under .factory/deps/<job>/; a failed download is a gap, never a stop) · deps show
+           deps check --file ledger.json   (an API ledger's quotes against the fetched source; agents may run it)
+Plan       plan validate · plan from-contract · plan probe   (lint + dry-run every verify command in a scratch worktree
+           inside the build environment the plan proposes; bounded in time, cleaned up; the plan critique and the gate read it)
 Tasks      task start <T> · task show <T> · task verify <T> · task state <T> blocked|exhausted [--reason]
+           task grant <T> --paths a,b   (realize's own step: paths inside the contract's allowed paths no other task owns)
 Build      reconcile run|continue|abort · verify run · evidence add <AC> --type diff|doc [--path p] [--note n]
 Ship       report · ship [--local] · pr sync · ci verify [--manifest-dir d | --commit sha] · close
 Change     amend start --reason "…" [--by who] · amend submit · park --reason "…" · followup
@@ -110,6 +115,7 @@ const AGENT_ALLOWED = {
   intent: ['show'],
   clarify: ['status'],
   env: ['show', 'check'],
+  deps: ['show', 'check'],
   plan: ['validate'],
   task: ['start', 'show', 'verify'],
   reconcile: ['run', 'continue', 'abort'],
@@ -307,7 +313,14 @@ function run(argv) {
         return { job: state.id, ...r };
       }
       if (sub === 'from-contract') return C('plan').fromContract(root, state);
-      return fail('plan validate | from-contract', 'bad_input');
+      if (sub === 'probe') {
+        // factory run's own step in decompose (and the main session's): lint + dry-run every
+        // verify command in a scratch worktree inside the proposed build environment
+        const r = C('probe').run(root, { jobId: state.id });
+        if (!r.ok) process.exitCode = 1;
+        return r;
+      }
+      return fail('plan validate | from-contract | probe', 'bad_input');
     }
     case 'task': {
       const t = C('tasks');
@@ -321,6 +334,12 @@ function run(argv) {
         return r;
       }
       if (sub === 'state') return t.setState(R(), J, id, pos[3], opt.reason);
+      if (sub === 'grant') {
+        // factory run's own step in realize: paths inside the contract for a blocked builder
+        const r = t.grant(R(), J, id, String(opt.paths || '').split(',').map((x) => x.trim()).filter(Boolean));
+        if (!r.ok) process.exitCode = 1;
+        return r;
+      }
       return fail('task start | show | verify | state', 'bad_input');
     }
     case 'reconcile': {
@@ -495,6 +514,17 @@ function run(argv) {
         return { job: state.id, task: id, ok: r.ok, ...(r.ok ? { cached: r.cached, ran: r.ran, name: r.env ? r.env.name || null : null, env: E.processEnv(r.env, r.vars) } : { broken: r.broken, message: r.broken.reason }) };
       }
       return fail('env show | check [--proposed] | propose --file f | set [--file f | --none] [hash]', 'bad_input');
+    }
+    case 'deps': {
+      const D = C('deps');
+      if (sub === 'fetch') return D.fetch(R(), { jobId: J, add: String(opt.add || '').split(',').map((x) => x.trim()).filter(Boolean) });
+      if (sub === 'show') return D.show(R(), { jobId: J });
+      if (sub === 'check') {
+        const r = D.checkFile(R(), { jobId: J, file: opt.file });
+        if (!r.ok) process.exitCode = 1;
+        return r;
+      }
+      return fail('deps fetch [--add specs] | show | check --file ledger.json', 'bad_input');
     }
     case 'finding':
       if (!['accept', 'dismiss'].includes(sub) || !pos[2]) fail('finding accept|dismiss <id> --reason "…"', 'bad_input');

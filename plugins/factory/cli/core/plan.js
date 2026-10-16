@@ -32,6 +32,9 @@ const TASK_SCHEMA = {
           notes: { type: 'string' },
           // the interfaces (by name) this task calls or imports from another task's work
           consumes: { type: 'array', items: { type: 'string', minLength: 1 } },
+          // greenfield (0.10.0): the task that creates the manifests the build environment's
+          // setup needs; every other task depends on it, and realize prepares its worktree bare
+          bootstrap: { type: 'boolean' },
         },
       },
     },
@@ -220,6 +223,9 @@ function validatePlan(root, state, { write = true } = {}) {
     if (!owner) errors.push(`Interface "${i.name}" is owned by unknown task ${i.owner}`);
     else if (!matchesAny(String(i.file).replace(/^\.\//, ''), owner.allowed_paths)) errors.push(`Interface "${i.name}" lives in ${i.file}, outside its owner ${i.owner}'s allowed paths`);
   }
+  const boots = plan.tasks.filter((t) => t.bootstrap === true);
+  if (boots.length > 1) errors.push(`Only one task may be the bootstrap task (${boots.map((t) => t.id).join(', ')} are)`);
+  if (boots.length && (boots[0].depends_on || []).length) errors.push(`The bootstrap task ${boots[0].id} must come first: it depends on nothing`);
   for (const t of plan.tasks) {
     for (const c of t.consumes || []) if (!names.includes(c)) errors.push(`${t.id} consumes "${c}", but no task produces it: declare it in interfaces with its owner (or add the task that builds it)`);
   }

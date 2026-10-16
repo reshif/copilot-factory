@@ -510,7 +510,7 @@ test('local mode: the human merges and the factory notices (no "merged <sha>" ne
 
 test('HS deny is a fix round: the reason becomes the builders\' finding (every task reopened), then prove and review again and HS on the new build', () => {
   const root = F.makeRepo();
-  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-origin-'));
+  const bare = require('./helpers/tmp').mkdtemp('factory-origin-');
   F.sh(bare, 'git init -q --bare');
   F.sh(root, `git remote add origin "${bare}"`);
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'high']).job;

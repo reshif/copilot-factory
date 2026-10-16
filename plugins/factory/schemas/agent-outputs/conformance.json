@@ -1,0 +1,10 @@
+{ "$comment": "api-conformance (decide): the design's external calls checked against the pinned dependency source. A blocker/major item without evidence (a dependency file:line with its exact quote, or a probe's command and output) counts as minor; a source quote the CLI cannot find at its line counts as minor too. Serious items then go to a finding verifier.",
+  "type": "object", "required": ["verdict", "items"], "properties": {
+  "verdict": { "enum": ["approve", "revise"] },
+  "items": { "type": "array", "items": { "type": "object", "required": ["symbol", "issue", "severity", "evidence"], "properties": {
+    "symbol": { "type": "string" },
+    "issue": { "type": "string" },
+    "severity": { "enum": ["blocker", "major", "minor"] },
+    "evidence": { "type": "object", "required": ["kind", "ref", "quote"], "properties": {
+      "kind": { "enum": ["source", "probe"] }, "ref": { "type": "string" }, "quote": { "type": "string" } } },
+    "suggestion": { "type": "string" } } } } } }

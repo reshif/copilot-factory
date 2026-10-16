@@ -58,6 +58,26 @@ function allTasksMerged(ctx) {
   });
 }
 
+// A gate that approves more than its own document (0.10.0): the recipe step's `combined` list
+// (design, plan, environment). At medium risk H3 is one gate for design + plan + the build
+// environment the plan runs in; approving it seals that environment (human.approve), so
+// "confirm environment" is no separate reply. null for an ordinary gate.
+function combinedOf(ctx, gate) {
+  const s = ctx.recipe.steps.find((x) => x.step === gate && x.run === 'gate');
+  return s && Array.isArray(s.combined) && s.combined.length ? s.combined : null;
+}
+
+// The parts a combined gate binds, by name: { design, plan, environment: { status, hash, … } }.
+function combinedParts(ctx, gate) {
+  const list = combinedOf(ctx, gate);
+  if (!list) return null;
+  const out = {};
+  if (list.includes('design')) out.design = ctx.b.design || null;
+  if (list.includes('plan')) out.plan = ctx.b.plan || null;
+  if (list.includes('environment')) out.environment = require('./environment').gateProposal(ctx.root, ctx.state.id);
+  return out;
+}
+
 function approved(ctx, gate, hash) {
   const a = (ctx.state.approvals || {})[gate];
   return Boolean(a && hash && a.hash === hash);
@@ -73,8 +93,12 @@ function gateHash(ctx, gate) {
     case 'EH2':
       return b.design;
     case 'H3':
-    case 'EH3':
-      return b.plan;
+    case 'EH3': {
+      const parts = gate === 'H3' ? combinedParts(ctx, gate) : null;
+      if (!parts || !b.plan) return b.plan;
+      if ('design' in parts && !parts.design) return null;
+      return require('../lib/util').sha256(require('../lib/util').stableStringify({ design: parts.design, plan: parts.plan, environment: parts.environment ? parts.environment.hash : undefined }));
+    }
     case 'HS':
       return b.fingerprint;
     case 'HF':
@@ -93,10 +117,20 @@ function gateDocs(ctx, gate) {
     case 'H2':
     case 'EH2':
     case 'HF':
-      return [...(gate === 'HF' ? [jp.findings] : []), ...invalidation.designFiles(ctx.root, ctx.state.id), `${jp.critiquesDir}/design.json`];
+      return [...(gate === 'HF' ? [jp.findings] : []), ...invalidation.designFiles(ctx.root, ctx.state.id), `${jp.critiquesDir}/design.json`, ...(require('fs').existsSync(require('./deps').LEDGER(ctx.root, ctx.state.id)) ? [require('./deps').LEDGER(ctx.root, ctx.state.id)] : [])];
     case 'H3':
-    case 'EH3':
-      return [ctx.state.epic ? jp.slices : jp.plan, `${jp.critiquesDir}/plan.json`];
+    case 'EH3': {
+      const list = gate === 'H3' ? combinedOf(ctx, gate) || [] : [];
+      const fs = require('fs');
+      const deps = require('./deps');
+      return [
+        ...(list.includes('design') ? [...invalidation.designFiles(ctx.root, ctx.state.id), `${jp.critiquesDir}/design.json`, deps.LEDGER(ctx.root, ctx.state.id)] : []),
+        ctx.state.epic ? jp.slices : jp.plan,
+        `${jp.critiquesDir}/plan.json`,
+        ...(list.length ? [require('path').join(jp.dir, 'probe.json')] : []),
+        ...(list.includes('environment') ? [require('path').join(jp.dir, 'environment.proposed.json')] : []),
+      ].filter((f, i, a) => a.indexOf(f) === i && (fs.existsSync(f) || f.endsWith('.json') && /critiques/.test(f)));
+    }
     case 'HS':
       return [jp.report];
     default:
@@ -158,16 +192,25 @@ function isDone(ctx, stepDef) {
     case 'HS':
     case 'HF': {
       if (id === 'H2' && stepDef.when === 'adr' && !invalidation.hasAdr(root, state.id)) return true;
-      if (id === 'H3' && stepDef.auto === 'plan_critique' && fresh('plan_critique', { plan: b.plan })) return true;
+      // a plan God Eye approved skips H3 at low risk, unless the gate would seal a build
+      // environment: only the human accepts commands that run on this machine
+      if (id === 'H3' && stepDef.auto === 'plan_critique' && fresh('plan_critique', { plan: b.plan }) && !require('./environment').needsConfirmation(root, state.id)) return true;
       if (id === 'HS' && shipsLocally(ctx)) return true;
       return approved(ctx, id, gateHash(ctx, id));
     }
+    case 'deps':
+      // once per contract; packages ground or the planner ask for later are fetched where they
+      // are asked for (ground's factory.fetchDeps, decompose's record)
+      return fresh('deps', { contract: b.contract });
     case 'ground':
       return fresh('ground', { contract: b.contract });
     case 'decide':
       return Boolean(b.design) && fresh('decide', { contract: b.contract, design: b.design });
-    case 'decompose':
-      return Boolean(b.plan) && fresh('decompose', { plan: b.plan });
+    case 'decompose': {
+      // under a gate that approves design and plan together, a revised design re-plans
+      const withDesign = (combinedOf(ctx, 'H3') || []).includes('design');
+      return Boolean(b.plan) && fresh('decompose', withDesign ? { plan: b.plan, design: b.design } : { plan: b.plan });
+    }
     case 'realize':
       return allTasksDone(ctx);
     case 'reconcile':
@@ -201,4 +244,4 @@ function isDone(ctx, stepDef) {
   }
 }
 
-module.exports = { context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };
+module.exports = { combinedOf, combinedParts, context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };

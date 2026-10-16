@@ -13,7 +13,7 @@ const FAKE = path.join(__dirname, 'helpers', 'fake-copilot.js');
 const core = (m) => require(`../cli/core/${m}`);
 
 function harness(script, extraEnv = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-p2-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-p2-');
   const log = path.join(dir, 'copilot.jsonl');
   const file = path.join(dir, 'script.js');
   fs.writeFileSync(file, script);
@@ -61,7 +61,8 @@ function toRealize(root, policy) {
 test('P2.4: a timed-out builder gets a time-up turn in its session; its work is saved as wip:, and the next run resumes the session at attempt 2 with the history', () => {
   const root = F.makeRepo();
   F.cli(root, ['init']);
-  const J = toRealize(root, { copilot: { agent_timeout_seconds: 4 }, limits: { retry_limit: 1 } });
+  // (0.10.0's escalated attempt before exhaustion is off here: this test is about the time-up turn)
+  const J = toRealize(root, { copilot: { agent_timeout_seconds: 4 }, limits: { retry_limit: 1 }, agents: { escalate_before_park: false } });
   const fixture = JSON.stringify(path.join(__dirname, 'helpers', 'fixture.js'));
   const h = harness(`const F = require(${fixture});
   module.exports = async (c) => {

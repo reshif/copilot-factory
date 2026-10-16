@@ -122,11 +122,11 @@ for (const p of PLUGINS) {
   });
 }
 
-test('factory: 20 custom agents as <name>.agent.md with documented frontmatter and tool aliases', () => {
+test('factory: 21 custom agents as <name>.agent.md with documented frontmatter and tool aliases', () => {
   const dir = path.join(PLUGIN, 'agents');
   const files = fs.readdirSync(dir);
   for (const f of files) assert.match(f, /^[a-z]+(-[a-z]+)*\.agent\.md$/, `${f} is a .agent.md file`);
-  assert.equal(files.length, 20); // clarify v3: interviewer, brief-writer and contract-writer replace intent-mapper, intent-analyst, judge, verifier and contract-editor
+  assert.equal(files.length, 21); // clarify v3: interviewer, brief-writer and contract-writer replace intent-mapper, intent-analyst, judge, verifier and contract-editor; 0.10.0 adds api-conformance
   for (const f of files) {
     const { fm, body } = frontmatter(path.join(dir, f));
     for (const k of Object.keys(fm)) assert.ok(AGENT_FIELDS.has(k), `${f}: agent field ${k} is documented`);

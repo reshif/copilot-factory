@@ -15,7 +15,7 @@ const FAKE = path.join(__dirname, 'helpers', 'fake-copilot.js');
 
 // A scratch dir with the fake's log and script; run() calls the CLI with COPILOT_BIN set.
 function harness(script, extraEnv = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-runner-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-runner-');
   const log = path.join(dir, 'copilot.jsonl');
   let file = script;
   if (typeof script === 'object') {
@@ -401,7 +401,7 @@ test('factory run realize: builders start in their task worktree, task verify de
 });
 
 test('factory shim links factory and factory-inspect into a directory; doctor checks the Copilot CLI', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-shim-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-shim-');
   const r = F.cli(dir, ['shim', '--dir', path.join(dir, 'bin')]);
   assert.equal(r.__code, 0, JSON.stringify(r));
   assert.deepEqual(r.linked.map((l) => l.name), ['factory', 'factory-inspect']);
@@ -792,7 +792,7 @@ test('tool permissions follow the tools: list of each agent; policy adds pattern
   assert.ok(largs.includes('--allow-all-tools'), 'policy.copilot.permissions "allow-all" is the old behaviour');
 });
 
-test('standard@medium through factory run: decide with --threat-model, H2, decompose with --plan-critique, H3', () => {
+test('standard@medium through factory run: deps, decide with --threat-model, decompose with the plan probe and critique, one combined H3', () => {
   const root = F.makeRepo();
   fs.writeFileSync(path.join(root, '.factory', 'policy.json'), '{}');
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', 'medium']).job;
@@ -807,6 +807,9 @@ test('standard@medium through factory run: decide with --threat-model, H2, decom
   }
   assert.equal(n.step, 'H1');
   F.reply(root, 'approve');
+  n = F.cli(root, ['next']);
+  assert.equal(n.step, 'deps');
+  assert.equal(F.cli(root, ['deps', 'fetch']).__code, 0);
   n = F.cli(root, ['next']);
   assert.equal(n.workflow, 'ground');
   assert.equal(h.run(root, runArgs(n)).status, 'ok');
@@ -824,12 +827,9 @@ test('standard@medium through factory run: decide with --threat-model, H2, decom
   assert.match(r.message, /Design critique approved/);
   for (const role of ['option-generator', 'threat-modeler', 'architect', 'god-eye']) assert.ok(roles(r).includes(role), `${role} ran: ${roles(r)}`);
   assert.ok(fs.existsSync(path.join(F.jobDir(root, J), 'threat-model.md')));
+  // medium risk: no separate H2; the design is approved with the plan
   n = F.cli(root, ['next']);
-  assert.equal(n.step, 'H2', JSON.stringify(n));
-  F.reply(root, 'approve');
-  // decompose, with the plan critique
-  n = F.cli(root, ['next']);
-  assert.equal(n.workflow, 'decompose');
+  assert.equal(n.workflow, 'decompose', JSON.stringify(n));
   const dargs = runArgs({ ...n, plan_critique: true });
   const ddry = h.run(root, [...dargs, '--dry-run']);
   assert.deepEqual(ddry.agents.map((a) => a.agent_type.replace('factory:', '')).sort(), ['god-eye', 'planner']);
@@ -837,8 +837,11 @@ test('standard@medium through factory run: decide with --threat-model, H2, decom
   assert.equal(r.status, 'ok', JSON.stringify(r) + r.__stderr);
   assert.deepEqual(roles(r), ['god-eye', 'planner']);
   assert.match(r.message, /Plan valid: 1 tasks/);
+  assert.ok((r.checks || []).some((c) => c.step === 'probe'), 'factory run ran the plan probe');
+  assert.match(r.message, /plan probe ran every verify command/);
   n = F.cli(root, ['next']);
   assert.equal(n.step, 'H3', JSON.stringify(n));
+  assert.deepEqual(n.review.approves, ['design', 'plan', 'environment']);
   // after "deny" at H3 the router sends decompose again (the reason goes into its brief)
   F.reply(root, 'deny split the test change into its own task');
   n = F.cli(root, ['next']);
@@ -1035,7 +1038,7 @@ test('P4.1 transcripts and cost: each agent streams its JSONL to .factory/scratc
 
 test('P4.1 transcript caps: a transcript over the cap rotates to <label>.1.jsonl with complete counts; only the newest runs are kept', () => {
   const T = require('../cli/core/transcripts');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-tx-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-tx-');
   const t = T.open(path.join(dir, 'build_T1_1.jsonl'), { maxBytes: 200 });
   const ev = (n) => `${JSON.stringify({ type: 'tool.execution_start', data: { toolCallId: `t${n}`, toolName: n % 2 ? 'bash' : 'edit' } })}\n`;
   for (let i = 1; i <= 10; i++) t.write(ev(i).slice(0, 30)), t.write(ev(i).slice(30)); // lines split across chunks
@@ -1051,7 +1054,7 @@ test('P4.1 transcript caps: a transcript over the cap rotates to <label>.1.jsonl
   const taken = new Set();
   assert.notEqual(T.fileFor(dir, 'verify code-1', taken), T.fileFor(dir, 'verify code-1', taken));
   // prune keeps the newest run folders
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-txr-'));
+  const root = require('./helpers/tmp').mkdtemp('factory-txr-');
   for (const n of ['20260101T000000-a', '20260102T000000-b', '20260103T000000-c']) fs.mkdirSync(path.join(T.runsDir(root, 'J-0001'), n), { recursive: true });
   assert.equal(T.prune(root, 'J-0001', 2), 1);
   assert.deepEqual(fs.readdirSync(T.runsDir(root, 'J-0001')).sort(), ['20260102T000000-b', '20260103T000000-c']);

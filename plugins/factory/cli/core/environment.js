@@ -399,10 +399,12 @@ function propose(root, { file }) {
   return { proposed: PROPOSED(root), hash: short(p), message: `Proposed (${short(p)}). The human confirms it: reply "confirm environment ${short(p)}", or factory env set in their terminal.` };
 }
 
-// Human-only (cli/core/human.js setEnvironment): write the sealed, confirmed environment.
-function confirm(root, { file, none = false, expectHash = null, channel }) {
+// Human-only (cli/core/human.js setEnvironment, and approving a gate that binds the environment):
+// write the sealed, confirmed environment.
+function confirm(root, { file, none = false, env: given = null, expectHash = null, channel, via = null }) {
   let e;
   if (none) e = { version: 1, name: 'none', setup: [] };
+  else if (given) e = given;
   else if (file) e = readJson(path.resolve(file), null);
   else e = proposal(root);
   if (!e) fail(`No JSON in ${file}`, 'bad_input');
@@ -410,7 +412,7 @@ function confirm(root, { file, none = false, expectHash = null, channel }) {
   if (expectHash && short(clean) !== expectHash && short(e) !== expectHash) fail(`The proposal is now ${short(clean)}, not ${expectHash}: it changed after it was shown. Run factory env show and confirm again.`, 'stale_environment');
   const pp = problems(clean);
   if (pp.length) fail(`The environment is not valid:\n- ${pp.join('\n- ')}`, 'environment_invalid', pp);
-  const out = seal({ ...clean, version: 1, confirmed: { at: nowIso(), via: channel } });
+  const out = seal({ ...clean, version: 1, confirmed: { at: nowIso(), via: channel, ...(via ? { gate: via } : {}) } });
   writeJson(FILE(root), out);
   try {
     fs.rmSync(PROPOSED(root), { force: true });
@@ -487,6 +489,48 @@ function servicesDown(root, state) {
   return { cmd, code: r.code };
 }
 
+// ---------------------------------------------------------------- the environment a gate binds
+
+// The planner's proposal for this job (.factory/jobs/<job>/environment.proposed.json: the build
+// environment the plan runs in, written with plan.json), or null.
+const JOB_PROPOSED = (root, jobId) => path.join(root, '.factory', 'jobs', jobId, 'environment.proposed.json');
+
+// What an environment means, without its bookkeeping (seal, who confirmed it, where it came from).
+function essence(e) {
+  const { seal: _s, confirmed: _c, source: _src, evidence: _ev, hash: _h, problems: _p, ...rest } = e || {};
+  return { ...rest, version: 1 };
+}
+const fullHash = (e) => hash(essence(e));
+const isNone = (e) => !e || ((e.name === 'none' || !e.name) && !(e.setup || []).length && !e.services && !Object.keys(e.env || {}).length && !e.prefix);
+
+// The environment a job's plan gate binds: { status, hash, env, source, file? }
+//   confirmed  the sealed environment.json is what the plan runs in (nothing to seal)
+//   proposed   the planner's proposal (or the repo's detected one) waits for the human: approving
+//              a gate that binds the environment seals it
+//   none       nothing to set up (bare worktrees)
+//   tampered   environment.json fails its seal
+function gateProposal(root, jobId) {
+  const { env: conf, error } = loadSafe(root);
+  if (error) return { status: 'tampered', hash: 'tampered', env: null, message: error };
+  const jp = jobId ? readJson(JOB_PROPOSED(root, jobId), null) : null;
+  if (jp && !problems(essence(jp)).length) {
+    const h = fullHash(jp);
+    if (conf && fullHash(conf) === h) return { status: 'confirmed', hash: h, env: strip(conf), short: short(conf) };
+    if (isNone(jp) && (!conf || isNone(conf))) return { status: 'none', hash: 'none', env: essence(jp) };
+    return { status: 'proposed', hash: h, env: essence(jp), short: short(essence(jp)), source: 'the planner (with the plan)', file: JOB_PROPOSED(root, jobId) };
+  }
+  if (conf) return { status: 'confirmed', hash: fullHash(conf), env: strip(conf), short: short(conf) };
+  const p = proposal(root);
+  if (isNone(p)) return { status: 'none', hash: 'none', env: essence(p) };
+  return { status: 'proposed', hash: fullHash(p), env: essence(p), short: short(essence(p)), source: p.source };
+}
+
+// Realize may not start while the environment its commands run in waits for the human.
+function needsConfirmation(root, jobId) {
+  const g = gateProposal(root, jobId);
+  return g.status === 'proposed' || g.status === 'tampered';
+}
+
 // A one-line summary for factory next / the gate view while no environment is confirmed.
 function notice(root) {
   const { env: e, error } = loadSafe(root);
@@ -506,4 +550,4 @@ function notice(root) {
   };
 }
 
-module.exports = { teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };
+module.exports = { gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };

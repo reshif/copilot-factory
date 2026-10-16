@@ -137,7 +137,7 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
   assert.equal(H.hooks.preToolUse[0].timeoutSec, 10, 'timeouts fail open: keep the guard short');
   // the bash command really runs the hook through the env var (and exits quietly without it)
   const root = F.makeRepo();
-  const userDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'factory-userdir-'));
+  const userDir = require('./helpers/tmp').mkdtemp('factory-userdir-');
   const run = (env, bash = H.hooks.preToolUse[0].bash) => spawnSync('bash', ['-c', bash], { input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'git push --force' }, cwd: root }), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, FACTORY_USER_DIR: userDir, ...env } });
   for (const env of [{ COPILOT_PLUGIN_ROOT: F.PLUGIN }, { PLUGIN_ROOT: F.PLUGIN }, { CLAUDE_PLUGIN_ROOT: F.PLUGIN }]) {
     const r = run(env);
@@ -145,12 +145,12 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
     assert.equal(JSON.parse(r.stdout).permissionDecision, 'deny', JSON.stringify(env));
   }
   // a plugin root with a space in it
-  const spaced = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 'plug ')), 'my plugin');
+  const spaced = path.join(require('./helpers/tmp').mkdtemp('plug '), 'my plugin');
   fs.symlinkSync(F.PLUGIN, spaced);
   assert.equal(JSON.parse(run({ PLUGIN_ROOT: spaced }).stdout).permissionDecision, 'deny');
   assert.deepEqual([run({}).status, run({}).stdout], [0, '']);
   // node crashing, killed or too old fails OPEN: exit 0, a warning, no deny
-  const fakeNodeDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'badnode-'));
+  const fakeNodeDir = require('./helpers/tmp').mkdtemp('badnode-');
   for (const code of [1, 3, 137]) {
     fs.writeFileSync(path.join(fakeNodeDir, 'node'), `#!/bin/sh\nexit ${code}\n`, { mode: 0o755 });
     const r = run({ PLUGIN_ROOT: F.PLUGIN, PATH: `${fakeNodeDir}:${process.env.PATH}` });
@@ -166,7 +166,7 @@ test('hooks.json: at the plugin root, native Copilot format, named launchers tha
     assert.doesNotMatch(r.stderr, /hook failed/, ev);
   }
   // no node on PATH: every hook exits 0 with a warning (a non-zero preToolUse exit would deny every tool)
-  const noNode = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nonode-'));
+  const noNode = require('./helpers/tmp').mkdtemp('nonode-');
   for (const b of ['bash', 'dirname', 'cat']) {
     const p = spawnSync('bash', ['-c', `command -v ${b}`], { encoding: 'utf8' }).stdout.trim();
     if (p) fs.symlinkSync(p, path.join(noNode, b));

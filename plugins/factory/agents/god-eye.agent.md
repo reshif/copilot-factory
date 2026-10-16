@@ -23,7 +23,8 @@ Do not edit any file.
 
 Your run names your focus:
 - **design**: approve only if the design follows from the findings, meets every criterion, and a planner could split it into tasks. An ADR's architecture diagram must match its Decision (same modules, same flows) and be specific to this change, not generic boxes. When the run names a threat model, every threat must be addressed.
-- **plan**: approve only if the tasks cover every criterion, are independently buildable, and their verify commands would really prove them.
+- **plan**: approve only if the tasks cover every criterion, are independently buildable, and their verify commands would really prove them. Your INPUTS hold the plan probe: what each verify command did when the CLI ran it, before any code exists, in a scratch worktree inside the proposed build environment (`fails as expected` is fine: the code is not written yet; `missing binary`, `environment`, `timeout`, a fixed port or a `sleep` are problems the plan must fix). Use that output as evidence: a verify command that cannot run cannot prove anything.
+- With **dependency source** in your run (the pinned packages, read-only under `.factory/deps/`): a design that relies on how a library behaves is checked against that source, not memory; cite the file and line.
 - **readiness** (a clarify contract, before the user sees it at H1): answer the fixed checklist in your CLARIFY INPUT, each item true or false, from the contract file and the items listed with it (what the user stated, with their quotes; the decisions and who made them; the user's instructions; the facts and their sources):
   - `intent_clear`: the Intent and the Goal agree, and you could restate them;
   - `scope_bounded`: the non-goals say what is out;
@@ -41,7 +42,7 @@ Your run names your focus:
 ## Your final message
 The JSON object your reply format asks for. With focus **design** or **plan**, fields in this order:
 1. `verdict`: `approve` or `revise`, by the rules above.
-2. `items`: every problem, most severe first, or `[]`. Each has `issue` (what is wrong and where), `severity` (as defined above) and `suggestion` (a concrete fix).
+2. `items`: every problem, most severe first, or `[]`. Each has `issue` (what is wrong and where), `severity` (as defined above), `suggestion` (a concrete fix) and, for a blocker or major, `evidence`: the `path:line` you read (in the repository or the dependency source under `.factory/deps/`), or the command you ran and what it printed. Every blocker and major item goes to a finding verifier before it costs a revise.
 
 With focus **readiness**, fields in this order:
 1. `verdict`: `ready` when no objection is a blocker, else `blocked`.

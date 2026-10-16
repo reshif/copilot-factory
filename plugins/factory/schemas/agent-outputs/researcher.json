@@ -3,4 +3,9 @@
   "claims": { "type": "array", "items": { "type": "object", "required": ["claim", "source"], "properties": {
     "claim": { "type": "string" }, "source": { "type": "string" } } } },
   "unknowns": { "type": "array", "items": { "type": "object", "required": ["question", "blocking"], "properties": {
-    "question": { "type": "string" }, "blocking": { "type": "boolean" } } } } } }
+    "question": { "type": "string" }, "blocking": { "type": "boolean" } } } },
+  "ledger": { "type": "array", "items": { "type": "object", "required": ["symbol", "file", "line", "quote"], "properties": {
+    "symbol": { "type": "string" }, "file": { "type": "string" }, "line": { "type": "integer", "minimum": 1 },
+    "quote": { "type": "string" }, "version": { "type": "string" }, "behaviour": { "type": "string" } } } },
+  "deps": { "type": "array", "items": { "type": "object", "required": ["ecosystem", "name", "version"], "properties": {
+    "ecosystem": { "enum": ["pypi", "npm", "go"] }, "name": { "type": "string" }, "version": { "type": "string" } } } } } }

@@ -17,7 +17,7 @@ const { project, jobPaths, pluginPath } = require('../lib/paths');
 const STAGE_OF = {
   request: 'request',
   clarify: 'contract', H1: 'contract', EH1: 'contract', amend: 'contract', A: 'contract',
-  ground: 'design', decide: 'design', H2: 'design', EH2: 'design', HF: 'design',
+  deps: 'design', ground: 'design', decide: 'design', H2: 'design', EH2: 'design', HF: 'design',
   decompose: 'plan', H3: 'plan', EH3: 'plan',
   realize: 'build', reconcile: 'build', children: 'build',
   prove: 'verify', challenge: 'verify', epic_gate: 'verify',
@@ -131,8 +131,9 @@ function resultText(step, ok, d) {
       if (num(d.questions)) return `${num(d.questions)} question(s) for you${cats.length ? ` (${cats.join(', ')})` : ''}${held ? `; ${held} more held back until the intent is settled` : ''}`;
       return d.intent_open ? 'The intent is not settled yet' : (d.contract_problems || []).length ? `Contract has problems: ${d.contract_problems.slice(0, 2).join('; ')}` : 'Not clear yet';
     }
-    case 'ground': return `${num(d.claims)} sourced claim(s) across ${num(d.topics)} topic(s)${num(d.unverified) ? `, ${num(d.unverified)} unverified` : ''}${(d.blocking || []).length ? `, ${d.blocking.length} blocking` : ''}`;
-    case 'decide': return `${d.kind === 'adr' ? 'ADR' : d.kind || 'Decision'} recorded after ${num(d.rounds) || 1} critique round(s)${d.threat_model ? ', with a threat model' : ''}; God Eye: ${d.critique || 'n/a'}`;
+    case 'deps': return `${(d.fetched || []).length} pinned package(s) fetched read-only${(d.gaps || []).length ? `, ${d.gaps.length} gap(s)` : ''}`;
+    case 'ground': return `${num(d.claims)} sourced claim(s) across ${num(d.topics)} topic(s)${num(d.unverified) ? `, ${num(d.unverified)} unverified` : ''}${d.api_ledger ? `; API ledger: ${num(d.api_ledger.verified)} verified, ${num(d.api_ledger.rejected)} rejected` : ''}${(d.blocking || []).length ? `, ${d.blocking.length} blocking` : ''}`;
+    case 'decide': return `${d.kind === 'adr' ? 'ADR' : d.kind || 'Decision'} recorded after ${num(d.rounds) || 1} critique round(s)${d.threat_model ? ', with a threat model' : ''}; critics: ${d.critique || 'n/a'}${d.stop && d.stop !== 'approved' ? ` (${d.stop === 'no_progress' ? 'no progress' : 'ceiling'}, ${num(d.open)} open at the gate)` : ''}${d.targeted ? '; a targeted revise for your deny' : ''}`;
     case 'decompose': return ok ? (d.source === 'contract' ? 'One task, straight from the contract' : `${num(d.tasks)} task(s) in ${num(d.waves)} wave(s)`) : `Plan invalid: ${(d.errors || []).slice(0, 2).join('; ')}`;
     case 'plan_critique': return 'God Eye approved the plan';
     case 'reconcile': return `Task branches merged into the job branch${d.commit ? ` at ${String(d.commit).slice(0, 7)}` : ''}`;
@@ -473,6 +474,22 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     clarify: clarifyBlock(root, state),
     // what H1 shows besides the contract (factory next's `clarify` at the gate): checked against your words, decisions, gaps, drops, God Eye's objections
     h1: state.pending_gate && ['H1', 'EH1'].includes(state.pending_gate.id) ? require('./clarify').h1Summary(root, state) : null,
+    // 0.10.0: at the design or combined design + plan gate, what it approves besides its documents:
+    // the critics' open objections, the API ledger, the plan probe, the build environment it seals
+    gate_review: state.pending_gate && ['H2', 'EH2', 'H3', 'HF'].includes(state.pending_gate.id) ? (() => {
+      try {
+        return require('./critics').gateView(require('./steps').context(root, state, require('./job').load), state.pending_gate.id);
+      } catch {
+        return null;
+      }
+    })() : null,
+    api_ledger: (() => {
+      try {
+        return require('./critics').ledgerSummary(root, id);
+      } catch {
+        return null;
+      }
+    })(),
     intent: idata ? {
       web: idata.web || null,
       unknowns: (idata.unknowns || []).length,

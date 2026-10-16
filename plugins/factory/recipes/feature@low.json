@@ -10,7 +10,7 @@
     { "step": "H1", "run": "gate" },
     { "step": "ground", "run": "workflow:ground" },
     { "step": "decompose", "run": "workflow:decompose", "plan_critique": true },
-    { "step": "H3", "run": "gate", "auto": "plan_critique" },
+    { "step": "H3", "run": "gate", "auto": "plan_critique", "combined": ["plan", "environment"] },
     { "step": "realize", "run": "workflow:realize" },
     { "step": "reconcile", "run": "workflow:reconcile" },
     { "step": "prove", "run": "cli:verify run" },

@@ -21,7 +21,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The fake Copilot with a crew script; `script` may wrap the crew (a .js source string).
 function harness({ script = CREW, env = {} } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-p3-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-p3-');
   let file = script;
   if (!fs.existsSync(script)) {
     file = path.join(dir, 'script.js');
@@ -237,7 +237,7 @@ test('P3.2: notifications: notify-send on Linux, wsl-notify-send or a PowerShell
   assert.equal(N.isWsl({}, () => { throw new Error('no /proc'); }), false);
   // a real spawn through a notify-send on PATH; then policy.notify false turns it off
   const root = F.makeRepo();
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-bin-'));
+  const bin = require('./helpers/tmp').mkdtemp('factory-bin-');
   const out = path.join(bin, 'shown.txt');
   fs.writeFileSync(path.join(bin, 'notify-send'), `#!/bin/sh\necho "$@" >> "${out}"\n`, { mode: 0o755 });
   const saved = { PATH: process.env.PATH, FACTORY_NOTIFY: process.env.FACTORY_NOTIFY, WSL_DISTRO_NAME: process.env.WSL_DISTRO_NAME };
@@ -264,7 +264,7 @@ test('P3.2: notifications: notify-send on Linux, wsl-notify-send or a PowerShell
 test('P3.2: a drive stop notifies through the OS notifier (notify-send on PATH)', async () => {
   const root = F.makeRepo();
   newJob(root, { clarify: { readback: 'wait' } }); // a clarify turn to stop at
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-bin-'));
+  const bin = require('./helpers/tmp').mkdtemp('factory-bin-');
   const out = path.join(bin, 'shown.txt');
   fs.writeFileSync(path.join(bin, 'notify-send'), `#!/bin/sh\necho "$@" >> "${out}"\n`, { mode: 0o755 });
   const h = harness({ env: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FACTORY_NOTIFY: '', WSL_DISTRO_NAME: '' } });

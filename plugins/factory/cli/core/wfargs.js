@@ -273,12 +273,28 @@ function decide(root, state, ctx, action) {
       : '',
   ].filter(Boolean).join('\n');
   const deferredD = require('./clarify').deferredText(root, state);
-  const jc = `${jobContext(root, state, ['H2', 'EH2', 'HF'])}\n- Findings (cited): ${jp.findings}${deferredD ? `\n${deferredD}` : ''}${history ? `\n${history}` : ''}`;
+  // 0.10.0: the pinned dependency source and the API ledger ground verified, for every agent of
+  // decide (option generators design against it; the critics check the design against it)
+  const depsMod = require('./deps');
+  const depsText = depsMod.briefText(root, state);
+  const apiLedger = depsMod.readLedger(root, state.id);
+  const ledgerText = apiLedger && apiLedger.entries.length
+    ? `\n- API ledger (verified by the CLI against the dependency source: ${depsMod.LEDGER(root, state.id)}): ${apiLedger.entries.map((e) => `${e.id} ${e.symbol}`).join(', ')}. The ADR's "External API usage" table cites these ids.`
+    : '';
+  const denyGates = ['H2', 'EH2', 'HF', ...((steps.combinedOf(ctx, 'H3') || []).includes('design') ? ['H3'] : [])];
+  const jc = `${jobContext(root, state, denyGates)}\n- Findings (cited): ${jp.findings}${deferredD ? `\n${deferredD}` : ''}${depsText ? `\n${depsText}` : ''}${ledgerText}${history ? `\n${history}` : ''}`;
+  // A deny that names a defect (not "rethink"): a targeted revise of the design that exists, no new
+  // option generators (cli/core/critics.js denyMode)
+  const lastDecide = ledger.lastStep(root, state.id, 'decide');
+  const denial = (state.denials || []).filter((d) => denyGates.includes(d.gate) && (!lastDecide || d.at > lastDecide.at) && (d.gate !== 'H3' || require('./critics').denyTarget(d.reason) === 'decide')).pop();
+  const targeted = denial && priorDesign.length && require('./critics').denyMode(denial.reason) === 'targeted' && mode !== 'recommendation'
+    ? { gate: denial.gate, reason: denial.reason || '', at: denial.at }
+    : null;
   const existingAdrs = priorDesign.filter((f) => /adr-\d+/.test(f));
   const nextAdr = existingAdrs.length
     ? `${existingAdrs[existingAdrs.length - 1]} (revise it in place — keep this path — unless the decision itself is new)`
     : path.join(jp.dir, 'adr-001-<short-title>.md');
-  const fanout = cfg.fanout
+  const fanout = targeted ? [] : cfg.fanout
     .filter((f) => !(f.when === 'threat_model' && !threat))
     .filter((f) => !(mode === 'recommendation' && f.role === 'threat-modeler'))
     .map((f, i) => {
@@ -302,6 +318,7 @@ function decide(root, state, ctx, action) {
         : `If there is a real decision (two or more viable options with different consequences), write an ADR to ${nextAdr} following ${tpl('adr')} (kind "adr"). Otherwise write ${jp.noAdr} following ${tpl('no-adr')} (kind "no-adr").`;
   const rules = [
     threat && mode !== 'recommendation' ? '- A threat model was written for this change: map every threat id (TH-n) in the ADR\'s "Threat mitigations".' : '',
+    apiLedger && apiLedger.entries.length && mode !== 'recommendation' ? `- In the ADR's "External API usage" (${tpl('adr')}), list every call the design makes into a dependency, with how it is used and the ledger id (L-n) that shows the behaviour relied on. A call the ledger does not cover: read the dependency source yourself and say so in Open questions; never rely on remembered library behaviour.` : '',
     `- ${docCheck(root, state, '<file>')}`,
   ].filter(Boolean).join('\n');
   const judge = {
@@ -309,15 +326,35 @@ function decide(root, state, ctx, action) {
     prompt: prompt('architect', `${jc}\n- ${what}\n${rules}\n- The option generators' outputs${threat ? ' and the threat model' : ''} follow under INPUTS.`),
     schema: schema('architect'),
   };
-  const maxRounds = state.policy.limits.max_design_critique_rounds;
+  // the ceiling of critique rounds; the loop itself stops earlier on no progress (fanout-judge.js)
+  const maxRounds = Math.max(state.policy.limits.max_design_critique_rounds || 0, 3);
   const critique = {
+    id: 'god-eye',
     ...agentSpec(state, 'god-eye'),
-    prompt: prompt('god-eye', `${jc}\n- Focus: **design**. The document is the design record (paths under INPUTS).${threat ? ` The threat model it must address: ${jp.threatModel}.` : ''}`),
+    prompt: prompt('god-eye', `${jc}\n- Focus: **design**. The document is the design record (paths under INPUTS).${threat ? ` The threat model it must address: ${jp.threatModel}.` : ''}${depsText ? ' Where the design relies on a library\'s behaviour, check it in the dependency source above, and give each serious item its `evidence` (path:line, or the command and its output).' : ''}`),
     schema: schema('critique'),
     max_rounds: maxRounds,
-    revise: { ...agentSpec(state, 'architect'), prompt: prompt('architect', `${jc}\n- Revise the design record you wrote to address the critique under INPUTS. Keep the same file paths.\n${rules}`), schema: schema('architect') },
+    revise: { ...agentSpec(state, 'architect'), prompt: prompt('architect', `${jc}\n- Revise the design record you wrote to address ${targeted ? 'the human\'s denial' : 'the critique'} under INPUTS. Fix exactly what it names (each item says where, and why, with its evidence); keep the decision otherwise. Keep the same file paths.\n${rules}`), schema: schema('architect') },
   };
-  return base(root, state, 'fanout-judge', { config: 'decide', mode, input_hash: inputHash({ contract: ctx.b.contract, findings: ctx.b.findings }), fanout, judge, critique, verifier: null, threat_model: threat });
+  // the API-conformance critic runs beside God Eye when the job has dependency source to check
+  // the design against (cli/core/deps.js); its serious items must cite it
+  const hasDeps = Boolean(depsText) || Boolean(apiLedger && apiLedger.entries.length);
+  const critics = [critique, ...(hasDeps && mode !== 'recommendation' ? [{
+    id: 'api-conformance',
+    ...agentSpec(state, 'api-conformance'),
+    prompt: prompt('api-conformance', `${jc}\n- The design record to check is under INPUTS (its paths). Check every external call it makes (its "External API usage" table, and any call its Decision implies) against the pinned dependency source and the API ledger above.${(() => { const E = require('./environment').loadSafe(root).env; return E && !require('./environment').isNone(E) ? ` A probe (e.g. inspect.signature) may run only inside the project's confirmed build environment "${E.name || 'configured'}" (setup: ${(E.setup || []).join(' && ') || 'none'}), never by importing from .factory/deps.` : ' No build environment is confirmed: read the source, run no probe that imports the dependency.'; })()}`),
+    schema: schema('conformance'),
+  }] : [])];
+  // both critics' serious items are checked by a finding verifier before they cost a revise
+  const designPaths = invalidation.designFiles(root, state.id);
+  const verifier = {
+    ...agentSpec(state, 'finding-verifier'),
+    prompt_template: prompt('finding-verifier', `${jc}\n- This is a DESIGN finding, raised by a design critic (God Eye or the API-conformance critic) against the design record${designPaths.length ? ` (${designPaths.join(', ')})` : ' under review'}, before any code exists. Confirm it from the design record and, for a claim about a library, from the dependency source listed above (open the cited path:line); refute it when the record or the source shows it does not hold.\n- The finding to verify is given below your pointer to this file.`, 'The finding to verify:\n{{finding}}'),
+    schema: schema('verifier'),
+    severities: ['blocker', 'major'],
+  };
+  const priorOut = targeted ? { kind: designPaths.some((f) => /adr-\d+/.test(f)) ? 'adr' : designPaths.some((f) => /no-adr\.md$/.test(f)) ? 'no-adr' : 'contracts', paths: designPaths, summary: `The design record the human denied at ${targeted.gate}.` } : null;
+  return base(root, state, 'fanout-judge', { config: 'decide', mode, input_hash: inputHash({ contract: ctx.b.contract, findings: ctx.b.findings }), fanout, judge, critique, critics, verifier, threat_model: threat, ...(targeted ? { targeted, prior_design: priorOut } : {}) });
 }
 
 // ---------------------------------------------------------------- fanout-judge: diagnose
@@ -464,12 +501,18 @@ function ground(root, state, ctx, action) {
   const idata = v3 ? null : intent.load(root, state.id);
   const reuse = v3 || (idata && !idata.tampered ? intent.briefText(idata, { forGround: true }) : '');
   const where = v3 ? require('./clarify').file(root, state.id) : intent.files(root, state.id).md;
-  const jc = `${jobContext(root, state)}${reuse ? `\n- Research from clarify (${where}) — reuse it, don't redo it; extend only on design topics:\n${reuse.split('\n').map((l) => `  ${l}`).join('\n')}` : ''}`;
+  const depsText = require('./deps').briefText(root, state);
+  const jc = `${jobContext(root, state)}${reuse ? `\n- Research from clarify (${where}) — reuse it, don't redo it; extend only on design topics:\n${reuse.split('\n').map((l) => `  ${l}`).join('\n')}` : ''}${depsText ? `\n${depsText}` : ''}`;
+  // 0.10.0: the interfaces probe writes the API ledger from the fetched dependency source; any
+  // probe may ask for a package it needs (`deps`), which the CLI fetches before it asks once more
+  const LEDGER_TASK = depsText
+    ? ' Write the API ledger: for every external symbol (function, class, constant, flag, default) the contract implies a call to, an entry with `symbol`, `file` (the path inside the dependency source above), `line`, `quote` (the exact text at that line, copied), `version` (the fetched one) and `behaviour` (what it does that the design must rely on: defaults, flags, what happens with missing or extra items, None/null filters). The CLI checks every quote against the fetched file and rejects any that is not there.'
+    : ' If the change calls a library at a pinned version, name it under `deps` (`ecosystem` pypi, npm or go, `name`, `version`): the CLI fetches its source, read-only, and asks you once more to write the API ledger from it.';
   const probes = topics.slice(0, Math.max(1, cap)).map(([t, brief]) => ({
     id: t,
     ...agentSpec(state, 'researcher'),
     label: `ground · ${t}`,
-    prompt: prompt('researcher', `${jc}\n- Topic: **${t}** — ${brief}\n- Answers the human already gave:\n${answers.map((a) => `  - Q: ${a.question}\n    A: ${a.answer}`).join('\n') || '  - (none)'}`),
+    prompt: prompt('researcher', `${jc}\n- Topic: **${t}** — ${brief}${t === 'interfaces' ? LEDGER_TASK : ''}\n- Answers the human already gave:\n${answers.map((a) => `  - Q: ${a.question}\n    A: ${a.answer}`).join('\n') || '  - (none)'}`),
     schema: schema('researcher'),
   }));
   return base(root, state, 'ground', { mode: action.mode || null, input_hash: inputHash({ contract: ctx.b.contract, answers: answers.length }), probes });
@@ -485,19 +528,42 @@ function decompose(root, state, ctx, action) {
   const what = slices
     ? `Write ${jp.slices}: {"slices":[{"id":"S00","goal":"…","criteria_ids":["E-AC-1"],"depends_on":[],"work_type":"feature","risk":"${state.risk}","allowed_paths":["…"]}], "epic_verify_commands":["…"]}. S00 freezes the contracts and adds the feature flag; later slices are vertical and safe to stop after. Every E-AC must be owned by a slice.`
     : `Write ${jp.plan}: {"interfaces":[{"name":"parse(text) -> Config","kind":"function","file":"src/x/parse.js","owner":"T1"}],"tasks":[{"id":"T1","objective":"…","allowed_paths":["src/x/**"],"depends_on":[],"criteria_ids":["AC-1"],"verify_commands":[{"cmd":"…","covers":["AC-1"]}],"retry_limit":3,"rollback":"…"},{"id":"T2","objective":"…","allowed_paths":["src/y/**"],"consumes":["parse(text) -> Config"],"criteria_ids":["AC-2"],"verify_commands":[{"cmd":"…","covers":["AC-2"]}]}]}. Tasks that can run in parallel must not share allowed paths. Declare every interface one task builds and another uses, and list it in the user's \`consumes\`.`;
+  // 0.10.0: the planner proposes the build environment with the plan (it sees the one there is),
+  // and the CLI probes the plan's verify commands in it before any critic or human reads it
+  const envMod = require('./environment');
+  const envGate = slices ? null : envMod.gateProposal(root, state.id);
+  const envFile = envMod.JOB_PROPOSED(root, state.id);
+  const envText = slices
+    ? ''
+    : [
+        envGate.status === 'confirmed'
+          ? `- Build environment (confirmed: every worktree is set up with it, and task verify runs each verify command inside it): ${envGate.env.name || 'configured'} — setup: ${(envGate.env.setup || []).join(' && ') || '(none)'}${Object.keys(envGate.env.env || {}).length ? `; env: ${Object.keys(envGate.env.env).join(', ')}` : ''}${envGate.env.services ? `; services: ${envGate.env.services.up}` : ''}${envGate.env.notes ? `. Notes: ${envGate.env.notes}` : ''}`
+          : envGate.status === 'proposed'
+            ? `- Build environment (proposed, not confirmed yet — ${envGate.source}): ${envGate.env.name || 'proposed'} — setup: ${(envGate.env.setup || []).join(' && ') || '(none)'}${envGate.env.notes ? `. Notes: ${envGate.env.notes}` : ''}`
+            : '- Build environment: none yet (worktrees are bare: only what the repository already has runs).',
+        `- Propose the build environment the plan needs, with the plan: write ${envFile} (the fields of .factory/environment.json: name, setup, cache_key, env, prefix, services {up, health, down}, teardown, ignore, timeout_seconds, notes) whenever the verify commands need anything the environment above does not give them (a venv, installed dependencies, settings, a database, a server). Keep it unchanged when the one above is right. The human accepts it at the plan gate; nothing runs it before then except the CLI's probe in a scratch worktree.`,
+        '- Greenfield (the environment\'s setup needs manifests no commit has yet): make the task that creates them the bootstrap task ("bootstrap": true, no depends_on), first, and make every other task depend on it.',
+        '- Verify commands run in parallel worktrees, inside that environment: no fixed ports, no sleep-based waits, no background processes; a framework test gets its settings and database from the environment, not from the developer\'s machine.',
+      ].join('\n');
+  const lastProbe = slices ? null : readJson(require('./probe').FILE(root, state.id), null);
+  const probeText = lastProbe && (lastProbe.problems || []).length
+    ? `\n- The CLI's plan probe found these problems in the current plan (each verify command was dry-run in a scratch worktree inside the proposed environment); fix every one:\n${lastProbe.problems.slice(0, 15).map((p) => `  - ${p}`).join('\n')}`
+    : '';
   const planner = {
     ...agentSpec(state, slices ? 'slicer' : 'planner'),
     prompt: prompt(
       slices ? 'slicer' : 'planner',
-      `${jc}\n- ${what}\n- Then run \`${cli(root)} plan validate --job ${state.id}\` and fix every error before returning.\n- Accepted lessons each relevant task must carry:\n${ls.map((l) => `  - ${l.id} (${l.scope.join(', ')}): ${l.text}`).join('\n') || '  - (none)'}`,
+      `${jc}\n- ${what}${envText ? `\n${envText}` : ''}${probeText}\n- Then run \`${cli(root)} plan validate --job ${state.id}\` and fix every error before returning.\n- Accepted lessons each relevant task must carry:\n${ls.map((l) => `  - ${l.id} (${l.scope.join(', ')}): ${l.text}`).join('\n') || '  - (none)'}`,
     ),
     schema: schema('planner'),
     max_rounds: rounds,
   };
-  const critique = action.plan_critique
-    ? { ...agentSpec(state, 'god-eye'), prompt: prompt('god-eye', `${jc}\n- Focus: **plan**. The document is ${jp.plan}.`), schema: schema('critique'), max_rounds: 2 }
+  // God Eye's plan critique runs at every risk level (0.10.0), with the probe's output as its
+  // evidence; for an epic's slices only when the recipe asks for it
+  const critique = !slices || action.plan_critique
+    ? { ...agentSpec(state, 'god-eye'), prompt: prompt('god-eye', `${jc}\n- Focus: **plan**. The document is ${jp.plan}.${slices ? '' : ` The plan probe's record (what each verify command did when the CLI dry-ran it in the proposed build environment) is under INPUTS; the proposed environment is ${envFile} when the planner wrote one.`}`), schema: schema('critique'), max_rounds: 2 }
     : null;
-  return base(root, state, 'decompose', { mode: slices ? 'slices' : 'plan', input_hash: inputHash({ contract: ctx.b.contract, design: ctx.b.design }), planner, critique });
+  return base(root, state, 'decompose', { mode: slices ? 'slices' : 'plan', input_hash: inputHash({ contract: ctx.b.contract, design: ctx.b.design }), planner, critique, probe: !slices, max_probe_rounds: 3 });
 }
 
 // ---------------------------------------------------------------- realize
@@ -515,7 +581,7 @@ function realize(root, state, ctx, action) {
   // worktree and starts the builder inside it; task verify runs every command inside it.
   const E = require('./environment').loadSafe(root).env;
   const envNote = E && ((E.setup || []).length || Object.keys(E.env || {}).length || E.prefix)
-    ? `\n- Build environment "${E.name || 'configured'}": factory run sets it up in your worktree before you start (${(E.setup || []).join(' && ') || 'no setup'}) and starts you inside it${Object.keys(E.env || {}).length ? ` (${Object.keys(E.env).join(', ')} set)` : ''}; task verify runs every verify command inside it${E.prefix ? `, as \`${E.prefix} <command>\`` : ''}. Run tests the same way, from your worktree, so they import your worktree's code. Don't reinstall or change the environment yourself; if it is broken, reply blocked and say so.`
+    ? `\n- Build environment "${E.name || 'configured'}": factory run sets it up in your worktree before you start (${(E.setup || []).join(' && ') || 'no setup'}) and starts you inside it${Object.keys(E.env || {}).length ? ` (${Object.keys(E.env).join(', ')} set)` : ''}; task verify runs every verify command inside it${E.prefix ? `, as \`${E.prefix} <command>\`` : ''}. Run tests the same way, from your worktree, so they import your worktree's code. Don't reinstall or change the environment yourself; if it is broken, reply blocked with blocked_reason environment and the command and output that show it (no attempt is spent).`
     : '';
   const tasks = {};
   for (const t of pending) {
@@ -543,6 +609,14 @@ function realize(root, state, ctx, action) {
       // depends_on plus earlier-wave tasks on overlapping paths: a failed one skips this task.
       depends_on: require('./plan').effectiveDeps(plan.tasks, t.id, plan.interfaces),
       retry_limit: t.retry_limit || state.policy.limits.retry_limit,
+      // greenfield: the bootstrap task's worktree starts without the environment (it writes the
+      // manifests the environment's setup needs)
+      ...(t.bootstrap ? { bootstrap: true } : {}),
+      // 0.10.0: one escalated attempt (strongest model, diagnosis brief) before exhausted; once
+      // per task (a resumed job does not escalate again)
+      // (policy agents.escalate_before_park: false turns it off)
+      ...(((state.policy || {}).agents || {}).escalate_before_park === false ? {} : { escalation: { model: (() => { const up = builderSpec(state).escalate; return up.length ? up[up.length - 1] : null; })() } }),
+      ...(st.escalated_at ? { escalated: true } : {}),
       // Builders may move to a stronger model on retries (policy.agents.builder_escalation); in a
       // fix round the loop engine escalated (no progress), they start on the stronger model.
       builder: state.fix && state.fix.escalate_model && (state.fix.tasks || []).includes(t.id) ? { ...builderSpec(state), model: state.fix.escalate_model } : builderSpec(state),
