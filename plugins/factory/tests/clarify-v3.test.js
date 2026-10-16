@@ -70,8 +70,14 @@ test('sheet replies: ok, ok but, numbered choices, other, defer, fact correction
 });
 
 // a repo, a job with a request, clarify driven to a stage with the fixture's scripted agents
-function job({ risk = 'medium', request = 'fix add so the cart totals add up' } = {}) {
+function job({ risk = 'medium', request = 'fix add so the cart totals add up', policy = null } = {}) {
   const root = F.makeRepo();
+  if (policy) {
+    const pf = path.join(root, '.factory', 'policy.json');
+    const pol = JSON.parse(fs.readFileSync(pf, 'utf8'));
+    for (const [k, v] of Object.entries(policy)) pol[k] = { ...(pol[k] || {}), ...v };
+    fs.writeFileSync(pf, JSON.stringify(pol, null, 2));
+  }
   const J = F.cli(root, ['job', 'new', '--title', 'Fix add', '--type', 'feature', '--risk', risk, '--request', request]).job;
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText());
   return { root, J, JD: F.jobDir(root, J) };
@@ -79,7 +85,8 @@ function job({ risk = 'medium', request = 'fix add so the cart totals add up' } 
 const record = (root) => JSON.parse(fs.readFileSync(path.join(F.jobDir(root, require('../cli/core/job').resolve(root).id), 'clarify.json'), 'utf8'));
 
 test('replies without the prompt hook: factory clarify reply records the user\'s words; the chat hook takes only clear replies', () => {
-  const { root } = job();
+  // the read-back waits only when policy says so (or a pin conflicts, or a question is only the user's)
+  const { root } = job({ policy: { clarify: { readback: 'wait' } } });
   assert.equal(F.clarify(root, { until: 'readback_wait' }).stage, 'readback_wait');
   assert.equal(C.chatReply(root, 'should research also check the 3.x docs?'), null, 'a question is the user talking, not a reply');
   assert.equal(C.chatReply(root, 'I think the read-back missed that totals are cents'), null, 'prose at the read-back goes through the main session, which reads it back');
@@ -117,20 +124,12 @@ test('the user may edit contract.md at any time: the guard allows it, and the CL
   void J;
 });
 
-test('God Eye objections are never approval: a blocker sends clarify back; at the cap it parks; "proceed" is the user\'s and H1 shows the objection open', () => {
+test('God Eye objections are never approval: a blocker sends clarify back round after round; when the loop stops making progress H1 shows the objection open (no park, no proceed needed)', () => {
   const { root, J } = job({ risk: 'low' });
   const blocker = [{ check: 'acs_testable', severity: 'blocker', stage: 'assemble', ref: 'AC-1', issue: 'AC-1 names no input range', fix: 'say which numbers' }];
   const last = F.clarify(root, { objections: blocker, checklist: { acs_testable: false } });
-  assert.equal(last.status, 'park', JSON.stringify(last).slice(0, 400));
-  const n = F.cli(root, ['next']);
-  assert.equal(n.action, 'parked');
-  assert.match(n.reason, /proceed/, 'the park says the user can proceed with the objection shown');
-  // an agent cannot proceed: the verb is the user's (the CLI refuses without a terminal; the guard refuses agents)
-  const byAgent = F.cli(root, ['proceed']);
-  assert.ok(byAgent.error, JSON.stringify(byAgent));
-  assert.ok(require('../hooks/guard-rules').HUMAN_ONLY.has('proceed'), 'proceed is a human-only verb');
-  // the user proceeds in chat
-  F.reply(root, `proceed ${J}`);
+  assert.equal(last.status, 'ok', JSON.stringify(last).slice(0, 400));
+  assert.equal(last.loop_end.rule, 'no_progress');
   const h = F.cli(root, ['next']);
   assert.equal(h.step, 'H1', JSON.stringify(h).slice(0, 300));
   const view = h.clarify_h1;
@@ -139,9 +138,12 @@ test('God Eye objections are never approval: a blocker sends clarify back; at th
   assert.match(view.god_eye_objects[0], /AC-1 names no input range/);
   assert.match(view.screen, /God Eye objects/);
   assert.doesNotMatch(view.screen, /checks pass/, 'an open objection is never shown next to "all checks pass"');
+  // proceed stays a human-only verb (for parks from before 0.9.0)
+  assert.ok(require('../hooks/guard-rules').HUMAN_ONLY.has('proceed'), 'proceed is a human-only verb');
   const step = fs.readFileSync(path.join(F.jobDir(root, J), 'ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).filter((e) => e.kind === 'step' && e.step === 'clarify').pop();
   assert.equal(step.detail.approved, false);
   assert.equal(step.detail.god_eye_objects, 1);
+  assert.equal(step.detail.loop_end.rule, 'no_progress');
 });
 
 test('a degraded run parks: an agent that returns nothing twice is named, and resume tries again', () => {
@@ -285,7 +287,7 @@ test('telemetry: what clarify cost the user and what it could not do, per job', 
   const m = (t.per_job || []).find((x) => x.clarify);
   assert.ok(m, JSON.stringify(t).slice(0, 300));
   assert.equal(m.clarify.version, 3);
-  assert.ok(m.clarify.user_turns >= 1, 'the read-back ok is a user turn');
+  assert.equal(m.clarify.user_turns, 0, 'nothing needed the user: the read-back was shown, not waited on');
   assert.equal(m.clarify.readiness_checks, 1);
   assert.equal(m.clarify.proceeded, false);
 });

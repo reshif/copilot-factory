@@ -655,6 +655,62 @@ S.av = {
 // decision to the sheet. The readiness cycle cap parks it; nothing loops the user forever.
 S.loop = { ...S.b, check: (inp) => verdict([{ check: 'decisions_closed', severity: 'blocker', stage: 'sheet', ref: 'contract', issue: `Who owns the limits? (asked ${(inp.decisions || []).length})`, fix: 'ask the user' }]), interpret: (inp) => ({ answers: inp.sheet.decisions.map((d) => ({ decision: d.no, choice: 'other', text: inp.reply.text, quote: inp.reply.text })), facts: [], unclear: [] }), sheet: () => 'the platform team' };
 
+// (hello) the hello-world park of 0.8.x: God Eye raises 3 findings the writer can fix (each with a
+// fix), then 1, then none. 0.9.0 runs those rounds by itself: H1 with no park and no user turn.
+const HELLO = (round) => `# Hello world script
+
+## Intent
+- Problem: there is no script that greets the user
+- Who: whoever runs the script
+- Outcome: running it prints a greeting
+- Success signal: running it prints Hello, world
+
+## Goal
+\`node hello.js\` prints "Hello, world" and exits 0.
+
+## Non-goals
+${round >= 2 ? '- Command-line arguments or other languages' : '- None'}
+
+## Acceptance criteria
+- AC-1: \`node hello.js\` prints exactly "Hello, world" followed by a newline (evidence: test)
+${round >= 3 ? '- AC-2: `node hello.js` exits with code 0 (evidence: test)\n' : ''}
+## Constraints
+- No dependencies
+
+## Allowed paths
+- hello.js
+- tests/**
+
+## Verify commands
+- \`${round >= 2 ? 'node tests/hello.test.js' : 'node hello.js'}\` (AC-1${round >= 3 ? ', AC-2' : ''})
+
+## Assumptions
+- None
+`;
+S.hello = {
+  readback() {
+    return { intent: { problem: 'there is no script that greets the user', who: 'whoever runs the script', outcome: 'running it prints a greeting', success: 'running it prints Hello, world' }, scope: { in: ['a hello-world script'], out: [] }, took: [{ item: 'new', text: 'It prints Hello, world', quote: 'prints Hello, world' }], pins: [], plan: [], questions: [], design_may_choose: ['The file name'] };
+  },
+  repo: () => ({ mode: 'repo', versions: [], evidence: [], unresolved: [], failed_sources: [] }),
+  docs: () => ({ mode: 'docs', web_available: true, versions: [], evidence: [], unresolved: [], failed_sources: [] }),
+  brief: () => ({ summary: 'nothing to research', records: [], facts: [], gaps: [] }),
+  writer(inp) {
+    const round = earlier({}, (l) => l.agent === 'factory:contract-writer') + 1;
+    return { contract: HELLO(round), covers: (inp.items || []).map((x) => ({ item: x.id, where: 'AC-1' })), uncovered: [], removed: [], changed: [] };
+  },
+  check() {
+    const n = earlier({}, (l) => l.agent === 'factory:god-eye') + 1;
+    const all = [
+      { check: 'acs_testable', severity: 'blocker', stage: 'assemble', ref: 'AC-1', issue: 'The verify command `node hello.js` runs the script but checks nothing: it passes whatever the script prints.', fix: 'Add tests/hello.test.js that runs hello.js and compares its output, and make it the verify command for AC-1.', fixable_by: 'writer' },
+      { check: 'scope_bounded', severity: 'blocker', stage: 'assemble', ref: 'Non-goals', issue: 'Non-goals says None: arguments and other languages are neither in nor out.', fix: 'Add a non-goal: command-line arguments and other languages.', fixable_by: 'writer' },
+      { check: 'acs_testable', severity: 'blocker', stage: 'assemble', ref: 'Goal', issue: 'The Goal says it exits 0, but no criterion proves the exit code.', fix: 'Add AC-2: node hello.js exits with code 0 (evidence: test), covered by the verify command.' },
+    ];
+    // the first version has all three; the second fixed two; the third all
+    return verdict(n === 1 ? all : n === 2 ? all.slice(2) : []);
+  },
+  sheet: () => 'ok',
+};
+
 // The failure scenarios reuse b's world with one agent broken.
 S.e1 = { ...S.b, readback: () => ({ __timeout: true }) };
 S.e2 = { ...S.b, docs: (inp) => ({ mode: 'docs', web_available: false, versions: [], evidence: [], unresolved: inp.plan.map((p) => ({ plan: p.id, reason: 'web_fetch failed: no network' })), failed_sources: [] }) };
@@ -702,7 +758,13 @@ module.exports = (c) => {
     case 'contract-writer':
       return out(sc.writer(inp, ctx));
     case 'god-eye':
+      // the loop engine's diagnosis (focus diagnosis): why the writer loop made no progress
+      if (inp.focus === 'diagnosis') return out(sc.diagnosis ? sc.diagnosis(inp, ctx) : { cause: 'The same objection came back every round: the writer cannot settle it from what the record holds.', needs_user: false, approach: 'State the goal as one observable outcome with its number, and name the boundary case.', question: '', options: [], recommendation: '' });
       return out(sc.check(inp, ctx));
+    case 'finding-verifier':
+      // clarify's tie-break on a disputed readiness objection (mode dispute)
+      if (inp.mode === 'dispute') return out(sc.dispute ? sc.dispute(inp, ctx) : { finding_id: inp.finding.id, status: 'confirmed', evidence: 'contract.md: the objection holds as written', reason: 'The contract does not settle it yet.' });
+      return { exit: 1, stderr: 'clarify3-crew: finding-verifier outside a dispute' };
     default:
       return { exit: 1, stderr: `clarify3-crew: no script for ${c.agent}` };
   }

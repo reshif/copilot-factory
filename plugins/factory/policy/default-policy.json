@@ -72,8 +72,8 @@
     "max_design_critique_rounds": 2,
     "max_plan_validate_rounds": 3,
     "retry_limit": 3,
-    "max_review_rounds": 3,
-    "max_verify_fix_rounds": 3,
+    "max_review_rounds": 5,
+    "max_verify_fix_rounds": 5,
     "max_reverify_rounds": 3,
     "max_parallel_tasks": 4,
     "max_parallel_research": 4,
@@ -86,7 +86,8 @@
     "max_ship_files": 200,
     "flaky_reruns": 1,
     "command_timeout_seconds": 600,
-    "integrate_each_wave": true
+    "integrate_each_wave": true,
+    "clarify_writer_rounds": 5
   },
   "lessons_max_per_job": 3,
   "ci": {
@@ -128,14 +129,26 @@
   "drive": {
     "stop_before_ship": false
   },
+  "loops": {
+    "ceiling": 5,
+    "stall_rounds": 2,
+    "escalate_model": "opus",
+    "diagnose": true
+  },
+  "ship": {
+    "mode": "auto",
+    "auto_pr": false
+  },
   "intent_research": {
     "web": true,
     "search_mcp": null
   },
   "clarify": {
+    "readback": "show",
+    "facts_sheet": false,
+    "tiebreak": true,
     "max_research_passes": 2,
     "max_sheet_decisions": 5,
-    "max_writer_attempts": 2,
     "max_readiness_cycles": 3,
     "research_minutes": {
       "low": 6,

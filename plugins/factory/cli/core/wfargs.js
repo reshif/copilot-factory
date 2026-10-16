@@ -140,9 +140,18 @@ function jobContext(root, state, gates = []) {
     `- Goal: ${parsed.goal || '(not written yet)'}`,
     parsed.acs.length ? `- Acceptance criteria:\n${parsed.acs.map((a) => `  - ${a.id}: ${a.text} (evidence: ${a.evidence.join(', ')})`).join('\n')}` : '- Acceptance criteria: (none yet)',
     denialNotes(state, gates),
+    humanNotes(state),
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+// What the human said in reply to a park (their answer to the park's question): every agent that
+// works on the job next gets it, so a reply is content, not only a resume.
+function humanNotes(state) {
+  const notes = (state.human_notes || []).slice(-5);
+  return notes.length ? `- The human answered the factory's question while the job was parked. Follow it:
+${notes.map((n) => `  - (${n.from || 'park'}${n.question ? `: "${String(n.question).slice(0, 160)}"` : ''}) ${String(n.text).slice(0, 600)}`).join('\n')}` : '';
 }
 
 // Which factory agent runs an item, and on which model: policy.agents.models (an alias that
@@ -181,6 +190,13 @@ function builderSpec(state) {
   return { ...agentSpec(state, 'builder'), escalate: (Array.isArray(a.builder_escalation) ? a.builder_escalation : []).filter((m) => typeof m === 'string' && m.trim()), escalate_from: from };
 }
 
+// The stronger model a loop escalates to (policy loops.escalate_model, "opus" by default; null
+// turns escalation off). The runner maps the alias and falls back to the session default if refused.
+function loopModel(root, state) {
+  const pol = require('../lib/util').deepMerge(require('./policy').load(root), state.policy || {});
+  return require('./loop').policyFor(pol).escalate_model || null;
+}
+
 // The sweep check runs the tester agent on the fast tier (agents.models["sweep-check"]); it only
 // reports, task verify decides pass. Without a sweep-check model it runs on the tester's.
 function sweepSpec(state) {
@@ -208,7 +224,7 @@ function base(root, state, workflow, extra = {}) {
 // ---------------------------------------------------------------- clarify (v3)
 // One stage per run (docs/DESIGN-CLARIFY-v3.md): cli/core/clarify.js says which stage runs and
 // what each agent gets (its CLARIFY INPUT); this only turns that into prompts.
-const CLARIFY_SCHEMA = { readback: 'readback', redirect: 'redirect', interpret: 'interpret', research: 'research', brief: 'brief', 'contract-write': 'contract-write', readiness: 'readiness' };
+const CLARIFY_SCHEMA = { readback: 'readback', redirect: 'redirect', interpret: 'interpret', research: 'research', brief: 'brief', 'contract-write': 'contract-write', readiness: 'readiness', verifier: 'verifier', diagnosis: 'diagnosis' };
 const CLARIFY_TASK = {
   readback: 'Mode: **readback**. Read the user\'s words (WORDS below), the draft contract if there is one and the repository\'s manifests, and return the read-back (see "Read-back" in your role). Quote the user exactly; a pin needs a repo line or the user\'s own words.',
   redirect: 'Mode: **redirect**. The user redirected the work (REDIRECT below). Split it into clauses, each quoting the user exactly, each linked to an existing item by id or marked new, each with an action (see "Redirect" in your role).',
@@ -216,8 +232,10 @@ const CLARIFY_TASK = {
   repo: 'Mode: **repo**. Research the plan items below from this repository only: quote each line exactly with path:line.',
   docs: 'Mode: **docs**. Research the plan items below from official documentation for the pinned versions only; give each finding the version its page documents and the system it is about. Never cite a page listed under avoid.',
   brief: 'Write the research brief from the researchers\' findings (under INPUTS) and the findings kept from earlier passes (evidence below): one decision record per decision item, one fact per researched fact, the gaps. Cite findings by their source, exactly as the researchers gave it.',
-  write: 'Write the outcome contract from what clarify settled (below) and return it with the coverage map: for every item, where the contract honours it. Fix every blocker listed. Never write the factory\'s own sections (Decisions, Facts relied on, Design may choose, Research gaps).',
-  readiness: 'Focus: **readiness**. Read the contract cold and answer the fixed checklist below, each true or false; every objection names its check, its severity, the stage it concerns and a fix.',
+  write: 'Write the outcome contract from what clarify settled (below) and return it with the coverage map: for every item, where the contract honours it. Fix every blocker listed: each names its check, where it points and a suggested fix (and, when the finding-verifier checked it, what it found). When the input has a `round`, this is an automatic fix round of the readiness loop: fix the blockers of your last version (the way `round.approach` says, when there is one); rounds continue while the open blockers shrink. A constraint or non-goal you reword goes under `changed` (from, to, because); one you take out goes under `removed`. Never write the factory\'s own sections (Decisions, Facts relied on, Design may choose, Research gaps).',
+  readiness: 'Focus: **readiness**. Read the contract cold and answer the fixed checklist below, each true or false; every objection names its check, its severity, the stage it concerns, a fix, and who can fix it (`fixable_by`: `writer` from what is settled, or `user`; a user one carries the `question`, its `options` and your `recommendation`).',
+  dispute: 'Mode: **dispute** (a readiness objection, not a code finding). God Eye raised the objection below again after the contract writer was given its fix. Read the contract and the items: `confirmed` when the objection holds as stated, `refuted` when the contract already settles it (cite the line), `unverifiable` when only the user could say. Use the objection\'s `id` as your `finding_id`.',
+  diagnosis: 'Focus: **diagnosis**. The readiness loop below made no progress: the same objections came back round after round, also on a stronger model. Say why (`cause`), whether only the user can settle it (`needs_user`), and either a different `approach` the contract writer should take or the one specific `question` for the user with its `options` and your `recommendation`.',
 };
 
 function clarifyBrief(root, state) {
@@ -230,6 +248,8 @@ function clarifyBrief(root, state) {
     mode: a.mode,
     attempts: a.attempts,
     timeout_sec: a.timeout_sec,
+    // the loop engine escalated this agent to a stronger model (the runner falls back if refused)
+    ...(a.model ? { model: a.model } : {}),
     prompt: prompt(a.role, `${jc}\n- Clarify stage: **${plan.stage}**.\n- ${CLARIFY_TASK[a.mode] || ''}\n\nCLARIFY INPUT (JSON):\n${JSON.stringify(a.input, null, 1)}`),
     schema: schema(CLARIFY_SCHEMA[a.schema] || a.schema),
   })));
@@ -298,6 +318,31 @@ function decide(root, state, ctx, action) {
     revise: { ...agentSpec(state, 'architect'), prompt: prompt('architect', `${jc}\n- Revise the design record you wrote to address the critique under INPUTS. Keep the same file paths.\n${rules}`), schema: schema('architect') },
   };
   return base(root, state, 'fanout-judge', { config: 'decide', mode, input_hash: inputHash({ contract: ctx.b.contract, findings: ctx.b.findings }), fanout, judge, critique, verifier: null, threat_model: threat });
+}
+
+// ---------------------------------------------------------------- fanout-judge: diagnose
+// The loop engine's diagnosis for a router loop (review-fix, verify-fix) that stopped making
+// progress: God Eye (focus diagnosis) says why and what ends it, a different approach or the one
+// specific question for the human (cli/core/loop.js).
+function diagnose(root, state, ctx, action) {
+  const name = action.mode || Object.keys(state.loops || {}).find((k) => ((state.loops[k] || {}).pending || {}).kind === 'diagnosis');
+  if (!name || !(state.loops || {})[name]) fail('No loop waits for a diagnosis.', 'bad_input');
+  const L = state.loops[name];
+  const jc = jobContext(root, state);
+  const ch = ledger.lastStep(root, state.id, 'challenge');
+  const pr = ledger.lastStep(root, state.id, 'prove');
+  const input = {
+    focus: 'diagnosis',
+    loop: { review: 'the review-fix loop: builders fix confirmed review findings, the review runs again', verify: 'the verify-fix loop: builders fix failing verify commands and unproven criteria, prove runs again' }[name] || name,
+    rounds: (L.history || []).map((h) => ({ round: h.round, open: h.open })),
+    open: L.last || [],
+    ...(name === 'review' && ch ? { findings: (ch.detail.findings || []).filter((f) => f.severity !== 'minor').map((f) => ({ id: f.id, lane: f.lane, severity: f.severity, status: f.status, file: f.file, line: f.line, summary: f.summary, verification: f.verification || null })) } : {}),
+    ...(name === 'verify' && pr ? { failing: (pr.detail.commands || []).filter((c) => !c.pass).map((c) => ({ cmd: c.cmd, code: c.code, output: String(c.output || '').slice(-1500) })), acs: pr.detail.acs || {} } : {}),
+    contract: jobPaths(root, state.id).contract,
+    plan: jobPaths(root, state.id).plan,
+  };
+  const judge = { ...agentSpec(state, 'god-eye'), prompt: prompt('god-eye', `${jc}\n- Focus: **diagnosis**. The loop below stopped making progress (the same problems came back round after round, also on a stronger model). Read the code on the job branch (\`git -C "${root}" diff ${state.base_commit} ${state.branch}\`), the contract and the plan, and say why and what ends it.\n\nDIAGNOSIS INPUT (JSON):\n${JSON.stringify(input, null, 1)}`), schema: schema('diagnosis') };
+  return base(root, state, 'fanout-judge', { config: 'diagnose', mode: name, input_hash: inputHash({ loop: name, open: L.last || [] }), fanout: [], judge, critique: null, verifier: null });
 }
 
 // ---------------------------------------------------------------- fanout-judge: challenge
@@ -370,7 +415,17 @@ function challenge(root, state, ctx, action) {
     severities: cfg.verifier.severities,
     // carried findings (left unverified last round) get this multiple of the agent time cap
     reverify_scale: 2,
+    // ... and a second verifier on the stronger model (policy loops.escalate_model) that reproduces
+    // the finding in the build environment: the first could not settle it
+    ...(loopModel(root, state) ? { carried_model: loopModel(root, state) } : {}),
+    carried_note: `You are the second verifier of this finding: the first could not settle it. Reproduce it: run the job's verify commands (or a small test you write in a temp directory) inside the job worktree ${jobPaths(root, state.id).worktree}${(() => { const E = require('./environment').loadSafe(root).env; return E && E.prefix ? `, with the build environment's prefix \`${E.prefix}\`` : ''; })()}, and settle it on what ran.`,
   };
+  // A serious finding the last round left unverified, raised again: its verifier this round is the
+  // second one, on the stronger model, reproducing it in the build environment.
+  if (!mode && review.openUnverified(ledger.lastStep(root, state.id, 'challenge')).length && verifier.carried_model) {
+    verifier.model = verifier.carried_model;
+    verifier.prompt_template = `${verifier.prompt_template}\n\n${verifier.carried_note}`;
+  }
   // Serious findings the last round left unverified: re-verified this round whether or not a
   // reviewer raises them again (review.record keeps them open until a verifier settles them).
   const carried = mode ? [] : review.openUnverified(ledger.lastStep(root, state.id, 'challenge')).map((f) => ({ id: f.id, lane: f.lane, severity: f.severity, file: f.file, line: f.line, summary: f.summary, rule: f.rule, from_round: f.carried ? f.carried.from_round : f.round }));
@@ -474,6 +529,8 @@ function realize(root, state, ctx, action) {
         : t.id && state.tasks[t.id] && state.tasks[t.id].needs_work === 'integration'
           ? '- The integrated build (the job branch with the other tasks\' work) failed after your last build: `task show` lists the failing commands and their output under integration_failures. task start brings the integrated branch into yours; fix your part there.'
           : '';
+    // the loop's diagnosis (why earlier fix rounds did not converge): the approach this round takes
+    const approach = state.fix && state.fix.approach && (state.fix.tasks || []).includes(t.id) ? `\n- Earlier fix rounds made no progress; a diagnosis says: ${state.fix.approach}` : '';
     const st = state.tasks[t.id] || {};
     tasks[t.id] = {
       id: t.id,
@@ -486,14 +543,15 @@ function realize(root, state, ctx, action) {
       // depends_on plus earlier-wave tasks on overlapping paths: a failed one skips this task.
       depends_on: require('./plan').effectiveDeps(plan.tasks, t.id, plan.interfaces),
       retry_limit: t.retry_limit || state.policy.limits.retry_limit,
-      // Builders may move to a stronger model on retries (policy.agents.builder_escalation).
-      builder: builderSpec(state),
+      // Builders may move to a stronger model on retries (policy.agents.builder_escalation); in a
+      // fix round the loop engine escalated (no progress), they start on the stronger model.
+      builder: state.fix && state.fix.escalate_model && (state.fix.tasks || []).includes(t.id) ? { ...builderSpec(state), model: state.fix.escalate_model } : builderSpec(state),
       // policy agents.sweep_check: a cheap agent looks at the places the builder swept, after
       // task verify passed; it never decides pass (task verify's exit code does).
       ...(sweep ? { sweep: sweepSpec(state) } : {}),
       builder_prompt: prompt(
         'builder',
-        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\` — its \`packet\` is your part of the approved design: the ADR's Decision and diagram, this task's rows of "How each acceptance criterion is met", the findings on your paths, the interfaces you own or consume, and the other tasks' objectives. Build to it.\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${envNote}${fixNote ? `\n${fixNote}` : ''}`,
+        `${jc}\n- Task: **${t.id}** — ${t.objective}\n- task start: \`${cli(root)} task start ${t.id} --job ${state.id}\`\n- task show: \`${cli(root)} task show ${t.id} --job ${state.id}\` — its \`packet\` is your part of the approved design: the ADR's Decision and diagram, this task's rows of "How each acceptance criterion is met", the findings on your paths, the interfaces you own or consume, and the other tasks' objectives. Build to it.\n- Worktree: ${wt}. Allowed paths: ${t.allowed_paths.join(', ')}.\n- Time: about ${minutes} minutes for this attempt. Then factory run stops you and gives you one short turn to commit; uncommitted work is saved as a \`wip:\` commit. Commit each working increment as you go.${envNote}${fixNote ? `\n${fixNote}` : ''}${approach}`,
         'Attempt {{attempt}}. What the previous attempt left (task verify\'s failing commands and output, or its builder\'s reply), if any:\n{{failures}}',
       ),
       ...(sweep
@@ -529,6 +587,8 @@ function reconcile(root, state, ctx) {
     input_hash: inputHash({ plan: ctx.b.plan }),
     integrator: {
       ...agentSpec(state, 'integrator'),
+      // the integrator loop escalated (it came back without a result): the stronger model
+      ...((state.loops || {}).integrator && state.loops.integrator.level >= 1 && loopModel(root, state) ? { model: loopModel(root, state) } : {}),
       prompt: prompt(
         'integrator',
         `${jc}\n- Job worktree: ${jobPaths(root, state.id).worktree}\n- reconcile run: \`${cli(root)} reconcile run --job ${state.id}\`\n- reconcile continue: \`${cli(root)} reconcile continue --job ${state.id}\`\n- reconcile abort: \`${cli(root)} reconcile abort --job ${state.id}\``,
@@ -577,7 +637,8 @@ function build(root, { jobId, workflow, config, mode, scope, lanes, threatModel,
       if (config === 'clarify') return fail('Clarify v3 runs as factory run clarify (one stage per run); fanout-judge --config clarify is retired.', 'bad_input');
       if (config === 'decide') return decide(root, state, ctx, action);
       if (config === 'challenge') return challenge(root, state, ctx, action);
-      return fail('fanout-judge needs --config clarify|decide|challenge', 'bad_input');
+      if (config === 'diagnose') return diagnose(root, state, ctx, action);
+      return fail('fanout-judge needs --config clarify|decide|challenge|diagnose', 'bad_input');
     case 'ground':
       return ground(root, state, ctx, action);
     case 'decompose':
@@ -604,6 +665,7 @@ function currentInputHash(root, state, envelope) {
     }
     case 'fanout-judge':
       if (envelope.config === 'decide') return inputHash({ contract: ctx.b.contract, findings: ctx.b.findings });
+      if (envelope.config === 'diagnose') return inputHash({ loop: envelope.mode, open: (((state.loops || {})[envelope.mode]) || {}).last || [] });
       return inputHash({ fingerprint: ctx.b.fingerprint, children: ctx.b.children, mode: envelope.mode || null });
     case 'ground':
       return inputHash({ contract: ctx.b.contract, answers: answers.length });
@@ -614,4 +676,4 @@ function currentInputHash(root, state, envelope) {
   }
 }
 
-module.exports = { build, currentInputHash, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec, roleModel, builderSpec, sweepSpec, LEGACY_080 };
+module.exports = { build, currentInputHash, loopModel, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec, roleModel, builderSpec, sweepSpec, LEGACY_080 };

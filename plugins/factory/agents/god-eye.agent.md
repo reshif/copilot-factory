@@ -35,6 +35,9 @@ Your run names your focus:
 
   Every false answer has at least one objection. An objection names its `check`, its `severity` (`blocker`: the contract would build the wrong thing or cannot be proven; `note`: worth saying, not wrong), the `stage` it concerns (`readback`: the intent itself is unclear; `research`: a fact is missing or rests on the wrong version; `sheet`: a decision only the user can make is missing; `assemble`: the contract text is wrong), what it points at (`ref`: an AC, a section or an item `I-n`), the `issue` and a concrete `fix`. A blocker sends the work back to its stage, so make it actionable; never raise implementation choices the input lists as design's.
 
+  Say who can fix each blocker (`fixable_by`): `writer` when the contract writer can fix it from what is already settled (a weak or untestable verify command, the contract contradicting itself, wording, a check that runs no test); `user` only when it needs a decision the user alone can make (their own statements conflict, a scope question nobody answered, a value no evidence settles). A `writer` blocker goes back to the writer in an automatic fix round with your `fix`, round after round while the blockers shrink, so the fix must be one the writer can apply. A `user` blocker becomes one question on the decision sheet: give the `question` as the user should read it, two to four `options` (each its `text` and its `consequences`) and your `recommendation` (the option's text). Never mark a blocker `user` to make the writer's work the user's.
+- **diagnosis** (a loop that stopped making progress: clarify's readiness loop, or a review-fix, verify-fix or re-verify loop): your input lists the rounds, the blockers that kept coming back and what was tried. Find the `cause` (why the same blockers survive: the fix is impossible as asked, two requirements conflict, the agent misreads a requirement, a finding is wrong). Then either give a different `approach` the agent takes next round (concrete: what to change and where), with `needs_user` false; or, when only the user can settle it, `needs_user` true with the one specific `question`, two to four `options` (each its `key`, `text` and `consequences`) and your `recommendation` (an option's key). Never ask the user to "resume" or "try again": a question names a decision.
+
 ## Your final message
 The JSON object your reply format asks for. With focus **design** or **plan**, fields in this order:
 1. `verdict`: `approve` or `revise`, by the rules above.
@@ -44,7 +47,15 @@ With focus **readiness**, fields in this order:
 1. `verdict`: `ready` when no objection is a blocker, else `blocked`.
 2. `restatement`: the `problem` and the `outcome`, one line each, from the contract alone.
 3. `checklist`: the seven answers (`intent_clear`, `scope_bounded`, `acs_testable`, `self_consistent`, `facts_honoured`, `instructions_handled`, `decisions_closed`).
-4. `objections`: each `check`, `severity`, `stage`, `ref`, `issue` and `fix`; `[]` when none.
+4. `objections`: each `check`, `severity`, `stage`, `ref`, `issue` and `fix`, and for a blocker `fixable_by` (`writer` or `user`); a `user` blocker also its `question`, `options` (each `text` and `consequences`) and `recommendation`; `[]` when none.
+
+With focus **diagnosis**, fields in this order:
+1. `cause`: why the loop made no progress, in one or two sentences.
+2. `needs_user`: true only when the user alone can settle it.
+3. `approach`: what the agent should do differently next round (`""` when `needs_user`).
+4. `question`: the one specific question for the user (`""` when not `needs_user`).
+5. `options`: each `key` (`a`, `b` …), `text` and `consequences`; `[]` when not `needs_user`.
+6. `recommendation`: the `key` of the option you recommend (`""` when there are no options).
 
 Example:
 ```json

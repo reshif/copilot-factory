@@ -36,7 +36,7 @@ const READY = Object.fromEntries(C.CHECKLIST.map((k) => [k, true]));
 // Drives clarify with scripted stage outputs; `writer(text, data)` may change what the writer
 // returns; `check(n)` gives God Eye's objections for the n-th check. Stops at a wait when
 // `reply` returns null, at H1, or at a park.
-function run(root, J, { readback, writer, redirect, check = () => [], reply = () => 'ok', stopAt = [], results = [], max = 30 } = {}) {
+function run(root, J, { readback, writer, redirect, check = () => [], reply = () => 'ok', stopAt = [], results = [], max = 30, dispute = null, diagnosis = null } = {}) {
   const JD = F.jobDir(root, J);
   let checks = 0;
   for (let i = 0; i < max; i++) {
@@ -66,6 +66,9 @@ function run(root, J, { readback, writer, redirect, check = () => [], reply = ()
       // prose on the sheet read as "as you recommend" for every open decision, quoting the reply
       interpret: brief.stage !== 'interpret' ? null : { interpret: (() => { const s = d.sheets[d.sheets.length - 1]; const w = d.words.find((x) => x.id === d.pending_reply) || { text: '' }; return { answers: s.decisions.filter((x) => !x.answered).map((x) => ({ decision: x.no, choice: 'recommended', text: '', quote: w.text })), facts: [], unclear: [] }; })() },
       research: Object.fromEntries([...brief.groups.flat().filter((a) => a.label !== 'research brief').map((a) => [a.label, { mode: a.mode, evidence: [], unresolved: [] }]), ['research brief', { summary: 'nothing found', records: [], facts: [], gaps: [] }]]),
+      // the readiness loop's tie-break and diagnosis (0.9.0)
+      dispute: Object.fromEntries(brief.groups.flat().map((a) => [a.label, dispute ? dispute(a, d) : { finding_id: 'x', status: 'confirmed', evidence: 'contract.md', reason: 'it holds' }])),
+      diagnose: { diagnosis: diagnosis ? diagnosis(d) : { cause: 'the same objection every round', needs_user: false, approach: '', question: '', options: [], recommendation: '' } },
     }[brief.stage];
     if (!outputs) throw new Error(`no script for ${brief.stage}`);
     const r = F.record(root, F.envelope(brief, 'ok', { stage: brief.stage, rev: brief.rev, outputs }));
@@ -104,7 +107,7 @@ test('a redirect keeps every part of the user\'s words: what no clause quotes be
 });
 
 test('the user\'s words relayed by the main session are marked as relayed at H1 and in status (the factory cannot tell them from the user\'s own)', () => {
-  const { root, J } = job();
+  const { root, J } = job({ policy: { clarify: { readback: 'wait' } } });
   const n = run(root, J);
   assert.equal(n.step, 'H1');
   const v = n.clarify_h1;
@@ -139,10 +142,11 @@ test('(av) a redirect at H1 that names another version than the pin: read back, 
   assert.equal(rec.end.action, 'approved', JSON.stringify(rec.end));
   const pins = rec.ledger.items.filter((x) => x.kind === 'pin' && x.status === 'decided');
   assert.deepEqual(pins.map((p) => [p.system, p.value]), [['nautobot', '2.3.x']], 'the pin is a version, never the clause text');
-  // the version change was read back before anything was researched against it
+  // the version change was read back before anything was researched against it (the first
+  // read-back is shown, not waited on: nothing on it needed the user)
   const rb = rec.screens.filter((s) => s.stage === 'readback_wait');
-  assert.equal(rb.length, 2);
-  assert.match(rb[1].screen, /2\.3\.x/);
+  assert.equal(rb.length, 1);
+  assert.match(rb[0].screen, /2\.3\.x/);
   // no finding for 2.4 counts any more; the scoping decision was researched on 2.3 pages
   const ev = rec.ledger.evidence;
   assert.ok(ev.filter((e) => /v2\.4\.x/.test(e.source)).every((e) => e.verdict === 'other_version'), JSON.stringify(ev.map((e) => [e.source, e.verdict])));
@@ -222,28 +226,52 @@ test('the writer cannot drop an acceptance criterion, constraint or non-goal wit
   const { root, J } = job();
   let attempt = 0;
   const results = [];
-  const n = run(root, J, {
+  const drop = (text) => text.replace(/- AC-2:.*\n/, '').replace('(AC-1, AC-2)', '(AC-1)');
+  const explained = (d) => ({ removed: [{ ref: 'AC-2', text: 'add(-1, -2) returns -3', because: 'Non-goals', why: 'God Eye asked' }], covers: d.items.map((x) => ({ item: x.id, where: 'Goal' })) });
+  const h = run(root, J, {
     results,
     check: (k) => (k === 1 ? [{ check: 'scope_bounded', severity: 'blocker', stage: 'assemble', ref: 'Non-goals', issue: 'say what is out', fix: 'add a non-goal' }] : []),
-    writer: (text) => {
+    writer: (text, d) => {
       attempt += 1;
       if (attempt === 1) return { contract: text };
-      // the second version drops AC-2 silently, then explains it
-      const out = text.replace(/- AC-2:.*\n/, '').replace('(AC-1, AC-2)', '(AC-1)');
-      return attempt === 2 ? { contract: out } : { contract: out, removed: [{ ref: 'AC-2', text: 'add(-1, -2) returns -3', because: 'Non-goals', why: 'God Eye asked' }] };
+      // the second version drops AC-2 silently (refused), the third explains it
+      return attempt === 2 ? { contract: drop(text) } : { contract: drop(text), ...explained(d) };
     },
   });
-  // refused, and with the writer's two attempts spent, parked with the reason named
+  // refused, and the refusal is a finding the writer can fix: an automatic round fixed it, no park
   assert.ok(results.some((r) => /drops AC-2 with no reason/.test(r.refused || '')), JSON.stringify(results.map((r) => [r.stage, r.status, r.refused])));
-  assert.equal(n.action, 'parked');
-  assert.match(n.reason, /drops AC-2 with no reason/);
-  assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /- AC-2:/, 'not written');
-  F.reply(root, `resume ${J}`);
-  const h = run(root, J, { results, writer: () => ({ contract: fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8').replace(/- AC-2:.*\n/, '').replace('(AC-1, AC-2)', '(AC-1)'), removed: [{ ref: 'AC-2', text: 'add(-1, -2) returns -3', because: 'Non-goals', why: 'God Eye asked' }], covers: record(root, J).items.map((x) => ({ item: x.id, where: 'Goal' })) }) });
+  assert.ok(!results.some((r) => r.status === 'park'), 'no park: the writer could fix it');
   assert.equal(h.step, 'H1', JSON.stringify(h).slice(0, 300));
+  assert.equal(attempt, 3);
   assert.doesNotMatch(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /- AC-2:/, 'written once explained');
   assert.ok(h.clarify_h1.removed.some((x) => /^AC-2 \(add\(-1, -2\) returns -3\): because Non-goals/.test(x)), JSON.stringify(h.clarify_h1.removed));
   assert.match(h.clarify_h1.screen, /Taken out of the contract/);
+});
+
+test('a writer that keeps dropping a criterion silently: the loop engine stops on no progress (stronger model, diagnosis first) and H1 shows the refusal open, never a park', () => {
+  const { root, J } = job();
+  const results = [];
+  let attempt = 0;
+  const n = run(root, J, {
+    results,
+    check: (k) => (k === 1 ? [{ check: 'scope_bounded', severity: 'blocker', stage: 'assemble', ref: 'Non-goals', issue: 'say what is out', fix: 'add a non-goal' }] : []),
+    writer: (text) => (++attempt === 1 ? { contract: text } : { contract: text.replace(/- AC-2:.*\n/, '').replace('(AC-1, AC-2)', '(AC-1)') }),
+  });
+  assert.equal(n.step, 'H1', JSON.stringify(n).slice(0, 400));
+  assert.ok(!results.some((r) => r.status === 'park'), 'no park');
+  // the first version, then rounds while nothing shrank: two on the writer's model, one on the
+  // stronger one, one after the diagnosis
+  assert.equal(attempt, 5);
+  const d = record(root, J);
+  assert.equal(d.loop_end.rule, 'no_progress');
+  assert.ok(d.writer_loop.diagnosis, 'the diagnosis ran before the loop ended');
+  assert.equal(d.writer_loop.model, 'opus');
+  assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /- AC-2:/, 'never written: nothing left silently');
+  const v = n.clarify_h1;
+  assert.equal(v.approved, false);
+  assert.ok(v.god_eye_objects.some((o) => /drops AC-2 with no reason/.test(o)), JSON.stringify(v.god_eye_objects));
+  assert.ok(v.god_eye_objects.some((o) => /say what is out/.test(o)), 'the blocker its text was meant to fix still stands');
+  assert.match(v.screen, /The readiness loop ended\*\* \(no_progress/);
 });
 
 // ---------------------------------------------------------------- 4. loops and parks
@@ -273,35 +301,49 @@ test('prose read as "as you recommend" on a decision with no recommendation coun
   assert.deepEqual([q.status, q.owner], ['deferred', 'design']);
 });
 
-test('a God Eye that keeps sending new decisions to the sheet parks after the readiness cycle cap; proceed shows the objections open at H1', () => {
+test('a God Eye that keeps sending new decisions to the sheet: past the readiness cycle ceiling the contract goes to H1 with the objections open, never a park', () => {
   const { root, J } = job();
   const n = run(root, J, {
     check: (k) => [{ check: 'decisions_closed', severity: 'blocker', stage: 'sheet', ref: 'contract', issue: `Who owns the totals? (${k})`, fix: 'ask' }],
     reply: (stage, screen, d) => (stage === 'sheet_wait' ? `${d.sheets[d.sheets.length - 1].decisions.find((x) => !x.answered).no}: the finance team` : 'ok'),
   });
-  assert.equal(n.action, 'parked', JSON.stringify(n).slice(0, 300));
-  assert.match(n.reason, /readiness check sent the work back 4 times \(the cap is 3\)/);
-  assert.match(n.reason, /proceed/);
+  assert.equal(n.step, 'H1', JSON.stringify(n).slice(0, 300));
   const d = record(root, J);
   assert.equal(d.checks.length, 4);
-  F.reply(root, `proceed ${J}`);
-  const h = F.cli(root, ['next']);
-  assert.equal(h.step, 'H1');
-  assert.equal(h.clarify_h1.approved, false);
-  assert.ok(h.clarify_h1.god_eye_objects.some((o) => /Who owns the totals/.test(o)));
+  assert.equal(d.loop_end.rule, 'readiness_cycles');
+  assert.ok(!d.parked);
+  assert.equal(n.clarify_h1.approved, false);
+  assert.ok(n.clarify_h1.god_eye_objects.some((o) => /Who owns the totals/.test(o)));
+  assert.match(n.clarify_h1.screen, /The readiness loop ended\*\* \(readiness_cycles/);
 });
 
-test('words sent while clarify is parked are refused, not turned into a redirect behind the park; proceed and resume stay the user\'s', () => {
+test('words sent while clarify is parked are stored, never refused; the user\'s own reply resumes it with them (read back as a redirect); proceed stays the user\'s', () => {
   const { root, J } = job();
-  run(root, J, { check: () => [{ check: 'acs_testable', severity: 'blocker', stage: 'assemble', ref: 'AC-1', issue: 'no', fix: '' }] });
+  // God Eye's agent fails twice: the one clarify park left (an agent that returned nothing)
+  run(root, J, { stopAt: ['check'] });
+  const brief = F.cli(root, ['wfargs', 'clarify']);
+  const r0 = F.record(root, F.envelope(brief, 'degraded', { stage: 'check', rev: brief.rev, outputs: {} }));
+  assert.equal(r0.status, 'park');
   assert.equal(F.cli(root, ['next']).action, 'parked');
-  for (const words of ['proceed', 'resume', 'go on with the gaps']) {
+  // relayed by the main session: stored, not refused, and the job stays parked (resume is the user's)
+  for (const words of ['go on with the gaps', 'also cover zero']) {
     const r = F.cli(root, ['clarify', 'reply', words]);
-    assert.equal(r.code, 'parked', JSON.stringify(r));
+    assert.equal(r.stored, true, JSON.stringify(r));
+    assert.ok(!r.error);
   }
-  assert.equal(F.cli(root, ['clarify', 'redirect', 'also do subtraction']).code, 'parked');
-  assert.equal(record(root, J).redirects.length, 0);
+  assert.equal(F.cli(root, ['clarify', 'redirect', 'also do subtraction']).stored, true);
+  assert.equal(F.cli(root, ['job', 'show']).status, 'parked');
+  assert.equal(record(root, J).parked_words.length, 3);
+  assert.equal(record(root, J).redirects.length, 0, 'nothing runs behind the park');
   assert.equal(F.cli(root, ['proceed']).code, 'human_only');
+  // the user's own reply in chat is resume + content
+  const r = require('../cli/core/human').replyToPark(root, { text: 'please also check overflow', channel: 'chat' });
+  assert.match(r.message, /Resumed/);
+  const d = record(root, J);
+  assert.equal(d.redirects.length, 1);
+  assert.match(d.redirects[0].text, /go on with the gaps[\s\S]*also cover zero[\s\S]*also do subtraction[\s\S]*please also check overflow/);
+  assert.equal(d.stage, 'redirect');
+  assert.equal(F.cli(root, ['job', 'show']).status, 'active');
 });
 
 // ---------------------------------------------------------------- 5. denials

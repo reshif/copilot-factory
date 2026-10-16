@@ -285,14 +285,16 @@ function built(root, taskId, { job, result = { status: 'done', summary: 'built b
 // `contract`), God Eye's checklist all true. Leaves the job at gate H1 (factory next shows it).
 // `checklist` overrides God Eye's answers; `objections` adds its objections.
 // `until`: stop when clarify reaches that stage, before its agents run (an eval runs them for real).
-function clarify(root, { contract = null, readback = null, objections = [], checklist = {}, until = null } = {}) {
+// `after`: stop right after that stage recorded (the readiness loop would otherwise go on by itself).
+function clarify(root, { contract = null, readback = null, objections = [], checklist = {}, until = null, after = null } = {}) {
   const J = require('../../cli/core/job').resolve(root).id;
   const file = path.join(jobDir(root, J), 'contract.md');
   if (contract) fs.writeFileSync(file, contract);
   const parse = require('../../cli/core/contract').parse;
   const ready = { intent_clear: true, scope_bounded: true, acs_testable: true, self_consistent: true, facts_honoured: true, instructions_handled: true, decisions_closed: true, ...checklist };
   const results = [];
-  for (let i = 0; i < 12; i++) {
+  // (0.9.0: the readiness loop may run several writer rounds, a tie-break and a diagnosis)
+  for (let i = 0; i < 40; i++) {
     const n = cli(root, ['next']);
     if (!(n.action === 'skill' && n.skill === 'clarify')) break;
     const c = n.clarify || {};
@@ -310,11 +312,14 @@ function clarify(root, { contract = null, readback = null, objections = [], chec
       // the writer honours every item in the Goal (a test contract has no better place)
       assemble: { contract: { contract: text, covers: ((readJson(path.join(jobDir(root, J), 'clarify.json')) || {}).items || []).map((x) => ({ item: x.id, where: 'Goal' })), uncovered: [] } },
       check: { readiness: { verdict: objections.some((o) => o.severity === 'blocker') ? 'blocked' : 'ready', restatement: { problem: 'p', outcome: 'o' }, checklist: ready, objections } },
+      // the readiness loop's tie-break and diagnosis (0.9.0): the objection holds; no other approach
+      dispute: Object.fromEntries(brief.groups.flat().map((a) => [a.label, { finding_id: 'x', status: 'confirmed', evidence: 'contract.md', reason: 'it holds' }])),
+      diagnose: { diagnosis: { cause: 'the objection asks for something the record does not settle', needs_user: false, approach: '', question: '', options: [], recommendation: '' } },
     }[brief.stage];
     if (!outputs) throw new Error(`clarify helper: no script for stage ${brief.stage}`);
     const r = record(root, envelope(brief, 'ok', { stage: brief.stage, rev: brief.rev, outputs }));
     results.push(r);
-    if (r.status === 'ok' || r.status === 'park') break;
+    if (r.status === 'ok' || r.status === 'park' || (after && brief.stage === after)) break;
   }
   return results[results.length - 1] || null;
 }

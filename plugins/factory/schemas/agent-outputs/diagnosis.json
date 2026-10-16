@@ -1,0 +1,50 @@
+{
+ "$comment": "god-eye, focus diagnosis: why a loop (clarify's readiness loop, a review-fix, verify-fix or re-verify loop) stopped making progress, and what ends it: a different approach the agent takes next, or the one specific question for the user with its options and a recommendation. The CLI asks the user only that question, never a bare resume.",
+ "type": "object",
+ "required": [
+  "cause",
+  "needs_user",
+  "approach",
+  "question",
+  "options",
+  "recommendation"
+ ],
+ "properties": {
+  "cause": {
+   "type": "string"
+  },
+  "needs_user": {
+   "type": "boolean"
+  },
+  "approach": {
+   "type": "string"
+  },
+  "question": {
+   "type": "string"
+  },
+  "options": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "key",
+     "text"
+    ],
+    "properties": {
+     "key": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "consequences": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "recommendation": {
+   "type": "string"
+  }
+ }
+}

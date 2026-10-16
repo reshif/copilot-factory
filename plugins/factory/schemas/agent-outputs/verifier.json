@@ -1,6 +1,7 @@
-{ "$comment": "finding-verifier (challenge): one blocker/major finding re-checked. unverifiable keeps the finding blocking, like no result; the review runs again.",
+{ "$comment": "finding-verifier (challenge): one blocker/major finding re-checked. unverifiable keeps the finding blocking, like no result; the review runs again, then on a stronger model in the build environment; level contract: the code does what the contract says but the contract or the design is wrong (an amendment, not a fix round).",
   "type": "object", "required": ["finding_id", "status", "evidence", "reason"], "properties": {
   "finding_id": { "type": "string" },
   "status": { "enum": ["confirmed", "refuted", "unverifiable"] },
   "evidence": { "type": "string" },
-  "reason": { "type": "string" } } }
+  "reason": { "type": "string" },
+  "level": { "enum": ["code", "contract"] } } }

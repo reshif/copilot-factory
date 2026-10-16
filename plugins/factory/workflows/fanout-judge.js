@@ -125,16 +125,18 @@ if (brief.config === 'challenge') {
   let verifications = []
   if (serious.length || carried.length) {
     phase(`challenge: verify ${serious.length} finding(s)${carried.length ? ` + ${carried.length} carried` : ''}`)
-    const item = (f, label, sc) => ({
-      prompt: brief.verifier.prompt_template.replace('{{finding}}', JSON.stringify(f, null, 2)),
+    // a carried finding (the first verifier could not settle it) gets a second verifier on the
+    // stronger model that reproduces it in the build environment
+    const item = (f, label, sc, again = false) => ({
+      prompt: `${brief.verifier.prompt_template.replace('{{finding}}', JSON.stringify(f, null, 2))}${again && brief.verifier.carried_note && !brief.verifier.prompt_template.includes(brief.verifier.carried_note) ? `\n\n${brief.verifier.carried_note}` : ''}`,
       schema: brief.verifier.schema,
       agent_type: brief.verifier.agent_type,
-      model: brief.verifier.model,
+      model: (again && brief.verifier.carried_model) || brief.verifier.model,
       label,
       scale: sc,
       retry_scale: scale,
     })
-    const items = [...serious.map((f) => item(f, `verify ${f.id}`, null)), ...carried.map((f) => item(f, `verify ${f.id} (carried from round ${f.from_round})`, scale))]
+    const items = [...serious.map((f) => item(f, `verify ${f.id}`, null)), ...carried.map((f) => item(f, `verify ${f.id} (carried from round ${f.from_round})`, scale, true))]
     const res = await fan(items)
     verifications = res.map((r, i) => (r ? (i < serious.length ? { ...r, finding_id: serious[i].id } : { ...r, finding_id: carried[i - serious.length].id, carried: true }) : null)).filter(Boolean)
   }
@@ -142,6 +144,13 @@ if (brief.config === 'challenge') {
   const unverifiable = verifications.filter((v) => v.status === 'unverifiable').length
   const summary = `${lanes.length}/${brief.fanout.length} lane(s) reviewed; ${serious.length} serious finding(s)${carried.length ? ` and ${carried.length} carried unverified` : ''}, ${confirmed} confirmed${unverifiable ? `, ${unverifiable} unverifiable` : ''}.${degraded.length ? ` Missing lanes: ${degraded.join(', ')}.` : ''}`
   return envelope(degraded.length ? 'degraded' : 'ok', summary, { lanes, degraded, verifications }, { fingerprint: brief.fingerprint || null, lanes_requested: brief.lanes_requested || null })
+}
+
+// the loop engine's diagnosis of a router loop that stopped making progress (cli/core/loop.js)
+if (brief.config === 'diagnose') {
+  phase('diagnose: God Eye')
+  const d = await one(brief.judge.prompt, brief.judge, 'diagnosis')
+  return envelope('ok', d ? `Diagnosis of the ${brief.mode} loop: ${d.needs_user ? 'a question for the human' : 'a different approach'}.` : 'The diagnosis agent returned nothing.', { loop: brief.mode, diagnosis: d || null })
 }
 
 throw new Error(`Unknown config ${brief.config}`)

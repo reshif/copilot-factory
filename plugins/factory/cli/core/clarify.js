@@ -18,9 +18,9 @@ const { readJson, writeJson, readText, writeText, nowIso, fail, deepMerge, exist
 const { jobPaths } = require('../lib/paths');
 const { seal, valid } = require('../lib/seal');
 
-const STAGES = ['readback', 'readback_wait', 'research', 'sheet_wait', 'interpret', 'redirect', 'redirect_wait', 'assemble', 'check', 'ready'];
+const STAGES = ['readback', 'readback_wait', 'research', 'sheet_wait', 'interpret', 'redirect', 'redirect_wait', 'assemble', 'check', 'dispute', 'diagnose', 'ready'];
 const WAITS = new Set(['readback_wait', 'sheet_wait', 'redirect_wait']);
-const RUNS = new Set(['readback', 'research', 'interpret', 'redirect', 'assemble', 'check']);
+const RUNS = new Set(['readback', 'research', 'interpret', 'redirect', 'assemble', 'check', 'dispute', 'diagnose']);
 const KINDS = ['intent', 'scope', 'fact', 'pin', 'decision', 'question', 'instruction', 'design'];
 const STATUSES = ['open', 'to_decide', 'decided', 'assumed', 'deferred', 'done', 'dropped'];
 const FINAL = new Set(['decided', 'assumed', 'deferred', 'done', 'dropped']);
@@ -122,12 +122,27 @@ function settings(root, state) {
   return {
     research_passes: Math.max(1, pos(c.max_research_passes, caps.max_research_passes || 2)),
     sheet_decisions: Math.max(1, pos(c.max_sheet_decisions, caps.max_sheet_decisions || 5)),
-    writer_attempts: Math.max(1, pos(c.max_writer_attempts, caps.max_writer_attempts || 2)),
+    // automatic contract-writer rounds on findings the writer can fix from what is settled
+    // (limits.clarify_writer_rounds): the loop also stops early when a round makes no progress
+    writer_rounds: Math.max(1, pos((pol.limits || {}).clarify_writer_rounds, pos(c.max_writer_rounds, caps.max_writer_rounds || 5))),
     // readiness checks that send work back (to the writer, the sheet, research or the read-back)
     // before the job parks: a God Eye that keeps finding a new blocker cannot loop the user
     readiness_cycles: Math.max(1, pos(c.max_readiness_cycles, caps.max_readiness_cycles || 3)),
+    // the shared loop engine's settings for the writer ⇄ God Eye loop (cli/core/loop.js): the
+    // ceiling is limits.clarify_writer_rounds; policy.loops gives the stall rule, the stronger
+    // model and whether a diagnosis runs before the loop ends (at H1, never in a park)
+    loops: require('./loop').policyFor(pol, { ceiling: Math.max(1, pos((pol.limits || {}).clarify_writer_rounds, pos(c.max_writer_rounds, caps.max_writer_rounds || 5))) }),
+    // the read-back is shown, not waited on, unless a pin conflicts or a question only the user can
+    // answer is on it (clarify.readback "wait" restores the old blocking read-back)
+    readback_wait: c.readback === 'wait',
+    // facts research settled are shown on the sheet when there is one and at H1; a sheet of facts
+    // alone is not a turn of its own (clarify.facts_sheet true restores it)
+    facts_sheet: c.facts_sheet === true,
+    // a blocker that survives a writer round that had its fix is checked by the finding-verifier
+    // once (clarify.tiebreak false turns it off)
+    tiebreak: c.tiebreak !== false,
     research_sec: Math.max(1, Math.round(pos(minutes, { low: 6, medium: 10, high: 15 }[state.risk] || 10) * 60)),
-    agent_sec: { interviewer: pos(sec.interviewer, 600), 'brief-writer': pos(sec['brief-writer'], 900), 'contract-writer': pos(sec['contract-writer'], 900), 'god-eye': pos(sec['god-eye'], 900) },
+    agent_sec: { interviewer: pos(sec.interviewer, 600), 'brief-writer': pos(sec['brief-writer'], 900), 'contract-writer': pos(sec['contract-writer'], 900), 'god-eye': pos(sec['god-eye'], 900), 'finding-verifier': pos(sec['finding-verifier'], 600) },
     web: ir.web !== false,
     search_mcp: typeof ir.search_mcp === 'string' && ir.search_mcp.trim() ? ir.search_mcp.trim() : null,
   };
@@ -197,6 +212,11 @@ function setValue(it, { value, strength, source, actor, status = 'decided', text
   const byUser = strength === 'user' || (strength === 'accepted' && /^user/.test(actor || ''));
   if (!byUser && it.value !== null && cur >= neu) return false;
   if (it.value !== null && it.value !== undefined) itemEvent(it, 'replaced', actor, `was: ${clip(it.value, 160)} (${it.strength || 'none'})`);
+  // the user's later words win over their earlier ones, never silently: the change is kept and
+  // shown on the next screen the user sees (the sheet, or H1) as "changed: X → Y because you said …"
+  if (byUser && (it.strength === 'user' || it.strength === 'accepted' || it.kind === 'scope') && it.value !== null && it.value !== undefined && value !== null && value !== undefined && norm(value) !== norm(it.value)) {
+    it.changes = [...(it.changes || []), { at: nowIso(), from: clip(it.value, 300), to: clip(value, 300), quote: clip((source && source.quote) || text || value, 300), word: source && (source.word || source.ref) ? source.word || source.ref : null, shown: false }].slice(-10);
+  }
   it.value = value === null || value === undefined ? it.value : clip(value, 600);
   it.strength = strength;
   if (source) it.source = source;
@@ -453,8 +473,9 @@ function advance(data, S) {
     buildSheet(data, S);
     return 'sheet_wait';
   }
-  // facts not shown to the user yet go on a sheet of their own (one turn, they may correct them)
-  if (unshownFacts(data).length) {
+  // facts not shown to the user yet: on the sheet when there is one, and at H1 (Facts relied on);
+  // a sheet of facts alone is no turn of its own unless clarify.facts_sheet asks for it
+  if (S && S.facts_sheet && unshownFacts(data).length) {
     buildSheet(data, S);
     return 'sheet_wait';
   }
@@ -491,6 +512,29 @@ function applyReadback(root, state, data, out) {
   }
   referenced.add(intentItem.id);
   rb.intent_item = intentItem.id;
+  // the scope, in and out, as items: a later redirect or sheet answer can change one by its id
+  // (a changed scope line is shown as a change, never dropped silently)
+  rb.scope_items = { in: [], out: [] };
+  for (const side of ['in', 'out']) {
+    for (const text of rb.scope[side]) {
+      let it = data.items.find((x) => x.kind === 'scope' && x.scope === side && x.status !== 'dropped' && (norm(x.text) === norm(text) || norm(x.value) === norm(text)));
+      if (!it) it = newItem(data, { kind: 'scope', text, value: text, status: 'decided', strength: 'assumption', origin: 'readback', extra: { scope: side } }, 'interviewer');
+      referenced.add(it.id);
+      rb.scope_items[side].push(it.id);
+    }
+  }
+  // a scope line the user set (by a redirect or a sheet answer) stays, whatever this read-back says
+  for (const it of data.items) {
+    if (it.kind === 'scope' && it.status !== 'dropped' && !referenced.has(it.id)) {
+      if (it.strength === 'user') {
+        referenced.add(it.id);
+        (rb.scope_items[it.scope === 'out' ? 'out' : 'in'] || []).push(it.id);
+      } else {
+        it.status = 'dropped';
+        itemEvent(it, 'dropped', 'interviewer', 'not in the new read-back');
+      }
+    }
+  }
   // what the user said: kept only with a quote that is really in their words
   for (const t of (Array.isArray(o.took) ? o.took : []).slice(0, 20)) {
     const w = quoted(data, t.quote);
@@ -632,6 +676,7 @@ function readbackScreen(state, data) {
   if (i.success) L.push(`- Success signal: ${i.success}`);
   if (rb.scope.in.length) L.push(`- In scope: ${rb.scope.in.join('; ')}`);
   if (rb.scope.out.length) L.push(`- Out of scope: ${rb.scope.out.join('; ')}`);
+  L.push(`- Run as: ${state.work_type || 'work'} at ${state.risk} risk${state.epic ? ', as an epic' : ''} (from intake; say so if not)`);
   const took = rb.took.map((id) => item(data, id)).filter(Boolean);
   if (took.length) {
     L.push('', '**What I took from your words**');
@@ -668,9 +713,35 @@ function readbackScreen(state, data) {
   return L.join('\n');
 }
 
-function confirmReadback(data, word, S) {
+// The read-back confirmed: by the user's ok, or (auto) because nothing on it needs the user (no
+// pin conflict, no question only they can answer). An auto read-back is shown on the next screen
+// the user sees (the sheet, or H1); its intent stays the factory's restatement until H1.
+function readbackNeedsUser(data) {
   const rb = data.readback;
-  rb.confirmed = { at: nowIso(), word: word.id };
+  if (!rb) return false;
+  if (rb.pins.some((id) => (item(data, id) || {}).status === 'to_decide')) return true;
+  if (rb.questions.some((id) => { const it = item(data, id); return it && !FINAL.has(it.status); })) return true;
+  // a version the user changed in a redirect is read back before anything is researched against it
+  if (data.redirects.some((R) => R.status === 'confirmed' && (R.clauses || []).some((c) => c.pin_change && !c.pin_read_back))) return true;
+  return data.redirects.some((r) => r.status === 'queued');
+}
+
+function confirmReadback(data, word, S, auto = false) {
+  const rb = data.readback;
+  rb.confirmed = { at: nowIso(), word: word ? word.id : null, ...(auto ? { auto: true } : {}) };
+  if (auto) {
+    rb.auto = true;
+    rb.shown = false;
+    // the intent as the factory restated it: assumed until the user corrects it or approves H1
+    for (const it of data.items) {
+      if (it.kind === 'intent' && it.status === 'open' && it.strength !== 'user') {
+        it.status = 'assumed';
+        itemEvent(it, 'assumed', 'factory', 'the read-back was shown without waiting: H1 confirms it');
+      }
+    }
+    log(data, 'readback_auto', 'nothing on the read-back needs the user: research starts; the read-back is shown on the next screen');
+    return;
+  }
   for (const it of data.items) {
     if (it.status === 'dropped') continue;
     if (it.kind === 'intent' && it.strength !== 'user') setValue(it, { value: it.value, strength: 'accepted', actor: 'user (read-back ok)', text: word.text });
@@ -681,6 +752,7 @@ function confirmReadback(data, word, S) {
     }
     if (it.kind === 'question' && it.status === 'open') it.status = 'to_decide';
   }
+  for (const R of data.redirects) for (const c of R.clauses || []) if (c.pin_change) c.pin_read_back = rb.confirmed.at;
   log(data, 'readback_confirmed', word.text);
 }
 
@@ -810,8 +882,20 @@ function applyResearch(root, state, data, outputs, runs, S, pass) {
       log(data, 'research_retry', 'the brief writer returned nothing: one more pass');
       return { next: 'research', retry: true };
     }
-    data.parked = { kind: 'research', stage: 'research', reason: `Research could not produce a brief in ${data.counters.research_passes} pass(es): the brief writer ${rec.failures.find((f) => f.what === 'the brief writer').reason}.` };
-    return { next: 'park' };
+    // no park: research is over for these items; what it could not do is a gap the sheet and H1
+    // show (the decisions are asked without a researched recommendation)
+    const why = `the brief writer ${rec.failures.find((f) => f.what === 'the brief writer').reason} in ${data.counters.research_passes} pass(es)`;
+    data.research.retry = null;
+    for (const id of pass.items) {
+      const it = item(data, id);
+      if (!it) continue;
+      it.needs_research = false;
+      if (it.kind === 'decision' && it.researched === undefined) it.researched = false;
+      it.gap = it.gap || clip(`not researched: ${why}`, 200);
+    }
+    addFailure(data, { what: 'research', reason: `no research brief: ${why}; the items it covered go on without a researched recommendation` });
+    log(data, 'research_gave_up', why);
+    return { next: 'route' };
   }
   if (transient && lacking.length && moreAllowed) {
     data.research.retry = { brief_only: false, items: lacking.map((x) => x.id), failed: rec.scouts.filter((s) => !s.ok).map((s) => s.mode) };
@@ -859,7 +943,15 @@ function buildSheet(data, S) {
     it.shown = n;
     return { no: i + 1, item: it.id, text: it.value, source: factSource(data, it) };
   });
-  data.sheets.push({ n, at: nowIso(), decisions, facts, queued: pending.length - take.length, answered_at: null, failures_at: data.failures.length });
+  const rb = data.readback;
+  const showReadback = Boolean(rb && rb.auto && !rb.shown);
+  if (showReadback) rb.shown = n;
+  // the user's own earlier words a later word changed: shown once, on this sheet
+  const changes = data.items.flatMap((it) => (it.changes || []).filter((c) => !c.shown).map((c) => {
+    c.shown = n;
+    return { item: it.id, text: it.text, from: c.from, to: c.to, quote: c.quote };
+  }));
+  data.sheets.push({ n, at: nowIso(), decisions, facts, queued: pending.length - take.length, answered_at: null, failures_at: data.failures.length, ...(showReadback ? { readback: true } : {}), ...(changes.length ? { changes } : {}) });
   log(data, 'sheet', `sheet ${n}: ${decisions.length} decision(s), ${facts.length} fact(s), ${pending.length - take.length} waiting`);
 }
 
@@ -881,11 +973,34 @@ function factSource(data, it) {
   return `my assumption, not confirmed: ${it.unconfirmed || 'no source'}`;
 }
 
+// The read-back, compactly, on the first screen after it (it was shown, not waited on).
+function readbackBrief(data, state = null) {
+  const rb = data.readback;
+  if (!rb) return [];
+  const i = rb.intent || {};
+  const L = ['**What I understood** (my read-back; correct anything in your reply)'];
+  if (state) L.push(`- Run as: ${state.work_type || 'work'} at ${state.risk} risk${state.epic ? ', as an epic' : ''}`);
+  if (i.problem || i.outcome) L.push(`- ${i.problem || ''}${i.outcome ? ` → ${i.outcome}` : ''}`);
+  if (rb.scope.in.length) L.push(`- In scope: ${rb.scope.in.join('; ')}`);
+  if (rb.scope.out.length) L.push(`- Out of scope: ${rb.scope.out.join('; ')}`);
+  const took = rb.took.map((id) => item(data, id)).filter(Boolean);
+  if (took.length) L.push(`- From your words: ${took.map((it) => `${it.value || it.text} ("${clip((it.source && it.source.quote) || '', 80)}")`).join('; ')}`);
+  const pins = rb.pins.map((id) => item(data, id)).filter((p) => p && p.value);
+  if (pins.length) L.push(`- Versions: ${pins.map((p) => `${p.system} ${p.value}${p.source && p.source.quote ? ` (${p.source.kind === 'word' ? `you said "${clip(p.source.quote, 80)}"` : `${p.source.ref}`})` : ''}`).join(', ')}`);
+  return L;
+}
+
 function sheetScreen(state, data) {
   const s = currentSheet(data);
   if (!s) return '';
   const passes = data.research.passes.length;
   const L = [`**Decisions · ${state.id}**${passes ? ` (research: ${passes} pass${passes > 1 ? 'es' : ''})` : ''}`, ''];
+  if (s.readback) L.push(...readbackBrief(data, state), '');
+  if ((s.changes || []).length) {
+    L.push('**Changed by your later words** (the later one wins; say if not)');
+    for (const c of s.changes) L.push(`- changed: ${c.from} → ${c.to} because you said "${clip(c.quote, 160)}"`);
+    L.push('');
+  }
   for (const d of s.decisions.filter((x) => !x.answered)) {
     L.push(`${d.no}. **${d.question}**${d.reasked ? ' (reopened)' : ''}`);
     for (const o of d.options) L.push(`   - ${o.key}) ${o.text}${o.key === d.recommendation ? ' **(recommended)**' : ''}`);
@@ -1237,7 +1352,7 @@ function confirmRedirect(data, word) {
   }
   // the decisions the redirect touches are asked again once they are researched
   data.counters.research_passes = 0;
-  data.counters.writer_attempts = 0;
+  newWriterCycle(data);
   data.counters.readiness_cycles = 0;
   const earliest = R.clauses.map((c) => ORDER[c.stage]).reduce((m, x) => Math.min(m, x), 9);
   R.restart = Object.keys(ORDER).find((k) => ORDER[k] === earliest) || 'assemble';
@@ -1344,29 +1459,42 @@ function applyWriter(root, state, data, out) {
   // edited one), an acceptance criterion, constraint or non-goal the new text no longer has must be
   // listed under `removed` with the item, blocker or redirect it rests on
   const removedNow = [];
+  const changedNow = [];
   if (data.contract.written_hash) {
     const before = contract.parse(contract.read(root, state.id));
     const key = (t) => norm(t).replace(/[.;]+$/, '');
+    // a placeholder ("None", "n/a", "-") is no constraint or non-goal: replacing it drops nothing
+    const placeholder = (t) => /^(none|n\/a|na|-|—|tbd|\(none\))$/i.test(key(t));
     const gone = [
       ...before.acs.filter((a) => !parsed.acs.some((b) => b.id === a.id)).map((a) => ({ ref: a.id, text: a.text })),
-      ...before.constraints.filter((c) => !parsed.constraints.some((d) => key(d) === key(c))).map((c) => ({ ref: 'Constraints', text: c })),
-      ...before.nonGoals.filter((c) => !parsed.nonGoals.some((d) => key(d) === key(c))).map((c) => ({ ref: 'Non-goals', text: c })),
+      ...before.constraints.filter((c) => !placeholder(c) && !parsed.constraints.some((d) => key(d) === key(c))).map((c) => ({ ref: 'Constraints', text: c })),
+      ...before.nonGoals.filter((c) => !placeholder(c) && !parsed.nonGoals.some((d) => key(d) === key(c))).map((c) => ({ ref: 'Non-goals', text: c })),
     ];
     const listed = Array.isArray(out.removed) ? out.removed : [];
-    const known = (b) => Boolean(b) && Boolean(item(data, b) || data.redirects.some((R) => R.id === String(b).toUpperCase()) || (data.blockers || []).some((x) => x.ref === b) || data.checks.some((k) => (k.objections || []).some((o) => o.ref === b)));
+    // what a change may rest on: an item, a redirect, a blocker, or the user's own words (W-n)
+    const known = (b) => Boolean(b) && Boolean(item(data, b) || data.redirects.some((R) => R.id === String(b).toUpperCase()) || data.words.some((w) => w.id === String(b).toUpperCase()) || (data.blockers || []).some((x) => x.ref === b) || data.checks.some((k) => (k.objections || []).some((o) => o.ref === b)));
+    // a reworded constraint or non-goal is a cited change (old → new), not a drop
+    const changedList = Array.isArray(out.changed) ? out.changed : [];
+    const nowLines = [...parsed.constraints.map((c) => ({ ref: 'Constraints', text: c })), ...parsed.nonGoals.map((c) => ({ ref: 'Non-goals', text: c })), ...parsed.acs.map((a) => ({ ref: a.id, text: a.text }))];
     const unexplained = [];
     for (const g of gone) {
+      const ch = changedList.find((x) => x && (x.ref === g.ref || !x.ref) && x.from && key(x.from) === key(g.text) && x.to && nowLines.some((l) => key(l.text) === key(x.to)) && known(x.because));
+      if (ch) {
+        changedNow.push({ ref: g.ref, from: clip(g.text, 200), to: clip(ch.to, 200), because: String(ch.because), why: clip(ch.why || '', 200) });
+        continue;
+      }
       const l = listed.find((x) => (x.ref === g.ref || (x.text && key(x.text) === key(g.text))) && known(x.because));
       if (l) removedNow.push({ ref: g.ref, text: clip(g.text, 200), because: String(l.because).toUpperCase() === String(l.because) ? l.because : String(l.because), why: clip(l.why || '', 200) });
       else unexplained.push(g.ref === 'Constraints' || g.ref === 'Non-goals' ? `${g.ref}: "${clip(g.text, 80)}"` : g.ref);
     }
     if (unexplained.length) {
-      res.refused = `the new text drops ${unexplained.join(', ')} with no reason: list each under removed with the item (I-n), blocker or redirect it rests on, or keep it`;
+      res.refused = `the new text drops ${unexplained.join(', ')} with no reason: list each under changed (a rewording: from, to, because) or removed with the item (I-n), the user's words (W-n), the blocker or the redirect it rests on, or keep it`;
       return res;
     }
   }
   writeText(jobPaths(root, state.id).contract, next);
   if (removedNow.length) data.contract.removed = [...(data.contract.removed || []), ...removedNow.map((r) => ({ ...r, at: nowIso() }))].slice(-40);
+  if (changedNow.length) data.contract.changed = [...(data.contract.changed || []), ...changedNow.map((r) => ({ ...r, at: nowIso() }))].slice(-40);
   res.written = true;
   const sections = contract.sections(next);
   const acIds = new Set(parsed.acs.map((a) => a.id));
@@ -1438,26 +1566,179 @@ function earliest(blockers) {
   return blockers.map((b) => b.stage).filter((s) => ORDER[s] !== undefined).sort((a, b) => ORDER[a] - ORDER[b])[0] || 'assemble';
 }
 
-// A blocker goes back to its stage: what that means for the record.
-function sendBack(root, state, data, blockers, S) {
-  const stage = earliest(blockers);
+// Who can fix a readiness blocker: the `writer` (from what is already settled: a weak or
+// untestable verify command, the contract contradicting itself, a check that runs no test file,
+// wording) or the `user` (a decision only they can make: their statements conflict, a scope
+// question nobody answered, a value no evidence or answer settles). God Eye says so per objection
+// (`fixable_by`); without that, the CLI decides from the blocker itself:
+//   - its own checks: by the stage they concern (assemble: the writer; the sheet or the read-back:
+//     the user);
+//   - God Eye's: a blocker about the contract text (stage assemble) or a missing fact (research)
+//     needs no user; a weak verify command (acs_testable) or a contradiction between the
+//     contract's own sections (self_consistent, pointing at no item the user stated) never does,
+//     whatever stage it names; anything else it sent to the sheet or the read-back is the user's.
+function userStated(data, b) {
+  const ids = `${b.ref || ''} ${b.issue || ''} ${b.why || ''}`.match(/\bI-\d+\b/gi) || [];
+  return ids.some((id) => {
+    const it = item(data, id);
+    return Boolean(it && it.strength === 'user');
+  });
+}
+function fixableBy(b, data) {
+  if (b.fixable_by === 'writer' || b.fixable_by === 'user') return b.fixable_by;
+  if (b.by === 'cli') return ['sheet', 'readback'].includes(b.stage) ? 'user' : 'writer';
+  if (b.stage === 'assemble' || b.stage === 'research') return 'writer';
+  if (b.check === 'acs_testable') return 'writer';
+  if (b.check === 'self_consistent' && !userStated(data, b)) return 'writer';
+  return 'user';
+}
+
+// Where a classified blocker goes: the writer (or research, for a missing fact) without the
+// user; the user's to the decision sheet (or the read-back, when the intent itself is unclear).
+function routeOf(b) {
+  if (b.fixable_by === 'user') return b.stage === 'readback' ? 'readback' : 'sheet';
+  return b.stage === 'research' ? 'research' : 'assemble';
+}
+
+function classify(data, blockers) {
+  return blockers.map((b) => {
+    const c = { ...b, fixable_by: fixableBy(b, data) };
+    c.route = routeOf(c);
+    return c;
+  });
+}
+
+// The identity of a set of writer blockers, to tell a round that made progress (the set shrank
+// or changed) from one that made none (the same set again). God Eye's ids are its check and what
+// it points at; the CLI's own blockers add their (deterministic) text.
+function blockerKey(b) {
+  const ref = String(b.ref || '').trim().toUpperCase();
+  return `${b.check}|${ref}${b.by === 'cli' ? `|${norm(b.why || b.issue).slice(0, 80)}` : ''}`;
+}
+function signature(blockers) {
+  return [...new Set(blockers.map(blockerKey))].sort().join('\n');
+}
+
+function findingLine(b, i) {
+  return `${i + 1}. ${b.check} (${b.ref || 'contract'}): ${clip(b.issue || b.why, 200)}${b.fix ? ` — suggested fix: ${clip(b.fix, 160)}` : ''}`;
+}
+
+function optionsOf(b) {
+  const opts = (Array.isArray(b.options) ? b.options : []).slice(0, 5).map((o, i) => ({ key: 'abcde'[i], text: clip(typeof o === 'string' ? o : o && o.text, 200), consequences: clip(o && o.consequences, 200) })).filter((o) => o.text);
+  const want = norm(b.recommendation);
+  const rec = want ? opts.find((o) => o.key === want || norm(o.text) === want) : null;
+  return { options: opts, recommendation: rec ? rec.key : null, why: clip(b.fix || '', 300) || null };
+}
+
+// A decision only the user can make, from a blocker: a question on the next decision sheet, with
+// God Eye's options and recommendation when it gave them (never a generic park).
+function userQuestion(data, b) {
+  const by = b.by === 'cli' ? 'readiness check' : 'God Eye';
+  const it = item(data, b.ref);
+  if (it && ['decision', 'question'].includes(it.kind)) {
+    if (FINAL.has(it.status) && it.status !== 'dropped') reopen(it, by, b.issue || b.why);
+    if (!(it.options || []).length) Object.assign(it, optionsOf(b));
+    return it;
+  }
+  const text = clip(b.question || b.issue || b.why, 300);
+  if (data.items.some((x) => x.origin === 'check' && x.kind === 'decision' && !FINAL.has(x.status) && norm(x.text) === norm(text))) return null;
+  return newItem(data, { kind: 'decision', text, status: 'to_decide', impact: 'high', origin: 'check', extra: { researched: false, ...(it ? { about: it.id } : {}), ...optionsOf(b) } }, by);
+}
+
+// The writer loop's state for the shared loop engine (cli/core/loop.js); a record from before 0.9.0
+// (writer_loop { rounds, last: signature }) starts a fresh engine state.
+function writerLoopState(data) {
+  const w = data.writer_loop;
+  if (!w || typeof w.last === 'string' || !('level' in w)) data.writer_loop = { ...require('./loop').fresh(), total: (w && w.total) || 0 };
+  return data.writer_loop;
+}
+
+// One step of the writer ⇄ God Eye loop, by the loop engine: another writer round (on the stronger
+// model once the loop escalated), the diagnosis, or the end of the loop: at H1 with the objections
+// shown, or a sheet question when the diagnosis says only the user can settle it. Never a park.
+function writerLoop(data, writer, S) {
+  const Loop = require('./loop');
+  const d = Loop.shouldContinue(writerLoopState(data), writer.map((b) => ({ key: blockerKey(b) })), S.loops);
+  data.writer_loop = { ...d.state, total: (data.writer_loop.total || 0) + (['continue', 'escalate'].includes(d.action) ? 1 : 0), model: d.model || null, approach: d.approach || (d.state.diagnosis && d.state.diagnosis.approach) || null };
+  data.counters.writer_rounds = d.state.rounds;
+  if (d.action === 'diagnose') {
+    log(data, 'diagnose', `the writer loop made no progress (${d.rule}): God Eye diagnoses it before the loop ends`);
+    return 'diagnose';
+  }
+  if (d.action === 'stop' || d.action === 'done') return loopEnd(data, d, writer);
+  data.sent_back = { blockers: writer.length, stage: 'assemble', writer_round: d.state.rounds, ...(d.model ? { model: d.model } : {}) };
+  if (d.action === 'escalate') log(data, 'escalate', `no progress in ${S.loops.stall_rounds} round(s): the contract writer runs on ${d.model}`);
+  return 'assemble';
+}
+
+// The writer loop is over without converging: the diagnosis's question goes on the sheet when it
+// says only the user can settle it; otherwise the contract goes to H1 with the open objections
+// (and the diagnosis) shown: H1 is the gate, never a park in front of it.
+function loopEnd(data, d, writer) {
+  const diag = d.state.diagnosis;
+  const q = require('./loop').question(d.state, { what: 'the readiness loop', blockers: writer });
+  data.loop_end = { at: nowIso(), rule: d.rule, rounds: d.state.rounds, findings: writer.map((b) => ({ check: b.check, ref: b.ref, issue: clip(b.issue || b.why, 300), fix: clip(b.fix, 300) })), ...(diag ? { diagnosis: { cause: diag.cause, question: diag.question, options: diag.options, recommendation: diag.recommendation } } : {}), text: q.text };
+  ledgerNoteLater(data, 'loop_end', { rule: d.rule, writer_rounds: d.state.rounds, findings: writer.map((b) => `${b.check}|${b.ref}`), diagnosed: Boolean(diag), question: Boolean(diag && diag.question) });
+  if (diag && diag.needs_user && diag.question && (data.counters.readiness_cycles || 0) < 99) {
+    const it = userQuestion(data, { by: 'god-eye', check: 'decisions_closed', ref: 'contract', question: diag.question, issue: diag.cause, options: diag.options, recommendation: diag.recommendation, fix: diag.cause });
+    if (it) {
+      data.counters.readiness_cycles = (data.counters.readiness_cycles || 0) + 1;
+      data.sent_back = { blockers: writer.length, stage: 'sheet' };
+      log(data, 'loop_end', `the writer loop stopped (${d.rule}); the diagnosis's question goes on the sheet`);
+      return 'route';
+    }
+  }
+  log(data, 'loop_end', `the writer loop stopped (${d.rule}) with ${writer.length} objection(s) open: H1 shows them`);
+  return 'ready';
+}
+
+// A ledger line written when the record is saved (finish), so it carries the saved rev.
+function ledgerNoteLater(data, outcome, detail) {
+  data.pending_notes = [...(data.pending_notes || []), { outcome, detail }];
+}
+
+// A blocker goes back to whoever can fix it (docs/DESIGN-CLARIFY-v3.md, "Readiness"):
+//   - writer blockers only: the contract writer runs again with the exact findings and their
+//     suggested fixes, automatically, while each round makes progress; the job parks only when a
+//     round makes none (the same blockers twice in a row) or after limits.clarify_writer_rounds;
+//   - a user blocker: a question on the decision sheet (or the read-back), never a generic park;
+//     writer blockers raised with it are kept for the writer that runs after the user's answer;
+//   - a missing fact: research again.
+// Writer rounds are counted apart from the readiness cycles that reach the user.
+function sendBack(root, state, data, raw, S) {
+  // a blocker the tie-break verifier refuted is a note now (shown at H1), never a blocker again
+  const refuted = (b) => ((data.disputes || {})[blockerKey(b)] || {}).status === 'refuted';
+  const blockers = classify(data, raw).filter((b) => !refuted(b));
+  data.blockers = blockers.map((b) => ({ ...b }));
+  if (!blockers.length) return 'ready';
+  const writer = blockers.filter((b) => b.route === 'assemble');
+  const other = blockers.filter((b) => b.route !== 'assemble');
+  if (!other.length) {
+    log(data, 'back', `${writer.length} blocker(s) the writer can fix`);
+    const loopState = writerLoopState(data);
+    // disputed: God Eye raised it again after a writer round that was given its fix: the
+    // finding-verifier settles it once before another round is spent on it
+    // (only from a fresh check of a new version: a blocker carried past a refused text was not
+    // checked again, so it is not disputed)
+    const fresh = !writer.some((b) => b.refusal);
+    const disputed = S.tiebreak && fresh ? writer.filter((b) => b.by === 'god-eye' && (loopState.last || []).includes(blockerKey(b)) && !(data.disputes || {})[blockerKey(b)]).slice(0, 3) : [];
+    if (disputed.length) {
+      data.dispute = { at: nowIso(), blockers: disputed.map((b) => ({ key: blockerKey(b), check: b.check, ref: b.ref, issue: clip(b.issue || b.why, 400), fix: clip(b.fix, 300) })) };
+      log(data, 'dispute', `${disputed.length} blocker(s) survived a round that had their fix: the finding-verifier checks them`);
+      return 'dispute';
+    }
+    return writerLoop(data, writer, S);
+  }
+  const stage = earliest(other.map((b) => ({ stage: b.route })));
   data.counters.readiness_cycles = (data.counters.readiness_cycles || 0) + 1;
   data.sent_back = { blockers: blockers.length, stage };
-  data.blockers = blockers.map((b) => ({ ...b }));
   log(data, 'back', `${blockers.length} blocker(s): back to ${stage}`);
-  if (stage === 'assemble') {
-    if (data.counters.writer_attempts >= S.writer_attempts) {
-      data.parked = { kind: 'writer', stage: 'assemble', reason: `The contract still fails its readiness check after ${data.counters.writer_attempts} writer attempt(s): ${blockers.slice(0, 4).map((b) => `${b.ref}: ${b.why || b.issue}`).join('; ')}` };
-      return 'park';
-    }
-    return 'assemble';
-  }
   if (stage === 'readback') {
-    data.readback_objections = blockers.filter((b) => b.stage === 'readback');
+    data.readback_objections = other.filter((b) => b.route === 'readback');
     return 'readback';
   }
   if (stage === 'research') {
-    for (const b of blockers.filter((x) => x.stage === 'research')) {
+    for (const b of other.filter((x) => x.route === 'research')) {
       const it = item(data, b.ref);
       if (it && !it.needs_research) reopen(it, b.by === 'cli' ? 'readiness check' : 'God Eye', b.why || b.issue);
       else if (!it) newItem(data, { kind: 'fact', text: b.issue || b.why, tag: 'docs', impact: 'high', needs_research: true, origin: 'check', pins: Object.keys(pinsBySystem(data)) }, 'God Eye');
@@ -1465,12 +1746,8 @@ function sendBack(root, state, data, blockers, S) {
     data.counters.research_passes = 0;
     return 'research';
   }
-  // the sheet: a decision God Eye says is missing becomes one
-  for (const b of blockers.filter((x) => x.stage === 'sheet')) {
-    const it = item(data, b.ref);
-    if (!it) newItem(data, { kind: 'decision', text: b.issue || b.why, status: 'to_decide', impact: 'high', origin: 'check', extra: { researched: false, why: b.fix || null } }, 'God Eye');
-    else if (FINAL.has(it.status) && it.status !== 'dropped') reopen(it, 'God Eye', b.issue || b.why);
-  }
+  // the sheet: each decision only the user can make becomes a question with its options
+  for (const b of other.filter((x) => x.route === 'sheet')) userQuestion(data, b);
   for (const it of data.items) if (it.kind === 'decision' && it.needs_research) it.needs_research = false;
   return 'route';
 }
@@ -1499,12 +1776,18 @@ function applyCheck(root, state, data, out, S) {
     ref: clip(o.ref, 60),
     issue: clip(o.issue, 400),
     fix: clip(o.fix, 300),
+    ...(o.fixable_by === 'writer' || o.fixable_by === 'user' ? { fixable_by: o.fixable_by } : {}),
+    ...(o.question ? { question: clip(o.question, 300) } : {}),
+    ...(Array.isArray(o.options) && o.options.length ? { options: o.options.slice(0, 5).map((x) => (typeof x === 'string' ? { text: clip(x, 200) } : { text: clip(x && x.text, 200), consequences: clip(x && x.consequences, 200) })) } : {}),
+    ...(o.recommendation ? { recommendation: clip(o.recommendation, 200) } : {}),
     by: 'god-eye',
   }));
   const checklist = {};
   for (const k of CHECKLIST) checklist[k] = Boolean(g.checklist && g.checklist[k] === true);
   // a "false" on the checklist with no objection is an objection too (it is never silently a pass)
   for (const k of CHECKLIST) if (!checklist[k] && !objections.some((o) => o.check === k && o.severity === 'blocker')) objections.push({ check: k, severity: 'blocker', stage: 'assemble', ref: 'contract', issue: `God Eye answered ${k} false without saying why`, fix: '', by: 'god-eye' });
+  // who can fix each blocker (God Eye's word, else the CLI's fallback): shown at H1 and in status
+  for (const o of objections) if (o.severity === 'blocker') o.fixable_by = fixableBy(o, data);
   const rec = { n: data.checks.length + 1, at: nowIso(), contract_hash: contractHash(root, state), deterministic: [], checklist, objections, restatement: g.restatement || null, ok: !objections.some((o) => o.severity === 'blocker') };
   data.checks.push(rec);
   return rec;
@@ -1565,7 +1848,7 @@ function stagePlan(root, state) {
   const S = settings(root, state);
   // which agent plays each part: config/workflows/clarify.json
   const roles = readJson(require('../lib/paths').pluginPath('config', 'workflows', 'clarify.json')).agents;
-  const A = (key, label, mode, input, timeout, schema, attempts = 2) => ({ role: roles[key].role, label, mode, input, timeout_sec: timeout, schema, attempts });
+  const A = (key, label, mode, input, timeout, schema, attempts = 2, model = null) => ({ role: roles[key].role, label, mode, input, timeout_sec: timeout, schema, attempts, ...(model ? { model } : {}) });
   const stage = data.stage;
   let groups = [];
   if (stage === 'readback') groups = [[A('interviewer', 'read-back', 'readback', readbackInput(root, state, data), S.agent_sec.interviewer, 'readback')]];
@@ -1583,14 +1866,57 @@ function stagePlan(root, state) {
     const brief = A('brief', 'research brief', 'brief', { plan: p.plan, pins: p.pins, stated: p.stated, evidence: p.priorEvidence, failures: data.failures.map((f) => `${f.what}: ${f.reason}`) }, S.agent_sec['brief-writer'], 'brief');
     groups = scouts.length ? [scouts, [brief]] : [[brief]];
   } else if (stage === 'assemble') {
-    groups = [[A('writer', 'contract', 'write', writerInput(root, state, data), S.agent_sec['contract-writer'], 'contract-write')]];
+    // once the writer loop escalated, the writer runs on the stronger model (the runner falls back
+    // to the session default if the CLI refuses it)
+    groups = [[A('writer', 'contract', 'write', writerInput(root, state, data), S.agent_sec['contract-writer'], 'contract-write', 2, (data.writer_loop && data.writer_loop.model) || null)]];
   } else if (stage === 'check') {
     groups = [[A('check', 'readiness', 'readiness', readinessInput(root, state, data), S.agent_sec['god-eye'], 'readiness')]];
+  } else if (stage === 'dispute') {
+    // the tie-break: one finding-verifier per blocker God Eye raised again after the writer had its fix
+    const D = data.dispute || { blockers: [] };
+    groups = [D.blockers.map((b, i) => A('verifier', `dispute ${i + 1}`, 'dispute', disputeInput(root, state, data, b), S.agent_sec['finding-verifier'], 'verifier', 1))];
+  } else if (stage === 'diagnose') {
+    groups = [[A('check', 'diagnosis', 'diagnosis', diagnosisInput(root, state, data, S), S.agent_sec['god-eye'], 'diagnosis')]];
   } else fail(`Clarify is at an unknown stage (${stage}).`, 'internal');
   // what each group is called while it runs (the console's live step list)
-  const PH = { readback: ['read your words back'], redirect: ['read your redirect back'], interpret: ['read your sheet answer'], assemble: ['write the contract'], check: ['readiness check'] };
+  const PH = { readback: ['read your words back'], redirect: ['read your redirect back'], interpret: ['read your sheet answer'], assemble: ['write the contract'], check: ['readiness check'], dispute: ['check disputed objections'], diagnose: ['diagnose the readiness loop'] };
   const phases = stage === 'research' ? groups.map((g) => (g.some((a) => a.role === roles.brief.role) ? 'research brief' : `research (${g.map((a) => a.mode).join(', ')})`)) : PH[stage];
   return { stage, rev: data.rev || 0, groups, phases, contract_hash: stageContractHash(root, state, stage) };
+}
+
+function scopeNow(data, rb) {
+  const live = data.items.filter((it) => it.kind === 'scope' && it.status !== 'dropped');
+  if (!live.length) return rb.scope;
+  return { in: live.filter((it) => it.scope !== 'out').map((it) => it.value || it.text), out: live.filter((it) => it.scope === 'out').map((it) => it.value || it.text) };
+}
+
+// The tie-break: a readiness objection God Eye raised again after the writer was given its fix.
+function disputeInput(root, state, data, b) {
+  const live = data.items.filter((it) => it.status !== 'dropped');
+  return {
+    mode: 'dispute',
+    contract: jobPaths(root, state.id).contract,
+    finding: { id: b.key, check: b.check, ref: b.ref, issue: b.issue, fix: b.fix },
+    note: 'A readiness objection on the contract (not on code). God Eye raised it again after the contract writer was given its fix. Read the contract and the items: confirmed when the objection holds as stated; refuted when the contract already settles it (quote the line); unverifiable when only the user could say.',
+    stated: live.filter((it) => it.strength === 'user' && it.source && it.source.quote).map((it) => ({ id: it.id, text: it.value || it.text, quote: it.source.quote })),
+    decisions: live.filter((it) => it.kind === 'decision').map((it) => ({ id: it.id, text: it.text, value: it.value, by: byWhom(it) })),
+  };
+}
+
+// The diagnosis: why the writer ⇄ God Eye loop made no progress, and what would end it.
+function diagnosisInput(root, state, data, S) {
+  const live = data.items.filter((it) => it.status !== 'dropped');
+  const w = data.writer_loop || {};
+  return {
+    focus: 'diagnosis',
+    loop: 'clarify readiness: the contract writer fixes God Eye\'s readiness objections, round by round',
+    contract: jobPaths(root, state.id).contract,
+    rounds: (w.history || []).map((h) => ({ round: h.round, open: h.open })),
+    ceiling: S.loops.ceiling,
+    open: (data.blockers || []).map((b) => ({ key: blockerKey(b), check: b.check, ref: b.ref, issue: b.issue || b.why, fix: b.fix || '', ...((data.disputes || {})[blockerKey(b)] ? { verifier: data.disputes[blockerKey(b)] } : {}) })),
+    stated: live.filter((it) => it.strength === 'user' && it.source && it.source.quote).map((it) => ({ id: it.id, text: it.value || it.text, quote: it.source.quote })),
+    decisions: live.filter((it) => it.kind === 'decision' || it.kind === 'question').map((it) => ({ id: it.id, text: it.text, value: it.value, status: it.status, by: byWhom(it) })),
+  };
 }
 
 function writerInput(root, state, data) {
@@ -1599,14 +1925,23 @@ function writerInput(root, state, data) {
   return {
     contract: jobPaths(root, state.id).contract,
     intent: rb.intent,
-    scope: rb.scope,
+    // the scope as its items say now (a redirect or a sheet answer may have changed a line)
+    scope: scopeNow(data, rb),
     items: live.map((it) => ({ id: it.id, kind: it.kind, text: it.text, value: it.value, status: it.status, strength: it.strength, by: byWhom(it), source: it.kind === 'fact' || it.kind === 'pin' ? factSource(data, it) : null, ...(it.superseded ? { superseded_by: it.superseded.by } : {}) })),
     evidence: data.evidence.filter(usable).map((e) => ({ id: e.id, item: e.item, claim: e.claim, source: e.source })),
     instructions: live.filter((it) => it.kind === 'instruction').map((it) => ({ id: it.id, text: it.text, quote: it.value })),
-    blockers: (data.blockers || []).map((b) => ({ check: b.check, ref: b.ref, issue: b.issue || b.why, fix: b.fix || '' })),
+    // the exact findings of the last readiness check the writer can fix, each with its suggested
+    // fix (a user's decision among them is on the record as an item by now)
+    blockers: (data.blockers || []).filter((b) => !b.route || b.route === 'assemble').map((b) => {
+      const v = (data.disputes || {})[blockerKey(b)];
+      return { check: b.check, ref: b.ref, issue: b.issue || b.why, fix: b.fix || '', ...(b.fixable_by ? { fixable_by: b.fixable_by } : {}), ...(v ? { verified: `the finding-verifier ${v.status === 'confirmed' ? 'confirmed it' : 'could not settle it'}: ${v.reason}` } : {}) };
+    }),
+    ...(data.writer_loop && data.writer_loop.rounds && (data.blockers || []).length ? { round: { n: data.writer_loop.rounds, of: settings(root, state).writer_rounds, ...(data.writer_loop.approach ? { approach: data.writer_loop.approach } : {}), note: `An automatic fix round: the readiness check found the blockers below in your last version. Fix every one${data.writer_loop.approach ? ', the way the diagnosis (approach) says' : ''}. Rounds continue while the open blockers shrink; when they stop shrinking the loop ends and the user sees what is still open at H1.` } } : {}),
     ...(data.contract.edited_by_hand ? { hand_edited: 'The user edited the contract file by hand since the last version the factory wrote. Start from the file as it is now and keep every change they made; change only what the items and blockers below require.' } : {}),
     design_may_choose: live.filter((it) => it.status === 'deferred').map((it) => it.text),
     gaps: data.failures.map((f) => `${f.what}: ${f.reason}`),
+    // the user's own words by id, to cite (because: W-n) when their later words change the contract
+    words: data.words.slice(-20).map((w) => ({ id: w.id, text: clip(w.text, 400) })),
   };
 }
 
@@ -1645,6 +1980,14 @@ function record(root, state, env) {
       applyReadback(root, state, data, out);
       data.readback_objections = null;
       next = 'readback_wait';
+      // shown, not waited on: research starts now; what the user says meanwhile is a correction
+      if (!S.readback_wait && !readbackNeedsUser(data)) {
+        confirmReadback(data, null, S, true);
+        judge(root, data);
+        data.counters.research_passes = 0;
+        next = 'route';
+        result.readback = 'shown';
+      }
     }
   } else if (stage === 'redirect') {
     const out = outputs.redirect;
@@ -1665,6 +2008,16 @@ function record(root, state, env) {
       const answers = (out.answers || []).filter((a) => norm(w.text).includes(norm(a.quote || '')) && norm(a.quote || '').length >= 2).map((a) => ({ no: Number(a.decision), ...(a.choice === 'defer' ? { defer: true } : ['recommended', 'a', 'b', 'c', 'd', 'e'].includes(a.choice) ? { choice: a.choice, quote: clip(a.quote, 300) } : { text: clip(a.text || a.quote, 400), quote: a.quote }) }));
       const facts = (out.facts || []).filter((f) => norm(w.text).includes(norm(f.quote || ''))).map((f) => ({ no: Number(f.fact), text: clip(f.text, 400) }));
       const r = applySheet(data, s, { accept: false, answers, facts }, w, 'interpret');
+      // conservation: what the interviewer could not map (its `unclear`, word for word) and any
+      // part of the reply no mapping quotes are kept verbatim as the user's instructions
+      const quotes = [...(out.answers || []).map((a) => a.quote), ...(out.facts || []).map((f) => f.quote)].filter((q) => q && norm(w.text).includes(norm(q)));
+      const unclear = (Array.isArray(out.unclear) ? out.unclear : []).map((u) => String(typeof u === 'string' ? u : (u && (u.quote || u.text)) || '')).filter((u) => norm(u).length >= 4 && norm(w.text).includes(norm(u)));
+      const kept = [...new Set([...unclear, ...unquoted(w.text, [...quotes, ...unclear])])];
+      for (const k of kept.slice(0, 8)) {
+        if (data.items.some((x) => x.kind === 'instruction' && x.status !== 'dropped' && norm(x.value) === norm(k))) continue;
+        newItem(data, { kind: 'instruction', text: k, value: k, status: 'open', strength: 'user', source: { kind: 'word', ref: w.id, quote: clip(k, 300) }, origin: 'sheet' }, 'user (unmapped words, kept verbatim)');
+      }
+      if (kept.length) result.instructions = kept.length;
       // "as you recommend" for a decision that has no recommendation is an ok without an answer
       okWithoutRecommendation(data, s, r, w, answers.filter((a) => a.choice === 'recommended').map((a) => a.no));
       result.applied = r;
@@ -1684,11 +2037,43 @@ function record(root, state, env) {
     else {
       const w = applyWriter(root, state, data, out);
       if (w.refused) {
-        const b = [{ check: 'acs_testable', stage: 'assemble', ref: 'contract', why: `the CLI refused the writer's contract: ${w.refused}`, severity: 'blocker', by: 'cli' }];
+        // the refusal is one more blocker the writer can fix; the blockers its text was meant to
+        // fix still stand (the contract on disk did not change)
+        const b = [{ check: 'acs_testable', stage: 'assemble', ref: 'contract', why: `the CLI refused the writer's contract: ${w.refused}`, severity: 'blocker', by: 'cli', refusal: true }, ...(data.blockers || []).filter((x) => !x.refusal && (!x.route || x.route === 'assemble'))];
+        data.checks.push({ n: data.checks.length + 1, at: nowIso(), contract_hash: contractHash(root, state), deterministic: b, checklist: null, objections: b, ok: false, refusal: true });
         next = sendBack(root, state, data, b, S);
         result.refused = w.refused;
       } else next = 'check';
     }
+  } else if (stage === 'dispute') {
+    const D = data.dispute || { blockers: [] };
+    data.disputes = data.disputes || {};
+    D.blockers.forEach((b, i) => {
+      const out = outputs[`dispute ${i + 1}`];
+      const st = out && ['confirmed', 'refuted', 'unverifiable'].includes(out.status) ? out.status : 'unverifiable';
+      data.disputes[b.key] = { status: st, reason: clip((out && out.reason) || (out ? '' : `the finding-verifier ${failedRun(`dispute ${i + 1}`)}`), 400), evidence: clip(out && out.evidence, 400), at: nowIso() };
+    });
+    const last = data.checks[data.checks.length - 1];
+    if (last) {
+      for (const o of last.objections || []) {
+        const v = o.severity === 'blocker' ? data.disputes[blockerKey(o)] : null;
+        if (v && v.status === 'refuted') {
+          o.severity = 'note';
+          o.refuted = v.reason;
+        }
+      }
+      last.ok = !(last.objections || []).some((o) => o.severity === 'blocker');
+    }
+    data.dispute = null;
+    result.disputes = D.blockers.map((b) => ({ key: b.key, status: data.disputes[b.key].status }));
+    next = sendBack(root, state, data, data.blockers || [], S);
+  } else if (stage === 'diagnose') {
+    const out = outputs.diagnosis;
+    const Loop = require('./loop');
+    const total = (data.writer_loop && data.writer_loop.total) || 0;
+    data.writer_loop = { ...Loop.recordDiagnosis(writerLoopState(data), out ? { ...out, by: 'god-eye' } : { cause: `the diagnosis agent ${failedRun('diagnosis')}`, needs_user: false }), total };
+    result.diagnosis = { needs_user: data.writer_loop.diagnosis.needs_user, question: data.writer_loop.diagnosis.question };
+    next = writerLoop(data, (data.blockers || []).filter((b) => !b.route || b.route === 'assemble'), S);
   } else if (stage === 'check') {
     const out = outputs.readiness;
     if (!out) next = agentFailed('readiness', 'God Eye readiness check');
@@ -1697,28 +2082,49 @@ function record(root, state, env) {
       const blockers = rec.objections.filter((o) => o.severity === 'blocker');
       if (blockers.length) {
         next = sendBack(root, state, data, blockers, S);
-        if (next === 'park') data.parked.reason = `God Eye's readiness check still blocks after ${data.counters.writer_attempts} writer attempt(s): ${blockers.slice(0, 3).map((b) => `${b.check} (${b.ref}): ${b.issue}`).join('; ')}`;
       } else next = 'ready';
     }
   }
   return finish(root, state, data, next, S, result);
 }
 
+function newWriterCycle(data) {
+  data.counters.writer_attempts = 0;
+  data.counters.writer_rounds = 0;
+  data.writer_loop = { ...require('./loop').fresh(), total: (data.writer_loop && data.writer_loop.total) || 0 };
+  data.loop_end = null;
+}
+
+// The exact replies a clarify park takes (the user's alone: resume and proceed are human-only).
+function parkReplies(p, S) {
+  if (p.kind === 'agent') return 'Reply "resume" to run it again, or "cancel job".';
+  if (p.kind === 'writer' && p.rule) {
+    return [
+      'Reply:',
+      `- "resume": one more automatic contract-writer round with these findings${p.rule === 'ceiling' ? ` (the ceiling is limits.clarify_writer_rounds = ${S.writer_rounds})` : ''};`,
+      '- or edit contract.md yourself to settle them, then "resume": your text goes through the readiness check again and the writer keeps your edit;',
+      '- "proceed": go to H1 with these findings shown as open God Eye objections (you decide there);',
+      '- "cancel job" to stop.',
+    ].join('\n');
+  }
+  return 'Reply "resume" for one more try, or "proceed" to go on with the gaps shown.';
+}
+
 // Move to the next stage (routing by current state), save, and say what happens now.
 function finish(root, state, data, next, S, result = {}) {
   if (next === 'route') next = advance(data, S);
-  if (next === 'assemble' && data.stage !== 'assemble' && data.stage !== 'check') data.counters.writer_attempts = 0;
+  // a new readiness cycle (the writer runs after a user's turn, research or a redirect): the
+  // automatic writer rounds start again
+  if (next === 'assemble' && !['assemble', 'check', 'dispute', 'diagnose'].includes(data.stage)) newWriterCycle(data);
   if (next === 'check') next = enterCheck(root, state, data, S);
-  // the readiness cycle cap: work sent back more often than the cap allows parks where it
-  // would have gone (resume: one more cycle; proceed: H1 with the blockers shown open)
-  if (data.sent_back && next !== 'park') {
-    const sb = data.sent_back;
-    if (data.counters.readiness_cycles > S.readiness_cycles) {
-      const last = data.blockers || [];
-      data.parked = { kind: 'check', stage: next, reason: `The readiness check sent the work back ${data.counters.readiness_cycles} times (the cap is ${S.readiness_cycles}); still open: ${last.slice(0, 4).map((b) => `${b.check} (${b.ref}): ${clip(b.issue || b.why, 140)}`).join('; ')}.` };
-      next = 'park';
-    }
-    void sb;
+  // the readiness cycle cap (work sent back to the user's stages more often than the cap allows):
+  // the contract goes to H1 with the open objections shown; H1 is the gate, never a park before it
+  if (data.sent_back && next !== 'park' && next !== 'ready' && data.counters.readiness_cycles > S.readiness_cycles) {
+    const last = data.blockers || [];
+    data.loop_end = { at: nowIso(), rule: 'readiness_cycles', rounds: data.counters.readiness_cycles, findings: last.map((b) => ({ check: b.check, ref: b.ref, issue: clip(b.issue || b.why, 300), fix: clip(b.fix, 300) })), text: `The readiness check sent the work back ${data.counters.readiness_cycles} times (the ceiling is ${S.readiness_cycles}); H1 shows what is still open.` };
+    ledgerNoteLater(data, 'loop_end', { rule: 'readiness_cycles', readiness_cycles: data.counters.readiness_cycles, findings: last.map((b) => `${b.check}|${b.ref}`) });
+    log(data, 'loop_end', `readiness cycles over the ceiling (${S.readiness_cycles}): H1 shows the open objections`);
+    next = 'ready';
   }
   data.sent_back = null;
   if (next === 'ready') {
@@ -1728,19 +2134,27 @@ function finish(root, state, data, next, S, result = {}) {
   }
   if (next === 'park') {
     data.stage = data.parked.stage;
+    const pn = data.pending_notes || [];
+    data.pending_notes = null;
     save(root, state.id, data);
-    ledgerNote(root, state, data, 'park', { reason: data.parked.reason });
-    return { status: 'park', park_from: 'clarify', park_reason: `${data.parked.reason} Reply "resume" for one more try${data.parked.kind === 'agent' ? '' : ', or "proceed" to go on with the gaps shown'}.`, stage: data.stage, ...result, message: 'Parked.' };
+    for (const n of pn) ledgerNote(root, state, data, n.outcome, n.detail);
+    ledgerNote(root, state, data, 'park', { reason: data.parked.reason, kind: data.parked.kind, ...(data.parked.rule ? { rule: data.parked.rule, writer_rounds: (data.writer_loop || {}).rounds || 0, findings: (data.parked.findings || []).map((b) => `${b.check}|${b.ref}`) } : {}) });
+    const replies = parkReplies(data.parked, S);
+    return { status: 'park', park_from: 'clarify', park_reason: `${data.parked.reason}\n${replies}`, park_next: replies, stage: data.stage, ...result, message: 'Parked.' };
   }
   data.stage = next;
   data.parked = null;
+  const notes = data.pending_notes || [];
+  data.pending_notes = null;
   save(root, state.id, data);
-  ledgerNote(root, state, data, next, { counters: data.counters, caps: { research_passes: S.research_passes, writer_attempts: S.writer_attempts }, failures: data.failures.length });
+  for (const n of notes) ledgerNote(root, state, data, n.outcome, n.detail);
+  ledgerNote(root, state, data, next, { counters: data.counters, caps: { research_passes: S.research_passes, writer_rounds: S.writer_rounds }, ...(data.writer_loop && data.writer_loop.level ? { loop: { level: data.writer_loop.level, rounds: data.writer_loop.rounds, model: data.writer_loop.model || null } } : {}), failures: data.failures.length });
   if (next === 'ready') {
     const b = require('./invalidation').current(root, state);
     const last = data.checks[data.checks.length - 1] || {};
-    require('./ledger').append(root, state.id, { kind: 'step', step: 'clarify', ok: true, bound: { contract: b.contract }, detail: { version: 3, items: data.items.length, decisions: data.items.filter((x) => x.kind === 'decision').length, sheets: data.sheets.length, research_passes: data.research.passes.length, failures: data.failures.length, checks: data.checks.length, notes: (last.objections || []).filter((o) => o.severity === 'note').length, ...(data.proceeded ? { proceeded: data.proceeded } : {}), ...((last.objections || []).some((o) => o.severity === 'blocker') ? { approved: false, god_eye_objects: (last.objections || []).filter((o) => o.severity === 'blocker').length } : {}) } });
-    return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', stage: next, ...result, message: 'The contract passed its readiness check. Run factory next: gate H1 shows it.' };
+    require('./ledger').append(root, state.id, { kind: 'step', step: 'clarify', ok: true, bound: { contract: b.contract }, detail: { version: 3, items: data.items.length, decisions: data.items.filter((x) => x.kind === 'decision').length, sheets: data.sheets.length, research_passes: data.research.passes.length, failures: data.failures.length, checks: data.checks.length, notes: (last.objections || []).filter((o) => o.severity === 'note').length, ...(data.proceeded ? { proceeded: data.proceeded } : {}), ...(data.loop_end ? { loop_end: { rule: data.loop_end.rule, rounds: data.loop_end.rounds, diagnosed: Boolean(data.loop_end.diagnosis) } } : {}), writer_rounds: (data.writer_loop && data.writer_loop.total) || 0, ...((last.objections || []).some((o) => o.severity === 'blocker') ? { approved: false, god_eye_objects: (last.objections || []).filter((o) => o.severity === 'blocker').length } : {}) } });
+    const openN = (last.objections || []).filter((o) => o.severity === 'blocker').length;
+    return { status: 'ok', next_gate: state.epic ? 'EH1' : 'H1', stage: next, ...result, ...(data.loop_end ? { loop_end: { rule: data.loop_end.rule, open: openN } } : {}), message: openN ? `The readiness loop ended (${data.loop_end ? data.loop_end.rule : 'proceeded'}) with ${openN} God Eye objection(s) open: run factory next; gate H1 shows the contract with them.` : 'The contract passed its readiness check. Run factory next: gate H1 shows it.' };
   }
   if (WAITS.has(next)) {
     return { status: 'needs_user', stage: next, screen: screen(state, data), ...result, message: `Show the screen to the user as it is, then stop. Record their reply with factory clarify reply "<their words>" (unless the reply hook already did: factory next's last_reply says so).${result.note ? ` ${result.note}` : ''}` };
@@ -1761,9 +2175,9 @@ function reply(root, { jobId, text, via = 'cli' }) {
   const state = job.resolve(root, jobId);
   if (['closed', 'cancelled', 'abandoned'].includes(state.status)) fail(`${state.id} is ${state.status}; nothing to reply to.`, 'not_active');
   if (state.approvals && (state.approvals.H1 || state.approvals.EH1)) fail(`${state.id}'s contract is approved: clarify takes no more replies. To change it, start an amendment (factory amend start --reason "…").`, 'approved');
-  if (state.status === 'parked') fail(parkedMessage(state), 'parked');
   const t = String(text || '').trim();
   if (!t) fail('Say the reply: factory clarify reply "<the user\'s words>".', 'bad_input');
+  if (state.status === 'parked') return storeParked(root, state, t, via === 'chat' ? 'reply (chat, while parked)' : 'reply (while parked)');
   const data = get(root, state);
   if (data.tampered) fail(`${state.id}'s clarify.json fails its seal.`, 'tampered');
   const S = settings(root, state);
@@ -1828,20 +2242,44 @@ function reply(root, { jobId, text, via = 'cli' }) {
   return { job: state.id, word: w.id, ...res, message: `${msg} ${res.message}` };
 }
 
-// While clarify is parked, words are not a reply: only the user's resume or proceed (human-only)
-// moves it, so nothing the main session relays is recorded as a redirect behind the park.
-function parkedMessage(state) {
-  return `${state.id} is parked (${clip((state.park && state.park.reason) || 'clarify', 200)}). Nothing was recorded: the user replies "resume"${state.park && state.park.from === 'clarify' ? ' or "proceed"' : ''} in chat or runs it in their own terminal; their other words wait until then.`;
+// Words sent while the job is parked are never refused: they are stored with the record (the
+// user's words, verbatim) and become a redirect clarify reads back as soon as the job resumes.
+// Only the user resumes it (human-only): their own reply in chat does (it is resume + content);
+// words the main session relays are stored and wait for that.
+function storeParked(root, state, text, via) {
+  const data = load(root, state.id) || get(root, state);
+  if (data.tampered) fail(`${state.id}'s clarify.json fails its seal.`, 'tampered');
+  const w = addWord(data, text, via);
+  if (w.duplicate) return { job: state.id, stage: data.stage, duplicate: true, stored: true, message: 'Already recorded (the same words came twice).' };
+  data.parked_words = [...new Set([...(data.parked_words || []), w.id])];
+  log(data, 'parked_words', text);
+  save(root, state.id, data);
+  ledgerNote(root, state, data, 'parked_words', { word: w.id });
+  return { job: state.id, stage: data.stage, word: w.id, stored: true, status: 'parked', message: `${state.id} is parked (${clip((state.park && state.park.reason) || 'clarify', 160)}). Your words are recorded (${w.id}): clarify reads them back as a redirect as soon as the job resumes. Your own reply in chat resumes it with them; in a terminal, factory resume does.` };
+}
+
+// Words stored while parked: one redirect, read back once the job runs again.
+function parkedWordsToRedirect(data) {
+  const ids = data.parked_words || [];
+  if (!ids.length) return null;
+  const ws = ids.map((id) => data.words.find((w) => w.id === id)).filter(Boolean);
+  data.parked_words = [];
+  if (!ws.length) return null;
+  const R = { id: nextId(data.redirects, 'R'), at: nowIso(), gate: null, word: ws[0].id, words: ws.map((w) => w.id), text: ws.map((w) => w.text).join('\n'), status: 'interpreting', clauses: [], from_stage: data.stage };
+  data.redirects.push(R);
+  data.stage = 'redirect';
+  log(data, 'redirect', `words sent while parked (${ws.map((w) => w.id).join(', ')})`);
+  return R;
 }
 
 function redirect(root, { jobId, text, via = 'cli', gate = null }) {
   const job = require('./job');
   const state = job.resolve(root, jobId);
   if (state.approvals && (state.approvals.H1 || state.approvals.EH1)) fail(`${state.id}'s contract is approved: start an amendment instead (factory amend start --reason "…").`, 'approved');
-  if (state.status === 'parked') fail(parkedMessage(state), 'parked');
-  if (!['active'].includes(state.status)) fail(`${state.id} is ${state.status}; nothing to redirect.`, 'not_active');
   const t = String(text || '').trim();
   if (!t) fail('Say the redirect: factory clarify redirect "<the user\'s words>".', 'bad_input');
+  if (state.status === 'parked') return storeParked(root, state, t, via === 'chat' ? 'redirect (chat, while parked)' : 'redirect (while parked)');
+  if (!['active'].includes(state.status)) fail(`${state.id} is ${state.status}; nothing to redirect.`, 'not_active');
   const data = get(root, state);
   if (data.tampered) fail(`${state.id}'s clarify.json fails its seal.`, 'tampered');
   const R = startRedirect(data, t, via === 'denial' ? 'denial' : via === 'chat' ? 'redirect (chat)' : 'redirect', gate);
@@ -1913,7 +2351,7 @@ function handEdit(root, state, data) {
   log(data, 'edited', `contract.md changed by hand at ${data.stage}`);
   if (!['ready', 'check'].includes(data.stage)) return true;
   const S = settings(root, state);
-  data.counters.writer_attempts = 0;
+  newWriterCycle(data);
   data.counters.readiness_cycles = 0;
   const lost = lostCoverage(root, state, data);
   for (const it of lost) {
@@ -2017,7 +2455,7 @@ function h1View(root, state, data = load(root, state.id)) {
     checked.push({ item: it.id, quote: clip(s.quote, 200), text: it.value || it.text, ok: !sup && Boolean(it.covered || it.status === 'deferred'), where: sup ? `you went by the source instead: ${clip(sup.value, 160)}` : it.covered ? it.covered.where : it.status === 'deferred' ? 'deferred to design' : 'not in the contract', ...(w && w.relayed ? { relayed: true } : {}) });
   }
   const last = data.checks[data.checks.length - 1] || null;
-  const objections = last ? (last.objections || []).map((o) => ({ check: o.check, severity: o.severity, issue: o.issue || o.why, fix: o.fix || '', ref: o.ref, open: o.severity === 'blocker' })) : [];
+  const objections = last ? (last.objections || []).map((o) => ({ check: o.check, severity: o.severity, issue: o.issue || o.why, fix: o.fix || '', ref: o.ref, open: o.severity === 'blocker', ...(o.refuted ? { refuted: o.refuted } : {}), ...(o.fixable_by ? { fixable_by: o.fixable_by } : {}) })) : [];
   const redirects = data.redirects.map((R) => {
     const clauses = R.clauses.map((c) => ({ quote: c.quote, action: c.action, ...clauseOutcome(data, R, c) }));
     return { id: R.id, words: R.text, done: clauses.filter((c) => c.done).length, of: clauses.length, clauses };
@@ -2034,6 +2472,14 @@ function h1View(root, state, data = load(root, state.id)) {
     skipped: skippedSources(data),
     objections,
     proceeded: data.proceeded || null,
+    // the readiness loop ended without converging: why, and the diagnosis's question if it ran
+    loop_end: data.loop_end ? { rule: data.loop_end.rule, rounds: data.loop_end.rounds, text: data.loop_end.text, diagnosis: data.loop_end.diagnosis || null } : null,
+    // the read-back, when it was shown and not waited on and no sheet showed it yet
+    readback: data.readback && data.readback.auto && !data.readback.shown ? readbackBrief(data, state) : null,
+    // the user's later words that changed their earlier ones (the later one won)
+    changes: data.items.flatMap((it) => (it.changes || []).map((c) => ({ item: it.id, from: c.from, to: c.to, quote: c.quote }))),
+    // contract lines the writer reworded, each with what it rests on
+    reworded: (data.contract.changed || []).map((c) => `${c.ref}: "${c.from}" → "${c.to}" because ${c.because}${c.why ? ` — ${c.why}` : ''}`),
     redirects,
     edited_by_hand: Boolean(data.contract.edited_by_hand),
     hand_edits: (data.contract.hand_edits || []).length,
@@ -2061,7 +2507,9 @@ function h1View(root, state, data = load(root, state.id)) {
 }
 
 function h1Screen(state, v) {
-  const L = [`**Contract · ${state.id} ${state.title}**`, '', `**Goal:** ${v.goal}`, '', '**Done means**'];
+  const L = [`**Contract · ${state.id} ${state.title}**`, ''];
+  if (v.readback && v.readback.length) L.push(...v.readback, '');
+  L.push(`**Goal:** ${v.goal}`, '', '**Done means**');
   for (const a of v.done) L.push(`- ${a.id} ${a.text}`);
   if (v.checked.length) {
     L.push('', '**Checked against what you said**');
@@ -2078,8 +2526,19 @@ function h1Screen(state, v) {
   const open = v.objections.filter((o) => o.open);
   const notes = v.objections.filter((o) => !o.open);
   // God Eye's objections are never approval: with one open, the screen never says the checks pass
-  if (open.length) L.push('', '**God Eye objects** (it did not approve this contract; you chose to proceed: `approve` takes it on over them, `deny <what must change>` sends it back)', ...open.map((o) => `- ${o.check} (${o.ref}): ${o.issue}`));
-  else L.push('', `**God Eye:** all ${CHECKLIST.length} checks pass${notes.length ? `; remarks: ${notes.map((o) => o.issue).join('; ')}` : ''}.`);
+  if (open.length) L.push('', `**God Eye objects** (it did not approve this contract${v.proceeded ? '; you chose to proceed' : ''}: \`approve\` takes it on over them, \`deny <what must change>\` sends it back)`, ...open.map((o) => `- ${o.check} (${o.ref}): ${o.issue}${o.fix ? ` — suggests: ${clip(o.fix, 160)}` : ''}`));
+  else L.push('', `**God Eye:** all ${CHECKLIST.length} checks pass${notes.length ? `; remarks: ${notes.map((o) => `${o.issue}${o.refuted ? ` (raised as a blocker; the finding-verifier refuted it: ${clip(o.refuted, 160)})` : ''}`).join('; ')}` : ''}.`);
+  if (v.loop_end) {
+    L.push('', `**The readiness loop ended** (${v.loop_end.rule}${v.loop_end.rounds ? `, ${v.loop_end.rounds} round(s)` : ''}): the objections above are what it could not settle by itself.`);
+    const dg = v.loop_end.diagnosis;
+    if (dg && (dg.cause || dg.question)) {
+      L.push(`- Diagnosis: ${dg.cause || ''}`.trim());
+      if (dg.question) L.push(`- Its question: ${dg.question}${(dg.options || []).length ? ` ${dg.options.map((o) => `${o.key}) ${o.text}${o.key === dg.recommendation ? ' (recommended)' : ''}`).join(' · ')}` : ''}`);
+    }
+    L.push('- `approve` takes the contract with them; `deny <what must change>` sends it back with your words.');
+  }
+  if (v.changes && v.changes.length) L.push('', '**Changed by your later words**', ...v.changes.map((c) => `- changed: ${c.from} → ${c.to} because you said "${clip(c.quote, 160)}"`));
+  if (v.reworded && v.reworded.length) L.push('', '**Reworded in the contract**', ...v.reworded.map((x) => `- ${x}`));
   if (v.dropped) L.push('', '**Dropped**', ...v.dropped.map((x) => `- ${x}`));
   if (v.removed && v.removed.length) L.push('', '**Taken out of the contract**', ...v.removed.map((x) => `- ${x}`));
   for (const R of v.redirects) {
@@ -2165,14 +2624,79 @@ function status(root, { jobId, json = false, h1 = false } = {}) {
 }
 
 // ---------------------------------------------------------------- parks: resume and proceed
-function onResume(root, state) {
+// A park from before 0.8.3 (the writer-attempt or readiness-cycle cap) whose open blockers the
+// writer can fix from what is settled: since 0.8.3 the factory runs those rounds itself, so on
+// the user's `resume` it continues automatically (never without the user's resume).
+function legacyWriterPark(data) {
+  const p = data && data.parked;
+  if (!p || p.rule || !['writer', 'check'].includes(p.kind)) return false;
+  const bl = data.blockers || [];
+  return bl.length > 0 && classify(data, bl).every((b) => b.route === 'assemble');
+}
+
+// For factory next on a job clarify parked: the exact replies, and for an upgraded job parked the
+// old way, that resume now continues by itself. Read-only.
+function parkAdvice(root, state) {
   const data = load(root, state.id);
-  if (!data || data.tampered || !data.parked) return;
-  if (data.parked.kind === 'research') data.counters.research_passes = Math.max(0, data.counters.research_passes - 1);
-  if (data.parked.kind === 'writer') data.counters.writer_attempts = Math.max(0, data.counters.writer_attempts - 1);
-  if (data.parked.kind === 'check') data.counters.readiness_cycles = Math.max(0, (data.counters.readiness_cycles || 0) - 1);
-  log(data, 'resumed', data.parked.reason);
+  if (!data || data.tampered || !data.parked) return null;
+  const S = settings(root, state);
+  if (legacyWriterPark(data)) {
+    const findings = classify(data, data.blockers);
+    return {
+      upgraded: true,
+      findings: findings.map((b) => ({ check: b.check, ref: b.ref, issue: clip(b.issue || b.why, 300), fix: clip(b.fix, 300), fixable_by: b.fixable_by })),
+      next: [
+        `This job parked before factory 0.8.3, which now fixes these readiness findings itself: the contract writer can settle all ${findings.length} from what is already decided, so none of them needs your decision.`,
+        ...findings.slice(0, 6).map(findingLine),
+        `Reply "resume" and clarify continues automatically: the contract writer runs again with these findings and their suggested fixes, then the readiness check, for up to ${S.writer_rounds} round(s) while each round makes progress. Or "proceed" to go to H1 with them shown as open objections, or "cancel job".`,
+      ].join('\n'),
+    };
+  }
+  return { upgraded: false, findings: data.parked.findings || [], next: parkReplies(data.parked, S) };
+}
+
+function onResume(root, state, words = null) {
+  const data = load(root, state.id);
+  if (!data || data.tampered) return;
+  if (!data.parked) {
+    // parked by the router, not by clarify (a budget park mid-clarify): only the stored words
+    if (words) {
+      const w = addWord(data, words, 'resume (your words)');
+      if (!w.duplicate) data.parked_words = [...new Set([...(data.parked_words || []), w.id])];
+    }
+    if ((data.parked_words || []).length && !WAITS.has(data.stage)) {
+      parkedWordsToRedirect(data);
+      save(root, state.id, data);
+    } else if (words) save(root, state.id, data);
+    return;
+  }
+  const S = settings(root, state);
+  const p = data.parked;
+  if (p.kind === 'research') data.counters.research_passes = Math.max(0, data.counters.research_passes - 1);
+  if (legacyWriterPark(data)) {
+    // upgraded mid-park: the automatic writer rounds take over from the old cap
+    if (p.kind === 'check') data.counters.readiness_cycles = Math.max(0, (data.counters.readiness_cycles || 0) - 1);
+    newWriterCycle(data);
+    data.stage = 'assemble';
+    log(data, 'resumed', 'upgraded park: the automatic writer rounds continue');
+  } else if (p.kind === 'writer' && p.rule) {
+    // one more writer round: it runs now; if the check still blocks, the job parks again
+    const loop = data.writer_loop || { rounds: 0, last: null, total: 0, history: [] };
+    loop.rounds = Math.max(loop.rounds, S.writer_rounds);
+    data.writer_loop = loop;
+    log(data, 'resumed', p.reason);
+  } else {
+    if (p.kind === 'writer') data.counters.writer_attempts = Math.max(0, data.counters.writer_attempts - 1);
+    if (p.kind === 'check') data.counters.readiness_cycles = Math.max(0, (data.counters.readiness_cycles || 0) - 1);
+    log(data, 'resumed', p.reason);
+  }
   data.parked = null;
+  // what the user said while it was parked (and their resume words) is read back as a redirect
+  if (words) {
+    const w = addWord(data, words, 'resume (your words)');
+    if (!w.duplicate) data.parked_words = [...new Set([...(data.parked_words || []), w.id])];
+  }
+  parkedWordsToRedirect(data);
   save(root, state.id, data);
 }
 
@@ -2292,7 +2816,7 @@ module.exports = {
   pinOf, compatible, urlVersion, inRange, verdictOf, usable, judge, route, advance,
   applyReadback, readbackScreen, parseSheetReply, applySheet, sheetScreen, buildSheet,
   startRedirect, applyRedirect, confirmRedirect, redirectScreen, sentences,
-  applyWriter, writeSections, sectionLines, deterministic, applyCheck,
+  applyWriter, writeSections, sectionLines, deterministic, applyCheck, fixableBy, classify, signature, sendBack,
   stagePlan, stageContractHash, record, reply, redirect, chatReply, sync, ready, nextInfo, waitingForUser,
-  h1View, h1Summary: (root, state) => h1View(root, state), view, status, statusText, onResume, proceed, briefText, deferredText, floorOk, inClarify, consoleBlock, split, ACCEPT,
+  h1View, h1Summary: (root, state) => h1View(root, state), view, status, statusText, onResume, parkAdvice, proceed, briefText, deferredText, floorOk, inClarify, consoleBlock, split, ACCEPT,
 };

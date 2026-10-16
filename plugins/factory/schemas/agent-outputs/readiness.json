@@ -1,4 +1,4 @@
-{ "$comment": "god-eye, focus readiness (clarify v3): the fixed checklist answered true or false, and every objection with its check, severity (blocker or note), the stage it concerns (readback, research, sheet, assemble) and a fix. A blocker sends the work back to that stage.",
+{ "$comment": "god-eye, focus readiness (clarify v3): the fixed checklist answered true or false, and every objection with its check, severity (blocker or note), the stage it concerns (readback, research, sheet, assemble) and a fix, and who can fix it (fixable_by: writer from what is settled, or user, with the question, its options and a recommendation). A writer blocker goes back to the contract writer in an automatic round; a user one becomes a sheet question.",
   "type": "object", "required": ["verdict", "restatement", "checklist", "objections"], "properties": {
   "verdict": { "enum": ["ready", "blocked"] },
   "restatement": { "type": "object", "required": ["problem", "outcome"], "properties": {
@@ -9,4 +9,8 @@
   "objections": { "type": "array", "items": { "type": "object", "required": ["check", "severity", "stage", "ref", "issue", "fix"], "properties": {
     "check": { "enum": ["intent_clear", "scope_bounded", "acs_testable", "self_consistent", "facts_honoured", "instructions_handled", "decisions_closed"] },
     "severity": { "enum": ["blocker", "note"] }, "stage": { "enum": ["readback", "research", "sheet", "assemble"] },
-    "ref": { "type": "string" }, "issue": { "type": "string" }, "fix": { "type": "string" } } } } } }
+    "ref": { "type": "string" }, "issue": { "type": "string" }, "fix": { "type": "string" },
+    "fixable_by": { "enum": ["writer", "user"] },
+    "question": { "type": "string" },
+    "options": { "type": "array", "items": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" }, "consequences": { "type": "string" } } } },
+    "recommendation": { "type": "string" } } } } } }

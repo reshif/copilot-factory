@@ -28,6 +28,9 @@ var RUN_STEPS = (function () {
         { key: 'redirect', label: 'read your redirect back', match: /^clarify: read your redirect back/, roles: ['interviewer'], optional: true, only_when_run: true },
         { key: 'write', label: 'write the contract', match: /^clarify: write the contract/, roles: ['contract-writer'], optional: true, only_when_run: true },
         { key: 'check', label: 'readiness check', match: /^clarify: readiness check/, roles: ['god-eye'], optional: true, only_when_run: true },
+        // 0.9.0: the readiness loop's tie-break on a disputed objection, and its diagnosis
+        { key: 'dispute', label: 'check disputed objections', match: /^clarify: check disputed objections/, roles: ['finding-verifier'], optional: true, only_when_run: true },
+        { key: 'diagnose', label: 'diagnose the readiness loop', match: /^clarify: diagnose the readiness loop/, roles: ['god-eye'], optional: true, only_when_run: true },
       ],
     },
     // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
@@ -47,6 +50,11 @@ var RUN_STEPS = (function () {
         { key: 'fanout', label: 'review lanes', match: /^challenge: fan-out/, roles: ['code-reviewer', 'test-reviewer', 'security-reviewer', 'ux-reviewer', 'epic-reviewer'] },
         { key: 'verify', label: 'verify findings', match: /^challenge: verify/, roles: ['finding-verifier'] },
       ],
+    },
+    // fanout-judge.js, diagnose (0.9.0): God Eye diagnoses a review-fix or verify-fix loop that stopped making progress
+    'fanout-judge:diagnose': {
+      next: 'a different approach, or one question for you',
+      steps: [{ key: 'diagnose', label: 'diagnose the loop', match: /^diagnose: God Eye/, roles: ['god-eye'] }],
     },
     // ground.js: the probes in parallel
     ground: { next: 'decide', steps: [{ key: 'probes', label: 'research probes', match: /^ground:/, roles: ['researcher'] }] },

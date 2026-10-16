@@ -45,6 +45,8 @@ module.exports = (c) => {
       return { contract: fs.readFileSync(path.join(jd, 'contract.md'), 'utf8'), covers: inp.items.map((x) => ({ item: x.id, where: 'Goal' })), uncovered: [] };
     }
     case 'god-eye':
+      // the loop engine's diagnosis of a loop that made no progress: the question for the human
+      if (/Focus: \*\*diagnosis/.test(text)) return { cause: 'The reviewer keeps finding the same problem in src/add.js and the builders do not change that line.', needs_user: true, approach: '', question: 'The same review finding survived every fix round: what should the builders do about it?', options: [{ key: 'a', text: 'Fix it the way the finding says', consequences: 'one more round with that direction' }, { key: 'b', text: 'The finding is wrong for this job: amend the contract to say so', consequences: 'an amendment you approve' }], recommendation: 'a' };
       if (/Focus: \*\*readiness/.test(text)) return { verdict: 'ready', restatement: { problem: 'add subtracts', outcome: 'add sums' }, checklist: { intent_clear: true, scope_bounded: true, acs_testable: true, self_consistent: true, facts_honoured: true, instructions_handled: true, decisions_closed: true }, objections: [] };
       return { verdict: 'approve', items: [] };
     case 'researcher': {

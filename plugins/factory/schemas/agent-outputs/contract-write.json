@@ -1,4 +1,4 @@
-{ "$comment": "contract-writer (clarify v3): the full outcome contract and the coverage map (for every item, the AC id or section that honours it); items it could not honour are listed with why. The CLI checks it, writes it, and writes its own sections from the record.",
+{ "$comment": "contract-writer (clarify v3): the full outcome contract and the coverage map (for every item, the AC id or section that honours it); items it could not honour are listed with why; a constraint, non-goal or AC it took out is under removed and one it reworded under changed (from, to, because: the I-n, W-n, blocker or R-n it rests on). The CLI checks it, writes it, and writes its own sections from the record.",
   "type": "object", "required": ["contract", "covers", "uncovered"], "properties": {
   "contract": { "type": "string", "minLength": 20 },
   "covers": { "type": "array", "items": { "type": "object", "required": ["item", "where"], "properties": {
@@ -6,4 +6,6 @@
   "uncovered": { "type": "array", "items": { "type": "object", "required": ["item", "why"], "properties": {
     "item": { "type": "string" }, "why": { "type": "string" } } } },
   "removed": { "type": "array", "items": { "type": "object", "required": ["ref", "because"], "properties": {
-    "ref": { "type": "string" }, "text": { "type": "string" }, "because": { "type": "string" }, "why": { "type": "string" } } } } } }
+    "ref": { "type": "string" }, "text": { "type": "string" }, "because": { "type": "string" }, "why": { "type": "string" } } } },
+  "changed": { "type": "array", "items": { "type": "object", "required": ["ref", "from", "to", "because"], "properties": {
+    "ref": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" }, "because": { "type": "string" }, "why": { "type": "string" } } } } } }

@@ -117,10 +117,11 @@ test('(a) J-0001 replay: the four denial points are met, 2.4.x is honoured, the 
   assert.ok(last.h1.skipped.some((k) => /\/stable\//.test(k.source)), 'the skipped 3.x pages stay visible at H1');
   assert.deepEqual(last.h1.gaps, [], 'every gap was closed by the redirect: nothing is left unresearched');
   assert.deepEqual(noVanished(rec), []);
-  // what each turn cost
-  assert.deepEqual(rec.turns[0].calls, ['interviewer'], 'the read-back is one call');
-  const ok = rec.turns.find((t) => t.at_stage === 'readback_wait');
-  assert.deepEqual([...ok.calls].sort(), ['brief-writer', 'researcher', 'researcher']);
+  // what each turn cost: the read-back is shown, not waited on (0.9.0), so the request alone runs
+  // the read-back and research; the first screen is the sheet, with the read-back on top
+  assert.deepEqual([...rec.turns[0].calls].sort(), ['brief-writer', 'interviewer', 'researcher', 'researcher'], 'the request runs the read-back and research without a turn in between');
+  assert.ok(!rec.turns.some((t) => t.at_stage === 'readback_wait'), 'no read-back turn: nothing on it needed the user');
+  assert.match(rec.screens[0].screen, /^\*\*Decisions[^\n]*\n\n\*\*What I understood/, 'the sheet opens with the read-back');
   const sheet1 = rec.turns.find((t) => t.at_stage === 'sheet_wait');
   assert.ok(sheet1.calls.every((r) => ['contract-writer', 'god-eye'].includes(r)) && sheet1.calls.length <= 4, `sheet reply: ${sheet1.calls}`);
   const deny = rec.turns.find((t) => t.at_stage === 'H1' && /^deny/.test(t.said));
@@ -271,16 +272,23 @@ test('(e2) the web is down: every docs item says so on the sheet, in the contrac
   assert.ok(rec.ledger.items.every((x) => !(x.tag === 'docs' && x.strength === 'evidence')), 'nothing from the docs counts as evidence');
 });
 
-test('(e3) God Eye blocks with no fix: two writer attempts, then a park; proceed shows the objection open at H1', () => {
-  const rec = drive({ ...B, crew: 'e3', sheet: () => 'ok', onPark: (n) => (n === 1 ? 'proceed' : null) }, quiet);
+test('(e3) God Eye blocks with no fix and never moves: the loop engine escalates, diagnoses, then H1 shows the objection open, never a park', () => {
+  const rec = drive({ ...B, crew: 'e3', sheet: () => 'ok', onPark: () => null }, quiet);
   report('e3', rec);
-  assert.equal(rec.parks.length, 1);
-  assert.match(rec.parks[0], /God Eye|readiness/i);
-  assert.equal(rec.calls.filter((c) => c.agent === 'factory:contract-writer').length, 2);
+  assert.equal(rec.parks.length, 0, 'no park: H1 is the gate');
+  const writers = rec.calls.filter((c) => c.agent === 'factory:contract-writer');
+  // the first version, two rounds on the writer's own model, one on the stronger model, one with the diagnosis's approach
+  assert.equal(writers.length, 5, writers.map((c) => c.model || 'default').join(', '));
+  assert.deepEqual(writers.map((c) => c.model || null), [null, null, null, 'claude-opus-5.5', 'claude-opus-5.5'], 'the escalated rounds run on the stronger model, the first ones on the session default');
+  assert.equal(rec.calls.filter((c) => c.agent === 'factory:finding-verifier').length, 1, 'the disputed objection got one tie-break');
+  assert.equal(rec.agentRuns.filter((r) => r.label === 'diagnosis').length, 1, 'one diagnosis before the loop ended');
   assert.equal(rec.end.action, 'approved');
-  const obj = rec.h1[0].h1.objections;
-  assert.ok(obj.some((o) => o.severity === 'blocker' && o.open && /sharper/.test(o.issue)), JSON.stringify(obj));
-  assert.ok(!/approved with notes/i.test(JSON.stringify(rec.h1[0].h1)));
+  const h1 = rec.h1[0].h1;
+  assert.ok(h1.objections.some((o) => o.severity === 'blocker' && o.open && /sharper/.test(o.issue)), JSON.stringify(h1.objections));
+  assert.equal(h1.loop_end.rule, 'no_progress');
+  assert.match(h1.screen, /The readiness loop ended[\s\S]*Diagnosis: The same objection came back/);
+  assert.ok(!/approved with notes/i.test(JSON.stringify(h1)));
+  assert.ok(!rec.ledger.parked);
 });
 
 test('(e4) the docs researcher times out: one more pass, then the gap is on the sheet and at H1', () => {
@@ -306,12 +314,13 @@ test('(e5) every agent fails every time and nobody steps in: the job parks after
   assert.equal(rec.ledger.stage, 'readback', 'nothing moved on without an agent');
 });
 
-test('(e6) the brief writer fails in both passes: the job parks with the failure named', () => {
-  const rec = drive({ ...B, crew: 'e6', onPark: () => null }, quiet);
+test('(e6) the brief writer fails in both passes: no park; the decisions go on unresearched and the gap is named on the sheet and at H1', () => {
+  const rec = drive({ ...B, crew: 'e6', sheet: () => 'ok', onPark: () => null }, quiet);
   report('e6', rec);
-  assert.equal(rec.end.action, 'parked');
-  assert.match(rec.end.reason, /brief writer/);
+  assert.equal(rec.parks.length, 0);
   assert.equal(rec.ledger.research.passes.length, 2);
+  assert.ok(rec.h1.length >= 1, JSON.stringify(rec.end));
+  assert.ok(rec.h1[0].h1.gaps.some((g) => /brief writer/.test(g.reason)), JSON.stringify(rec.h1[0].h1.gaps));
 });
 
 // ---------------------------------------------------------------- J-0002's shape

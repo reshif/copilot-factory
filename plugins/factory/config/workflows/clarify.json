@@ -1,19 +1,20 @@
 {
   "id": "clarify",
   "version": 3,
-  "description": "Clarify v3 (docs/DESIGN-CLARIFY-v3.md): one stage per factory run clarify. The interviewer reads the user's words back (and later redirects, and free-form sheet answers); the researchers (repo, docs) run once per research pass, time-boxed and pinned to the confirmed versions, and the brief writer turns their findings into decision records; the contract writer writes the contract once; God Eye answers the fixed readiness checklist. Every rule is cli/core/clarify.js's; the workflow only dispatches.",
+  "description": "Clarify v3 (docs/DESIGN-CLARIFY-v3.md): one stage per factory run clarify. The interviewer reads the user's words back (and later redirects, and free-form sheet answers); the researchers (repo, docs) run once per research pass, time-boxed and pinned to the confirmed versions, and the brief writer turns their findings into decision records; the contract writer writes the contract, and again in automatic fix rounds while God Eye's objections shrink (cli/core/loop.js); God Eye answers the fixed readiness checklist, and diagnoses a loop that stopped making progress; the finding-verifier settles an objection God Eye raises again after the writer had its fix. Every rule is cli/core/clarify.js's; the workflow only dispatches.",
   "agents": {
     "interviewer": { "role": "interviewer", "stages": ["readback", "redirect", "interpret"] },
     "repo": { "role": "researcher", "stages": ["research"], "mode": "repo" },
     "docs": { "role": "researcher", "stages": ["research"], "mode": "docs" },
     "brief": { "role": "brief-writer", "stages": ["research"] },
     "writer": { "role": "contract-writer", "stages": ["assemble"] },
-    "check": { "role": "god-eye", "stages": ["check"], "focus": "readiness" }
+    "check": { "role": "god-eye", "stages": ["check", "diagnose"], "focus": "readiness" },
+    "verifier": { "role": "finding-verifier", "stages": ["dispute"] }
   },
   "caps": {
     "max_research_passes": 2,
     "max_sheet_decisions": 5,
-    "max_writer_attempts": 2,
+    "max_writer_rounds": 5,
     "max_readiness_cycles": 3
   },
   "checklist": ["intent_clear", "scope_bounded", "acs_testable", "self_consistent", "facts_honoured", "instructions_handled", "decisions_closed"]

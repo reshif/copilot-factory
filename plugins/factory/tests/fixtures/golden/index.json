@@ -110,5 +110,13 @@
   "lesson-writer.project-brief": {
     "role": "lesson-writer",
     "schema": "lessons"
+  },
+  "god-eye.readiness.blocked": {
+    "role": "god-eye",
+    "schema": "readiness"
+  },
+  "god-eye.diagnosis": {
+    "role": "god-eye",
+    "schema": "diagnosis"
   }
 }
