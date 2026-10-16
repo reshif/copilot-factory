@@ -153,6 +153,9 @@ const RECIPE_SCHEMA = {
           auto: { enum: ['plan_critique'] },
           threat_model: { type: ['boolean', 'string'] },
           plan_critique: { type: 'boolean' },
+          // a gate that approves more than its own document (0.10.0): H3 at medium risk binds
+          // the design, the plan and the build environment (approving it seals the environment)
+          combined: { type: 'array', items: { enum: ['design', 'plan', 'environment'] } },
         },
       },
     },
@@ -171,6 +174,8 @@ function check(recipe) {
   const order = [
     ['clarify', 'H1'],
     ['H1', 'ground'],
+    ['H1', 'deps'],
+    ['deps', 'ground'],
     ['decide', 'H2'],
     ['decompose', 'H3'],
     ['H3', 'realize'],

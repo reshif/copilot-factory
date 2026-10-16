@@ -1,4 +1,8 @@
 {
+  "api-conformance": {
+    "role": "api-conformance",
+    "schema": "conformance"
+  },
   "architect": {
     "role": "architect",
     "schema": "architect"

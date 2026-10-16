@@ -30,13 +30,17 @@ var RUN_STEPS = (function () {
         { key: 'check', label: 'readiness check', match: /^clarify: readiness check/, roles: ['god-eye'], optional: true, only_when_run: true },
       ],
     },
-    // fanout-judge.js, decide: options (and the threat model) → architect → God Eye rounds, the architect revising between them
+    // fanout-judge.js, decide: options (and the threat model) → architect → critic rounds (God Eye,
+    // and the API-conformance critic against the dependency source), a verifier per serious item,
+    // the architect revising after each round (0.10.0). A deny that names a defect starts at the
+    // revise (no options).
     'fanout-judge:decide': {
-      next: 'H2',
+      next: 'the design gate (H2, or the combined design + plan gate)',
       steps: [
         { key: 'fanout', label: 'options', match: /^decide: fan-out/, roles: ['option-generator', 'threat-modeler'] },
         { key: 'architect', label: 'architect decides', match: /^decide: architect$/, roles: ['architect'] },
-        { key: 'god-eye', label: 'God Eye (design)', match: /^decide: God Eye/, roles: ['god-eye'] },
+        { key: 'god-eye', label: 'design critics', match: /^decide: (God Eye|critics)/, roles: ['god-eye', 'api-conformance'] },
+        { key: 'verify', label: 'verify serious items', match: /^decide: verify/, roles: ['finding-verifier'], optional: true },
         { key: 'revise', label: 'architect revises', match: /^decide: architect revises/, roles: ['architect'], optional: true },
       ],
     },
@@ -50,11 +54,14 @@ var RUN_STEPS = (function () {
     },
     // ground.js: the probes in parallel
     ground: { next: 'decide', steps: [{ key: 'probes', label: 'research probes', match: /^ground:/, roles: ['researcher'] }] },
-    // decompose.js: planner rounds until valid → God Eye (plan) rounds, the planner revising between them
+    // decompose.js: planner rounds until valid → the plan probe (the CLI dry-runs every verify
+    // command in the proposed environment; the planner fixes what cannot run) → God Eye (plan)
+    // rounds with the probe's output, the planner revising between them
     decompose: {
       next: 'plan validate, then H3',
       steps: [
-        { key: 'planner', label: 'planner', match: /^decompose: (?!God Eye)/, roles: ['planner', 'slicer'] },
+        { key: 'planner', label: 'planner', match: /^decompose: (?!God Eye|plan probe)/, roles: ['planner', 'slicer'] },
+        { key: 'probe', label: 'plan probe', match: /^decompose: plan probe/, roles: ['planner'], optional: true },
         { key: 'god-eye', label: 'God Eye (plan)', match: /^decompose: God Eye/, roles: ['god-eye', 'planner'], optional: true },
       ],
     },

@@ -22,7 +22,7 @@ const events = (root) => fs.readFileSync(path.join(root, '.factory', 'log', 'eve
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function harness({ script = CREW, env = {} } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-p3r-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-p3r-');
   let file = script;
   if (!fs.existsSync(script)) {
     file = path.join(dir, 'script.js');

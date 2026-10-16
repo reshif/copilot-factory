@@ -104,7 +104,7 @@ test('local ci verify (the merge result re-verified for ci_reverify) runs inside
   const J = F.cli(root, ['job', 'new', '--title', 'Env job', '--type', 'bug', '--risk', 'low']).job;
   // a verify command that passes only inside the environment (as `python -m pytest` needs the venv)
   fs.writeFileSync(path.join(F.jobDir(root, J), 'contract.md'), F.contractText({ verify: '`test "$FACTORY_REVIEW_MARK" = inside` (AC-1)' }));
-  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
+  const envFile = require("./helpers/tmp").track(path.join(root, '..', `${path.basename(root)}-env.json`));
   fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'marked', setup: [], env: { FACTORY_REVIEW_MARK: 'inside' } }));
   core('environment').confirm(root, { file: envFile, channel: 'chat' });
   const s = stateOf(root, J);
@@ -121,8 +121,8 @@ test('environment teardown: what setup started per worktree (a compose project p
     { id: 'T1', objective: 'fix add', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: VC },
     { id: 'T2', objective: 'never started', allowed_paths: ['src/b.js'], criteria_ids: ['AC-1'], verify_commands: VC },
   ]);
-  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
-  const marks = path.join(root, '..', `${path.basename(root)}-torn`);
+  const envFile = require("./helpers/tmp").track(path.join(root, '..', `${path.basename(root)}-env.json`));
+  const marks = require("./helpers/tmp").track(path.join(root, '..', `${path.basename(root)}-torn`));
   fs.mkdirSync(marks);
   fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'compose', setup: ['true'], teardown: `touch ${marks}/{slug}` }));
   assert.deepEqual(core('environment').problems(JSON.parse(fs.readFileSync(envFile, 'utf8'))), []);
@@ -174,8 +174,8 @@ test('environment services: when the health check fails after the job brought th
   const root = F.makeRepo();
   const J = grounded(root);
   customPlan(root, J, [{ id: 'T1', objective: 'fix add', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: VC }]);
-  const svc = path.join(root, '..', `${path.basename(root)}-svc`);
-  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
+  const svc = require("./helpers/tmp").track(path.join(root, '..', `${path.basename(root)}-svc`));
+  const envFile = require("./helpers/tmp").track(path.join(root, '..', `${path.basename(root)}-env.json`));
   fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'svc', setup: ['true'], services: { up: `mkdir -p ${svc} && touch ${svc}/running && echo x >> ${svc}/ups`, health: `test -f ${svc}/running`, down: `rm -f ${svc}/running` } }));
   core('environment').confirm(root, { file: envFile, channel: 'chat' });
   const wt = core('tasks').prepareWorktree(root, stateOf(root, J), 'T1');
@@ -218,9 +218,9 @@ test('environment services: a wave\'s tasks prepared in parallel bring the job\'
   const J = grounded(root);
   const ids = ['T1', 'T2', 'T3', 'T4'];
   customPlan(root, J, ids.map((id) => ({ id, objective: `task ${id}`, allowed_paths: [`src/${id}.js`], criteria_ids: ['AC-1'], verify_commands: VC })));
-  const svc = path.join(root, '..', `${path.basename(root)}-svc`);
+  const svc = require("./helpers/tmp").track(path.join(root, '..', `${path.basename(root)}-svc`));
   fs.mkdirSync(svc);
-  const envFile = path.join(root, '..', `${path.basename(root)}-env.json`);
+  const envFile = require("./helpers/tmp").track(path.join(root, '..', `${path.basename(root)}-env.json`));
   // like two `docker compose up` on one project at once: the second fails while the first works
   const up = `if [ -e ${svc}/busy ]; then exit 1; fi; touch ${svc}/busy; sleep 1; touch ${svc}/running; echo x >> ${svc}/ups; rm ${svc}/busy`;
   fs.writeFileSync(envFile, JSON.stringify({ version: 1, name: 'svc', setup: ['true'], services: { up, health: `test -f ${svc}/running` } }));

@@ -15,7 +15,7 @@ const CREW = path.join(__dirname, 'clarify3-crew.js');
 const FAKE = path.join(__dirname, 'fake-copilot.js');
 
 function makeRepo(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clarify3-'));
+  const root = require('./tmp').mkdtemp('clarify3-');
   F.sh(root, 'git init -q -b main && git config user.email t@example.com && git config user.name Tester && git config commit.gpgsign false');
   for (const [rel, text] of Object.entries(files)) F.write(root, rel, text);
   F.sh(root, 'git add -A && git commit -qm init');

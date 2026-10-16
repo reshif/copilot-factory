@@ -55,13 +55,16 @@ function evaluate(ctx) {
     detail.drift = 'contract';
   }
   const planGate = state.epic ? 'EH3' : 'H3';
-  if (v.no_drift && approvals[planGate] && b.plan && approvals[planGate].hash !== b.plan && (buildStarted(state) || (state.children || []).length)) {
+  // a combined gate (design + plan + environment) records the plan it approved beside its own hash
+  const approvedPlan = approvals[planGate] ? approvals[planGate].plan || approvals[planGate].hash : null;
+  if (v.no_drift && approvedPlan && b.plan && approvedPlan !== b.plan && (buildStarted(state) || (state.children || []).length)) {
     v.no_drift = false;
     detail.drift = 'plan';
   }
   if (v.no_drift && state.branch && ledger.lastStep(root, state.id, 'reconcile')) {
     const plan = readJson(jobPaths(root, state.id).plan, { tasks: [] });
-    const allowed = (plan.tasks || []).flatMap((t) => t.allowed_paths || []);
+    // plus the paths realize granted a task inside the contract's allowed paths (tasks.grant)
+    const allowed = (plan.tasks || []).flatMap((t) => [...(t.allowed_paths || []), ...(((state.tasks || {})[t.id] || {}).granted_paths || [])]);
     let changed = [];
     try {
       changed = git.changedFiles(root, state.base_commit, state.branch).filter((f) => !f.startsWith('.factory-ship/'));

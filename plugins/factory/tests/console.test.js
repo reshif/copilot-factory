@@ -74,8 +74,8 @@ test('console: steps, timeline and the agents per step, read-only', async () => 
   assert.match(ag.decision_id, /^J-\d+-D\d+$/);
 
   const before = snapshot(root);
-  const out = path.join(os.tmpdir(), `console-${process.pid}-${Date.now()}.html`);
-  const dataFile = `${out}.json`;
+  const out = require("./helpers/tmp").track(path.join(os.tmpdir(), `console-${process.pid}-${Date.now()}.html`));
+  const dataFile = `${out}.json`; require("./helpers/tmp").track(dataFile);
   const r = F.cli(root, ['console', '--out', out, '--data', dataFile]);
   assert.equal(r.__code, 0, JSON.stringify(r));
   assert.equal(r.written, out);
@@ -106,8 +106,8 @@ test('console: steps, timeline and the agents per step, read-only', async () => 
 test('console: never creates a factory key on a machine without one', () => {
   const root = F.makeRepo();
   F.cli(root, ['job', 'new', '--title', 'x', '--type', 'bug', '--risk', 'low']);
-  const key = path.join(os.tmpdir(), `no-key-${process.pid}-${Date.now()}`, 'secret');
-  const out = path.join(os.tmpdir(), `console-nokey-${process.pid}.html`);
+  const key = path.join(require("./helpers/tmp").track(path.join(os.tmpdir(), `no-key-${process.pid}-${Date.now()}`)), "secret");
+  const out = require("./helpers/tmp").track(path.join(os.tmpdir(), `console-nokey-${process.pid}.html`));
   const r = spawnSync('node', [F.BIN, 'console', '--out', out], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', FACTORY_SECRET_FILE: key } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(JSON.parse(r.stdout).integrity, 'not_checked');
@@ -286,12 +286,12 @@ test('console: workflow runs step by step — steps in order, agents per step, p
   flush();
   now = new Date(t0 + 310 * 1000).toISOString();
   const d = get().runs[1];
-  assert.deepEqual(d.steps.map((x) => [x.state, x.label]), [['running', 'fan-out (2)'], ['pending', 'architect decides'], ['pending', 'God Eye (design)'], ['pending', 'architect revises']]);
+  assert.deepEqual(d.steps.map((x) => [x.state, x.label]), [['running', 'fan-out (2)'], ['pending', 'architect decides'], ['pending', 'design critics'], ['pending', 'verify serious items'], ['pending', 'architect revises']]);
   assert.deepEqual(d.steps[1].planned, ['architect'], 'a pending step names who will run it');
   ev(320, { event: 'workflow_phase', text: 'decide: God Eye (design) round 1', index: 1 });
   flush();
   now = new Date(t0 + 330 * 1000).toISOString();
-  assert.deepEqual(get().runs[1].steps.map((x) => x.state), ['done', 'skipped', 'running', 'pending'], 'a step the run passed without its phase is skipped');
+  assert.deepEqual(get().runs[1].steps.map((x) => x.state), ['done', 'skipped', 'running', 'pending', 'pending'], 'a step the run passed without its phase is skipped');
 
   // a run with no end whose factory run is gone was cut off
   base = { job: A, decision_id: null, workflow: 'clarify', config: null, mode: 'research', wf_run: 'W3' };
@@ -330,7 +330,8 @@ test('console: workflow run templates follow the workflow sources; realize waves
   for (const t of [...ph, 'research brief', 'research (repo, docs)', 'research (repo)', 'research (docs)']) assert.ok(RS.matchStep(RS.TEMPLATES.clarify, `clarify: ${t}`) >= 0, `clarify: "${t}" has a template step`);
   assert.match(src('clarify.js'), /phase\(`clarify: \$\{\(brief\.phases/, 'the clarify workflow prints the CLI\'s phase texts');
   for (const w of ['ground', 'decompose', 'realize', 'reconcile']) for (const t of texts(`${w}.js`)) assert.ok(RS.matchStep(RS.TEMPLATES[w], t) >= 0, `${w}: "${t}"`);
-  assert.ok(RS.matchStep(RS.TEMPLATES.decompose, 'decompose: God Eye (plan) round 1') === 1 && RS.matchStep(RS.TEMPLATES.decompose, 'decompose: plan round 2') === 0);
+  assert.ok(RS.matchStep(RS.TEMPLATES.decompose, 'decompose: God Eye (plan) round 1') === 2 && RS.matchStep(RS.TEMPLATES.decompose, 'decompose: plan round 2') === 0 && RS.matchStep(RS.TEMPLATES.decompose, 'decompose: plan probe (round 2)') === 1);
+  assert.ok(RS.matchStep(RS.TEMPLATES['fanout-judge:decide'], 'decide: verify 2 serious item(s)') === 3 && RS.matchStep(RS.TEMPLATES['fanout-judge:decide'], 'decide: architect revises for your deny') === 4);
   // realize: the waves still ahead are pending, a wave the run jumped (all its tasks skipped) is skipped
   const T = (s) => new Date(Date.UTC(2030, 0, 1, 12, 0, s)).toISOString();
   const run = { id: 'R', workflow: 'realize', config: null, started_at: T(0), ended_at: null, status: 'running', phases: [{ i: 0, text: 'realize: wave 1/4 (T1, T2)', at: T(1), key: 'wave' }], agents: [{ role: 'builder', step: 0, at: T(2), end: null, outcome: null, retry: false }] };
@@ -389,8 +390,8 @@ test('console: clarify v3 — items with who decided them, findings with source 
     return { summary: 's', records: [], facts: [{ plan: 'P-1', statement: 'add is in src/add.js and subtracts', evidence: ['src/add.js:1'] }, { plan: 'P-2', statement: 'VLAN groups can be assigned to a location', evidence: [`${NB}/v2.4.4/user-guide/core-data-model/ipam/vlangroup/`, `${NB}/stable/user-guide/core-data-model/ipam/vlan/`] }], gaps: [] };
   });
   assert.equal(F.cli(root, ['next']).clarify.stage, 'sheet_wait');
-  const dataFile = path.join(os.tmpdir(), `console-clarify-${process.pid}-${Date.now()}.json`);
-  F.cli(root, ['console', '--out', `${dataFile}.html`, '--data', dataFile]);
+  const dataFile = require("./helpers/tmp").track(path.join(os.tmpdir(), `console-clarify-${process.pid}-${Date.now()}.json`));
+  F.cli(root, ['console', '--out', require("./helpers/tmp").track(`${dataFile}.html`), '--data', dataFile]);
   let job = JSON.parse(fs.readFileSync(dataFile, 'utf8')).jobs.find((j) => j.id === J);
   const c = job.clarify;
   assert.equal(c.version, 3);
@@ -412,7 +413,7 @@ test('console: clarify v3 — items with who decided them, findings with source 
   F.cli(root, ['clarify', 'reply', 'ok'], { allowFail: false });
   F.clarify(root);
   assert.equal(F.cli(root, ['next']).step, 'H1');
-  F.cli(root, ['console', '--out', `${dataFile}.html`, '--data', dataFile]);
+  F.cli(root, ['console', '--out', require("./helpers/tmp").track(`${dataFile}.html`), '--data', dataFile]);
   job = JSON.parse(fs.readFileSync(dataFile, 'utf8')).jobs.find((j) => j.id === J);
   assert.match(job.timeline.find((t) => t.type === 'result' && t.step === 'clarify').text, /Contract passed its readiness check after 1 research pass/);
   assert.ok(job.h1 && Array.isArray(job.h1.decisions), 'H1 carries the decisions, gaps, drops and objections');

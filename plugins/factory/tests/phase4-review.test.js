@@ -23,7 +23,7 @@ function newJob(root, policy) {
   return J;
 }
 function env(extra = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-p4r-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-p4r-');
   return { dir, log: path.join(dir, 'copilot.jsonl'), env: { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: CREW, FAKE_COPILOT_LOG: path.join(dir, 'copilot.jsonl'), FACTORY_NOTIFY: 'off', ...extra } };
 }
 const run = (root, e, args) => {
@@ -105,7 +105,7 @@ test('B1: the model-rejection matcher is conservative; doctor warns on a CLI old
   assert.deepEqual(M.versionWarnings('1.0.97', ['claude-haiku-5.5', 'claude-opus-5.5']), []);
   // doctor with a CLI that says 1.0.90
   const root = F.makeRepo();
-  const bin = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'oldcli-')), 'copilot.js');
+  const bin = path.join(require('./helpers/tmp').mkdtemp('oldcli-'), 'copilot.js');
   fs.writeFileSync(bin, "process.stdout.write('GitHub Copilot CLI 1.0.90\\n');\n");
   const d = spawnSync('node', [F.BIN, 'doctor'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: bin } });
   const chk = JSON.parse(d.stdout).checks.find((c) => c.name === 'copilot models');
@@ -145,7 +145,7 @@ test('M1: R25 on drive.js\'s real event order: a sent notification surfaces the 
     return { root, J, stop: ev[iStop], fired: R.jobHealth(job, LIMITS, later).some((x) => x.rule === 'R25.drive_stop_unsurfaced') };
   };
   // a notifier that works: notify-send on PATH
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-'));
+  const bin = require('./helpers/tmp').mkdtemp('notify-');
   fs.writeFileSync(path.join(bin, 'notify-send'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const sent = crewDrive({ FACTORY_NOTIFY: '', PATH: `${bin}${path.delimiter}${process.env.PATH}`, WSL_DISTRO_NAME: '' });
   assert.equal(sent.stop.sent, true, JSON.stringify(sent.stop));
@@ -204,7 +204,7 @@ test('m3/m4/m6: tool calls unknown when the CLI sent no events; every spawn\'s s
   assert.equal(r.tool_calls, null, 'no message or tool event: unknown, not 0');
   assert.deepEqual(r.usage, { reported: false }, 'a shutdown with no numbers reports nothing');
   assert.equal(T.totals([{ ms: 1, tool_calls: null, usage: { reported: false } }]).tool_calls, null);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-red-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-red-');
   const f = path.join(dir, 'x.jsonl');
   const w = T.open(f);
   w.write('{"type":"tool.execution_complete","data":{"result":{"content":"GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 and sk-ant-abcdefghijklmnopqrstuvwx"}}}\n');

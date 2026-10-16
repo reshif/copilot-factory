@@ -18,7 +18,7 @@ const human = require('../cli/core/human');
 const events = (root) => fs.readFileSync(path.join(root, '.factory', 'log', 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
 function harness(script) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-env-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-env-');
   const log = path.join(dir, 'copilot.jsonl');
   const file = path.join(dir, 'script.js');
   fs.writeFileSync(file, script);
@@ -58,7 +58,11 @@ function toRealize(root) {
   F.record(root, F.envelope(b, 'ok', { topics: [{ topic: 'codebase', claims: [{ claim: 'slug is in myapp/text.py', source: 'myapp/text.py:1' }], unknowns: [] }], degraded: [] }));
   F.cli(root, ['next']);
   F.cli(root, ['plan', 'from-contract'], { allowFail: false });
-  assert.equal(F.cli(root, ['next']).workflow, 'realize');
+  // 0.10.0: no build starts in an environment nobody accepted (bug@low has no plan gate to seal it)
+  const w = F.cli(root, ['next']);
+  assert.equal(w.action, 'wait', JSON.stringify(w));
+  assert.equal(w.rule, 'env.unconfirmed');
+  assert.match(w.reason, /not confirmed, so no task is built[\s\S]*confirm environment [0-9a-f]{8}/);
   return { J, h1 };
 }
 
@@ -149,6 +153,7 @@ test('P2.1 acceptance: the builder runs inside the worktree\'s venv and its work
   const root = P.makePyRepo();
   const { J } = toRealize(root);
   terminal(root, ['env', 'set', '--file', writeEnv(root, P.ENV)]);
+  assert.equal(F.cli(root, ['next']).workflow, 'realize', 'confirmed: the build may start');
   const wt = path.join(root, '.factory', 'worktrees', `${J}-T1`);
   // Before: the root venv's runner tests the ROOT's code, wherever it is run from.
   const fixture = JSON.stringify(path.join(__dirname, 'helpers', 'fixture.js'));
@@ -201,6 +206,7 @@ test('P2.1 acceptance: a broken setup parks the job once, with the reason, befor
   const { J } = toRealize(root);
   const BROKEN = { ...P.ENV, setup: ['bash scripts/mkenv.sh', 'echo "ERROR: No matching distribution found for nautobot==9.9" >&2; exit 3'] };
   terminal(root, ['env', 'set', '--file', writeEnv(root, BROKEN)]);
+  assert.equal(F.cli(root, ['next']).workflow, 'realize');
   const fixture = JSON.stringify(path.join(__dirname, 'helpers', 'fixture.js'));
   const h = harness(`const F = require(${fixture});
   module.exports = (c) => {

@@ -19,8 +19,11 @@ And at the top level, `interfaces`: everything one task builds that another task
 
 Build the plan from the design record: the ADR's Decision and Architecture diagram say what changes, its "How each acceptance criterion is met" table says which criterion each part proves, and its "Rollback and migration" section feeds each task's rollback. Name in each objective the part of the design it implements (e.g. "Limiter module from ADR 001"), so the docs index can trace criterion → design → task → proof.
 Prefer fewer, independently buildable tasks. Carry every accepted lesson into the tasks it applies to (in the objective or notes).
+Verify commands run in the build environment, in parallel worktrees, before any human approves the plan: the CLI's plan probe dry-runs every one of them in a scratch worktree inside the environment you propose (it is expected to fail before the code exists, for the right reason: no test yet, an assertion), and you get its raw output when it cannot run (the command or a third-party module is missing, a framework test has no settings or database, a server it waits on, a fixed port, a `sleep` race, a background process).
+- **The build environment.** Your run says which environment worktrees have. When the verify commands need more (a venv with the project installed, settings, a database, a service), write the environment proposal next to plan.json at the path your run gives (the fields of `.factory/environment.json`); leave it out when the current environment is right. Only the human accepts it, at the plan gate.
+- **Greenfield.** When that environment's setup needs manifests no commit has yet, the task that creates them is the bootstrap task: `"bootstrap": true`, no `depends_on`, and every other task depends on it.
 Then run the validate command you are given and fix every error.
-Write only plan.json.
+Write only plan.json (and, when the environment must change, the environment proposal).
 
 ## Your final message
 The JSON object your reply format asks for, fields in this order:

@@ -8,6 +8,8 @@
 //   threats         every threat id (TH-n) of the job's threat model appears in it
 //   mermaid a|b     it holds a well-formed ```mermaid block of one of these diagram types
 //   subgraph        that block draws at least one subgraph (a boundary)
+//   ledger          (0.10.0) required when the job has an API ledger: a table whose every row
+//                   cites a verified ledger entry (L-n), or a None line (no external API)
 // Checks are cheap and syntactic. Mermaid is never rendered; blocks are checked for a
 // known diagram type, balanced brackets and blocks, and at least one edge or message.
 
@@ -93,7 +95,7 @@ function norm(s) {
 }
 
 function parseRules(text) {
-  const r = { optional: false, table: false, acs: false, threats: false, subgraph: false, mermaid: null };
+  const r = { optional: false, table: false, acs: false, threats: false, subgraph: false, ledger: false, mermaid: null };
   for (const m of String(text).matchAll(/<!--\s*rule:\s*([\s\S]*?)-->/g)) {
     for (const part of m[1].split(';').map((x) => x.trim()).filter(Boolean)) {
       const [k, ...rest] = part.split(/\s+/);
@@ -266,6 +268,7 @@ function check(text, opts = {}) {
       const earlier = secs.findIndex((s) => s.key === ts.key);
       if (earlier !== -1) problems.push(`Section "## ${ts.title}" is out of order (sections follow ${tfile})`);
       else if (!ts.rules.optional) problems.push(`Missing section "## ${ts.title}"`);
+      else if (ts.rules.ledger && opts.ledger && opts.ledger.length) problems.push(`Missing section "## ${ts.title}": ground recorded an API ledger (${opts.ledger.slice(0, 6).join(', ')}${opts.ledger.length > 6 ? ', …' : ''}); list every external call the design relies on, each with its ledger id`);
       else if (ts.rules.threats && opts.threats && opts.threats.length) problems.push(`Missing section "## ${ts.title}": the threat model lists ${opts.threats.join(', ')}`);
       continue;
     }
@@ -285,6 +288,7 @@ function check(text, opts = {}) {
       const miss = opts.threats.filter((id) => !idRe(id).test(body));
       if (miss.length) problems.push(`Section "## ${ts.title}" does not map threat(s) ${miss.join(', ')} from threat-model.md`);
     }
+    if (ts.rules.ledger && opts.ledger) problems.push(...ledgerProblems(ts.title, s.text, opts.ledger));
     if (ts.rules.mermaid) {
       const mine = blocks.filter((b) => b.start > s.line && b.start < s.end);
       const good = mine.filter((b) => b.res.type && ts.rules.mermaid.includes(b.res.type) && !b.res.problems.length);
@@ -295,6 +299,22 @@ function check(text, opts = {}) {
   }
   for (const b of blocks) problems.push(...b.res.problems);
   return { type, template: t.version, ok: problems.length === 0, problems, warnings };
+}
+
+// The "External API usage" table against the job's API ledger: every row cites a ledger id the
+// ledger has; "None" (no external API) is a valid answer.
+function ledgerProblems(title, text, ids) {
+  const body = bare(text);
+  const rows = String(text).split('\n').filter((l) => /^\s*\|.*\|\s*$/.test(l) && !/^\s*\|(\s*:?-{3,}:?\s*\|)+\s*$/.test(l)).slice(1);
+  if (!rows.length) return /^none\b/i.test(body) || /no external api/i.test(body) ? [] : [`Section "## ${title}" needs a table (Symbol | How the design uses it | Ledger) or "None: this design calls no external API."`];
+  const out = [];
+  for (const r of rows) {
+    const cells = r.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    const cited = [...r.matchAll(/\bL-\d+\b/g)].map((m) => m[0]);
+    if (!cited.length) out.push(`Section "## ${title}": the row for ${cells[0] || '?'} cites no API ledger entry (L-n); quote the dependency source in ground's ledger first, or drop the call`);
+    for (const c of cited) if (!ids.includes(c)) out.push(`Section "## ${title}": ${cells[0] || '?'} cites ${c}, which is not a verified entry of the API ledger (${ids.slice(0, 8).join(', ') || 'none'})`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- job context
@@ -309,7 +329,15 @@ function jobOpts(root, state, file) {
   const jp = jobPaths(root, state.id);
   const acs = contract.parse(contract.read(root, state.id)).acs.map((a) => a.id);
   const tm = path.resolve(file) === path.resolve(jp.threatModel) ? null : readText(jp.threatModel, null);
-  return { job: state.id, acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file) };
+  // the verified API ledger ids, when ground recorded a ledger with entries (an ADR must cite them)
+  let ledgerIds = null;
+  try {
+    const l = require('./deps').readLedger(root, state.id);
+    if (l && l.entries.length) ledgerIds = l.entries.map((e) => e.id);
+  } catch {
+    ledgerIds = null;
+  }
+  return { job: state.id, acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}) };
 }
 
 function checkFile(file, opts = {}) {

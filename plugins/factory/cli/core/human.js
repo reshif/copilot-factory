@@ -212,8 +212,19 @@ function approve(root, { jobId, gate, channel, via }) {
   if (!now || now !== pending.hash) {
     fail(`The ${pending.id} document changed after it was presented (or is still being drafted). Ask Copilot to present it again, then approve.`, 'stale_gate');
   }
+  // A gate that binds more than its document (the medium-risk H3: design + plan + the build
+  // environment): its parts are recorded with the approval, and the environment it showed is
+  // sealed by this approval, the human's, so there is no separate "confirm environment".
+  const ctx0 = pending.id === 'A' ? null : steps.context(root, state, job.load);
+  const parts = ctx0 ? steps.combinedParts(ctx0, pending.id) : null;
+  if (parts && parts.environment && parts.environment.status === 'tampered') fail(`${parts.environment.message} Nothing was approved.`, 'environment_tampered');
   confirmTyped(channel, state.id, `approve ${pending.id}`);
-  state.approvals[pending.id] = { hash: now, at: nowIso(), via: via || channel, snapshot: snapshot(root, state, pending.id, now) };
+  state.approvals[pending.id] = { hash: now, at: nowIso(), via: via || channel, snapshot: snapshot(root, state, pending.id, now), ...(parts ? { combined: Object.keys(parts), ...(parts.design !== undefined ? { design: parts.design } : {}), ...(parts.plan !== undefined ? { plan: parts.plan } : {}), ...(parts.environment ? { environment: parts.environment.hash } : {}) } : {}) };
+  if (parts && parts.environment && parts.environment.status === 'proposed') {
+    const r = require('./environment').confirm(root, { env: parts.environment.env, channel, via: `${state.id} ${pending.id}` });
+    require('./events').append(root, { event: 'environment_set', channel, name: r.environment.name || null, hash: r.hash, job: state.id, gate: pending.id });
+    log(root, state, 'set_environment', { channel, environment: r.environment.name || null, hash: r.hash, gate: pending.id });
+  }
   state.pending_gate = null;
   if (pending.id === 'A') require('./amend').applyApproved(root, state);
   // An amendment submitted while the job was parked pre-empts the park: approving it is the

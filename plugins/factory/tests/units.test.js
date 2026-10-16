@@ -371,7 +371,7 @@ test('init: a plain folder becomes a repository whose first commit holds your fi
   const { spawnSync } = require('child_process');
   const run = (cwd, env = {}) => JSON.parse(spawnSync('node', [F.BIN, 'init'], { cwd, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', ...env } }).stdout);
   const git = (cwd, args) => spawnSync('git', args, { cwd, encoding: 'utf8' }).stdout.trim();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nogit-'));
+  const dir = require('./helpers/tmp').mkdtemp('nogit-');
   F.write(dir, 'notes.txt', 'mine\n');
   F.write(dir, 'src/app.js', 'module.exports = 1;\n');
   F.write(dir, '.gitignore', 'build/\n');
@@ -389,13 +389,13 @@ test('init: a plain folder becomes a repository whose first commit holds your fi
   assert.deepEqual(git(dir, ['status', '--porcelain']).split('\n').sort(), ['?? .env', '?? config/'], 'secrets stay untracked; .factory/ is excluded');
   assert.ok(fs.existsSync(path.join(dir, '.factory', 'project.json')));
   // a repository with no commits yet gets the same first commit
-  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'nocommit-'));
+  const empty = require('./helpers/tmp').mkdtemp('nocommit-');
   spawnSync('git', ['init', '-q'], { cwd: empty });
   F.write(empty, 'a.txt', 'a\n');
   assert.equal(run(empty).first_commit.files, 1);
   assert.equal(git(empty, ['ls-tree', '-r', '--name-only', 'HEAD']), 'a.txt');
   // no identity: a clear message, and no .git left behind; run init again after git config and it finishes
-  const anon = fs.mkdtempSync(path.join(os.tmpdir(), 'noid-'));
+  const anon = require('./helpers/tmp').mkdtemp('noid-');
   const noId = { HOME: anon, GIT_CONFIG_GLOBAL: path.join(anon, 'none'), GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: '', GIT_COMMITTER_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_EMAIL: '', EMAIL: '' };
   const proj = path.join(anon, 'proj');
   fs.mkdirSync(proj);
@@ -413,6 +413,8 @@ test('spike: grounded recommendation, HF gate, close without shipping code', () 
   let b;
   F.cli(root, ['next']);
   F.reply(root, 'approve');
+  assert.equal(F.cli(root, ['next']).step, 'deps');
+  F.cli(root, ['deps', 'fetch']);
   b = F.cli(root, ['wfargs', 'ground']);
   F.record(root, F.envelope(b, 'ok', { topics: [{ topic: 'external', claims: [{ claim: 'lib A supports retries', source: 'https://example.com/a' }], unknowns: [] }], degraded: [] }));
   const n = F.cli(root, ['next']);

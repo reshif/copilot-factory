@@ -280,7 +280,7 @@ test('terminal human actions: a random code shown on the terminal only, no bypas
   const py = spawnSync('python3', ['-c', 'import pty'], { encoding: 'utf8' }).status === 0;
   if (py && process.platform !== 'win32') {
     const J3 = F.cli(root, ['job', 'new', '--title', 'z', '--type', 'bug', '--risk', 'low']).job;
-    const drive = path.join(root, '..', `pty-${J3}.py`);
+    const drive = require("./helpers/tmp").track(path.join(root, '..', `pty-${J3}.py`));
     fs.writeFileSync(drive, [
       'import os, pty, re, sys, json',
       'mode = sys.argv[1]',
@@ -317,8 +317,8 @@ test('terminal human actions: a random code shown on the terminal only, no bypas
     assert.equal(hits, '', `the code is in ${hits}`);
     // stderr never holds it (stdout must be the terminal itself, or the command is refused)
     const J4 = F.cli(root, ['job', 'new', '--title', 'w', '--type', 'bug', '--risk', 'low']).job;
-    const out = path.join(root, '..', `out-${J4}.txt`);
-    const err = path.join(root, '..', `err-${J4}.txt`);
+    const out = require("./helpers/tmp").track(path.join(root, '..', `out-${J4}.txt`));
+    const err = require("./helpers/tmp").track(path.join(root, '..', `err-${J4}.txt`));
     const shown = JSON.parse(spawnSync('python3', [drive, 'right', 'bash', '-c', `node "${F.BIN}" cancel --job ${J4} 2>"${err}"; echo done >"${out}"`], { cwd: root, encoding: 'utf8', env: { ...clean, FACTORY_ROOT: '' }, timeout: 20000 }).stdout);
     const code4 = /type the code ([A-Z2-9]{4}): /.exec(shown)[1];
     assert.equal(F.cli(root, ['job', 'show', '--job', J4]).status, 'cancelled');

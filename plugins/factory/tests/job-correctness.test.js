@@ -103,7 +103,7 @@ test('1 dirty_worktree: factory run never starts a task agent at the project roo
   // something that is not a worktree sits where T1's worktree goes
   fs.mkdirSync(path.join(root, '.factory', 'worktrees'), { recursive: true });
   fs.writeFileSync(path.join(root, '.factory', 'worktrees', `${J}-T1`), 'not a worktree');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-runner-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-runner-');
   const log = path.join(dir, 'copilot.jsonl');
   const script = path.join(dir, 'script.js');
   fs.writeFileSync(script, 'module.exports = (c) => ({ status: "done", summary: "built at " + c.cwd, swept: [] });');

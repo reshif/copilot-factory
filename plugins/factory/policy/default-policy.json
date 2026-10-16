@@ -69,7 +69,7 @@
   ],
   "checks": [],
   "limits": {
-    "max_design_critique_rounds": 2,
+    "max_design_critique_rounds": 3,
     "max_plan_validate_rounds": 3,
     "retry_limit": 3,
     "max_review_rounds": 3,

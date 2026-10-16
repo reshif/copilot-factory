@@ -120,7 +120,7 @@ test('M1: the step two drives in a row were killed in is not started a third tim
 test('M1: a foreground drive stopped by a signal mid-step records the step it was in (in_step), so the next drive counts it', async () => {
   const root = F.makeRepo();
   newJob(root);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-081-');
   const script = path.join(dir, 'script.js');
   fs.writeFileSync(script, `const crew = require(${JSON.stringify(CREW)});\nmodule.exports = async (c) => { if (c.role === 'interviewer') await new Promise((r) => setTimeout(r, 20000)); return crew(c); };\n`);
   const env = { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: script, FAKE_COPILOT_LOG: path.join(dir, 'copilot.jsonl'), FACTORY_NOTIFY: 'off' };
@@ -183,7 +183,7 @@ test('M3: judgement roles run on the session default model; only the interviewer
 
 test('M3: factory doctor says every other role runs on the session default and names judgement roles a project pinned to a model', () => {
   const root = F.makeRepo();
-  const fakeV = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-')), 'copilot.js');
+  const fakeV = path.join(require('./helpers/tmp').mkdtemp('factory-081-'), 'copilot.js');
   fs.writeFileSync(fakeV, '#!/usr/bin/env node\nconsole.log("GitHub Copilot CLI 1.0.99");\n');
   fs.chmodSync(fakeV, 0o755);
   const find = (r) => (r.checks || r.results || []).find((c) => c.name === 'copilot models') || JSON.stringify(r).match(/copilot models[^}]*/);
@@ -198,7 +198,7 @@ test('M3: factory doctor says every other role runs on the session default and n
 
 test('M4: the guard reads a factory agent\'s script files and refuses a subcommand built at run time; human-only verbs stay blocked for everyone', () => {
   const g = require('../hooks/guard-rules');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-g-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-081-g-');
   fs.writeFileSync(path.join(dir, 'run.sh'), 'echo hi\nfactory drive\n');
   fs.writeFileSync(path.join(dir, 'x'), '#!/usr/bin/env bash\nfactory clarify reply ok\n');
   fs.writeFileSync(path.join(dir, 'ok.sh'), 'factory task show T1\n');
@@ -360,7 +360,7 @@ test('ci install vendors every directory the CLI reads at run time: the copy sta
   const root = F.makeRepo();
   ship.ciInstall(root);
   // run the copy from somewhere the plugin is not: a fresh directory with only the vendored CLI
-  const away = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-ci-'));
+  const away = require('./helpers/tmp').mkdtemp('factory-081-ci-');
   fs.cpSync(path.join(root, '.github', 'factory-cli'), path.join(away, 'factory-cli'), { recursive: true });
   const env = { PATH: process.env.PATH, HOME: away };
   const bin = path.join(away, 'factory-cli', 'bin', 'factory');
@@ -404,7 +404,7 @@ test('ci install vendors every directory the CLI reads at run time: the copy sta
 test('hooks: the launcher finds the plugin without any root variable (VS Code token, or the root the CLI recorded); every run leaves a heartbeat; doctor reports each hook and says when the guard is not enforcing', () => {
   const H = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'hooks.json'), 'utf8'));
   const root = F.makeRepo();
-  const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-u-'));
+  const userDir = require('./helpers/tmp').mkdtemp('factory-081-u-');
   const base = { PATH: process.env.PATH, HOME: userDir, FACTORY_USER_DIR: userDir };
   const deny = (r) => r.stdout && JSON.parse(r.stdout).permissionDecision === 'deny';
   const guardIn = JSON.stringify({ toolName: 'bash', toolArgs: { command: 'factory approve' }, cwd: root });
@@ -435,7 +435,7 @@ test('hooks: the launcher finds the plugin without any root variable (VS Code to
   assert.ok(deny(viaFile), viaFile.stderr);
   // 3. VS Code substitutes the ${PLUGIN_ROOT} token, shell-quoted (a path with a space), and sets no variable
   fs.rmSync(path.join(userDir, 'plugin-root'));
-  const spaced = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'plug ')), 'my plugin');
+  const spaced = path.join(require('./helpers/tmp').mkdtemp('plug '), 'my plugin');
   fs.symlinkSync(F.PLUGIN, spaced);
   for (const tok of ['${PLUGIN_ROOT}', '${CLAUDE_PLUGIN_ROOT}']) {
     const b = H.hooks.preToolUse[0].bash.split(tok).join(`'${spaced}'`);
@@ -459,7 +459,7 @@ test('hooks: the launcher finds the plugin without any root variable (VS Code to
   assert.ok(fs.existsSync(path.join(root, '.factory', 'turn.json')));
   assert.equal(check(doctor(), 'hook prompt').ok, true);
   // no node: logged as node_missing, and doctor names the fix
-  const noNode = fs.mkdtempSync(path.join(os.tmpdir(), 'nonode-'));
+  const noNode = require('./helpers/tmp').mkdtemp('nonode-');
   for (const b of ['bash', 'cat', 'mkdir', 'date', 'uname']) {
     const w = spawnSync('bash', ['-c', `command -v ${b}`], { encoding: 'utf8' }).stdout.trim();
     if (w) fs.symlinkSync(w, path.join(noNode, b));
@@ -497,11 +497,11 @@ test('hooks: factory next\'s dead-hook notice sends the user to factory doctor f
 test('hooks: node only on a login shell PATH (~/.local/bin): the launcher uses the node the CLI recorded, and the guard still enforces', () => {
   const H = JSON.parse(fs.readFileSync(path.join(F.PLUGIN, 'hooks.json'), 'utf8'));
   const root = F.makeRepo();
-  const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-n-'));
+  const userDir = require('./helpers/tmp').mkdtemp('factory-081-n-');
   F.cli(root, ['doctor'], { env: { FACTORY_USER_DIR: userDir } }); // records plugin-root and node-path
   assert.equal(fs.readFileSync(path.join(userDir, 'node-path'), 'utf8').trim(), process.execPath);
   // a PATH with bash and coreutils but no node
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-081-bin-'));
+  const bin = require('./helpers/tmp').mkdtemp('factory-081-bin-');
   for (const t of ['bash', 'cat', 'dirname', 'mkdir', 'date', 'uname', 'wslpath']) {
     const w = spawnSync('bash', ['-c', `command -v ${t}`], { encoding: 'utf8' }).stdout.trim();
     if (w) fs.symlinkSync(w, path.join(bin, t));

@@ -1,6 +1,7 @@
 'use strict';
-// standard@medium and full@high routes: design record + critique, H2 only when there's an ADR,
-// planned tasks in waves with a dependency, all required lanes, threat model and HS at high risk.
+// standard@medium and full@high routes: dependency source (deps), design record + critique, one
+// combined design + plan + environment gate at medium (H3), separate H2 and H3 at high, planned
+// tasks in waves with a dependency, all required lanes, threat model and HS at high risk.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -18,7 +19,12 @@ function clarifyAndApprove(root, J) {
   assert.equal(F.clarify(root).status, 'ok');
   assert.equal(next(root).step, 'H1');
   F.reply(root, 'approve');
-  const n = next(root);
+  // 0.10.0: the pinned dependency source comes before ground (nothing pinned here: nothing fetched)
+  let n = next(root);
+  assert.equal(n.step, 'deps');
+  assert.match(n.command, /deps fetch/);
+  assert.equal(F.cli(root, ['deps', 'fetch']).__code, 0);
+  n = next(root);
   assert.equal(n.workflow, 'ground');
   const g = F.cli(root, ['wfargs', 'ground']);
   assert.equal(F.record(root, F.envelope(g, 'ok', { topics: [{ topic: 'codebase', claims: [{ claim: 'x', source: 'src/add.js:1' }], unknowns: [] }], degraded: [] })).status, 'ok');
@@ -68,7 +74,7 @@ function buildAll(root, J) {
   assert.equal(pv.ok, true, JSON.stringify(pv));
 }
 
-test('standard@medium: ADR → H2, plan → H3, three lanes, floors before ship', () => {
+test('standard@medium: ADR and plan approved at ONE gate (H3, with the build environment), three lanes, floors before ship', () => {
   const root = F.makeRepo();
   const J = F.cli(root, ['job', 'new', '--title', 'Math module', '--type', 'feature', '--risk', 'medium']).job;
   clarifyAndApprove(root, J);
@@ -102,16 +108,29 @@ test('standard@medium: ADR → H2, plan → H3, three lanes, floors before ship'
   assert.equal(r.status, 'park', 'three template failures in a row park the job');
   assert.match(r.park_reason, /unbalanced brackets[\s\S]*does not cover AC-2|does not cover AC-2[\s\S]*unbalanced brackets/);
   F.reply(root, 'resume decide');
-  // architect writes a valid ADR; the critique says revise twice → H2 shows it to the human
+  // architect writes a valid ADR; the critics stop with an objection open → it goes to the gate, never a park
   F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], decision: 'We will add separate modules.' }));
   assert.equal(F.cli(root, ['doc', 'check', adrPath]).ok, true);
   brief = F.cli(root, ['wfargs', 'fanout-judge', '--config', 'decide']);
-  r = F.record(root, F.envelope(brief, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-math.md')], summary: 's' }, critiques: [{ verdict: 'revise', items: [{ issue: 'i', severity: 'minor' }] }, { verdict: 'revise', items: [] }] }));
+  assert.equal(brief.verifier.agent_type, 'factory:finding-verifier', 'the design critics\' serious items are verified');
+  assert.deepEqual(brief.critics.map((c) => c.id), ['god-eye'], 'no dependency source: no API-conformance critic');
+  r = F.record(root, F.envelope(brief, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-math.md')], summary: 's' }, stop: 'no_progress', revised_after_last: true, open: ['god-eye-2-1'], critiques: [{ round: 1, verdict: 'revise', items: [{ id: 'god-eye-1-1', critic: 'god-eye', issue: 'i', severity: 'major', verified: 'confirmed' }], open: ['god-eye-1-1'] }, { round: 2, verdict: 'revise', items: [{ id: 'god-eye-2-1', critic: 'god-eye', issue: 'i', severity: 'major', verified: 'confirmed' }], open: ['god-eye-2-1'] }] }));
   assert.equal(r.status, 'ok');
-  assert.match(r.message, /you will see it at H2/);
+  assert.match(r.message, /you will see them at H3/);
+  // decompose → the one gate for design + plan + environment
   n = next(root);
-  assert.equal(n.step, 'H2');
-  assert.ok(n.gate.docs.some((d) => d.endsWith('design.json')));
+  assert.equal(n.workflow, 'decompose', 'medium risk has no separate H2');
+  brief = F.cli(root, ['wfargs', 'decompose']);
+  assert.ok(brief.critique, 'the plan critique runs at every risk level');
+  assert.equal(brief.probe, true, 'and the plan probe');
+  plan(root, J);
+  assert.equal(F.record(root, F.envelope(brief, 'ok', { planner: { valid: true, errors: [], path: 'plan.json' }, critique: null })).status, 'ok');
+  n = next(root);
+  assert.equal(n.step, 'H3');
+  assert.ok(n.gate.docs.some((d) => d.endsWith('design.json')) && n.gate.docs.some((d) => d.endsWith('plan.json')) && n.gate.docs.some((d) => d.endsWith('probe.json')), JSON.stringify(n.gate.docs));
+  assert.deepEqual(n.review.approves, ['design', 'plan', 'environment']);
+  assert.equal(n.review.design_critique.open.length, 1, 'the open objection is shown at the gate');
+  assert.match(n.review.objections, /1 objection/);
   // a document edited after it was presented can't be approved
   F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], decision: 'We will add separate modules, edited.' }));
   assert.throws(() => F.reply(root, 'approve'), /changed after it was presented/);
@@ -126,10 +145,8 @@ test('standard@medium: ADR → H2, plan → H3, three lanes, floors before ship'
   const archText = fs.readFileSync(brief.judge.prompt.split('\n')[1].trim(), 'utf8');
   assert.match(archText, /## Working with files[\s\S]*`edit` and `create`[\s\S]*Never run python, node/, 'a writer with a shell is told to edit files, not script them');
   F.record(root, F.envelope(brief, 'ok', { options: [], degraded: [], judge: { kind: 'adr', paths: [path.join(F.jobDir(root, J), 'adr-001-math.md')], summary: 's' }, critiques: [{ verdict: 'approve', items: [] }] }));
-  assert.equal(next(root).step, 'H2');
-  F.reply(root, 'approve');
 
-  // decompose → H3
+  // a revised design re-plans (the combined gate binds both), then the one gate
   n = next(root);
   assert.equal(n.workflow, 'decompose');
   brief = F.cli(root, ['wfargs', 'decompose']);
@@ -137,9 +154,13 @@ test('standard@medium: ADR → H2, plan → H3, three lanes, floors before ship'
   assert.equal(F.cli(root, ['plan', 'validate']).valid, true);
   r = F.record(root, F.envelope(brief, 'ok', { planner: { valid: true, errors: [], path: 'plan.json' }, critique: null }));
   assert.equal(r.status, 'ok');
+  assert.match(r.message, /plan probe ran every verify command/);
   n = next(root);
   assert.equal(n.step, 'H3');
   F.reply(root, 'approve');
+  const st = F.cli(root, ['job', 'show']);
+  assert.deepEqual(st.approvals.H3.combined, ['design', 'plan', 'environment']);
+  assert.equal(F.cli(root, ['finalize', '--mode', 'before_ship']).missing.includes('design_critique'), false, 'the design was approved at the combined gate');
 
   buildAll(root, J);
 
@@ -225,7 +246,7 @@ test('full@high: threat model required, H2 and H3 human, HS before ship, trial r
 
 test('high-risk jobs refuse recipes that are not proven', () => {
   const os = require('os');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recipes-'));
+  const dir = require('./helpers/tmp').mkdtemp('recipes-');
   for (const f of fs.readdirSync(path.join(F.PLUGIN, 'recipes'))) fs.copyFileSync(path.join(F.PLUGIN, 'recipes', f), path.join(dir, f));
   const r = JSON.parse(fs.readFileSync(path.join(dir, 'full@high.json'), 'utf8'));
   r.status = 'trial';

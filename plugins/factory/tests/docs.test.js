@@ -11,7 +11,7 @@ const F = require('./helpers/fixture');
 const doc = require('../cli/core/doc');
 
 const tmpFile = (name, text) => {
-  const d = fs.mkdtempSync(path.join(require('os').tmpdir(), 'factory-doc-'));
+  const d = require('./helpers/tmp').mkdtemp('factory-doc-');
   const p = path.join(d, name);
   fs.writeFileSync(p, text);
   return p;
@@ -26,7 +26,7 @@ test('every template is well formed: only its {{placeholders}} fail the check', 
     assert.deepEqual(r.problems.filter((p) => !/placeholder|is not YYYY-MM-DD/.test(p)), [], `${type}: ${r.problems.join('; ')}`);
   }
   const adr = doc.loadTemplate('adr');
-  assert.deepEqual(adr.sections.map((s) => s.title), ['Context', 'Decision drivers', 'Considered options', 'Decision', 'Architecture diagram', 'Consequences', 'How each acceptance criterion is met', 'Threat mitigations', 'Rollback and migration', 'Open questions']);
+  assert.deepEqual(adr.sections.map((s) => s.title), ['Context', 'Decision drivers', 'Considered options', 'Decision', 'Architecture diagram', 'External API usage', 'Consequences', 'How each acceptance criterion is met', 'Threat mitigations', 'Rollback and migration', 'Open questions']);
   assert.ok(adr.sections.find((s) => s.title === 'Architecture diagram').rules.mermaid.includes('flowchart'));
   assert.equal(doc.loadTemplate('threat-model').sections.find((s) => /Data-flow/.test(s.title)).rules.subgraph, true);
   assert.equal(doc.loadTemplate('no-adr').sections.find((s) => s.title === 'Diagram').rules.optional, true);

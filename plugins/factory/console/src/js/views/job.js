@@ -40,6 +40,7 @@ function nowCard(job) {
     parts.push(`<div class="nk"><i class="beacon" style="--bk:var(--sig-amber)"></i>Now · your turn</div>`);
     parts.push(`<p>The job waits on you at <b>${esc(g ? `${g} · ${stepName(g).replace(/^\S+ · /, '')}` : m.stepLabel)}</b>, and has for <b data-since="${m.waitSince || ''}">${esc(fmtDur(nowMs() - (m.waitSince || m.updated)))}</b>. ${esc((STEP_INFO[g] || [, ''])[1])} Reply in the Copilot CLI:</p>`);
     if ((g === 'H1' || g === 'EH1') && job.h1) parts.push(h1Html(job.h1));
+    if (['H2', 'EH2', 'H3', 'HF'].includes(g) && job.gate_review) parts.push(gateReviewHtml(job.gate_review));
     if (g && g !== 'P') { parts.push(reply(gateReply(job, g))); if (g !== 'H4') parts.push(reply(`deny ${job.id} <what must change>`)); }
     else parts.push(`<p>Reply to clarify in chat, in plain words${job.clarify && job.clarify.questions && job.clarify.questions.length ? ` (${job.clarify.questions.length} decision${job.clarify.questions.length === 1 ? '' : 's'} on the sheet): <code>ok</code> takes the recommendations, <code>ok, but 2 b</code> changes one` : ': <code>ok</code>, or what to change'}. The main session can record it too: <code>factory clarify reply "…"</code>.</p>`);
   } else if (m.bucket === 'parked') {
@@ -61,6 +62,27 @@ function h1Html(h) {
   const decisions = (h.decisions || []).map((d) => `<b>${esc(d.item)}</b> ${esc(d.text)}: ${esc(d.value || '')} <span class="meta">(${esc(d.by)})</span>`);
   const redirects = (h.redirects || []).map((R) => `<b>${esc(R.id)}</b> ${R.done} of ${R.of} done: ${R.clauses.map((c) => `${c.done ? '✓' : '✗'} “${esc(c.quote)}”`).join('; ')}`);
   return `${list('God Eye objects', (h.god_eye_objects || []).map(esc), 'God Eye did not approve this contract; clarify could not settle these. Approve only to go on over them.', 'bad')}${list('Checked against what you said', checked)}${list('Decisions and who made them', decisions)}${list('Design may choose', (h.design_may_choose || []).map(esc))}${list('Your redirects', redirects)}${list('Research gaps', (h.gaps || []).map((g) => `${esc(g.what)}: ${esc(g.reason)}`), null, 'bad')}${list('Dropped', (h.dropped || []).map(esc))}${h.edited_by_hand ? '<p class="meta">You edited contract.md by hand; the readiness check ran on your text.</p>' : ''}`;
+}
+// At the design gate, or the combined design + plan + environment gate (0.10.0): what it approves,
+// the critics' open objections (verified, with their evidence; never shown as approval), the API
+// ledger quoted from the pinned dependency source, the plan probe's dry-run, and the environment
+// approving it confirms.
+function gateReviewHtml(r) {
+  const list = (head, items, note, cls) => (items && items.length ? `<div class="eh${cls ? ` ${cls}` : ''}">${esc(head)}</div>${note ? `<p class="meta">${esc(note)}</p>` : ''}<ul>${items.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+  const item = (i) => `<b>${esc(i.critic || '')}</b> [${esc(i.severity)}${i.verified ? `, ${esc(i.verified)}` : ''}] ${esc(i.issue)}${i.evidence ? ` <span class="src"><code>${esc(typeof i.evidence === 'string' ? i.evidence : `${i.evidence.ref || ''}${i.evidence.quote ? ` “${i.evidence.quote}”` : ''}`)}</code></span>` : ''}`;
+  const dc = r.design_critique;
+  const pc = r.plan_critique;
+  const L = r.api_ledger;
+  const P = r.probe;
+  const E = r.environment;
+  const parts = [];
+  if (r.approves) parts.push(`<p class="meta">One approval covers: ${esc(r.approves.join(' + '))}.</p>`);
+  if (dc) parts.push(list(`Design critics: ${dc.verdict}${dc.stop && dc.stop !== 'approved' ? ` (${dc.stop === 'no_progress' ? 'stopped: no progress' : 'stopped at the ceiling'})` : ''}`, (dc.open || []).map(item), dc.open && dc.open.length ? `Open after ${dc.rounds} round(s)${dc.revised_after_last ? '; the architect revised after the last critique' : ''}: your call.` : null, dc.open && dc.open.length ? 'bad' : null));
+  if (pc && (pc.open || []).length) parts.push(list(`Plan critique: ${pc.verdict}`, pc.open.map(item), null, 'bad'));
+  if (L) parts.push(list(`API ledger: ${L.entries} verified quote(s) from the pinned source${L.rejected ? `, ${L.rejected} rejected` : ''}`, [...(L.symbols || []).map(esc), ...(L.gaps || []).map((g) => `<span class="bad">gap: ${esc(g)}</span>`)]));
+  if (P) parts.push(list(`Plan probe: ${P.ok ? 'every verify command can run' : `${(P.problems || []).length} problem(s)`}${P.current ? '' : ' (for an earlier plan)'}`, [...(P.problems || []).map((x) => `<span class="bad">${esc(x)}</span>`), ...(P.commands || []).map(esc)]));
+  if (E) parts.push(`<p class="meta">Build environment: <b>${esc(E.name || 'none')}</b> (${esc(E.status)})${(E.setup || []).length ? ` — setup: <code>${esc(E.setup.join(' && '))}</code>` : ''}${E.note ? `. ${esc(E.note)}` : ''}</p>`);
+  return parts.join('');
 }
 function agentsProse(agents) {
   const cs = chipsFor(agents);

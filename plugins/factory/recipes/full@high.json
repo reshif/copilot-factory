@@ -8,11 +8,12 @@
   "steps": [
     { "step": "clarify", "run": "skill:clarify" },
     { "step": "H1", "run": "gate" },
+    { "step": "deps", "run": "cli:deps fetch" },
     { "step": "ground", "run": "workflow:ground" },
     { "step": "decide", "run": "workflow:fanout-judge", "config": "decide", "threat_model": true },
     { "step": "H2", "run": "gate" },
     { "step": "decompose", "run": "workflow:decompose" },
-    { "step": "H3", "run": "gate" },
+    { "step": "H3", "run": "gate", "combined": ["plan", "environment"] },
     { "step": "realize", "run": "workflow:realize" },
     { "step": "reconcile", "run": "workflow:reconcile" },
     { "step": "prove", "run": "cli:verify run" },

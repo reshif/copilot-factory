@@ -126,7 +126,7 @@ function run(root, jobId) {
     const r = git.run(wt, ['merge', '--no-ff', '--no-edit', '-m', `factory: merge ${t.id} into ${state.id}\n\nFactory-Job: ${state.id}\nFactory-Task: ${t.id}`, br], { allowFail: true });
     if (r.code !== 0) {
       const files = conflicted(wt);
-      const scope = ordered.flatMap((x) => x.allowed_paths || []);
+      const scope = ordered.flatMap((x) => require('./tasks').taskPaths(state, x));
       const inScope = files.length > 0 && files.every((f) => matchesAny(f, scope));
       if (!inScope) {
         git.run(wt, ['merge', '--abort'], { allowFail: true });

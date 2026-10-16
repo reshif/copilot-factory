@@ -169,7 +169,7 @@ test('other goldens: ids, unknowns, quotes and paths hold up', () => {
 // ---------------------------------------------------------------- the runner reads each golden
 
 test('runAgent turns every golden reply into exactly the golden, through the correction turn', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-contracts-'));
+  const dir = require('./helpers/tmp').mkdtemp('factory-contracts-');
   const root = path.join(dir, 'root');
   fs.mkdirSync(path.join(root, '.factory'), { recursive: true });
   const script = path.join(dir, 'script.js');

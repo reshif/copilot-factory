@@ -107,7 +107,13 @@ function applyApproved(root, state) {
   const rebind = { contract: [before.contract, b.contract], plan: [before.plan, b.plan], design: [before.design, b.design] };
   const { snapshot } = require('./human');
   for (const gate of ['H1', 'EH1']) if (state.approvals[gate]) state.approvals[gate] = { ...state.approvals[gate], hash: b.contract, rebound_by: `A-${am.n}`, snapshot: snapshot(root, state, gate, b.contract) };
-  for (const gate of ['H3', 'EH3']) if (state.approvals[gate] && b.plan) state.approvals[gate] = { ...state.approvals[gate], hash: b.plan, rebound_by: `A-${am.n}`, snapshot: snapshot(root, state, gate, b.plan) };
+  for (const gate of ['H3', 'EH3']) {
+    if (!state.approvals[gate] || !b.plan) continue;
+    // a combined gate (design + plan + environment) is re-bound to its combined hash, with the plan
+    const combined = Array.isArray(state.approvals[gate].combined);
+    const h = combined ? require('./steps').gateHash(require('./steps').context(root, state, job.load), gate) || b.plan : b.plan;
+    state.approvals[gate] = { ...state.approvals[gate], hash: h, ...(combined ? { plan: b.plan, ...('design' in state.approvals[gate] ? { design: b.design } : {}) } : {}), rebound_by: `A-${am.n}`, snapshot: snapshot(root, state, gate, h) };
+  }
   // Carry earlier step records forward to the new hashes, with your approval as the reason.
   for (const step of ['clarify', 'ground', 'decide', 'decompose', 'plan_critique']) {
     const last = ledger.freshStep(root, state.id, step, {});
