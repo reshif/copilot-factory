@@ -156,8 +156,18 @@ The CLI builds it from the ledger, by current state:
   cites no unusable evidence; then writes it and the CLI-owned sections from the ledger:
   `## Decisions`, `## Facts relied on`, `## Design may choose` and `## Research gaps`.
 - **The user may edit `contract.md` directly**, at any time before H1 (the v2 guard lock is gone).
-  The CLI notices the changed hash and re-validates: the readiness check runs again before H1.
-  An edit made after the writer is shown at H1 ("edited by hand since the writer; re-checked").
+  The CLI notices a hash it neither wrote nor checked. Before the readiness check has passed, the
+  next writer is told to keep the edit. Once it has passed (or while it runs), the edited text goes
+  through the whole check again, deterministic checks first; an item the edit took out of the
+  contract (the user deleted the AC that honoured it) becomes a decision on the sheet: put it back,
+  or leave it out (the item is then dropped by the user; a user-stated item gets no
+  recommendation). H1 says the contract was edited by hand.
+- **Nothing leaves the contract silently.** Once the factory has written a version (or the user
+  edited one), an AC, constraint or non-goal the writer's new text no longer has must be listed
+  under the writer's `removed` with the item, blocker or redirect it rests on; otherwise the CLI
+  refuses the text. H1 lists what was taken out and why.
+- The contract is an input of the read-back, the writer and the readiness check only: an edit while
+  research runs does not throw the research away.
 
 ### 5. Readiness
 
@@ -219,6 +229,18 @@ input:
 4. On `ok`, linked items **reopen** (the user can always reopen; the old value stays in history)
    and work restarts at the **earliest affected stage** (research < sheet < contract).
 5. Each clause is tracked to an outcome and reported at the next H1 as done or not done.
+
+Conservation is checked on the user's text, not sentence by sentence: every part of the redirect
+no clause quotes ("…, and decide how credentials are supplied") becomes its own `instruction`
+clause, verbatim. Two denials given before clarify reads either become one redirect.
+
+**A version in a redirect** ("we actually run 2.3, not 2.4"): a clause linked to a pin, or a stated
+fact that names a version, restarts at the **read-back**: the pin is reopened, the interviewer
+reads the user's words again (between two versions the user gave, the latest is recommended), and
+on `ok` every finding is judged again against the new pin. Facts that rested on the old version
+drop to assumptions and are researched again; a decision whose researched recommendation rested on
+it is reopened (unless the user decided it). The clause is done only when a version from words
+given with or after the redirect is confirmed.
 
 ## Data model
 
@@ -421,11 +443,27 @@ calls.
 | research passes per entry into research | 2 | park: `resume` one more pass, `proceed` to the sheet with gaps marked |
 | decisions per sheet | 5 | the rest wait for the next sheet |
 | writer attempts per readiness cycle | 2 | park: `resume` one more attempt, `proceed` to H1 with the blockers shown |
+| readiness checks that send work back (to the writer, the sheet, research or the read-back) | 3 | park where the work would have gone: `resume` one more cycle, `proceed` to H1 with the blockers shown |
+| `ok` on a sheet whose open decisions have no recommendation | the second `ok` | those decisions are deferred to design, recorded as the user's (the sheet warned after the first) |
 | an agent that returns nothing | retried once in the same run | park with the failure named |
 
+While a job is parked, `clarify reply` and `clarify redirect` are refused: only the user's `resume`
+or `proceed` moves it.
+
 Policy keys: `clarify.max_research_passes`, `clarify.max_sheet_decisions`,
-`clarify.max_writer_attempts`, `clarify.research_minutes.{low,medium,high}`. The web switch and
+`clarify.max_writer_attempts`, `clarify.max_readiness_cycles`, `clarify.research_minutes.{low,medium,high}`. The web switch and
 search tool stay `intent_research.web` and `intent_research.search_mcp`.
+
+## Who said it
+
+Every word is recorded with how it arrived. Words the main session relays (`job new --request`,
+`clarify reply`, `clarify redirect`) are marked `relayed`: the factory cannot tell them from the
+user's own (in VS Code on WSL the reply hook never fires, so all of them are). H1 marks each
+quote that came this way and says how many of the user's words were relayed; `clarify status`
+lists them. Gate verbs (approve, deny, resume, proceed, reseal) stay human-only.
+
+`clarify.json` is sealed. A record that fails its seal is never run, replied to or recorded over
+(a forged envelope cannot reseal it); `factory reseal` (human-only) keeps the file as it is.
 
 ## Migration
 
@@ -442,7 +480,14 @@ and no `clarify.json` migrates it. The v2 record is left as it was (history).
 - Deferred to design → `deferred`, owner design. Dropped → `dropped`, with the reason (the user
   can reopen it).
 - Open, researching and asked issues → `open` / `to_decide`.
-- An H1 denial newer than the last approval becomes a redirect, read back to the user.
+- The H1 denials newer than the last approval become one redirect (all of them, in order), read
+  back to the user after the read-back.
+- The options v2 asked with are kept; a v2 default becomes the recommendation only when it names
+  one of the options ("Your call: …" was no recommendation). A drop keeps who dropped it and why
+  from the v2 history (J-0001's credentials: "judge: the README will cover it").
+- A migrated finding names no system: it is judged against the item's pins, or every pin, so a
+  `/stable/` (3.x) page never confirms a 2.4 fact. With only the repository's range known, a moving
+  page or a page outside the range confirms nothing either.
 - The job restarts at the **read-back** with all of this pre-filled; the screen says what was
   carried over.
 

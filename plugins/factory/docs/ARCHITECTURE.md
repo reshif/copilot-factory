@@ -95,7 +95,7 @@ One module owns every clarify rule; `workflows/clarify.js` only runs the agents 
 | `interpret` | interviewer | Maps prose onto the numbered decisions, each mapping quoting the reply; what it cannot map stays open. |
 | `redirect`, `redirect_wait` | interviewer, the user | A denial or `factory clarify redirect` split into clauses linked to items; after the user's ok, clarify restarts at the earliest stage they touch; each clause is reported done / not done at H1. |
 | `assemble` | contract writer | The whole contract and a coverage map (item → where); the CLI checks it (parses, keeps the Intent, user facts present) and writes it with its own sections: `## Decisions`, `## Facts relied on`, `## Design may choose`, `## Research gaps`. |
-| `check` | the CLI, then God Eye | Deterministic checks first (criteria testable and covered by verify commands, user facts honoured, no rejected source cited outside the CLI sections), then God Eye's seven-item checklist. A blocker goes back to its stage (assemble, research or the sheet), at most `clarify.max_writer_attempts` writer attempts; never a note. |
+| `check` | the CLI, then God Eye | Deterministic checks first (criteria testable and covered by verify commands, user facts honoured, no rejected source cited outside the CLI sections), then God Eye's seven-item checklist. A blocker goes back to its stage (assemble, research, the sheet or the read-back), at most `clarify.max_writer_attempts` writer attempts and `clarify.max_readiness_cycles` send-backs before a park; never a note. |
 | `ready` | — | H1 next; `h1View()` is what the gate shows. |
 
 | Rule | Where |
