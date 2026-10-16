@@ -95,6 +95,8 @@ module.exports = (c) => {
       const fixed = opt().plan === 'good' || /plan probe/.test(text);
       const cmd = fixed ? 'node tests/add.test.js' : 'vlan-sync-check --strict && node tests/add.test.js';
       fs.writeFileSync(file, JSON.stringify({ tasks: [{ id: 'T1', objective: 'Sync without SKIP_UNMATCHED_DST (ADR 001)', allowed_paths: ['src/add.js'], depends_on: [], criteria_ids: ['AC-1'], verify_commands: [{ cmd, covers: ['AC-1'] }] }] }));
+      // the build environment the plan runs in, proposed with it (nothing to download here)
+      fs.writeFileSync(path.join(jd, 'environment.proposed.json'), JSON.stringify({ version: 1, name: 'node-test', setup: ['node --version'], env: { NODE_ENV: 'test' }, notes: 'Plain node; the tests need nothing installed.' }));
       const v = F.cli(root, ['plan', 'validate', '--job', J]);
       return { valid: Boolean(v.valid), errors: v.errors || [], path: file };
     }

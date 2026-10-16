@@ -9,7 +9,7 @@ const GATES = ['H1', 'H2', 'H3', 'HF', 'HS', 'EH1', 'EH2', 'EH3'];
 // Steps a router may legitimately choose that are not recipe steps.
 const SPECIAL_STEPS = new Set(['amend', 'A']);
 // Steps whose completion the ledger records.
-const LEDGER_STEPS = new Set(['clarify', 'ground', 'decide', 'decompose', 'reconcile', 'prove', 'challenge', 'ship', 'distill', 'close', 'epic_gate', 'post_merge_challenge']);
+const LEDGER_STEPS = new Set(['clarify', 'deps', 'ground', 'decide', 'decompose', 'reconcile', 'prove', 'challenge', 'ship', 'distill', 'close', 'epic_gate', 'post_merge_challenge']);
 // Decision rules that legitimately send the job backwards.
 const REWIND_RULES = /^(row1|row2|row3|row4|row5|row6|cap)\./;
 

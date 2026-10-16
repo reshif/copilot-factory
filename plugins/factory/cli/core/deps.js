@@ -143,7 +143,10 @@ function repoDeps(root) {
       }
       if (/^tool\.poetry\.(dev-)?dependencies$|^tool\.poetry\.group\.[^.]+\.dependencies$/.test(section)) {
         const m = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=\s*(?:"([^"]*)"|\{[^}]*version\s*=\s*"([^"]*)")/.exec(l);
-        if (m && m[1].toLowerCase() !== 'python') add('pypi', m[1], (m[2] || m[3] || '').replace(/^==/, '') || lock[m[1].toLowerCase()] || null, `pyproject.toml:${i + 1}`);
+        if (m && m[1].toLowerCase() !== 'python') {
+          const spec = (m[2] || m[3] || '').replace(/^==/, '');
+          add('pypi', m[1], isExact(spec) ? spec : lock[m[1].toLowerCase()] || null, `pyproject.toml:${i + 1}`);
+        }
         return;
       }
       for (const q of l.matchAll(/"([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?\s*(?:(==)\s*([0-9][^",;\s]*)|[<>~!=^][^"]*)?\s*(?:;[^"]*)?"/g)) {
@@ -514,7 +517,7 @@ function fetch(root, { jobId, add = [] } = {}) {
   const fetched = packages.filter((p) => p.status === 'fetched');
   const gaps = packages.filter((p) => p.status === 'gap');
   const ledger = require('./ledger');
-  ledger.append(root, state.id, { kind: 'step', step: 'deps', ok: true, bound: { pins: pinsHash(root, state) }, detail: { fetched: fetched.map((p) => `${p.ecosystem}:${p.name}@${p.version}`), gaps: gaps.map((p) => ({ package: `${p.ecosystem}:${p.name}${p.version ? `@${p.version}` : ''}`, reason: p.reason })), skipped: S.enabled === false } });
+  ledger.append(root, state.id, { kind: 'step', step: 'deps', ok: true, bound: { contract: require('./invalidation').current(root, state).contract, pins: pinsHash(root, state) }, detail: { fetched: fetched.map((p) => `${p.ecosystem}:${p.name}@${p.version}`), gaps: gaps.map((p) => ({ package: `${p.ecosystem}:${p.name}${p.version ? `@${p.version}` : ''}`, reason: p.reason })), skipped: S.enabled === false } });
   try {
     require('./events').append(root, { event: 'deps_fetch', job: state.id, fetched: fetched.length, gaps: gaps.length });
   } catch {

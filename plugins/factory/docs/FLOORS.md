@@ -17,7 +17,7 @@ Floors are the steps no recipe may omit, per risk level ([`policy/floors.json`](
 | `human_merge` | ✅ | ✅ | ✅ | the merge commit is recorded (GitHub via `pr sync`, or your `merged <commit>` reply) |
 | `ground` | | ✅ | ✅ | findings recorded for the current contract |
 | `design_record` | | ✅ | ✅ | an ADR / no-adr / contracts record, decided for the current contract |
-| `design_critique` | | ✅ | ✅ | God Eye approved this design hash, or rounds ran out and you approved it at H2 |
+| `design_critique` | | ✅ | ✅ | The design critics (God Eye, and the API-conformance critic when the job has dependency source) approved this design hash, or their loop stopped (no progress, or the ceiling) and you approved the design at H2 or at the combined design + plan gate (H3 at medium risk) |
 | `plan_validated` | | ✅ | ✅ | `plan validate` passed for the current plan hash |
 | `challenge:tests` · `challenge:security` | | ✅ | ✅ | those lanes passed on the current fingerprint |
 | `finding_verifiers` | | ✅ | ✅ | every blocker/major finding was confirmed or refuted (none unverified) |

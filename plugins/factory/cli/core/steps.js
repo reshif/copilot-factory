@@ -176,7 +176,9 @@ function isDone(ctx, stepDef) {
       return approved(ctx, id, gateHash(ctx, id));
     }
     case 'deps':
-      return fresh('deps', { pins: require('./deps').pinsHash(root, state) });
+      // once per contract; packages ground or the planner ask for later are fetched where they
+      // are asked for (ground's factory.fetchDeps, decompose's record)
+      return fresh('deps', { contract: b.contract });
     case 'ground':
       return fresh('ground', { contract: b.contract });
     case 'decide':

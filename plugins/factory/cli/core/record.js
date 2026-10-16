@@ -181,6 +181,15 @@ function recDecompose(root, state, env) {
     ledger.append(root, state.id, { kind: 'step', step: 'decompose', ok: false, bound: { plan: b.plan, contract: b.contract }, detail: { errors: v.errors } });
     return { status: 'retry', errors: v.errors, message: 'The plan is still invalid; factory next runs decompose again (the planner gets the errors).' };
   }
+  // Packages the planner's plan or environment adds: fetched now (never run; a failure is a gap)
+  const planDeps = (((d.planner || {}).deps) || []).filter((x) => x && x.ecosystem && x.name && x.version);
+  if (planDeps.length && !state.epic) {
+    try {
+      require('./deps').fetch(root, { jobId: state.id, add: planDeps.map((x) => (x.ecosystem === 'pypi' ? `pypi:${x.name}==${x.version}` : `${x.ecosystem}:${x.name}@${x.version}`)) });
+    } catch {
+      /* a gap at worst; the plan stands */
+    }
+  }
   // The plan probe (cli/core/probe.js): the workflow ran it on this plan; an envelope recorded
   // without it (or a plan that changed since) is probed here. Problems go back to the planner
   // once more, unless they are the ones it already could not fix: then they go to the gate.

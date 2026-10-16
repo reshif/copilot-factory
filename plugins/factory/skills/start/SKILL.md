@@ -30,7 +30,7 @@ A request with no active job for it → follow the **intake** skill to create th
 | `questions` | Ask exactly the `questions` as one numbered list. Record each answer with `factory answer --question "…" --answer "…"`. | **stop**, then `factory drive --detach` |
 | `degraded` | Ask the user: re-run, or go on without the missing angle. To go on, write the angle under Assumptions in the contract and run the workflow from `next` with `--accept-degraded`. | **stop**, then `factory drive --detach` |
 | `parked` | Follow the **park** skill: `next.reason`, `park.kind` and `park.next` (the suggested step). | **stop** |
-| `wait` | Say in one line what is awaited (`summary`; a merge: the **ship** skill's commands). | **stop** |
+| `wait` | Say in one line what is awaited (`summary`; a merge: the **ship** skill's commands; a build that waits for its environment, `rule` `env.unconfirmed`: show `next.environment` and the `confirm environment <hash>` reply from `next.reason`, never confirm it yourself). | **stop** |
 | `amend` | Follow the **amend** skill. | `factory drive --detach` |
 | `evidence` | For each AC in `acs`, check the job worktree shows it, then run its line in `commands` with the real path. If it isn't there, tell the user and **stop**. | `factory drive --detach` |
 | `skill` | Follow the factory skill named in `next.skill`. | `factory drive --detach` |

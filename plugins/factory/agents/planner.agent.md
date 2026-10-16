@@ -31,6 +31,7 @@ The JSON object your reply format asks for, fields in this order:
 2. `errors`: the validate command's remaining errors, word for word; `[]` when valid.
 3. `path`: the plan.json you wrote.
 4. `summary`: one or two sentences: the tasks and what each proves.
+5. `deps` (only when the plan or its environment adds a pinned package the job did not fetch yet): each `ecosystem` (`pypi`, `npm` or `go`), `name` and `version` (exact). The CLI fetches its source, read-only, for the plan critic and the builders.
 
 Example:
 ```json

@@ -121,6 +121,8 @@ function greenfield(root, base, e) {
     tracked = [];
   }
   const { matchesAny } = require('../lib/glob');
+  // only a setup that installs from a manifest needs one: `pip install -e .`, `npm ci`, …
+  if (!/pip3? install|poetry install|uv sync|npm (ci|install)|pnpm install|yarn( install)?\b|go mod|cargo (build|fetch)|bundle install|invoke build/.test((e.setup || []).join('\n'))) return false;
   const keys = e.cache_key || [];
   if (keys.length) return !tracked.some((f) => matchesAny(f, keys));
   return !tracked.some((f) => /^(pyproject\.toml|setup\.py|setup\.cfg|requirements[\w.-]*\.txt|package\.json|go\.mod|Cargo\.toml|Gemfile|pom\.xml|build\.gradle)$/.test(f));
@@ -181,7 +183,8 @@ function run(root, { jobId } = {}) {
       try {
         if (e) {
           const { evidence: _e, notes: _n, source: _s, ...runEnv } = e;
-          E = envMod.ensure(root, null, { taskId: 'probe', wt, env: runEnv });
+          // the probe's budget bounds setup too
+          E = envMod.ensure(root, null, { taskId: 'probe', wt, env: { ...runEnv, timeout_seconds: Math.min(runEnv.timeout_seconds || 1200, S.budget) } });
           if (!E.ok) {
             setup = { status: 'broken', cmd: E.broken.cmd, code: E.broken.code, tail: String(E.broken.tail || '').slice(-800) };
             problems.push(`The build environment does not set up: ${E.broken.reason.slice(0, 600)}. Fix environment.proposed.json (setup, env, services) so every worktree can build.`);

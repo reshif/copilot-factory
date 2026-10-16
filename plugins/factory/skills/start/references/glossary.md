@@ -8,6 +8,11 @@ Read this when a factory output or skill uses a term you don't know. Each term i
 - **Contract**: `.factory/jobs/<job>/contract.md`, the outcome the job promises: Intent, Goal, acceptance criteria (`AC-n`), allowed paths and verify commands. Approved at gate H1.
 - **Gate**: a stop where only the user's reply moves the job on (`approve` / `deny <what must change>`). Each approval is bound to the **hash** of the documents shown; if they change, the gate comes back.
 - **God Eye**: the factory's independent critic agent. It reads the contract, design or plan cold, as someone who has never seen the conversation, and returns `approve` or `revise`.
+- **Dependency source** (`.factory/deps/<job>/`): the pinned versions of the packages a job relies on, downloaded by `factory deps fetch` without running them and unpacked read-only, so researchers and critics read the library instead of remembering it. A download that fails is a **gap**, shown to the agents and at the design gate; it never stops the job.
+- **API ledger** (`api-ledger.json`, entries `L-n`): facts quoted from the dependency source (symbol, file:line, the exact text, the version), each checked by the CLI against the file. The ADR's "External API usage" table cites them.
+- **API-conformance critic**: the design critic beside God Eye that checks every external call the design makes against the dependency source; every serious finding cites a file:line or a probe's output, and a finding verifier checks it before it costs a revise.
+- **Plan probe** (`factory plan probe`): the CLI lints every verify command and dry-runs it in a scratch worktree inside the build environment the plan proposes, before anyone approves the plan.
+- **Combined gate**: at medium risk, H3 approves the design, the plan and the build environment in one reply; approving it also confirms that environment.
 - **Workflow**: a fixed fan-out of agents (`clarify`, `ground`, `fanout-judge`, `decompose`, `realize`, `reconcile`) that `factory run <workflow>` starts, one `copilot -p` process per agent.
 - **Brief**: the instructions `factory run` builds for each agent of a workflow. You never write one.
 - **Envelope**: the JSON result a workflow returns, which `factory run` passes to `factory record` to be checked and sealed. You never write one.
