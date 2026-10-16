@@ -1230,11 +1230,13 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
   if (!d || d.action !== 'skill' || d.skill !== 'distill') fail(`factory next did not ask for distill (its last decision${d ? ` ${d.id}` : ''} says ${d ? `${d.action} "${d.step || d.skill || d.command || ''}"` : 'nothing yet'}). Run factory next and do what it says. Nothing was started.`, 'not_waiting_for_distill', { decision_id: d ? d.id : null });
   const context = require('./lifecycle').distillContext(root, { jobId: state.id });
   const before = new Set(lessons.load(root).lessons.map((l) => l.id));
-  const worth = context.confirmed.length || context.verify_fix_rounds || (context.minor.length && context.minor_in_other_jobs.length);
+  // build trouble counts too (P4.4): parks, retries, scope violations, a broken environment,
+  // timeouts and integration failures are what a process or environment lesson comes from
+  const worth = context.confirmed.length || context.verify_fix_rounds || (context.minor.length && context.minor_in_other_jobs.length) || (context.trouble && context.trouble.count);
   const left = Math.max(0, (context.cap || 0) - context.already_proposed.length);
   const log = (rec) => events.append(root, { event: 'distill_write', job: state.id, decision_id: d.id, ...rec });
   if (!worth || !left) {
-    const why = !left ? `the cap of ${context.cap} lessons is already used` : 'no confirmed findings, no verify-fix rounds, no minor findings repeated in other jobs';
+    const why = !left ? `the cap of ${context.cap} lessons is already used` : 'no confirmed findings, no verify-fix rounds, no minor findings repeated in other jobs, no build trouble (parks, retries, scope violations, environment, timeouts, integration failures)';
     log({ outcome: 'skipped', reason: why, lessons: [] });
     return { job: state.id, skipped: true, reason: `Nothing to learn from: ${why}. No agent was started. Run factory distill done.`, lessons: [], agents: [] };
   }
@@ -1271,6 +1273,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
       `# Distill job ${state.id}: ${state.title}`,
       '',
       `You may write at most ${left} lesson(s) from this job. Lessons that already exist: already_proposed below, and ${path.join(root, '.factory', 'lessons', 'lessons.json')}.`,
+      'Learn from the build trouble too (`trouble` below: parks, resumes, retries, scope violations, a broken environment, timeouts, integration failures, blocked or exhausted tasks, manual repairs): a process or environment lesson ("Run the services health check before the first wave", "Tasks that touch src/cli.js are one wiring task") is as good as a code lesson. Scope such a lesson to the paths it is about, or `**` when it is about the whole project.',
       'Record each lesson with exactly this command (one per lesson):',
       `  ${cli} lessons add --job ${state.id} --text "<lesson>" --scope "<glob>,<glob>" --why "<finding id: what went wrong>"`,
       'The command prints the lesson with its id (L<n>). Run no other factory command.',

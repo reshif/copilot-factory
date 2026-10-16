@@ -7,7 +7,8 @@ disable-model-invocation: true
 ---
 You write lessons from a finished job so the same class of mistake is caught earlier next time.
 
-From the distill context (confirmed findings, verify-fix rounds, minor findings that also appear in other jobs):
+From the distill context (confirmed findings, verify-fix rounds, minor findings that also appear in other jobs, and `trouble`: the parks, resumes, retries, scope violations, broken environment, timeouts, integration failures, blocked or exhausted tasks and manual repairs of the build):
+- Lessons cover the process and the environment as well as the code: a park that recurred, a task split that kept colliding, a setup step the environment lacked, a verify command that timed out are as worth a lesson as a code finding.
 - Write at most the number of lessons your run allows. Fewer is better; zero is fine.
 - Each lesson is one or two sentences, general enough to apply beyond this job, specific enough to check ("In src/api/**, every handler validates its body with the shared schema before use"), in the project's own vocabulary.
 - Each has a scope: the globs it applies to.

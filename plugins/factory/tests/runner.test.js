@@ -1051,3 +1051,53 @@ test('P4.1 transcript caps: a transcript over the cap rotates to <label>.1.jsonl
   const tot = T.totals([{ ms: 1000, session_id: 's1', usage: { reported: true, input_tokens: 5, session_premium_requests: 2 } }, { ms: 1000, session_id: 's1', usage: { reported: true, input_tokens: 3, session_premium_requests: 3 } }, { ms: 500, usage: { reported: false } }]);
   assert.deepEqual([tot.input_tokens, tot.premium_requests, tot.reported_runs, tot.unreported_runs, tot.output_tokens], [8, 3, 2, 1, null]);
 });
+
+test('P4.4 distill learns from build trouble: parks (typed ones read generically), retries, scope violations, environment, verifier timeouts and integration failures start the lesson-writer', () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  const ev = require('../cli/core/events');
+  const job = require('../cli/core/job');
+  const decisions = require('../cli/core/decisions');
+  const ledger = require('../cli/core/ledger');
+  const L = require('../cli/core/lifecycle');
+  assert.equal(L.distillContext(root, { jobId: J }).trouble.count, 0, 'a clean job has no trouble');
+  decisions.write(root, { id: `${J}-D3`, job: J, action: 'parked', rule: 'cap.verify_fix_rounds', reason: 'verify-fix rounds exhausted' });
+  decisions.write(root, { job: J, action: 'human.resume', from: 'verify' });
+  ev.append(root, { event: 'cli', job: J, cmd: 'record', ok: true, status: 'park', workflow: 'realize' });
+  ev.append(root, { event: 'task_parked', job: J, type: 'dependency_conflict', reason: 'Merging T1 into T2 conflicts' }); // a typed park from a later factory
+  ev.append(root, { event: 'drive_stop', job: J, type: 'needs_human', reason: 'gate H2' });
+  ev.append(root, { event: 'agent_run', job: J, role: 'builder', label: 'build T2 #2', outcome: 'ok' });
+  ev.append(root, { event: 'agent_run', job: J, role: 'finding-verifier', label: 'verify code-1', outcome: 'timeout', time_cap_sec: 240 });
+  ev.append(root, { event: 'environment_broken', job: J, task: 'T1', cmd: 'pip install -e .', code: 1, reason: 'setup failed' });
+  ev.append(root, { event: 'cli', job: J, cmd: 'amend', sub: 'submit', ok: true });
+  ledger.append(root, J, { kind: 'step', step: 'integrate', ok: false, bound: {}, detail: { wave: 2, kind: 'commands', commands: [{ cmd: 'npm test', pass: false, code: 1 }] } });
+  const s = job.load(root, J);
+  s.tasks = { T2: { attempts: 3, outcome: 'exhausted', history: [{ attempt: 1, verify: { pass: false, scope_violations: ['src/index.js'] } }] } };
+  job.save(root, s);
+  const t = L.distillContext(root, { jobId: J }).trouble;
+  assert.deepEqual(t.parks.map((p) => [p.source, p.type]), [['router', 'cap.verify_fix_rounds'], ['realize result', null], ['task_parked', 'dependency_conflict'], ['drive_stop', 'needs_human']]);
+  assert.equal(t.resumes.length, 1);
+  assert.deepEqual(t.retries.map((r) => r.label), ['build T2 #2']);
+  assert.equal(t.verifier_timeouts, 1);
+  assert.deepEqual(t.scope_violations, [{ task: 'T2', attempt: 1, paths: ['src/index.js'] }]);
+  assert.equal(t.environment_broken[0].cmd, 'pip install -e .');
+  assert.deepEqual(t.integration_failures.map((x) => [x.step, x.kind, x.commands]), [['integrate', 'commands', ['npm test']]]);
+  assert.deepEqual(t.tasks.map((x) => [x.task, x.outcome]), [['T2', 'exhausted']]);
+  assert.deepEqual(t.manual_repairs.map((x) => x.what), ['factory amend submit']);
+  assert.equal(t.count, 12);
+  // distill write: no confirmed findings, but the trouble is worth a lesson, so the agent runs and sees it
+  decisions.write(root, { id: 'D-distill-1', job: J, action: 'skill', skill: 'distill', step: 'distill' });
+  const st = job.load(root, J);
+  st.last_decision_id = 'D-distill-1';
+  job.save(root, st);
+  const h = harness({ 'factory:lesson-writer': { lessons: [], nothing_to_learn: true } });
+  const r = spawnSync('node', [F.BIN, 'distill', 'write'], { cwd: root, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: '', COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: h.file, FAKE_COPILOT_LOG: path.join(path.dirname(h.file), 'copilot.jsonl') }, timeout: 120000 });
+  const out = JSON.parse(r.stdout);
+  assert.notEqual(out.skipped, true, JSON.stringify(out));
+  const [call] = h.log();
+  assert.equal(call.agent, 'factory:lesson-writer');
+  const brief = fs.readFileSync(flagOf(call.argv, '-p').split('\n').map((l) => l.trim()).find((l) => l.startsWith('/')), 'utf8');
+  assert.match(brief, /"trouble":/);
+  assert.match(brief, /process or environment lesson/);
+  assert.match(brief, /dependency_conflict/);
+});
