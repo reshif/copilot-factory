@@ -561,6 +561,10 @@ test('realize: needs_paths inside the contract\'s allowed paths are granted (nev
   assert.equal(G.grant(root, J, 'T1', ['README.md']).refused[0].why.includes('outside the contract'), true, 'outside the contract: an amendment, never a grant');
   assert.match(G.grant(root, J, 'T1', ['src/other.js']).refused[0].why, /T2's path/);
   assert.match(G.grant(root, J, 'T1', ['src/**']).refused[0].why, /a glob/);
+  // M4: a bare directory (or one with a trailing slash) covers other tasks' files: refused
+  assert.match(G.grant(root, J, 'T1', ['src']).refused[0].why, /a directory/);
+  assert.match(G.grant(root, J, 'T1', ['src/']).refused[0].why, /a directory/);
+  assert.match(G.grant(root, J, 'T1', ['src/new/']).refused[0].why, /a directory/);
   assert.match(G.grant(root, J, 'T1', ['.factory/jobs/x']).refused[0].why, /outside the contract|factory or git state/);
   const b = F.cli(root, ['wfargs', 'realize']);
   let calls = 0;

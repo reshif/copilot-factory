@@ -394,6 +394,19 @@ function taskPaths(state, task) {
 // the contract, never another task's file. All or nothing; at most a few per task. Anything else
 // stays a needs_paths park (an amendment the human approves).
 const MAX_GRANTS = 6;
+// A directory on the base commit, the job branch or disk (a grant names files only).
+function isDirectory(root, state, p) {
+  for (const ref of [state.branch, state.base_commit].filter(Boolean)) {
+    const r = git.run(root, ['cat-file', '-t', `${ref}:${p}`], { allowFail: true });
+    if (r.code === 0 && String(r.stdout).trim() === 'tree') return true;
+  }
+  try {
+    return fs.statSync(path.join(root, p)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function grant(root, jobId, taskId, paths) {
   const state = job.resolve(root, jobId);
   const { plan, task } = planTask(root, state, taskId);
@@ -409,6 +422,8 @@ function grant(root, jobId, taskId, paths) {
         ? 'a glob: only plain paths are granted'
         : p.startsWith('/') || p.split('/').includes('..')
           ? 'not a path inside the repository'
+          : p.endsWith('/') || isDirectory(root, state, p)
+            ? 'a directory: only single files are granted (a directory covers files other tasks may own)'
           : p.startsWith('.factory/') || p.startsWith('.git/')
             ? 'factory or git state'
             : matchesAny(p, pol.protected_paths || [])
@@ -418,7 +433,8 @@ function grant(root, jobId, taskId, paths) {
                 : !matchesAny(p, allowed)
                   ? `outside the contract's allowed paths (${allowed.join(', ') || 'none'}): only an amendment the human approves widens them`
                   : (() => {
-                      const other = plan.tasks.find((x) => x.id !== taskId && matchesAny(p, taskPaths(state, x)));
+                      // another task's file, or a path under this one (a file of the same name as a directory it owns)
+                      const other = plan.tasks.find((x) => x.id !== taskId && (matchesAny(p, taskPaths(state, x)) || taskPaths(state, x).some((y) => String(y).replace(/^\.\/+/, '').startsWith(`${p}/`))));
                       return other ? `${other.id}'s path: give it to one task by amending the plan` : null;
                     })();
     if (why) refused.push({ path: p || raw, why });
