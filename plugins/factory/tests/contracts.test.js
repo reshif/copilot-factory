@@ -199,7 +199,7 @@ module.exports = (c) => {
   const ctx = (mode) => ({
     root,
     brief: { job: 'J-0001', workflow: 'fanout-judge', config: 'contracts' },
-    settings: { bin: FAKE, maxParallel: 6, modelIds: {}, timeoutSec: 60, resumeForRetry: true, flags: [] },
+    settings: { bin: FAKE, maxParallel: 6, modelIds: {}, timeoutSec: 60, resumeForRetry: true, flags: [], transientRetries: 4, transientBackoffSec: 10 },
     runs: [],
     files: 0,
     scratch: path.join(root, '.factory', 'scratch', 'runner', 'J-0001', mode),

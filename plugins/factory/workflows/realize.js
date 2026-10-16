@@ -102,7 +102,7 @@ async function attempt(id) {
     .replace('{{failures}}', () => (s.failures.length ? s.failures.map((f) => `  - ${f}`).join('\n') : '  - (none)'))
   // After a failed attempt the builder continues its previous Copilot session (the runner
   // resumes it when it has one), with the raw failure as this turn's input.
-  const o = opts({ ...T[id].builder, schema: brief.builder_schema }, `build ${id} #${attemptNo(id)}`, builderModel(T[id].builder, s.attempts + 1))
+  const o = opts({ ...T[id].builder, schema: brief.builder_schema }, `build ${id} #${attemptNo(id)}`, builderModel(T[id].builder, attemptNo(id))) // the global attempt: escalation holds across runs
   if (s.failures.length) o.resume = true
   const b = await call(prompt, o)
   // dependency_conflict, the first time: task start could not merge into the task's

@@ -222,6 +222,25 @@ function copilotChecks(add, root) {
   const v = spawnSync(file, args, { encoding: 'utf8', timeout: 20000, ...(shell ? { shell: true, windowsVerbatimArguments: true } : {}) });
   const version = `${v.stdout || ''}`.trim().split('\n')[0];
   add('copilot cli', v.status === 0, v.status === 0 ? `${bin}: ${version}` : `${bin} not found or failing: install the GitHub Copilot CLI (or set COPILOT_BIN). factory run needs it`, 'warning');
+  // The model each role runs on, and whether this CLI predates a default id (models.js)
+  try {
+    const M = require('./models');
+    const pol = require('./policy').load(root);
+    const a = pol.agents || {};
+    if (M.modelsOff(pol)) add('copilot models', true, 'policy.agents.models_enabled is false: every role runs on your Copilot default model', 'warning');
+    else {
+      const ids = (a.models && typeof a.models === 'object' ? Object.entries(a.models) : []).map(([r, al]) => [r, al && al !== 'default' ? (a.model_ids || {})[al] || al : null]);
+      const used = [...new Set(ids.map(([, id]) => id).filter(Boolean).concat((a.builder_escalation || []).map((al) => (a.model_ids || {})[al] || al)))];
+      const old = v.status === 0 ? M.versionWarnings(version, used) : [];
+      const rejected = [...M.loadRejected(root).keys()];
+      const byId = {};
+      for (const [r, id] of ids) (byId[id || 'session default'] = byId[id || 'session default'] || []).push(r);
+      const map = Object.entries(byId).map(([id, rs]) => `${id}: ${rs.join(', ')}`).join(' · ');
+      add('copilot models', !old.length && !rejected.length, `${old.length ? `this Copilot CLI (${version}) predates ${old.map((x) => `${x.id} (added in ${x.min})`).join(', ')}: update the CLI (copilot update), or set policy.agents.model_ids / models_enabled: false. ` : ''}${rejected.length ? `Copilot refused ${rejected.join(', ')} recently; those roles fall back to your default model (.factory/cache/rejected-models.json). ` : ''}Roles by model: ${map}`, 'warning');
+    }
+  } catch {
+    /* no policy yet */
+  }
   const allowAll = String(process.env.COPILOT_ALLOW_ALL || '').trim();
   if (allowAll && !/^(0|false|no|off)$/i.test(allowAll)) add('copilot allow-all', false, `COPILOT_ALLOW_ALL=${allowAll} is set: every tool runs without asking in your sessions. Human gates still need your reply, but unset it for factory work`, 'warning');
   const plan = String(process.env.COPILOT_PLAN_THEN_AUTOPILOT || '').trim();

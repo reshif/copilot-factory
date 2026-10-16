@@ -83,6 +83,13 @@ async function answer(call) {
 
 (async () => {
   const start = Date.now();
+  // FAKE_COPILOT_REJECT_MODELS: comma-separated ids this "account" can't use: refused at startup
+  const rejected = String(process.env.FAKE_COPILOT_REJECT_MODELS || '').split(',').filter(Boolean);
+  if (model && rejected.includes(model)) {
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify({ start, end: Date.now(), agent, model, cwd: process.cwd(), argv, session, turn: 0, exit: 1, rejected: true, env: {} }) + '\n');
+    process.stderr.write(`Error: Model "${model}" is not available. Run /model to see the models you can use.\n`);
+    process.exit(1);
+  }
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith('FACTORY_')) env[k] = v;
   const n = readLog().filter((l) => l.agent === agent).length;

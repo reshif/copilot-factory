@@ -93,7 +93,7 @@ function agentRuns(root) {
   if (RUNS && RUNS.root === root) return RUNS.byJob;
   const byJob = {};
   for (const e of readEventLog(root)) {
-    if (e.event !== 'agent_run' || !e.job || e.outcome === 'copilot_unavailable') continue;
+    if (e.event !== 'agent_run' || !e.job) continue; // an unavailable or transient-exhausted run took time too
     (byJob[e.job] = byJob[e.job] || []).push(e);
   }
   RUNS = { root, byJob };
@@ -356,7 +356,7 @@ function toMarkdown(r) {
     const c = m.cost;
     if (!c) continue;
     const top = Object.entries(c.by_role || {}).sort((a, b) => b[1].agent_seconds - a[1].agent_seconds).slice(0, 3).map(([role, x]) => `${role} ${x.agent_seconds}s`).join(', ');
-    L.push(`| ${m.job} | ${m.recipe} | ${c.agent_runs} | ${c.agent_seconds} | ${c.tool_calls} | ${fmt(c.input_tokens)} | ${fmt(c.output_tokens)} | ${fmt(c.cache_read_tokens)} | ${fmt(c.premium_requests)} | ${fmt(c.cost)} | ${c.unreported_runs} | ${top || '—'} |`);
+    L.push(`| ${m.job} | ${m.recipe} | ${c.agent_runs} | ${c.agent_seconds} | ${fmt(c.tool_calls)} | ${fmt(c.input_tokens)} | ${fmt(c.output_tokens)} | ${fmt(c.cache_read_tokens)} | ${fmt(c.premium_requests)} | ${fmt(c.cost)} | ${c.unreported_runs} | ${top || '—'} |`);
   }
   const q = r.quality;
   if (q) {

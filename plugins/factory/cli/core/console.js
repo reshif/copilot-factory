@@ -62,18 +62,22 @@ function transcriptPath(p) {
   return /^\.factory\/scratch\/runs\/[\w.@-]+(\/[\w.@-]+)+$/.test(s) && !s.split('/').includes('..') ? s : null;
 }
 
-// The runner's per-agent facts for an agent row: transcript, tool calls, tokens.
-function runnerExtras(e) {
+// The runner's per-agent facts for an agent row: transcript, tool calls, tokens. A transcript the
+// disk budget pruned (transcripts.pruneAll) is marked pruned instead of linked.
+function runnerExtras(e, root = null) {
   const out = {};
+  const gone = (rel) => root && !fs.existsSync(path.join(root, rel)) && !fs.existsSync(path.join(root, rel.replace(/\.jsonl$/, '.1.jsonl')));
   const t = transcriptPath(e.transcript);
-  if (t) out.transcript = t;
+  if (t && gone(t)) out.transcript_pruned = true;
+  else if (t) out.transcript = t;
+  if (e.transcript_pruned) out.transcript_pruned = true;
   if (Number.isInteger(e.tool_calls)) out.tool_calls = e.tool_calls;
   if (e.usage && typeof e.usage === 'object') {
     const u = e.usage;
     out.usage = u.reported ? { reported: true, input_tokens: typeof u.input_tokens === 'number' ? u.input_tokens : null, output_tokens: typeof u.output_tokens === 'number' ? u.output_tokens : null, premium_requests: typeof u.session_premium_requests === 'number' ? u.session_premium_requests : null, cost: typeof u.cost === 'number' ? u.cost : null } : { reported: false };
   }
   const st = transcriptPath(e.stderr_file);
-  if (st) out.stderr_file = st;
+  if (st && !gone(st)) out.stderr_file = st;
   return out;
 }
 
@@ -258,7 +262,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       delete started[e.agent_id];
     }
     // `factory run` (Copilot) times each agent process itself: one agent_run per agent() call.
-    if (e.event === 'agent_run') (hookAgents[e.decision_id || 'none'] = hookAgents[e.decision_id || 'none'] || []).push({ agent_type: e.agent_type, label: e.label, ms: e.ms, verdict: typeof e.verdict === 'string' ? e.verdict : null, ...runnerExtras(e) });
+    if (e.event === 'agent_run') (hookAgents[e.decision_id || 'none'] = hookAgents[e.decision_id || 'none'] || []).push({ agent_type: e.agent_type, label: e.label, ms: e.ms, verdict: typeof e.verdict === 'string' ? e.verdict : null, ...runnerExtras(e, root) });
   }
   const runningNow = [];
   const staleNow = [];
@@ -622,10 +626,14 @@ function serve(root, { port = 4477, job, label, interval = 400, onReady } = {}) 
       // agent transcripts only (.factory/scratch/runs/…), as plain text
       let rel = null;
       try { rel = transcriptPath(decodeURIComponent(url.slice('/files/'.length))); } catch { rel = null; }
-      const file = rel ? path.resolve(root, rel) : null;
-      const base = path.resolve(root, '.factory', 'scratch', 'runs') + path.sep;
+      const file = rel && /\.(jsonl|log)$/.test(rel) ? path.resolve(root, rel) : null;
       let text = null;
-      if (file && file.startsWith(base)) { try { text = fs.readFileSync(file); } catch { text = null; } }
+      try {
+        // the real path, after any symlink, must still be inside the transcripts folder
+        const base = fs.realpathSync(path.resolve(root, '.factory', 'scratch', 'runs')) + path.sep;
+        const real = file ? fs.realpathSync(file) : null;
+        if (real && real.startsWith(base) && fs.statSync(real).isFile()) text = fs.readFileSync(real);
+      } catch { text = null; }
       if (text === null) { res.writeHead(404); res.end('not found'); return; }
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
       res.end(text);
@@ -664,4 +672,4 @@ function runServe(root, { port, job, label }) {
   return null;
 }
 
-module.exports = { build, render, run, serve, runServe, fingerprint, STAGE_OF, STALE_AGENT_MS };
+module.exports = { build, render, run, serve, runServe, fingerprint, runnerExtras, STAGE_OF, STALE_AGENT_MS };

@@ -73,6 +73,8 @@ function settings(root, state) {
     bin: process.env.COPILOT_BIN || 'copilot',
     maxParallel: num((pol.limits || {}).max_parallel_agents, 4),
     modelIds: (pol.agents || {}).model_ids || {},
+    // the live switch (models.js): every role on the Copilot session default, running jobs included
+    modelsOff: require('./models').modelsOff(live),
     timeoutSec: num(cp.agent_timeout_seconds, 1800),
     resumeForRetry: cp.resume_for_retry !== false,
     // P3.3 transient failures (rate limit, 5xx, network): re-spawned with backoff and jitter
@@ -741,7 +743,16 @@ async function runAgent(ctx, prompt, opts) {
     throw new Error(`agent() called without a real factory agentType (got ${JSON.stringify(agentType)}) for "${o.label}"`);
   }
   const S = ctx.settings;
-  const model = modelId(S.modelIds, o.model);
+  // the role's model id, unless models are switched off or the CLI refused that id earlier in
+  // this run or recently (models.js): then the session default, with the skip on the record
+  if (!ctx.rejectedModels) ctx.rejectedModels = require('./models').loadRejected(ctx.root);
+  let model = S.modelsOff ? null : modelId(S.modelIds, o.model);
+  let modelSkipped = null;
+  if (model && ctx.rejectedModels.has(model)) {
+    modelSkipped = model;
+    model = null;
+  }
+  let modelFallback = null;
   // the workflow run and the step (phase) in force when agent() was called, for the console's step list
   const wf = ctx.wfRun ? { wf_run: ctx.wfRun, step: typeof ctx.phaseIndex === 'number' ? ctx.phaseIndex : -1 } : {};
   // A time cap from the workflow (opts.timeoutSec: clarify's scout budget) counts from the
@@ -804,22 +815,48 @@ async function runAgent(ctx, prompt, opts) {
     const tm = /^(?:build|sweep) (\S+)/.exec(o.label || '');
     const buildEnv = ctx.brief.workflow === 'realize' && tm && ctx.taskEnv ? ctx.taskEnv[tm[1]] || {} : {};
     const env = { ...process.env, ...buildEnv, FACTORY_DRIVE: '', FACTORY_ROOT: ctx.root, FACTORY_RUNNER: '1', FACTORY_JOB: ctx.brief.job, FACTORY_AGENT_ROLE: role, FACTORY_AGENT_LABEL: o.label || role };
-    const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail] });
+    // every spawn's stderr, as it ended, into <label>.stderr.log (transient re-spawns included)
+    const stderrFile = tfile ? tfile.replace(/\.jsonl$/, '.stderr.log') : null;
+    const stderrRel = stderrFile ? path.relative(ctx.root, stderrFile).split(path.sep).join('/') : null;
+    let stderrSeen = '';
+    const logStderr = (r) => {
+      if (!r || !String(r.stderr || '').trim()) return;
+      stderrSeen += `${stderrSeen ? '\n' : ''}${r.stderr}`;
+      if (stderrFile) transcripts.writeStderr(stderrFile, `${r.stderr.endsWith('\n') ? r.stderr : `${r.stderr}\n`}`, { maxBytes: (S.transcripts || {}).maxBytes });
+    };
+    const failedTrail = () => ({ ...(tRel ? { transcript: tRel } : {}), ...(stderrSeen ? { stderr_tail: transcripts.stderrTail(stderrSeen), ...(stderrRel && fs.existsSync(stderrFile) ? { stderr_file: stderrRel } : {}) } : {}), usage: sink.result().usage });
+    const closeUnavailable = (detail, r) => events.append(ctx.root, { event: 'agent_run', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, cwd, ms: r ? r.ms : 0, exit: r ? r.code : null, outcome: 'copilot_unavailable', code: 'copilot_unavailable', errors: [detail], ...failedTrail() });
     const spawnOnce = async (text, retryTurn = false, capSecOverride = null) => {
       if (ctx.unavailable) {
         if (retryTurn) closeUnavailable(ctx.unavailable.detail); // its first turn already started it
         throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
       }
       if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, session_id: sessionId, ...(resumedFrom ? { resumed_session: true } : {}), ...(tRel ? { transcript: tRel } : {}), pid: process.pid });
-      const argv = copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm });
+      let argv = copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm });
       let r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()), sink });
+      logStderr(r);
+      // The CLI refused the turn because of its --model (an id this CLI, plan or org can't use):
+      // the same turn once more on the session default, no attempt spent, and the id skipped for
+      // the rest of this run and remembered for later runs (models.js).
+      const refused = model ? require('./models').rejection(r, model) : null;
+      if (refused) {
+        modelFallback = { model_id: model, detail: refused };
+        if (!ctx.rejectedModels.has(model)) ctx.note(`Copilot refused the model ${model} (${refused}); ${o.label || role} and the rest of this run use the session default model. Set policy.agents.model_ids or policy.agents.models_enabled: false to change it.`);
+        ctx.rejectedModels.set(model, { at: new Date().toISOString(), detail: refused });
+        require('./models').noteRejected(ctx.root, model, refused);
+        events.append(ctx.root, { event: 'agent_model_fallback', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, label: o.label || role, role, model: o.model || null, model_id: model, detail: refused, exit: r.code });
+        model = null;
+        argv = copilotArgs({ prompt: argv[argv.indexOf('-p') + 1], agentType, model: null, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm });
+        r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()), sink });
+        logStderr(r);
+      }
       // Transient (429, 5xx, network): back off with jitter and spawn the same turn again; the
       // workflow never sees the failure, so no attempt is spent. After transient_retries the run
       // stops (nothing recorded) with copilot_transient: the service is down, not the agent wrong.
       for (let n = 0, why = transient(r); why; why = transient(r), n += 1) {
-        const waitMs = transientWaitMs(n, S.transientBackoffSec);
+        const waitMs = transientWaitMs(n, typeof S.transientBackoffSec === 'number' ? S.transientBackoffSec : 10);
         const room = capSecOverride ? null : deadline ? deadline - Date.now() : null;
-        if (n >= S.transientRetries || (room !== null && room < waitMs + 5000)) {
+        if (n >= (Number.isInteger(S.transientRetries) ? S.transientRetries : 4) || (room !== null && room < waitMs + 5000)) {
           if (!ctx.unavailable) ctx.unavailable = { why: 'transient', detail: `${why} (after ${n} retr${n === 1 ? 'y' : 'ies'}): ${errorLine(r.stderr) || why}`, label: o.label || role };
           closeUnavailable(ctx.unavailable.detail, r);
           throw new Error(`Copilot CLI transient failure: ${ctx.unavailable.detail}`);
@@ -829,6 +866,7 @@ async function runAgent(ctx, prompt, opts) {
         ctx.say(`${o.label || role}: transient failure (${why}); retry ${n + 1} in ${(waitMs / 1000).toFixed(1)}s (no attempt spent)`);
         await new Promise((res) => setTimeout(res, waitMs));
         r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()), sink });
+        logStderr(r);
       }
       const u = unavailable(r);
       if (u) {
@@ -888,15 +926,16 @@ async function runAgent(ctx, prompt, opts) {
     }
     const outcome = rawOutcome === 'ok' || !result ? rawOutcome : 'blocked';
     const seen = sink.result();
-    // A failed run keeps its stderr: the tail in the record, all of it (to the cap) beside the transcript.
-    const stderrAll = rawOutcome === 'ok' ? '' : runs.map((r) => r.stderr || '').filter((x) => x.trim()).join('\n');
-    const stderrFile = stderrAll && tfile ? transcripts.writeStderr(tfile.replace(/\.jsonl$/, '.stderr.log'), stderrAll, { maxBytes: (S.transcripts || {}).maxBytes }) : null;
+    // A failed run keeps its stderr: the tail in the record, every spawn's (to the cap) beside the transcript.
+    const stderrAll = rawOutcome === 'ok' ? '' : stderrSeen;
     const rec = {
       label: o.label || role,
       role,
       agent_type: agentType,
       model: o.model || null,
       model_id: model,
+      ...(modelFallback ? { model_fallback: modelFallback } : {}),
+      ...(modelSkipped ? { model_skipped: modelSkipped } : {}),
       cwd,
       ms: runs.reduce((s, r) => s + r.ms, 0),
       exit: last.code,
@@ -914,7 +953,7 @@ async function runAgent(ctx, prompt, opts) {
       tool_calls: seen.tool_calls,
       ...(seen.last_tool ? { last_tool: seen.last_tool } : {}),
       usage: seen.usage,
-      ...(stderrAll ? { stderr_tail: transcripts.stderrTail(stderrAll), ...(stderrFile ? { stderr_file: path.relative(ctx.root, stderrFile).split(path.sep).join('/') } : {}) } : {}),
+      ...(stderrAll ? { stderr_tail: transcripts.stderrTail(stderrAll), ...(stderrRel && fs.existsSync(stderrFile) ? { stderr_file: stderrRel } : {}) } : {}),
       ...(rawOutcome === 'ok' ? {} : { errors: (runs[0].timedOut ? [`timed out after ${capSec || S.timeoutSec}s${grace ? `; its time-up turn ${last.timedOut ? 'timed out too' : ok(last) ? 'replied without a valid result' : `failed (exit ${last.code})`}` : ''}`] : last.code !== 0 || last.timedOut ? [last.timedOut ? `timed out after ${capSec || S.timeoutSec}s` : `exit ${last.code}: ${errorLine(last.stderr)}`] : errors).slice(0, 5) }),
     };
     ctx.runs.push(rec);
@@ -942,7 +981,7 @@ function plannedAgents(ctx) {
   const S = ctx.settings;
   const items = [];
   const add = (label, spec, prompt, schema) => {
-    const model = modelId(S.modelIds, spec.model);
+    const model = S.modelsOff ? null : modelId(S.modelIds, spec.model);
     const cwd = cwdFor(ctx, { label }, { prepare: false });
     const full = `${prompt}${replyBlock(schema)}`;
     const file = promptFile(ctx, label); // the path the real run would write; nothing is written here
@@ -1179,7 +1218,9 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     const decision = preflight(root, state, workflow, config);
     const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
     const S = settings(root, state);
-    transcripts.prune(root, state.id, Math.max(1, S.transcripts.keepRuns - 1)); // room for this run's folder
+    // the disk budget (transcripts.pruneAll): this job's older runs per workflow, ended jobs, the total;
+    // this run's folder does not exist yet, and other jobs' live runs are never touched
+    transcripts.pruneAll(root, { ...S.transcripts, keepRuns: Math.max(1, S.transcripts.keepRuns - 1) }, { ownJob: state.id });
     const t0 = Date.now();
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
     const ctx = {
@@ -1328,7 +1369,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
   try {
     state = job.resolve(root, state.id);
     const S = settings(root, state);
-    transcripts.prune(root, state.id, Math.max(1, S.transcripts.keepRuns - 1));
+    transcripts.pruneAll(root, { ...S.transcripts, keepRuns: Math.max(1, S.transcripts.keepRuns - 1) }, { ownJob: state.id });
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
     const ctx = {
       root,
@@ -1370,7 +1411,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
         const pb = require('./project-brief');
         pb.ensure(root, state.policy);
         const text = pb.read(root);
-        return text ? ['', `## Project brief (${pb.file(root)}): propose edits in your reply's project_brief, never edit the file`, '```markdown', text.trim(), '```'] : [];
+        return text ? ['', `## Project brief (${pb.file(root)}): propose edits in your reply's project_brief (the user accepts or rejects them), never edit the file`, '```markdown', text.trim(), '```'] : [];
       })(),
     ].join('\n');
     // one step, logged like a workflow run's, so the console's Learn bank shows it while it runs
@@ -1404,16 +1445,18 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     const run = ctx.runs[ctx.runs.length - 1] || {};
     const outcome = run.outcome || (reply ? 'ok' : 'invalid');
     // the lesson-writer's proposed diff to the project brief, applied by the CLI (never by the agent)
-    const brief = reply && reply.project_brief && Array.isArray(reply.project_brief.edits) ? require('./project-brief').applyEdits(root, reply.project_brief.edits, { job: state.id }) : null;
-    log({ outcome, lessons: added.map((l) => l.id), claimed, unrecorded, agent_ms: run.ms || null, ...(brief ? { project_brief: { applied: brief.applied.length, refused: brief.refused.length } } : {}) });
+    // the lesson-writer's diff to the project brief is a proposal for the user (P<n>), applied
+    // only on their "accept brief P<n>", like a lesson; never applied here
+    const brief = reply && reply.project_brief && Array.isArray(reply.project_brief.edits) ? require('./project-brief').propose(root, reply.project_brief.edits, { job: state.id, why: reply.project_brief.why }) : null;
+    log({ outcome, lessons: added.map((l) => l.id), claimed, unrecorded, agent_ms: run.ms || null, ...(brief ? { project_brief: { proposal: brief.id, edits: brief.edits.length, refused: brief.refused.length } } : {}) });
     const out = {
       job: state.id,
       outcome,
       lessons: added.map((l) => ({ id: l.id, text: l.text, scope: l.scope, why: l.why || null })),
       ...(unrecorded.length ? { unrecorded, warning: `The lesson-writer named ${unrecorded.join(', ')} but no such lesson was recorded for ${state.id}; only the lessons listed were recorded.` } : {}),
       ...(reply && reply.note ? { note: reply.note } : {}),
-      ...(brief ? { project_brief: { file: require('./project-brief').file(root), applied: brief.applied, refused: brief.refused, why: reply.project_brief.why || null } } : {}),
-      message: added.length ? `${added.length} lesson(s) proposed: ${added.map((l) => l.id).join(', ')}. The user can reply "accept lesson Ln" or "reject lesson Ln <why>". Run factory distill done.` : outcome === 'ok' ? 'The lesson-writer found nothing worth a lesson. Run factory distill done.' : `The lesson-writer did not finish (${outcome}); no lessons were recorded. Run factory distill done to move on, or factory distill write to try again.`,
+      ...(brief ? { project_brief: { file: require('./project-brief').file(root), proposal: brief.id, edits: brief.edits, refused: brief.refused, why: reply.project_brief.why || null, ...(brief.id ? { reply: [`accept brief ${brief.id}`, `reject brief ${brief.id} <why>`] } : {}) } } : {}),
+      message: `${brief && brief.id ? `Project brief change proposed: ${brief.id} (the user can reply "accept brief ${brief.id}" or "reject brief ${brief.id} <why>"). ` : ''}${added.length ? `${added.length} lesson(s) proposed: ${added.map((l) => l.id).join(', ')}. The user can reply "accept lesson Ln" or "reject lesson Ln <why>". Run factory distill done.` : outcome === 'ok' ? 'The lesson-writer found nothing worth a lesson. Run factory distill done.' : `The lesson-writer did not finish (${outcome}); no lessons were recorded. Run factory distill done to move on, or factory distill write to try again.`}`,
       copilot: S.bin,
       agents: ctx.runs,
     };
@@ -1484,7 +1527,7 @@ function summaryText(r) {
   L.push(`agents: ${agents.length} (${Object.entries(by).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'})`);
   for (const a of agents.filter((x) => x.outcome !== 'ok')) L.push(`  - ${a.label} (${a.agent_type}) ${a.outcome}${a.errors && a.errors.length ? `: ${String(a.errors[0]).slice(0, 160)}` : ''}${a.transcript ? ` [transcript: ${a.transcript}${a.stderr_file ? `, stderr: ${a.stderr_file}` : ''}]` : ''}`);
   const cost = transcripts.totals(agents);
-  if (agents.length) L.push(`usage: ${cost.tool_calls} tool call(s)${cost.reported_runs ? `, ${cost.input_tokens ?? '?'} input / ${cost.output_tokens ?? '?'} output tokens${cost.premium_requests !== null ? `, ${cost.premium_requests} premium request(s)` : ''}` : ''}${cost.unreported_runs ? ` (${cost.unreported_runs} run(s) without usage records from the CLI: unknown)` : ''}`);
+  if (agents.length) L.push(`usage: ${cost.tool_calls ?? "?"} tool call(s)${cost.reported_runs ? `, ${cost.input_tokens ?? '?'} input / ${cost.output_tokens ?? '?'} output tokens${cost.premium_requests !== null ? `, ${cost.premium_requests} premium request(s)` : ''}` : ''}${cost.unreported_runs ? ` (${cost.unreported_runs} run(s) without usage records from the CLI: unknown)` : ''}`);
   L.push(`full result: ${r.result_file} (or run with --json)`);
   return L.join('\n');
 }

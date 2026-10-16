@@ -93,6 +93,7 @@
     "required_check": "factory-gate"
   },
   "agents": {
+    "models_enabled": true,
     "models": {
       "interviewer": "haiku",
       "researcher": "haiku",
@@ -135,6 +136,9 @@
     "transient_backoff_seconds": 10,
     "transcript_max_bytes": 8388608,
     "transcript_keep_runs": 30,
+    "transcript_max_total_bytes": 524288000,
+    "transcript_closed_days": 14,
+    "transcript_keep_jobs": 20,
     "transient_park_after": 3
   },
   "notify": true,

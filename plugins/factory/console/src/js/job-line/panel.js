@@ -46,7 +46,7 @@ function agentRowsHtml(list) {
     const verdict = a.verdict && a.verdict !== a.outcome ? a.verdict : null; // agent_run's verdict, when the roster's outcome is not already it
     const u = a.usage && a.usage.reported ? ` · ${fmtNum(a.usage.input_tokens)}/${fmtNum(a.usage.output_tokens)} tok` : '';
     const tools = typeof a.tool_calls === 'number' ? ` · ${a.tool_calls} tool${a.tool_calls === 1 ? '' : 's'}` : '';
-    const links = [fileLink(a.transcript, 'transcript'), fileLink(a.stderr_file, 'stderr')].filter(Boolean).join(' ');
+    const links = [fileLink(a.transcript, 'transcript'), a.transcript_pruned ? '<span class="label" title="removed by the transcript disk budget (policy.copilot.transcript_*)">transcript pruned</span>' : '', fileLink(a.stderr_file, 'stderr')].filter(Boolean).join(' ');
     return `<div class="arow"><span class="mdot ${fam}" title="${esc(a.model || 'session model')}">${esc(modelLetter(a.model))}</span><b title="${esc(a.label)}">${esc(a.label)}</b><span class="o ${outcomeClass(a.outcome)}">${esc(a.outcome || '')}${verdict ? ` <span class="${outcomeClass(verdict)}">· ${esc(verdict)}</span>` : ''}${a.ms ? ` · ${fmtDur(a.ms)}` : ''}${esc(tools)}${esc(u)}${links ? ` · ${links}` : ''}</span></div>`;
   }).join('')}</div>`;
 }
