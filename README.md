@@ -203,7 +203,7 @@ The first run initialises the repo (`factory init`): a `.factory/` folder kept o
 
 ### Let it run: `factory drive` and `factory inbox`
 
-`/factory:start` launches `factory drive`, which runs every mechanical step itself and stops only where a person is needed. Each stop is typed (`gate`, `clarify`, `questions`, `degraded`, `parked`, `wait`, `amend`, `evidence`, `done`, …), written to the event log, and announced with a desktop notification (`notify-send` on Linux; `wsl-notify-send` or a PowerShell toast on WSL; `osascript` on macOS; a terminal bell otherwise; `policy.notify: false` turns them off). Copilot shows you the stop; you reply as below; it runs `factory drive` again. The drive never answers a gate or a clarify turn and never runs a human-only command.
+`/factory:start` starts `factory drive --detach` (and waits for its stop with `factory drive status --wait`), which runs every mechanical step itself and stops only where a person is needed. Each stop is typed (`gate`, `clarify`, `questions`, `degraded`, `parked`, `wait`, `amend`, `evidence`, `done`, …), written to the event log, and announced with a desktop notification (`notify-send` on Linux; `wsl-notify-send` or a PowerShell toast on WSL; `osascript` on macOS; a terminal bell otherwise; `policy.notify: false` turns them off). Copilot shows you the stop; you reply as below; it runs `factory drive` again. The drive never answers a gate or a clarify turn and never runs a human-only command.
 
 | Command | What it does |
 |---|---|
@@ -477,6 +477,8 @@ Project overrides go in `.factory/policy.json` (you edit it; agents can't). Defa
 - `clarify` sets clarify's caps and time boxes (defaults: `max_research_passes` 2, `max_sheet_decisions` 5, `max_writer_attempts` 2, `research_minutes` `{ low: 6, medium: 10, high: 15 }`, and `agent_seconds` per clarify role). At a cap clarify parks; `resume` or `proceed` (yours) goes on.
 - `limits.max_parallel_agents` caps how many `copilot -p` processes `factory run` runs at once (default 4). Keep it at or below what your plan allows for concurrent sessions.
 - `copilot.transient_retries` (4) and `copilot.transient_backoff_seconds` (10): a rate limit, a 5xx or a network error from Copilot is retried with exponential backoff and jitter, in the same agent call and without spending an attempt; after the retries the run stops with `copilot_transient` and records nothing.
+- `copilot.transient_park_after` (3): a transient failure that stops that many runs in a row parks the job with kind `transient`.
+- `drive.stop_before_ship` (`false`): `true` makes `factory drive` stop (kind `ship`) before `factory ship`, so nothing is pushed or merged until you say so.
 - `notify` (`true`): desktop notifications at every `factory drive` stop. `false` turns them off (`FACTORY_NOTIFY=off` for one process).
 - `copilot.flags` adds flags to every `copilot -p` call the runner makes, for example `--reasoning-effort` or extra `--deny-tool` patterns (see `factory run --dry-run` for the full command line).
 - `secret_paths` are the files the guard won't let agents read or write (`.env`, `.env.*`, keys, `.npmrc`, credentials). `secret_exempt` lists templates that are never secrets: by default `.env.example`, `.env.sample`, `.env.template`, `.env.dist` and any `*.example` / `*.sample` / `*.template` / `*.dist`. Add a name there (e.g. `"**/.env.test"`) if your project keeps no secrets in it; your list replaces the default one, and the template suffixes stay exempt either way.

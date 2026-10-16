@@ -19,8 +19,7 @@ A request with no active job for it → follow the **intake** skill to create th
 ## The loop: `factory drive`
 `factory drive` steps the job for you: every workflow (`factory run`, clarify's agent stages included), every CLI step, ship, distill and the evidence records it can check. It stops only where a person is needed, and sends the user a desktop notification at each stop. You don't step `factory next` yourself, and you never run `factory next` or `factory run` while a drive runs (they answer `driving` or refuse with `drive_in_progress`).
 
-1. Tell the user in one line that the factory is working (it can take minutes, 30 or more for a big build). Run `factory drive` once, in the foreground, with your shell tool's longest timeout. Its progress goes to stderr; when it stops it prints one JSON stop: `kind`, a one-line `summary`, and `next` (the `factory next` output at that stop, which the gate, park and clarify skills read their fields from).
-   If your shell hands control back before it ends, or your host can't keep a long command running, start it with `factory drive --detach` instead, then run `factory drive status --wait 540` (again while its `status` is `running`). Its `last` is the stop. `drive_in_progress` means one is already running: wait for it the same way.
+1. Tell the user in one line that the factory is working (it can take minutes, 30 or more for a big build). Start it in the background: `factory drive --detach`. Then run `factory drive status --wait 240` (less than your shell tool's time limit), again while its `status` is `running`; between waits, one short line to the user is plenty. When `status` is `stopped`, its `last` is the stop: `kind`, a one-line `summary`, and `next` (the `factory next` output at that stop, which the gate, park and clarify skills read their fields from). `drive_in_progress` means one is already running: wait for it the same way. (Don't run `factory drive` in the foreground: a shell tool's time limit would stop it, and the build it is running with it.)
 2. Show what the stop carries, once each, in one line: `last_reply` (what happened to the user's last reply), `notice` (chat replies aren't reaching the factory; show it as it is), `autopilot` (Copilot Autopilot was detected: show its warning and **stop**; gates must wait for the user), and `environment` (no build environment is confirmed: show its `message` once; at a gate the gate skill shows the proposal in full; never confirm it yourself).
 3. Act on `kind`:
 
@@ -28,19 +27,22 @@ A request with no active job for it → follow the **intake** skill to create th
 |---|---|---|
 | `gate` | Follow the **gate** skill with the stop's `next`. | **stop** |
 | `clarify` | Show the stop's `screen` **as it is** (the **clarify** skill says how to record what the user says). | **stop** |
-| `questions` | Ask exactly the `questions` as one numbered list. Record each answer with `factory answer --question "…" --answer "…"`. | **stop**, then `factory drive` |
-| `degraded` | Ask the user: re-run, or go on without the missing angle. To go on, write the angle under Assumptions in the contract and run the workflow from `next` with `--accept-degraded`. | **stop**, then `factory drive` |
+| `questions` | Ask exactly the `questions` as one numbered list. Record each answer with `factory answer --question "…" --answer "…"`. | **stop**, then `factory drive --detach` |
+| `degraded` | Ask the user: re-run, or go on without the missing angle. To go on, write the angle under Assumptions in the contract and run the workflow from `next` with `--accept-degraded`. | **stop**, then `factory drive --detach` |
 | `parked` | Follow the **park** skill: `next.reason`, `park.kind` and `park.next` (the suggested step). | **stop** |
 | `wait` | Say in one line what is awaited (`summary`; a merge: the **ship** skill's commands). | **stop** |
-| `amend` | Follow the **amend** skill. | `factory drive` |
-| `evidence` | For each AC in `acs`, check the job worktree shows it, then run its line in `commands` with the real path. If it isn't there, tell the user and **stop**. | `factory drive` |
-| `skill` | Follow the factory skill named in `next.skill`. | `factory drive` |
+| `amend` | Follow the **amend** skill. | `factory drive --detach` |
+| `evidence` | For each AC in `acs`, check the job worktree shows it, then run its line in `commands` with the real path. If it isn't there, tell the user and **stop**. | `factory drive --detach` |
+| `skill` | Follow the factory skill named in `next.skill`. | `factory drive --detach` |
+| `ship` | `policy.drive.stop_before_ship` is on: every floor is met and the push, PR or local merge waits for the user. Run `factory report` and show its summary; when the user says to ship, follow the **ship** skill (`factory ship`). | **stop**, then `factory drive --detach` |
 | `done` | Summarise in two or three lines what shipped (`factory why --format md` if useful); list any `lessons` the user can accept. | **stop** |
 | `copilot_unavailable` | Tell the user the fix (`not_found`: install the Copilot CLI or put it on PATH; `not_signed_in`: `copilot login`). | **stop** |
-| `transient` | Copilot kept failing with rate limits or network errors: tell the user to wait a few minutes, then run `factory drive` again. | **stop** |
-| `error`, `interrupted`, `limit` | Show the `summary`. `factory why --format md` explains the last decisions. | **stop** |
+| `transient` | Copilot kept failing with rate limits or network errors: tell the user to wait a few minutes, then run `factory drive --detach` again (after a few runs in a row the job parks, kind `transient`). | **stop** |
+| `interrupted` | The drive was stopped (a closed terminal, `factory drive stop`): start it again with `factory drive --detach`; it continues from where the job is. | step 1 |
+| `superseded` | Another drive took over this one: wait for that one with `factory drive status --wait 240`. | step 1 |
+| `error`, `limit` | Show the `summary`. `factory why --format md` explains the last decisions. | **stop** |
 
-4. After the user replies to a stop (the reply hook applies `approve`, `ok`, `resume`, …), run `factory drive` again: it continues from where the job is, and its stop's `last_reply` says whether the reply was applied. Between steps, one short line to the user is plenty; don't narrate JSON. End your turn only at a **stop** above: the stop hook sends you back otherwise.
+4. After the user replies to a stop (the reply hook applies `approve`, `ok`, `resume`, …), start it again (`factory drive --detach`, then step 1's wait): it continues from where the job is, and its stop's `last_reply` says whether the reply was applied. Between steps, one short line to the user is plenty; don't narrate JSON. End your turn only at a **stop** above: the stop hook sends you back otherwise.
 
 **`factory inbox`** lists everything waiting on the user across jobs, each with the chat reply and the terminal command. Suggest it when the user asks what is waiting, or when several jobs are open.
 
