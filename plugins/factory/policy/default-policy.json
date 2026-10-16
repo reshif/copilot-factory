@@ -93,13 +93,35 @@
     "required_check": "factory-gate"
   },
   "agents": {
-    "models": {},
+    "models": {
+      "interviewer": "haiku",
+      "researcher": "haiku",
+      "finding-verifier": "haiku",
+      "tester": "haiku",
+      "builder": "sonnet",
+      "contract-writer": "sonnet",
+      "brief-writer": "sonnet",
+      "code-reviewer": "sonnet",
+      "security-reviewer": "sonnet",
+      "test-reviewer": "sonnet",
+      "ux-reviewer": "sonnet",
+      "epic-reviewer": "sonnet",
+      "option-generator": "sonnet",
+      "threat-modeler": "sonnet",
+      "planner": "sonnet",
+      "slicer": "sonnet",
+      "integrator": "sonnet",
+      "lesson-writer": "sonnet",
+      "architect": "opus",
+      "god-eye": "opus"
+    },
     "model_ids": {
       "opus": "claude-opus-5.5",
       "sonnet": "claude-sonnet-5.5",
       "haiku": "claude-haiku-5.5"
     },
-    "builder_escalation": [],
+    "builder_escalation": ["opus"],
+    "builder_escalation_from_attempt": 3,
     "sweep_check": false
   },
   "copilot": {

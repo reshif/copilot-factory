@@ -351,7 +351,15 @@ With Poetry, use `"setup": ["poetry config virtualenvs.in-project true --local",
 
 ### Models and cost
 
-By default no role has a model (`policy.agents.models` is empty), so every agent runs on your Copilot default model (`COPILOT_MODEL` or `model` in `~/.copilot/settings.json`). To pick one per role, set `policy.agents.models` to an alias (`opus`, `sonnet`, `haiku`); `policy.agents.model_ids` turns the alias into a Copilot model id, passed as `--model`. The agent files set no `model`, so this choice always wins. Run `/model` in a session to see the model ids your plan offers.
+Every role has a default model in `policy.agents.models` (an alias; `policy.agents.model_ids` turns it into a Copilot model id, passed as `--model`):
+
+| Tier | Alias (default id) | Roles |
+|---|---|---|
+| fast | `haiku` (`claude-haiku-5.5`) | interviewer, researcher, finding-verifier, tester (the sweep check) |
+| standard | `sonnet` (`claude-sonnet-5.5`) | builder, contract-writer, brief-writer, the reviewers, option-generator, threat-modeler, planner, slicer, integrator, lesson-writer |
+| strongest | `opus` (`claude-opus-5.5`) | god-eye, architect |
+
+A builder steps up through `builder_escalation` (default `["opus"]`) from attempt `builder_escalation_from_attempt` (default 3): attempt 2 resumes attempt 1's session on the same model, attempt 3 moves to the stronger one. Override any role in `.factory/policy.json` (`"agents": { "models": { "researcher": "sonnet" } }`); `null` or `"default"` runs that role on your Copilot default model (`COPILOT_MODEL` or `model` in `~/.copilot/settings.json`), and `"builder_escalation": []` turns escalation off. The agent files set no `model`, so this choice always wins. A job keeps the models of the policy it was created with. Run `/model` in a session to see the model ids your plan offers; the ids come from the CLI's supported-models list ([`docs/research/copilot-cli-usage.md`](docs/research/copilot-cli-usage.md) §2).
 
 Every agent is its own Copilot session, so a job uses many requests. A `standard@medium` job typically starts dozens of agents (analysts, researchers, option generators, builders, reviewers, verifiers). Copilot bills these against your plan: AI Credits on token-based plans, premium requests on the older request-based plans. Model multipliers apply, so roles you put on an `opus`-class model cost more. To keep cost down, use cheaper models for the read-only roles (researcher, analysts, reviewers), keep `builder_escalation` short, and lower `limits.max_agent_runs_per_job`. The factory counts agent runs and wall time, not credits.
 
@@ -457,7 +465,7 @@ Project overrides go in `.factory/policy.json` (you edit it; agents can't). Defa
 }
 ```
 
-- `agents.models` sets a model alias per role. `agents.builder_escalation` moves a builder to a stronger model from its second attempt.
+- `agents.models` sets a model alias per role, over the shipped defaults (see [Models and cost](#models-and-cost)); `null` or `"default"` means your Copilot default model. `agents.builder_escalation` moves a builder to a stronger model from attempt `agents.builder_escalation_from_attempt` (default 3).
 - `agents.model_ids` maps each alias to a Copilot model id. The ids above are examples from the Copilot CLI's supported-models list; the defaults are in `default-policy.json`. Any id your plan offers works, including non-Claude models.
 - `clarify` sets clarify's caps and time boxes (defaults: `max_research_passes` 2, `max_sheet_decisions` 5, `max_writer_attempts` 2, `research_minutes` `{ low: 6, medium: 10, high: 15 }`, and `agent_seconds` per clarify role). At a cap clarify parks; `resume` or `proceed` (yours) goes on.
 - `limits.max_parallel_agents` caps how many `copilot -p` processes `factory run` runs at once (default 4). Keep it at or below what your plan allows for concurrent sessions.

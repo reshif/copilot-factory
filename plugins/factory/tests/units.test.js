@@ -501,5 +501,33 @@ test('briefs name a real factory agent for every item, and carry only the run co
   const c = F.cli(root, ['wfargs', 'clarify']);
   const specs = c.groups.flat();
   for (const sp of specs) assert.match(sp.agent_type, /^factory:interviewer$/);
-  assert.equal(specs[0].model, undefined, 'no model unless policy names one');
+  assert.equal(specs[0].model, 'haiku', 'the interviewer runs on the shipped fast-tier default (policy.agents.models)');
+});
+
+test('P4.2 per-role default models: fast, standard and strongest tiers; policy overrides; the builder steps up on attempt 3', async () => {
+  const policy = require('../cli/core/policy');
+  const { roleModel, builderSpec } = require('../cli/core/wfargs');
+  const d = policy.defaults();
+  const roles = fs.readdirSync(path.join(F.PLUGIN, 'agents')).filter((f) => f.endsWith('.agent.md')).map((f) => f.replace(/\.agent\.md$/, ''));
+  for (const r of roles) assert.ok(d.agents.model_ids[d.agents.models[r]], `${r} has a default model alias that model_ids maps`);
+  for (const r of ['interviewer', 'researcher', 'finding-verifier', 'tester']) assert.equal(d.agents.models[r], 'haiku', `${r}: fast tier`);
+  for (const r of ['builder', 'contract-writer', 'code-reviewer', 'security-reviewer', 'test-reviewer']) assert.equal(d.agents.models[r], 'sonnet', `${r}: standard tier`);
+  for (const r of ['god-eye', 'architect']) assert.equal(d.agents.models[r], 'opus', `${r}: strongest tier`);
+  assert.deepEqual(d.agents.builder_escalation, ['opus']);
+  assert.equal(d.agents.builder_escalation_from_attempt, 3);
+  // a project override wins per role; null or "default" means the Copilot session default
+  const root = F.makeRepo();
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ agents: { models: { builder: 'opus', researcher: null, tester: 'default' } } }));
+  const live = policy.load(root);
+  assert.equal(roleModel(live, 'builder'), 'opus');
+  assert.equal(roleModel(live, 'researcher'), null);
+  assert.equal(roleModel(live, 'tester'), null);
+  assert.equal(roleModel(live, 'god-eye'), 'opus', 'roles the project does not name keep the default');
+  assert.deepEqual(builderSpec({ policy: d }), { role: 'builder', agent_type: 'factory:builder', model: 'sonnet', escalate: ['opus'], escalate_from: 3 });
+  // the realize workflow: attempts 1 and 2 on the builder's model, attempt 3 on the escalation
+  const H = require('./helpers/workflow-harness');
+  const brief = { workflow: 'realize', job: 'J-0001', input_hash: 'h', budgets: {}, waves: [['T1']], tasks: { T1: { id: 'T1', depends_on: [], retry_limit: 3, builder: builderSpec({ policy: d }), builder_prompt: 'B T1 {{attempt}} {{failures}}' } }, max_parallel_tasks: 1, builder_schema: {} };
+  let n = 0;
+  const r = await H.run(path.join(F.PLUGIN, 'workflows', 'realize.js'), brief, () => ({ status: 'done', summary: 'ok', swept: [] }), { verify: async (id) => ((n += 1) < 3 ? { task: id, pass: false, failures: [{ cmd: 't', code: 1, output: 'no' }] } : { task: id, pass: true, failures: [] }) });
+  assert.deepEqual(r.calls.filter((c) => c.prompt.startsWith('B T1')).map((c) => c.opts.model), ['sonnet', 'sonnet', 'opus']);
 });

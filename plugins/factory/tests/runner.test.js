@@ -160,7 +160,7 @@ test('factory run clarify: agents as copilot processes, envelope recorded in-pro
     assert.match(fs.readFileSync(file, 'utf8'), /Reply format \(strict\)/);
     assert.equal(c.env.FACTORY_RUNNER, '1');
     assert.equal(c.env.FACTORY_JOB, J);
-    assert.ok(!c.argv.includes('--model'), 'no model unless policy names one');
+    assert.equal(flagOf(c.argv, '--model'), c.agent === 'factory:god-eye' ? 'claude-opus-5.5' : c.agent === 'factory:interviewer' ? 'claude-haiku-5.5' : flagOf(c.argv, '--model'), 'each role runs on its shipped default model (policy.agents.models → model_ids)');
   }
   // the routing moved on, and the logs show what ran
   assert.equal(F.cli(root, ['next']).step, 'H1');
@@ -281,7 +281,7 @@ test('a reply that misses the schema gets one corrective turn in the same sessio
   assert.equal(ev[0].retry, true);
   assert.equal(ev[0].spawns, 2);
   assert.equal(ev[0].outcome, 'ok');
-  assert.match(r.__stderr, /read-back \(factory:interviewer\) ok after a format retry/);
+  assert.match(r.__stderr, /read-back \(factory:interviewer, claude-haiku-5\.5\) ok after a format retry/);
 });
 
 test('still invalid after the corrective turn → null, like a failed agent: the stage tries once more, then the job parks with it named', () => {
@@ -343,7 +343,9 @@ test('concurrency is capped by policy.limits.max_parallel_agents', () => {
 
 test('factory run realize: builders start in their task worktree, task verify decides, the result is recorded', () => {
   const root = F.makeRepo();
-  const J = newJob(root, { agents: { builder_escalation: ['opus'] } });
+  // escalation from attempt 2, and the builder on the session default model (the shipped default is
+  // sonnet, escalating from attempt 3: tested in units.test.js), so attempt 1 runs without --model
+  const J = newJob(root, { agents: { models: { builder: 'default' }, builder_escalation: ['opus'], builder_escalation_from_attempt: 2 } });
   F.clarify(root);
   let b;
   F.cli(root, ['next']);

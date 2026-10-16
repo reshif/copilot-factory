@@ -140,11 +140,27 @@ function jobContext(root, state, gates = []) {
     .join('\n');
 }
 
-// Which factory agent runs an item, and on which model (policy.agents.models, optional).
+// Which factory agent runs an item, and on which model: policy.agents.models (an alias that
+// model_ids maps to a Copilot id, or an id). default-policy.json ships one per role (fast,
+// standard, strongest); a project overrides any role in .factory/policy.json, and null or
+// "default" runs that role on the Copilot session default (no --model).
+function roleModel(policy, role) {
+  const m = (((policy || {}).agents || {}).models || {})[role];
+  return typeof m === 'string' && m.trim() && m.trim() !== 'default' ? m.trim() : null;
+}
+
 function agentSpec(state, role) {
-  const a = (state.policy && state.policy.agents) || {};
-  const model = (a.models || {})[role] || null;
+  const model = roleModel(state.policy, role);
   return { role, agent_type: `factory:${role}`, ...(model ? { model } : {}) };
+}
+
+// Builders step up through policy.agents.builder_escalation from attempt
+// builder_escalation_from_attempt (3 by default: attempt 2 resumes attempt 1's session on the
+// same model, attempt 3 moves to the stronger one).
+function builderSpec(state) {
+  const a = (state.policy && state.policy.agents) || {};
+  const from = Number.isInteger(a.builder_escalation_from_attempt) && a.builder_escalation_from_attempt >= 2 ? a.builder_escalation_from_attempt : 3;
+  return { ...agentSpec(state, 'builder'), escalate: (Array.isArray(a.builder_escalation) ? a.builder_escalation : []).filter((m) => typeof m === 'string' && m.trim()), escalate_from: from };
 }
 
 function inputHash(parts) {
@@ -445,7 +461,7 @@ function realize(root, state, ctx, action) {
       depends_on: require('./plan').effectiveDeps(plan.tasks, t.id, plan.interfaces),
       retry_limit: t.retry_limit || state.policy.limits.retry_limit,
       // Builders may move to a stronger model on retries (policy.agents.builder_escalation).
-      builder: { ...agentSpec(state, 'builder'), escalate: ((state.policy.agents || {}).builder_escalation || []).slice() },
+      builder: builderSpec(state),
       // policy agents.sweep_check: a cheap agent looks at the places the builder swept, after
       // task verify passed; it never decides pass (task verify's exit code does).
       ...(sweep ? { sweep: agentSpec(state, 'tester') } : {}),
@@ -563,4 +579,4 @@ function currentInputHash(root, state, envelope) {
   }
 }
 
-module.exports = { build, currentInputHash, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec };
+module.exports = { build, currentInputHash, prompt, roleBody, roleTools, workingText, fullText, cli, agentSpec, roleModel, builderSpec };

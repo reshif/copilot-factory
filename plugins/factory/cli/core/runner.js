@@ -1243,7 +1243,7 @@ async function distillWrite(root, { jobId, quiet = false } = {}) {
     };
     const cli = `node "${path.join(PLUGIN_ROOT, 'bin', 'factory')}" --root "${root}"`;
     const role = 'lesson-writer';
-    const model = ((state.policy && state.policy.agents) || {}).models ? state.policy.agents.models[role] || null : null;
+    const model = require('./wfargs').roleModel(state.policy, role);
     const prompt = [
       `# Distill job ${state.id}: ${state.title}`,
       '',
