@@ -194,6 +194,25 @@ test('environment services: when the health check fails after the job brought th
   assert.match(b.broken.reason, /^environment broken: false exit 1/);
 });
 
+test('worktrees: one prune-and-add at a time per repository (a parallel prune deleted another task\'s half-made worktree: the flaky "prepared in parallel")', () => {
+  const root = F.makeRepo();
+  const J = grounded(root);
+  customPlan(root, J, [{ id: 'T1', objective: 'fix add', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: VC }]);
+  const lock = path.join(root, '.factory', 'worktrees.lock');
+  // another live process is adding a worktree: this one waits for it instead of pruning under it
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: require('os').hostname(), at: new Date().toISOString() }));
+  const { spawn, spawnSync } = require('child_process');
+  const release = spawn('node', ['-e', `setTimeout(() => require('fs').rmSync(${JSON.stringify(lock)}, { force: true }), 1500)`]);
+  const t0 = Date.now();
+  const script = `const t = require(${JSON.stringify(path.join(__dirname, '..', 'cli', 'core', 'tasks.js'))}); const j = require(${JSON.stringify(path.join(__dirname, '..', 'cli', 'core', 'job.js'))}); console.log(t.prepareWorktree(${JSON.stringify(root)}, j.load(${JSON.stringify(root)}, ${JSON.stringify(J)}), 'T1'));`;
+  const r = spawnSync('node', ['-e', script], { cwd: root, encoding: 'utf8' });
+  release.kill();
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(Date.now() - t0 >= 1400, `waited for the lock (${Date.now() - t0} ms)`);
+  assert.ok(fs.existsSync(path.join(r.stdout.trim(), '.git')), 'the worktree was made');
+  assert.ok(!fs.existsSync(lock), 'released');
+});
+
 test('environment services: a wave\'s tasks prepared in parallel bring the job\'s services up once, not concurrently', async () => {
   const root = F.makeRepo();
   const J = grounded(root);

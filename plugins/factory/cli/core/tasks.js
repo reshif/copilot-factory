@@ -25,11 +25,18 @@ function planTask(root, state, taskId) {
 // A worktree folder removed without `git worktree prune` stays registered, and git then
 // refuses to add it again ("already checked out"): prune first. The build-cache excludes are
 // (re)written here too, for repositories initialised before they existed.
+// One worktree change at a time per repository: a wave's tasks are prepared in parallel, and a
+// `git worktree prune` in one process deletes the half-made .git/worktrees/<name> of another
+// process's `git worktree add` ("could not open .git/worktrees/…/gitdir"), so prune and add run
+// under one lock (.factory/worktrees.lock).
 function addWorktree(root, wt, branch) {
-  require('./setup').ensureGitSetup(root);
   if (exists(path.join(wt, '.git'))) return;
-  git.run(root, ['worktree', 'prune'], { allowFail: true });
-  git.run(root, ['worktree', 'add', wt, branch]);
+  require('./job').withLock(path.join(root, '.factory', 'worktrees.lock'), () => {
+    require('./setup').ensureGitSetup(root);
+    if (exists(path.join(wt, '.git'))) return;
+    git.run(root, ['worktree', 'prune'], { allowFail: true });
+    git.run(root, ['worktree', 'add', wt, branch]);
+  }, { waitMs: 120000, staleMs: 120000, what: 'the repository\'s worktrees' });
 }
 
 function ensureJobWorktree(root, state) {
@@ -43,7 +50,8 @@ function ensureJobWorktree(root, state) {
 function prepareWorktree(root, state, taskId) {
   const branch = steps.taskBranch(state, taskId);
   const wt = taskWorktree(root, state.id, taskId);
-  if (!git.branchExists(root, branch)) git.run(root, ['branch', branch, state.branch]);
+  if (!git.branchExists(root, branch)) git.run(root, ['branch', branch, state.branch], { allowFail: true });
+  if (!git.branchExists(root, branch)) git.run(root, ['branch', branch, state.branch]); // another process may have just made it
   addWorktree(root, wt, branch);
   return wt;
 }
