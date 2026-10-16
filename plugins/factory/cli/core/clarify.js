@@ -1907,7 +1907,6 @@ function handEdit(root, state, data) {
   const cur = contractHash(root, state);
   const C = data.contract;
   if (!C.written_hash || !cur || [C.written_hash, C.checked_hash, C.seen_hash].includes(cur)) return false;
-  if (['assemble', 'interpret', 'redirect', 'readback'].includes(data.stage) && cur === C.seen_hash) return false;
   C.seen_hash = cur;
   C.edited_by_hand = true;
   C.hand_edits = [...(C.hand_edits || []), { at: nowIso(), hash: cur, stage: data.stage }].slice(-20);
