@@ -55,6 +55,28 @@ const short = (s, n = 160) => (typeof s === 'string' && s.length > n ? `${s.slic
 const roleOf = (t) => String(t || '').replace(/^factory:/, '');
 const num = (v) => (Array.isArray(v) ? v.length : typeof v === 'number' ? v : 0);
 
+// An agent's transcript, as a path under .factory/scratch/runs/ relative to the project (the
+// page links it; the server serves only that folder). Anything else is dropped.
+function transcriptPath(p) {
+  const s = typeof p === 'string' ? p.replace(/\\/g, '/') : '';
+  return /^\.factory\/scratch\/runs\/[\w.@-]+(\/[\w.@-]+)+$/.test(s) && !s.split('/').includes('..') ? s : null;
+}
+
+// The runner's per-agent facts for an agent row: transcript, tool calls, tokens.
+function runnerExtras(e) {
+  const out = {};
+  const t = transcriptPath(e.transcript);
+  if (t) out.transcript = t;
+  if (Number.isInteger(e.tool_calls)) out.tool_calls = e.tool_calls;
+  if (e.usage && typeof e.usage === 'object') {
+    const u = e.usage;
+    out.usage = u.reported ? { reported: true, input_tokens: typeof u.input_tokens === 'number' ? u.input_tokens : null, output_tokens: typeof u.output_tokens === 'number' ? u.output_tokens : null, premium_requests: typeof u.session_premium_requests === 'number' ? u.session_premium_requests : null, cost: typeof u.cost === 'number' ? u.cost : null } : { reported: false };
+  }
+  const st = transcriptPath(e.stderr_file);
+  if (st) out.stderr_file = st;
+  return out;
+}
+
 function stepsOf(lock, state) {
   const recipe = (lock && lock.recipe) || {};
   const list = [{ id: 'request', stage: 'request', kind: 'start', human: true, run: 'skill:start' }];
@@ -236,7 +258,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
       delete started[e.agent_id];
     }
     // `factory run` (Copilot) times each agent process itself: one agent_run per agent() call.
-    if (e.event === 'agent_run') (hookAgents[e.decision_id || 'none'] = hookAgents[e.decision_id || 'none'] || []).push({ agent_type: e.agent_type, label: e.label, ms: e.ms, verdict: typeof e.verdict === 'string' ? e.verdict : null });
+    if (e.event === 'agent_run') (hookAgents[e.decision_id || 'none'] = hookAgents[e.decision_id || 'none'] || []).push({ agent_type: e.agent_type, label: e.label, ms: e.ms, verdict: typeof e.verdict === 'string' ? e.verdict : null, ...runnerExtras(e) });
   }
   const runningNow = [];
   const staleNow = [];
@@ -250,7 +272,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     return runLive;
   };
   for (const s of Object.values(started)) {
-    const a = { agent_type: s.agent_type, since: s.ts, decision_id: s.decision_id || null, ...(s.label ? { label: s.label } : {}) };
+    const a = { agent_type: s.agent_type, since: s.ts, decision_id: s.decision_id || null, ...(s.label ? { label: s.label } : {}), ...(transcriptPath(s.transcript) ? { transcript: transcriptPath(s.transcript) } : {}) };
     const age = nowMs - Date.parse(s.ts);
     if (state.status === 'active' && age >= 0 && age < STALE_AGENT_MS && (!s.runner || runnerLive())) runningNow.push(a);
     else staleNow.push({ ...a, stale: true });
@@ -335,7 +357,7 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
         let i = timed.findIndex((x) => x.label && x.label === a.label);
         if (i < 0) i = timed.findIndex((x) => !x.label && x.agent_type === a.agent_type);
         const hit = i >= 0 ? timed.splice(i, 1)[0] : null;
-        return { label: short(a.label, 100), role: roleOf(a.agent_type), model: a.model || null, retry: Boolean(a.retry), outcome: a.outcome || null, ms: hit ? hit.ms : null, ...(hit && hit.verdict ? { verdict: hit.verdict } : {}) };
+        return { label: short(a.label, 100), role: roleOf(a.agent_type), model: a.model || null, retry: Boolean(a.retry), outcome: a.outcome || null, ms: hit ? hit.ms : null, ...(hit && hit.verdict ? { verdict: hit.verdict } : {}), ...(hit ? runnerExtras(hit) : {}) };
       });
       push({ t: e.at, type: 'agents', step, workflow: e.workflow, config: e.config, mode: e.mode, decision_id: e.decision_id, status: e.status, runs: e.agent_runs || agents.length, agents });
     } else if (e.kind === 'clarify') {
@@ -429,6 +451,13 @@ function jobData(root, id, all, checker, nowMs = Date.now()) {
     limits: Object.fromEntries(['max_review_rounds', 'max_verify_fix_rounds', 'max_design_critique_rounds', 'max_plan_validate_rounds', 'retry_limit'].filter((k) => Number.isInteger((policy.limits || {})[k])).map((k) => [k, policy.limits[k]])),
     models: ((state.policy || {}).agents || {}).models || {},
     escalation: ((state.policy || {}).agents || {}).builder_escalation || [],
+    // what the agent runs cost, as the Copilot CLI reported it (null fields: not reported)
+    cost: (() => {
+      const runsOf = events.filter((e) => e.event === 'agent_run' && e.outcome !== 'copilot_unavailable');
+      if (!runsOf.length) return null;
+      const { by_role: _r, models: _m, ...t } = { ...require('./transcripts').totals(runsOf) };
+      return t;
+    })(),
     steps,
     timeline: T,
     running_agents: runningNow,
@@ -511,8 +540,9 @@ function render(data, { label, live } = {}) {
 }
 
 function run(root, { out, job, label, data: dataFile } = {}) {
-  const data = build(root, { job });
   const target = path.resolve(out || path.join(project(root).dir, 'console.html'));
+  // transcript links are relative to the page: from where it is written back to the project
+  const data = { ...build(root, { job }), files_base: `${path.relative(path.dirname(target), root).split(path.sep).join('/') || '.'}/` };
   const html = render(data, { label });
   writeText(target, html);
   if (dataFile) writeText(path.resolve(dataFile), JSON.stringify(data, null, 2) + '\n');
@@ -550,8 +580,9 @@ function serve(root, { port = 4477, job, label, interval = 400, onReady } = {}) 
   const p = project(root);
   if (!fs.existsSync(p.dir)) fail('No .factory/ folder here. Run factory init first.', 'no_root');
   const clients = new Set();
+  const withBase = (d) => ({ ...d, files_base: '/files/' }); // transcript links go to the /files/ route
   let data = build(root, { job });
-  let body = JSON.stringify(data);
+  let body = JSON.stringify(withBase(data));
   let print = fingerprint(root);
   const same = (a, b) => JSON.stringify({ ...a, generated_at: 0 }) === JSON.stringify({ ...b, generated_at: 0 });
   const send = (res, d) => res.write(`event: data\ndata: ${d}\n\n`);
@@ -566,7 +597,7 @@ function serve(root, { port = 4477, job, label, interval = 400, onReady } = {}) 
     try { next = build(root, { job }); } catch { return; } // a file mid-write: try again next tick
     if (same(next, data)) return;
     data = next;
-    body = JSON.stringify(data);
+    body = JSON.stringify(withBase(data));
     for (const res of clients) send(res, body);
   };
   const server = http.createServer((req, res) => {
@@ -577,7 +608,18 @@ function serve(root, { port = 4477, job, label, interval = 400, onReady } = {}) 
     if (req.method !== 'GET') { res.writeHead(405); res.end(); return; }
     if (url === '/' || url === '/index.html') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      res.end(render(data, { label, live: true }));
+      res.end(render(withBase(data), { label, live: true }));
+    } else if (url.startsWith('/files/')) {
+      // agent transcripts only (.factory/scratch/runs/…), as plain text
+      let rel = null;
+      try { rel = transcriptPath(decodeURIComponent(url.slice('/files/'.length))); } catch { rel = null; }
+      const file = rel ? path.resolve(root, rel) : null;
+      const base = path.resolve(root, '.factory', 'scratch', 'runs') + path.sep;
+      let text = null;
+      if (file && file.startsWith(base)) { try { text = fs.readFileSync(file); } catch { text = null; } }
+      if (text === null) { res.writeHead(404); res.end('not found'); return; }
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      res.end(text);
     } else if (url === '/data.json') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(body);

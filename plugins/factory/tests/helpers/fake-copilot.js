@@ -11,7 +11,9 @@
 //                        session, turn, start/end ms, exit, FACTORY_* env).
 //
 // A reply is a plain object (sent back as the JSON answer), a string (sent as is), or a
-// control object with any of: json, text, exit, stderr, sleep_ms.
+// control object with any of: json, text, exit, stderr, sleep_ms, usage. `usage` adds the
+// SDK's usage records to the JSONL: {input, output, cost, model, premium, nano_aiu}
+// (assistant.usage, session.usage_checkpoint, session.shutdown).
 // `call` holds: agent, role, model, prompt, instructions (the file the prompt points at),
 // cwd, argv, add_dirs, session, turn (1 for a new session id, 2 for its resume …), n
 // (earlier runs of this role), env (the FACTORY_* variables).
@@ -91,7 +93,7 @@ async function answer(call) {
   } catch (e) {
     r = { exit: 1, stderr: `fake copilot: script failed: ${e.stack}` };
   }
-  const ctl = r && typeof r === 'object' && ['json', 'text', 'exit', 'stderr', 'sleep_ms'].some((k) => k in r) ? r : typeof r === 'string' ? { text: r } : { json: r };
+  const ctl = r && typeof r === 'object' && ['json', 'text', 'exit', 'stderr', 'sleep_ms', 'usage'].some((k) => k in r) ? r : typeof r === 'string' ? { text: r } : { json: r };
   if (ctl.sleep_ms) await new Promise((res) => setTimeout(res, ctl.sleep_ms));
   const exit = ctl.exit || 0;
   const text = 'json' in ctl ? JSON.stringify(ctl.json) : ctl.text || '';
@@ -102,10 +104,18 @@ async function answer(call) {
       const lines = [
         { type: 'session.start', data: { sessionId: session, model } },
         { type: 'assistant.message', data: { messageId: 'm1', content: '', toolRequests: [{ toolCallId: 't1', name: 'view' }] } },
+        { type: 'tool.execution_start', data: { toolCallId: 't1', toolName: 'view' } },
+        { type: 'tool.execution_complete', data: { toolCallId: 't1', success: true } },
         { type: 'assistant.message', agentId: 'sub-1', data: { messageId: 'm2', content: '{"not":"this one"}' } },
         { type: 'assistant.message', data: { messageId: 'm3', content: text } },
         { type: 'session.idle', data: {} },
       ];
+      const u = ctl.usage;
+      if (u) {
+        lines.splice(lines.length - 1, 0, { type: 'assistant.usage', ephemeral: true, data: { model: u.model || model || 'claude-sonnet-5.5', inputTokens: u.input, outputTokens: u.output, ...(u.cost !== undefined ? { cost: u.cost } : {}) } });
+        if (u.nano_aiu !== undefined) lines.push({ type: 'session.usage_checkpoint', data: { totalNanoAiu: u.nano_aiu, ...(u.premium !== undefined ? { totalPremiumRequests: u.premium } : {}) } });
+        if (u.premium !== undefined) lines.push({ type: 'session.shutdown', data: { shutdownType: 'routine', totalPremiumRequests: u.premium, totalApiDurationMs: 1200, sessionStartTime: start, codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] }, modelMetrics: {} } });
+      }
       process.stdout.write(lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
     } else process.stdout.write(text + '\n');
   }

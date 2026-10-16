@@ -956,3 +956,98 @@ test('telemetry quality: correction turns, null results and park reasons are cou
   assert.deepEqual(q.god_eye.design, { verdicts: 2, approve: 1, revise: 1, revise_rate: 0.5 });
   assert.deepEqual(q.parks['cap.review_rounds'], { parks: 1, jobs: [J], example: 'Review rounds exhausted' });
 });
+
+test('P4.1 transcripts and cost: each agent streams its JSONL to .factory/scratch/runs/<job>/<run>/<label>.jsonl; agent_run records tool calls, usage, and a failed run keeps its stderr tail', async () => {
+  const root = F.makeRepo();
+  const J = newJob(root);
+  F.cli(root, ['next']);
+  const long = `${'x'.repeat(2000)}\nError: the real cause is here`;
+  const h = harness(`module.exports = (c) => {
+    const base = ${JSON.stringify(CLARIFY)};
+    if (c.agent === 'factory:interviewer') return { json: base[c.agent], usage: { input: 1200, output: 300, cost: 1, premium: 1, nano_aiu: 5000 } };
+    if (c.agent === 'factory:contract-writer') return { exit: 1, stderr: ${JSON.stringify(long)} };
+    return base[c.agent];
+  };`);
+  const rb = h.run(root, ['clarify']);
+  assert.equal(rb.status, 'needs_user', JSON.stringify(rb) + rb.__stderr);
+  const iv = events(root).filter((e) => e.event === 'agent_run' && e.role === 'interviewer')[0];
+  const start = events(root).find((e) => e.event === 'agent_start' && e.run_id === iv.run_id);
+  assert.match(iv.transcript, new RegExp(`^\\.factory/scratch/runs/${J}/[^/]+-clarify-\\d+/read-back\\.jsonl$`));
+  assert.equal(start.transcript, iv.transcript, 'agent_start names the transcript while the agent runs');
+  const text = fs.readFileSync(path.join(root, iv.transcript), 'utf8');
+  assert.match(text, /"type":"tool.execution_start"/);
+  assert.match(text, /"type":"assistant.message"/);
+  assert.equal(iv.tool_calls, 1);
+  assert.equal(iv.last_tool, 'view');
+  assert.equal(iv.session_id && typeof iv.session_id, 'string');
+  assert.equal(typeof iv.ms, 'number');
+  assert.deepEqual([iv.usage.reported, iv.usage.input_tokens, iv.usage.output_tokens, iv.usage.cost, iv.usage.session_premium_requests, iv.usage.session_nano_aiu], [true, 1200, 300, 1, 1, 5000]);
+  // the contract writer crashes: its whole stderr tail is kept, not 300 characters
+  F.cli(root, ['clarify', 'reply', 'ok']);
+  F.cli(root, ['next']);
+  const w = h.run(root, ['clarify']);
+  const cw = events(root).filter((e) => e.event === 'agent_run' && e.role === 'contract-writer');
+  assert.ok(cw.length >= 1, JSON.stringify(w));
+  assert.equal(cw[0].outcome, 'failed');
+  assert.ok(cw[0].stderr_tail.length > 1000 && /the real cause is here/.test(cw[0].stderr_tail), cw[0].stderr_tail.slice(-80));
+  assert.match(fs.readFileSync(path.join(root, cw[0].stderr_file), 'utf8'), /the real cause is here/);
+  assert.deepEqual(cw[0].usage, { reported: false }, 'no usage record from the CLI: unknown, not zero');
+  // telemetry: a Cost section per job
+  const T = require('../cli/core/telemetry');
+  const rep = T.report(root);
+  const cost = rep.per_job.find((m) => m.job === J).cost;
+  assert.equal(cost.input_tokens, 1200);
+  assert.equal(cost.premium_requests, 1);
+  assert.ok(cost.unreported_runs >= 1);
+  assert.equal(cost.by_role.interviewer.input_tokens, 1200);
+  assert.match(T.toMarkdown(rep), /## Cost[\s\S]*\| J-0001 \| bug@low \| \d+ \| \d+ \| \d+ \| 1200 \| 300 \|/);
+  // the console: the job's cost, and the transcript served live from /files/ (that folder only)
+  const C = require('../cli/core/console');
+  const job = C.build(root, { job: J }).jobs[0];
+  assert.equal(job.cost.input_tokens, 1200);
+  const http = require('http');
+  const get = (url) => new Promise((res) => http.get(url, (r) => { let b = ''; r.on('data', (d) => { b += d; }); r.on('end', () => res({ code: r.statusCode, body: b })); }));
+  await new Promise((resolve) => {
+    C.serve(root, { port: 0, onReady: async ({ url, close }) => {
+      const ok = await get(`${url}files/${iv.transcript.split('/').map(encodeURIComponent).join('/')}`);
+      assert.equal(ok.code, 200);
+      assert.match(ok.body, /assistant.message/);
+      assert.equal((await get(`${url}files/.factory/jobs/${J}/state.json`)).code, 404, 'only transcripts are served');
+      assert.equal((await get(`${url}files/.factory/scratch/runs/..%2F..%2Fpolicy.json`)).code, 404);
+      const page = await get(url);
+      assert.match(page.body, /"files_base":"\/files\/"/);
+      close();
+      resolve();
+    } });
+  });
+  // a snapshot links transcripts relative to where the page is written
+  const out = C.run(root, { job: J });
+  assert.match(fs.readFileSync(out.written, 'utf8'), /"files_base":"\.\.\/"/);
+});
+
+test('P4.1 transcript caps: a transcript over the cap rotates to <label>.1.jsonl with complete counts; only the newest runs are kept', () => {
+  const T = require('../cli/core/transcripts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-tx-'));
+  const t = T.open(path.join(dir, 'build_T1_1.jsonl'), { maxBytes: 200 });
+  const ev = (n) => `${JSON.stringify({ type: 'tool.execution_start', data: { toolCallId: `t${n}`, toolName: n % 2 ? 'bash' : 'edit' } })}\n`;
+  for (let i = 1; i <= 10; i++) t.write(ev(i).slice(0, 30)), t.write(ev(i).slice(30)); // lines split across chunks
+  t.write(JSON.stringify({ type: 'assistant.usage', data: { model: 'm', inputTokens: 7 } })); // no newline: counted at flush
+  t.flush();
+  const r = t.result();
+  assert.equal(r.tool_calls, 10);
+  assert.equal(r.last_tool, 'edit');
+  assert.equal(r.usage.input_tokens, 7);
+  assert.ok(fs.existsSync(path.join(dir, 'build_T1_1.1.jsonl')), 'rotated');
+  assert.ok(fs.statSync(path.join(dir, 'build_T1_1.jsonl')).size <= 200 + 100);
+  // a label used twice in one run gets its own file
+  const taken = new Set();
+  assert.notEqual(T.fileFor(dir, 'verify code-1', taken), T.fileFor(dir, 'verify code-1', taken));
+  // prune keeps the newest run folders
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-txr-'));
+  for (const n of ['20260101T000000-a', '20260102T000000-b', '20260103T000000-c']) fs.mkdirSync(path.join(T.runsDir(root, 'J-0001'), n), { recursive: true });
+  assert.equal(T.prune(root, 'J-0001', 2), 1);
+  assert.deepEqual(fs.readdirSync(T.runsDir(root, 'J-0001')).sort(), ['20260102T000000-b', '20260103T000000-c']);
+  // totals: session-wide counters once per session, at their largest; unreported runs never count as zero
+  const tot = T.totals([{ ms: 1000, session_id: 's1', usage: { reported: true, input_tokens: 5, session_premium_requests: 2 } }, { ms: 1000, session_id: 's1', usage: { reported: true, input_tokens: 3, session_premium_requests: 3 } }, { ms: 500, usage: { reported: false } }]);
+  assert.deepEqual([tot.input_tokens, tot.premium_requests, tot.reported_runs, tot.unreported_runs, tot.output_tokens], [8, 3, 2, 1, null]);
+});

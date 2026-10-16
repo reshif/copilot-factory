@@ -130,7 +130,9 @@
     "allow_tools": {},
     "deny_tools": {},
     "agent_timeout_seconds": 1800,
-    "resume_for_retry": true
+    "resume_for_retry": true,
+    "transcript_max_bytes": 8388608,
+    "transcript_keep_runs": 30
   },
   "intent_research": {
     "web": true,
