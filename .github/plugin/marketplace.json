@@ -12,7 +12,7 @@
       "name": "factory",
       "source": "./plugins/factory",
       "description": "Software Factory: a grounded orchestrator with CLI-enforced floors, human gates, evidence-bound builds, 21 custom agents run by `factory run` (clarify researches before it asks), and a console.",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "author": { "name": "Firdous" },
       "repository": "https://github.com/reshif/copilot-factory",
       "license": "MIT",
