@@ -10,6 +10,22 @@
 //   subgraph        that block draws at least one subgraph (a boundary)
 //   ledger          (0.10.0) required when the job has an API ledger: a table whose every row
 //                   cites a verified ledger entry (L-n), or a None line (no external API)
+// Design depth (0.11, templates adr@2 / no-adr@2; cli/core/design.js parses and checks them):
+//   refs            cites at least one acceptance criterion (AC-n)
+//   options         at least two options, and every option generator's id (O-n) has a row
+//   decisions       "### D-n" decision records: Context, Drivers, an Options trade-off table
+//                   (>= 2 options, >= 2 criteria columns, one "chosen"), Choice, Consequences,
+//                   Revisit when
+//   branch          its sequenceDiagram draws an alt / opt / break path and the whole run
+//   flow-acs        every AC appears in a flow-acs or failures section (a flow step)
+//   layout-names    its diagram names a module from the Project layout
+//   mapping         source → target table with the match key, an er/class diagram, or "None: why"
+//   failures        a table of failures, how they are detected, the behaviour and the AC
+//   layout          the ```text file tree: each file with status, responsibility and ACs;
+//                   every AC served by a file
+//   runs            entry points and commands in `code`
+// A doc is checked by the template version its front matter names: an ADR written under an
+// older template (templates/docs/legacy/adr@1.md) keeps that template's rules, with a warning.
 // Checks are cheap and syntactic. Mermaid is never rendered; blocks are checked for a
 // known diagram type, balanced brackets and blocks, and at least one edge or message.
 
@@ -95,12 +111,13 @@ function norm(s) {
 }
 
 function parseRules(text) {
-  const r = { optional: false, table: false, acs: false, threats: false, subgraph: false, ledger: false, mermaid: null };
+  const r = { optional: false, table: false, acs: false, threats: false, subgraph: false, ledger: false, mermaid: null, refs: false, options: false, decisions: false, branch: false, 'flow-acs': false, 'layout-names': false, mapping: false, failures: false, layout: false, runs: false };
   for (const m of String(text).matchAll(/<!--\s*rule:\s*([\s\S]*?)-->/g)) {
     for (const part of m[1].split(';').map((x) => x.trim()).filter(Boolean)) {
       const [k, ...rest] = part.split(/\s+/);
       if (k === 'mermaid') r.mermaid = rest.join(' ').split('|').map((x) => x.trim()).filter(Boolean);
       else if (k in r) r[k] = true;
+      else throw new Error(`unknown doc rule "${k}"`);
     }
   }
   return r;
@@ -115,10 +132,22 @@ function sectionsOf(st) {
   });
 }
 
+// Templates an earlier factory wrote docs under (templates/docs/legacy/<type>@<n>.md): a doc
+// that names one in its front matter is checked by that template's rules.
+function legacyPath(version) {
+  return /^[a-z-]+@\d+$/.test(String(version || '')) ? pluginPath('templates', 'docs', 'legacy', `${version}.md`) : null;
+}
+function isLegacy(version) {
+  const p = legacyPath(version);
+  return Boolean(p && exists(p));
+}
+
 const TEMPLATES = {};
-function loadTemplate(type) {
-  if (TEMPLATES[type]) return TEMPLATES[type];
-  const text = template(type);
+function loadTemplate(type, version = null) {
+  const legacy = version && isLegacy(version) && version.startsWith(`${type}@`) ? version : null;
+  const key = legacy || type;
+  if (TEMPLATES[key]) return TEMPLATES[key];
+  const text = legacy ? readText(legacyPath(legacy)) : template(type);
   const st = structure(text);
   const fm = st.fm;
   const h1 = st.heads.find((h) => h.level === 1);
@@ -131,8 +160,9 @@ function loadTemplate(type) {
     h1Re,
     statuses: statuses.length ? statuses : null,
     sections: sectionsOf(st).map((s) => ({ title: s.title, key: s.key, rules: parseRules(s.text) })),
+    legacy: Boolean(legacy),
   };
-  TEMPLATES[type] = t;
+  TEMPLATES[key] = t;
   return t;
 }
 
@@ -227,8 +257,11 @@ function check(text, opts = {}) {
   const front = st.fm.front;
   const type = opts.type || typeOf(opts.file, front);
   if (!type) return { type: null, ok: false, problems: [`Cannot tell the doc type: add front matter with "doc: <type>" (${Object.keys(TYPES).join(', ')})`], warnings };
-  const t = loadTemplate(type);
-  const tfile = `templates/docs/${TYPES[type].file}`;
+  // the template version the doc names: an older one (templates/docs/legacy) keeps its rules
+  const named = front && front.template && isLegacy(front.template) && String(front.template).startsWith(`${type}@`) ? front.template : null;
+  const t = loadTemplate(type, named);
+  const tfile = named ? `templates/docs/legacy/${named}.md` : `templates/docs/${TYPES[type].file}`;
+  if (named) warnings.push(`Written under the older template ${named}: checked by its rules. The current template ${loadTemplate(type).version} (design depth: decision records, end-to-end flow, data mapping, failure flow, project layout) applies to designs written now`);
 
   // Front matter
   if (!front) problems.push(`No front matter: start the file with the "---" block from ${tfile} (doc, template, job, title, status, date)`);
@@ -261,6 +294,10 @@ function check(text, opts = {}) {
   // Sections in order, with their rules
   const secs = sectionsOf(st);
   const blocks = st.fences.filter((f) => f.lang === 'mermaid').map((b) => ({ ...b, res: mermaid(b) }));
+  const D = require('./design');
+  const layout = t.sections.some((x) => x.rules.layout || x.rules['layout-names']) ? D.layoutOf(text) : null;
+  const flowAcs = new Set();
+  let flowWanted = false;
   let at = -1;
   for (const ts of t.sections) {
     const idx = secs.findIndex((s, i) => i > at && s.key === ts.key);
@@ -289,13 +326,32 @@ function check(text, opts = {}) {
       if (miss.length) problems.push(`Section "## ${ts.title}" does not map threat(s) ${miss.join(', ')} from threat-model.md`);
     }
     if (ts.rules.ledger && opts.ledger) problems.push(...ledgerProblems(ts.title, s.text, opts.ledger));
+    const mine = blocks.filter((b) => b.start > s.line && b.start < s.end);
+    // design depth (adr@2 / no-adr@2)
+    if (ts.rules.refs && !/(?<![\w-])(?:E-)?AC-\d+\b/.test(body)) problems.push(`Section "## ${ts.title}" ties no driver to an acceptance criterion: cite them by id (AC-1)`);
+    if (ts.rules.options) problems.push(...D.optionsProblems(ts.title, s.text, opts.options));
+    if (ts.rules.decisions) problems.push(...D.decisionProblems(ts.title, s.text));
+    if (ts.rules.branch) problems.push(...D.branchProblems(ts.title, mine));
+    if (ts.rules.mapping) problems.push(...D.mappingProblems(ts.title, s.text, mine));
+    if (ts.rules.failures) problems.push(...D.failureProblems(ts.title, s.text));
+    if (ts.rules.runs) problems.push(...D.runsProblems(ts.title, s.text));
+    if (ts.rules.layout && layout) problems.push(...D.layoutProblems(ts.title, layout, { acs: opts.acs, testAcs: opts.testAcs }));
+    if (ts.rules['layout-names'] && layout) problems.push(...D.layoutNameProblems(ts.title, mine, layout));
+    if (ts.rules['flow-acs'] || ts.rules.failures) {
+      flowWanted = flowWanted || ts.rules['flow-acs'];
+      for (const a of D.acsIn(s.text)) flowAcs.add(a);
+    }
     if (ts.rules.mermaid) {
-      const mine = blocks.filter((b) => b.start > s.line && b.start < s.end);
       const good = mine.filter((b) => b.res.type && ts.rules.mermaid.includes(b.res.type) && !b.res.problems.length);
       if (!mine.length) problems.push(`Section "## ${ts.title}" needs a \`\`\`mermaid diagram (${ts.rules.mermaid.join(' | ')}); see ${tfile}`);
       else if (!good.length && mine.every((b) => !b.res.problems.length)) problems.push(`Section "## ${ts.title}" needs a ${ts.rules.mermaid.join(' | ')} diagram; found ${mine.map((b) => b.res.type).join(', ')}`);
       else if (ts.rules.subgraph && good.length && !good.some((b) => b.res.subgraphs > 0)) problems.push(`The diagram in "## ${ts.title}" draws no boundary: put each trust boundary in a subgraph`);
     }
+  }
+  // every acceptance criterion is a step of the flow (or a row of the failure flow)
+  if (flowWanted && opts.acs) {
+    const miss = opts.acs.filter((a) => !flowAcs.has(a));
+    if (miss.length) problems.push(`No flow step shows ${miss.join(', ')}: put each acceptance criterion where it is met in "## End-to-end flow" (Note over …: AC-n) or in a row of "## Failure and state flow"`);
   }
   for (const b of blocks) problems.push(...b.res.problems);
   return { type, template: t.version, ok: problems.length === 0, problems, warnings };
@@ -327,7 +383,11 @@ function threatIds(text) {
 function jobOpts(root, state, file) {
   const contract = require('./contract');
   const jp = jobPaths(root, state.id);
-  const acs = contract.parse(contract.read(root, state.id)).acs.map((a) => a.id);
+  const parsedAcs = contract.parse(contract.read(root, state.id)).acs;
+  const acs = parsedAcs.map((a) => a.id);
+  const testAcs = parsedAcs.filter((a) => (a.evidence || []).includes('test')).map((a) => a.id);
+  // the option generators' options (O-n) of the latest decide fan-out: the ADR has a row for each
+  const options = (readJson(path.join(jp.dir, 'options.json'), null) || {}).options || null;
   const tm = path.resolve(file) === path.resolve(jp.threatModel) ? null : readText(jp.threatModel, null);
   // the verified API ledger ids, when ground recorded a ledger with entries (an ADR must cite them)
   let ledgerIds = null;
@@ -337,7 +397,7 @@ function jobOpts(root, state, file) {
   } catch {
     ledgerIds = null;
   }
-  return { job: state.id, acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}) };
+  return { job: state.id, acs: acs.length ? acs : null, threats: tm ? threatIds(tm) : null, dir: path.dirname(file), ...(ledgerIds ? { ledger: ledgerIds } : {}), ...(testAcs.length ? { testAcs } : {}), ...(options && options.length ? { options } : {}) };
 }
 
 function checkFile(file, opts = {}) {
@@ -468,4 +528,4 @@ function list() {
   return Object.entries(TYPES).map(([type, t]) => ({ type, template: loadTemplate(type).version, path: templatePath(type), what: t.what, sections: loadTemplate(type).sections.map((s) => `${s.title}${s.rules.optional ? ' (optional)' : ''}`) }));
 }
 
-module.exports = { TYPES, DESIGN_TYPES, template, templatePath, loadTemplate, frontMatter, check, checkFile, checkJob, jobOpts, designProblems, mermaid, structure, typeOf, frontBlock, cell, sectionLead, index, list, threatIds };
+module.exports = { TYPES, DESIGN_TYPES, template, templatePath, loadTemplate, isLegacy, legacyPath, frontMatter, check, checkFile, checkJob, jobOpts, designProblems, mermaid, structure, typeOf, frontBlock, cell, sectionLead, index, list, threatIds };

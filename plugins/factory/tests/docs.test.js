@@ -20,22 +20,25 @@ const tmpFile = (name, text) => {
 test('every template is well formed: only its {{placeholders}} fail the check', () => {
   for (const type of Object.keys(doc.TYPES)) {
     const t = doc.loadTemplate(type);
-    assert.equal(t.version, `${type}@1`);
+    assert.equal(t.version, ['adr', 'no-adr'].includes(type) ? `${type}@2` : `${type}@1`);
     assert.ok(t.sections.length >= 2, type);
     const r = doc.check(doc.template(type), { type });
     assert.deepEqual(r.problems.filter((p) => !/placeholder|is not YYYY-MM-DD/.test(p)), [], `${type}: ${r.problems.join('; ')}`);
   }
   const adr = doc.loadTemplate('adr');
-  assert.deepEqual(adr.sections.map((s) => s.title), ['Context', 'Decision drivers', 'Considered options', 'Decision', 'Architecture diagram', 'External API usage', 'Consequences', 'How each acceptance criterion is met', 'Threat mitigations', 'Rollback and migration', 'Open questions']);
+  assert.deepEqual(adr.sections.map((s) => s.title), ['Context', 'Decision drivers', 'Considered options', 'Decision', 'Decision records', 'Architecture diagram', 'End-to-end flow', 'Data model and mapping', 'Failure and state flow', 'Project layout', 'How it runs', 'External API usage', 'Consequences', 'How each acceptance criterion is met', 'Threat mitigations', 'Rollback and migration', 'Open questions']);
+  // the older templates stay, so designs written under them keep their rules
+  assert.deepEqual(doc.loadTemplate('adr', 'adr@1').sections.map((s) => s.title), ['Context', 'Decision drivers', 'Considered options', 'Decision', 'Architecture diagram', 'External API usage', 'Consequences', 'How each acceptance criterion is met', 'Threat mitigations', 'Rollback and migration', 'Open questions']);
+  assert.equal(doc.loadTemplate('no-adr', 'no-adr@1').sections.find((s) => s.title === 'Diagram').rules.optional, true);
   assert.ok(adr.sections.find((s) => s.title === 'Architecture diagram').rules.mermaid.includes('flowchart'));
   assert.equal(doc.loadTemplate('threat-model').sections.find((s) => /Data-flow/.test(s.title)).rules.subgraph, true);
-  assert.equal(doc.loadTemplate('no-adr').sections.find((s) => s.title === 'Diagram').rules.optional, true);
+  assert.equal(doc.loadTemplate('no-adr').sections.find((s) => s.title === 'Project layout').rules.layout, true);
 });
 
 test('factory doc template / list print the template set', () => {
   const r = require('child_process').spawnSync('node', [F.BIN, 'doc', 'template', 'adr'], { encoding: 'utf8' });
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /^---\ndoc: adr\ntemplate: adr@1/);
+  assert.match(r.stdout, /^---\ndoc: adr\ntemplate: adr@2/);
   assert.match(r.stdout, /## Architecture diagram[\s\S]*```mermaid\nflowchart LR/);
   const l = JSON.parse(require('child_process').spawnSync('node', [F.BIN, 'doc', 'list'], { encoding: 'utf8' }).stdout);
   assert.deepEqual(l.map((x) => x.type), ['adr', 'no-adr', 'recommendation', 'threat-model', 'contracts', 'intent-findings', 'findings', 'ship-report', 'lessons', 'index']);

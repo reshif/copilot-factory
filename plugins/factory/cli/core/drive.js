@@ -286,7 +286,7 @@ function stopDetail(kind, n, extra = {}) {
     case 'gate':
       return {
         gate: g ? { id: g.id, hash: g.hash, docs: g.docs || [] } : null,
-        summary: `${J} waits at gate ${g ? g.id : n.step}${g && g.hash ? ` (hash ${String(g.hash).slice(0, 12)})` : ''}${n.review && (n.review.approves || []).length ? `: one approval for ${n.review.approves.join(' + ')}${n.review.environment && n.review.environment.status === 'proposed' ? ' (it also sets the build environment for this repository: other jobs build in it too)' : ''}` : ''}${n.review && n.review.objections ? `; ${n.review.objections}` : ''}${n.resumes_park ? '; approving it also resumes the parked job' : ''}.`,
+        summary: `${J} waits at gate ${g ? g.id : n.step}${g && g.hash ? ` (hash ${String(g.hash).slice(0, 12)})` : ''}${n.review && (n.review.approves || []).length ? `: one approval for ${n.review.approves.join(' + ')}${n.review.environment && n.review.environment.status === 'proposed' ? ' (it also sets the build environment for this repository: other jobs build in it too)' : ''}` : ''}${n.review && n.review.objections ? `; ${n.review.objections}` : ''}${n.resumes_park ? '; approving it also resumes the parked job' : ''}.${n.review && n.review.design ? ` Design: ${n.review.design.summary} (review.design: the decision table, the diagrams and the layout tree; \`factory doc design\` prints them).` : ''}`,
         ...(n.review ? { review: n.review } : {}),
         reply: 'approve | deny <what must change>',
         command: g && g.id === 'A' ? `factory approve --job ${J}` : `factory approve ${g ? g.id : ''} --job ${J}`.replace('  ', ' '),

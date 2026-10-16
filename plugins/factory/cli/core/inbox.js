@@ -71,7 +71,17 @@ function itemFor(root, state, driveStop, plain = false) {
     } catch {
       /* the plain label */
     }
-    return { ...base, kind: 'gate', gate: pg.id, hash: pg.hash, docs: pg.docs || [], since: pg.at || null, what: `approve ${what}`, reply: ['approve', 'deny <what must change>'], command: pg.id === 'A' ? `factory approve --job ${J}` : `factory approve ${pg.id} --job ${J}`, human_only: true };
+    // 0.11: at the design or plan gate, what / how / where in one place (cli/core/design.js)
+    let design = null;
+    if (['H2', 'EH2', 'H3'].includes(pg.id)) {
+      try {
+        const v = require('./design').view(root, state);
+        if (v) design = { summary: v.summary, decisions: v.decisions.map((d) => ({ id: d.id, title: d.title, chosen: d.chosen })), markdown: require('./design').markdown(v) };
+      } catch {
+        design = null;
+      }
+    }
+    return { ...base, kind: 'gate', gate: pg.id, hash: pg.hash, docs: pg.docs || [], since: pg.at || null, what: `approve ${what}`, ...(design ? { design } : {}), reply: ['approve', 'deny <what must change>'], command: pg.id === 'A' ? `factory approve --job ${J}` : `factory approve ${pg.id} --job ${J}`, human_only: true };
   }
   const cw = clarifyWait(root, state, plain);
   if (cw) {
@@ -158,6 +168,7 @@ function markdown(r) {
     L.push(`- Reply in chat: ${it.reply.map((x) => `\`${x}\``).join(' · ')}`);
     if (it.command) L.push(`- Or in your terminal: \`${it.command}\`${it.human_only ? ' (it asks you to type a code shown on that terminal)' : ''}`);
     if (it.screen) L.push('', '```text', it.screen.trim(), '```');
+    if (it.design && it.design.markdown) L.push('', it.design.markdown.trim());
     L.push('');
   });
   L.push(r.message);

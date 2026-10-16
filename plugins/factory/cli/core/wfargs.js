@@ -305,7 +305,7 @@ function decide(root, state, ctx, action) {
         id: `option-${i + 1}`,
         ...agentSpec(state, 'option-generator'),
         label: `option · ${f.prior}`,
-        prompt: prompt('option-generator', `${jc}\n- Your prior: optimise for **${f.prior}**. Other generators optimise for other things; do not hedge toward them.${mode === 'contracts' ? '\n- This is an epic: list in freeze_first the interfaces and contracts your option freezes first.' : ''}${mode === 'recommendation' ? '\n- This is a spike: the option is a candidate answer to the research question.' : ''}`),
+        prompt: prompt('option-generator', `${jc}\n- Your option is **O-${i + 1}** (the architect's options table cites it by that id).\n- Your prior: optimise for **${f.prior}**. Other generators optimise for other things; do not hedge toward them.${mode === 'contracts' ? '\n- This is an epic: list in freeze_first the interfaces and contracts your option freezes first.' : ''}${mode === 'recommendation' ? '\n- This is a spike: the option is a candidate answer to the research question.' : ''}`),
         schema: schema('option'),
       };
     });
@@ -316,7 +316,18 @@ function decide(root, state, ctx, action) {
       : mode === 'contracts'
         ? `Write the decision as an ADR (${nextAdr}) following ${tpl('adr')}, the human-readable contracts to ${jp.contractsMd} following ${tpl('contracts')}, and the machine-readable interface list to ${jp.contractsJson}. kind = "contracts".`
         : `If there is a real decision (two or more viable options with different consequences), write an ADR to ${nextAdr} following ${tpl('adr')} (kind "adr"). Otherwise write ${jp.noAdr} following ${tpl('no-adr')} (kind "no-adr").`;
+  // 0.11 design depth: what the human must see at the design gate (templates adr@2 / no-adr@2)
+  const optionIds = cfg.fanout.filter((f) => f.role === 'option-generator').map((f, i) => `O-${i + 1} (${f.prior})`);
+  const depth = mode === 'recommendation' ? '' : [
+    `- Design depth (template ${docs.loadTemplate('adr').version}; keep "template: ${docs.loadTemplate('adr').version}" in the front matter): the human approves what, how and where from this one document. Fill every section concretely, with the real names from the findings and the code:`,
+    `  - "Considered options": one row per generated option, by id: ${optionIds.join(', ')} (option-n under INPUTS is O-n), then any of your own.`,
+    '  - "Decision records": one "### D-n" record per significant decision (approach, data collection or storage, how records are matched, how writes are grouped, error handling, registration…), each with Context, Drivers (cite AC ids or constraints), an Options trade-off table (two or more options with the generators\' alternatives where they apply, two or more criteria columns, exactly one "chosen"), Choice, Consequences and Revisit when.',
+    '  - "Architecture diagram": the component view with the real modules and classes of "Project layout" and the external systems; "End-to-end flow": the whole run as a sequenceDiagram, the dry-run and failure paths as alt/else/opt, each AC noted where it is met; "Data model and mapping": source field → target field and the match key; "Failure and state flow": every failure (unreachable system, bad credentials, conflicting data, partial write…), how it is detected, what the run does, its AC.',
+    '  - "Project layout": the file tree after the job — every new, changed and existing file that matters, tests, config, fixtures and harness — one per line with "# status · responsibility · ACs"; every AC served by a file. The planner derives the tasks from this tree, and `factory plan validate` checks every new or changed file is owned by exactly one task. "How it runs": entry points, where it is registered, the commands.',
+    '  - A no-adr note (one obvious way) still has "Project layout" and "How it runs".',
+  ].join('\n');
   const rules = [
+    depth,
     threat && mode !== 'recommendation' ? '- A threat model was written for this change: map every threat id (TH-n) in the ADR\'s "Threat mitigations".' : '',
     apiLedger && apiLedger.entries.length && mode !== 'recommendation' ? `- In the ADR's "External API usage" (${tpl('adr')}), list every call the design makes into a dependency, with how it is used and the ledger id (L-n) that shows the behaviour relied on. A call the ledger does not cover: read the dependency source yourself and say so in Open questions; never rely on remembered library behaviour.` : '',
     `- ${docCheck(root, state, '<file>')}`,
@@ -331,7 +342,7 @@ function decide(root, state, ctx, action) {
   const critique = {
     id: 'god-eye',
     ...agentSpec(state, 'god-eye'),
-    prompt: prompt('god-eye', `${jc}\n- Focus: **design**. The document is the design record (paths under INPUTS).${threat ? ` The threat model it must address: ${jp.threatModel}.` : ''}${depsText ? ' Where the design relies on a library\'s behaviour, check it in the dependency source above, and give each serious item its `evidence` (path:line, or the command and its output).' : ''}`),
+    prompt: prompt('god-eye', `${jc}\n- Focus: **design**. The document is the design record (paths under INPUTS). Check its depth too (your design checklist): every significant decision has a record with real alternatives and trade-offs; the component diagram, the end-to-end flow (failure and dry-run paths), the data mapping and the failure flow are complete and agree with the contract, with each other and with the API ledger; the Project layout names every file the flow needs, with a responsibility and the ACs it serves, and how it runs and where it is registered.${threat ? ` The threat model it must address: ${jp.threatModel}.` : ''}${depsText ? ' Where the design relies on a library\'s behaviour, check it in the dependency source above, and give each serious item its `evidence` (path:line, or the command and its output).' : ''}`),
     schema: schema('critique'),
     max_rounds: maxRounds,
     revise: { ...agentSpec(state, 'architect'), prompt: prompt('architect', `${jc}\n- Revise the design record you wrote to address ${targeted ? 'the human\'s denial' : 'the critique'} under INPUTS. Fix exactly what it names (each item says where, and why, with its evidence); keep the decision otherwise. Keep the same file paths.\n${rules}`), schema: schema('architect') },
@@ -342,7 +353,7 @@ function decide(root, state, ctx, action) {
   const critics = [critique, ...(hasDeps && mode !== 'recommendation' ? [{
     id: 'api-conformance',
     ...agentSpec(state, 'api-conformance'),
-    prompt: prompt('api-conformance', `${jc}\n- The design record to check is under INPUTS (its paths). Check every external call it makes (its "External API usage" table, and any call its Decision implies) against the pinned dependency source and the API ledger above.${(() => { const E = require('./environment').loadSafe(root).env; return E && !require('./environment').isNone(E) ? ` A probe (e.g. inspect.signature) may run only inside the project's confirmed build environment "${E.name || 'configured'}" (setup: ${(E.setup || []).join(' && ') || 'none'}), never by importing from .factory/deps.` : ' No build environment is confirmed: read the source, run no probe that imports the dependency.'; })()}`),
+    prompt: prompt('api-conformance', `${jc}\n- The design record to check is under INPUTS (its paths). Check every external call it makes (its "External API usage" table, and any call its Decision, its decision records, its End-to-end flow or its Data model and mapping imply) against the pinned dependency source and the API ledger above: the flow and the layout must be consistent with them (a flow step that relies on behaviour the source does not have, a mapped field the library does not expose, a registration hook that does not exist at the pinned version).${(() => { const E = require('./environment').loadSafe(root).env; return E && !require('./environment').isNone(E) ? ` A probe (e.g. inspect.signature) may run only inside the project's confirmed build environment "${E.name || 'configured'}" (setup: ${(E.setup || []).join(' && ') || 'none'}), never by importing from .factory/deps.` : ' No build environment is confirmed: read the source, run no probe that imports the dependency.'; })()}`),
     schema: schema('conformance'),
   }] : [])];
   // both critics' serious items are checked by a finding verifier before they cost a revise
@@ -526,7 +537,11 @@ function decompose(root, state, ctx, action) {
   const jp = jobPaths(root, state.id);
   const slices = action.mode === 'slices' || state.epic;
   const rounds = Math.max(1, state.policy.limits.max_plan_validate_rounds - state.counters.decompose_rounds);
-  const jc = `${jobContext(root, state, ['H3', 'EH3'])}\n- Findings: ${jp.findings}\n- Design record: ${invalidation.designFiles(root, state.id).join(', ') || '(none)'} (templated docs: the ADR's "Decision", "Architecture diagram", "How each acceptance criterion is met" and "Rollback and migration" sections are what tasks implement)`;
+  const layout = slices ? null : require('./design').jobLayout(root, state.id);
+  const layoutText = layout
+    ? `\n- The design's **Project layout** (${layout.files.join(', ')}) is the plan's source: derive the tasks from it. Every new, changed or deleted file in it is owned by exactly one task (its allowed_paths cover it; no other task's do); every allowed path covers at least one of those files (name files or narrow globs, not whole trees); existing files need no owner. \`plan validate\` checks both and prints the tree with each file's owner. Files to own:\n${layout.entries.filter((e) => !e.dir && require('./design').OWNED.has(e.status)).map((e) => `  - ${e.path} (${e.status}; ${e.acs.join(', ') || 'no AC'}): ${e.responsibility}`).join('\n')}`
+    : '';
+  const jc = `${jobContext(root, state, ['H3', 'EH3'])}\n- Findings: ${jp.findings}\n- Design record: ${invalidation.designFiles(root, state.id).join(', ') || '(none)'} (templated docs: the ADR's "Decision", "Decision records", "Architecture diagram", "End-to-end flow", "Project layout", "How each acceptance criterion is met" and "Rollback and migration" sections are what tasks implement)${layoutText}`;
   const ls = lessons.inScope(root, []);
   const what = slices
     ? `Write ${jp.slices}: {"slices":[{"id":"S00","goal":"…","criteria_ids":["E-AC-1"],"depends_on":[],"work_type":"feature","risk":"${state.risk}","allowed_paths":["…"]}], "epic_verify_commands":["…"]}. S00 freezes the contracts and adds the feature flag; later slices are vertical and safe to stop after. Every E-AC must be owned by a slice.`

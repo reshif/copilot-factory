@@ -233,6 +233,10 @@ function validatePlan(root, state, { write = true } = {}) {
   for (const ac of needsTask) {
     if (!plan.tasks.some((t) => t.criteria_ids.includes(ac.id))) errors.push(`${ac.id} is not covered by any task`);
   }
+  // 0.11 design depth: the plan is derived from the design's Project layout (adr@2 / no-adr@2):
+  // every new, changed or deleted file has exactly one owner task, every task path covers one
+  const layout = require('./design').jobLayout(root, state.id);
+  if (layout) errors.push(...require('./design').planLayoutProblems(layout, plan.tasks));
   if (state.risk === 'low' && plan.tasks.length > 6) errors.push(`${plan.tasks.length} tasks is too large for low risk; raise the risk via amendment or split into an epic`);
   for (const lock of otherJobLocks(root, state)) {
     const mine = plan.tasks.flatMap((t) => t.allowed_paths);
@@ -255,6 +259,8 @@ function validatePlan(root, state, { write = true } = {}) {
     tasks: plan.tasks.length,
     interfaces: ifaces.map((i) => ({ name: i.name, kind: i.kind || null, file: i.file, owner: i.owner, consumers: plan.tasks.filter((t) => (t.consumes || []).includes(i.name)).map((t) => t.id) })),
     implied_dependencies: Object.entries(implied).flatMap(([task, xs]) => xs.map((x) => ({ task, on: x.on, via: x.via }))),
+    // the design's Project layout with the task that owns each file (what H3 shows as a tree)
+    ...(layout ? { layout: require('./design').ownership(layout, plan.tasks).filter((e) => !e.dir).map((e) => ({ path: e.path, status: e.status, owner: e.owners.join('+') || null, acs: e.acs })), layout_tree: require('./design').treeText(require('./design').ownership(layout, plan.tasks)) } : {}),
   };
 }
 

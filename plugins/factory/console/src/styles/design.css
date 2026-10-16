@@ -1,0 +1,31 @@
+/* The design at a gate (0.11): decision table, rendered diagrams, the layout tree with owners. */
+.dsg { margin: 10px 0; }
+.dsg .eh { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 12px 0 5px; }
+.dsg-t { width: 100%; border-collapse: collapse; font-size: 12px; margin: 4px 0 8px; }
+.dsg-t th, .dsg-t td { border-bottom: 1px solid var(--rule); padding: 4px 6px; text-align: left; vertical-align: top; }
+.dsg-t th { font: 600 10px/1.2 var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.dsg-t td.bad, .dsg li.bad { color: var(--stop); font-weight: 600; }
+.dsg-tree tr.st-new td:nth-child(2) { color: var(--track); font-weight: 600; }
+.dsg-tree tr.st-changed td:nth-child(2) { color: var(--signal); font-weight: 600; }
+.dsg-tree tr.st-existing td { color: var(--muted); }
+.dsg-fig { margin: 8px 0 12px; }
+.dsg-fig figcaption { font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+.dsg-svg { overflow-x: auto; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 6px; }
+.dsg-svg svg { max-width: none; height: auto; }
+.dsg pre { font: 11px/1.45 var(--mono); white-space: pre-wrap; background: var(--bay); padding: 6px 8px; border-radius: 4px; margin: 4px 0; }
+.mmd text { font: 11px var(--body); fill: var(--ink); }
+.mmd .mm-ah { fill: var(--ink); }
+.mmd .mm-node rect, .mmd .mm-node polygon { fill: var(--live-soft); stroke: var(--live); stroke-width: 1.2; }
+.mmd .mm-node.changed rect, .mmd .mm-node.changed polygon { fill: var(--signal-soft); stroke: var(--signal); stroke-width: 2; }
+.mmd .mm-grp rect { fill: none; stroke: var(--muted); stroke-dasharray: 5 4; }
+.mmd .mm-grp text { fill: var(--muted); font-weight: 600; }
+.mmd .mm-edge line, .mmd .mm-msg line, .mmd .mm-msg path { stroke: var(--ink); stroke-width: 1.1; }
+.mmd .mm-edge.dashed line, .mmd .mm-msg.dashed line { stroke-dasharray: 4 3; }
+.mmd .mm-edge text { paint-order: stroke; stroke: var(--sheet); stroke-width: 3px; font-size: 10px; }
+.mmd .mm-part rect { fill: var(--live-soft); stroke: var(--live); }
+.mmd .mm-part line { stroke: var(--rule-2); stroke-dasharray: 3 3; }
+.mmd .mm-blk rect { fill: var(--signal-soft); fill-opacity: .35; stroke: var(--signal); }
+.mmd .mm-blk line { stroke: var(--signal); stroke-dasharray: 4 3; }
+.mmd .mm-note rect { fill: var(--track-soft); stroke: var(--track); }
+.mmd .kw { font-weight: 700; }
+.mmd .num { font-weight: 700; fill: var(--live); }

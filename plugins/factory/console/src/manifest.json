@@ -8,6 +8,7 @@
     "styles/board.css",
     "styles/wire.css",
     "styles/job.css",
+    "styles/design.css",
     "styles/line-map.css",
     "styles/overlays.css",
     "styles/blueprint.css",
@@ -17,6 +18,8 @@
   "scripts": [
     "js/definitions.js",
     "js/helpers.js",
+    "js/shell/mermaid.js",
+    "js/shell/design.js",
     "js/recipe-map/layout.js",
     "js/recipe-map/render.js",
     "js/recipe-map/inspector.js",

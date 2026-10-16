@@ -81,6 +81,16 @@ function build(root, state, plan, task) {
     decision: adr ? section(text, isAdr ? 'Decision' : 'Approach') : null,
     diagram: adr ? mermaidBlock(section(text, 'Architecture diagram') || text) : null,
     criteria_rows: rows,
+    // 0.11 design depth: the files of the design's Project layout this task owns (status,
+    // responsibility, ACs) and the end-to-end flow it is part of
+    ...(() => {
+      const D = require('./design');
+      const lay = D.jobLayout(root, state.id);
+      if (!lay) return {};
+      const mine = D.ownership(lay, [task]).filter((e) => !e.dir && e.owners.length && D.OWNED.has(e.status)).map((e) => ({ path: e.path, status: e.status, responsibility: e.responsibility, acs: e.acs }));
+      const flow = isAdr ? mermaidBlock(section(text, 'End-to-end flow') || '') : null;
+      return { layout: mine, ...(flow ? { flow } : {}) };
+    })(),
     findings: findingsFor(readText(jp.findings, ''), task.allowed_paths || []),
     interfaces: {
       owns: owns.map((i) => ({ ...i, consumers: consumers(i.name) })),

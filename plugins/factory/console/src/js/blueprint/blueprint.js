@@ -1477,7 +1477,8 @@
         done && failingT.length ? H("div", { "class": "meta", text: "closed with " + plural(failingT.length, "task") + " still marked failing (" + failingT.map(function (k) { return k.id; }).join(", ") + ")" }) : null,
         j.parked_from && s === "parked" ? H("div", { "class": "meta" }, "parked from ", H("b", { text: j.parked_from })) : null,
         g && g !== "H4" ? H("div", { "class": "now-gate" }, H("h4", null, gv(g), H("span", { "class": "chip tag", text: g }), H("em", { text: "waiting " + fD(t - enteredAt(j, t)) })),
-          (g === "H1" || g === "EH1") && j.h1 ? h1Notes(j.h1) : null, replyBox(chatReply(j, g), termCmd(j, g, t), true),
+          (g === "H1" || g === "EH1") && j.h1 ? h1Notes(j.h1) : null,
+          (g === "H2" || g === "EH2" || g === "H3") && j.design && typeof designHtml === "function" ? (function () { var d = H("div", { "class": "bp-design" }); d.innerHTML = designHtml(j.design); return d; })() : null, replyBox(chatReply(j, g), termCmd(j, g, t), true),
           j.amendment && j.amendment.reason ? H("p", { "class": "meta" }, "Amendment from ", H("b", { text: j.amendment.from || "?" }), ": " + j.amendment.reason) : null) : null,
         gt && gt.warnings.length ? H("div", { "class": "meta", text: "check warnings: " + gt.warnings.join("; ") }) : null));
       // the latest exchange about this job: your prompt, the reply, God Eye's last revise (B-48)
