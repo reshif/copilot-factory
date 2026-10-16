@@ -123,6 +123,9 @@ function settings(root, state) {
     research_passes: Math.max(1, pos(c.max_research_passes, caps.max_research_passes || 2)),
     sheet_decisions: Math.max(1, pos(c.max_sheet_decisions, caps.max_sheet_decisions || 5)),
     writer_attempts: Math.max(1, pos(c.max_writer_attempts, caps.max_writer_attempts || 2)),
+    // readiness checks that send work back (to the writer, the sheet, research or the read-back)
+    // before the job parks: a God Eye that keeps finding a new blocker cannot loop the user
+    readiness_cycles: Math.max(1, pos(c.max_readiness_cycles, caps.max_readiness_cycles || 3)),
     research_sec: Math.max(1, Math.round(pos(minutes, { low: 6, medium: 10, high: 15 }[state.risk] || 10) * 60)),
     agent_sec: { interviewer: pos(sec.interviewer, 600), 'brief-writer': pos(sec['brief-writer'], 900), 'contract-writer': pos(sec['contract-writer'], 900), 'god-eye': pos(sec['god-eye'], 900) },
     web: ir.web !== false,
@@ -139,7 +142,10 @@ function addWord(data, text, via, stage = data.stage) {
   // (the CLI), within a few minutes: recorded once
   const chat = (v) => /chat/.test(String(v || ''));
   if (last && last.text === t && via !== 'request' && chat(last.via) !== chat(via) && Date.now() - Date.parse(last.at) < 10 * 60 * 1000) return { ...last, duplicate: true };
-  const w = { id: nextId(data.words, 'W'), at: nowIso(), via, stage, text: t.slice(0, 4000) };
+  // relayed: the words reached the factory through a command the main session ran on the user's
+  // behalf (job new --request, clarify reply, clarify redirect), not through the reply hook or a
+  // human-only gate verb. The factory cannot tell them from the user's own; H1 says which they are.
+  const w = { id: nextId(data.words, 'W'), at: nowIso(), via, stage, text: t.slice(0, 4000), ...(['reply', 'redirect', 'request'].includes(via) ? { relayed: true } : {}) };
   data.words.push(w);
   return w;
 }
@@ -289,6 +295,15 @@ function judge(root, data) {
     const all = [...new Set([...(it.evidence || []), ...(it.rejected || [])])];
     it.evidence = all.filter((id) => usable(data.evidence.find((e) => e.id === id)));
     it.rejected = all.filter((id) => !it.evidence.includes(id));
+    if (it.record) it.record.usable = (it.record.evidence || []).filter((id) => usable(data.evidence.find((e) => e.id === id))).length;
+    // a decision whose researched recommendation rested on findings that no longer hold (the pin
+    // changed): asked again, unless the user decided it themselves
+    if (it.kind === 'decision' && it.researched && it.status === 'decided' && it.strength !== 'user' && !it.evidence.length && it.rejected.length) {
+      reopen(it, 'cli', `its sources document another version than the one now confirmed`);
+      it.researched = undefined;
+      it.record = null;
+      continue;
+    }
     // settled by findings that no longer hold (another version than the one now confirmed)
     if (it.strength === 'evidence' && it.kind !== 'pin' && !it.evidence.length && it.rejected.length) {
       it.strength = 'assumption';
@@ -313,18 +328,49 @@ function repoQuoteOk(root, e) {
   return norm(span).includes(norm(e.quote)) && norm(e.quote).length > 0;
 }
 
+// The systems a finding must be judged against: the system it names when that system has a pin
+// (or a range); a finding that names no system is judged against its item's pinned systems, or
+// every pinned system when its item names none (a page cannot slip past the pins by leaving the
+// system out, as migrated v1/v2 findings and some researchers do). System names compare without
+// case or punctuation ("Nautobot" is the pinned "nautobot"); a different name is another system.
+const sysKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function systemsFor(e, it, constrained) {
+  const keys = Object.keys(constrained);
+  const named = sysKey(e.system);
+  if (named) return keys.filter((k) => sysKey(k) === named);
+  const own = ((it && it.pins) || []).map((p) => keys.find((k) => sysKey(k) === sysKey(p))).filter(Boolean);
+  return own.length ? own : keys;
+}
+
+// Exact pins by system, and the repository's ranges for systems with no exact pin yet.
+function rangesBySystem(data) {
+  const out = {};
+  for (const it of data.items) if (it.kind === 'pin' && it.status !== 'dropped' && !(it.status === 'decided' && it.value) && (it.allows || []).length) out[it.system] = it.allows.map((a) => a.range);
+  return out;
+}
+
 function verdictOf(root, e, pins, data) {
   if (e.tier === 'repo' || (!/^https?:/i.test(e.source) && /:\d+/.test(e.source))) return repoQuoteOk(root, e) ? 'repo' : 'bad_quote';
   if (!/^https?:/i.test(e.source) || !String(e.quote || '').trim()) return 'unsourced';
   const it = item(data, e.item);
-  const sys = String(e.system || '').toLowerCase() || (it && it.pins.length === 1 ? it.pins[0] : '');
-  const pin = sys ? pins[sys] : null;
-  if (!pin) return 'docs';
+  const ranges = data && data.items ? rangesBySystem(data) : {};
   const u = urlVersion(e.source);
-  if (u && u.moving) return 'unpinned';
-  if (u && u.version) return compatible(pin, u.version) && (!e.version || compatible(pin, e.version)) ? 'pinned' : 'other_version';
-  if (!e.version) return 'unpinned';
-  return compatible(pin, e.version) ? 'pinned' : 'other_version';
+  const docVersion = (u && u.version) || (e.version ? pinOf(e.version) || e.version : null);
+  const pinned = systemsFor(e, it, pins);
+  if (pinned.length) {
+    if (u && u.moving) return 'unpinned';
+    if (!docVersion) return 'unpinned';
+    const fits = (v) => pinned.some((s) => compatible(pins[s], v));
+    return fits(docVersion) && (!e.version || !u || !u.version || fits(e.version)) ? 'pinned' : 'other_version';
+  }
+  // a system the repository constrains to a range, with no exact version confirmed yet: a moving
+  // page or a page outside the range proves nothing about the version in use
+  const ranged = systemsFor(e, it, ranges);
+  if (ranged.length) {
+    if (u && u.moving) return 'unpinned';
+    if (docVersion && !ranged.every((s) => ranges[s].every((r) => inRange(docVersion, r)))) return 'other_version';
+  }
+  return 'docs';
 }
 
 const USABLE = new Set(['repo', 'pinned', 'docs']);
@@ -503,11 +549,13 @@ function applyReadback(root, state, data, out) {
     if (it.strength === 'user' && it.status === 'decided' && !conflict) {
       // kept: the user settled it before
     } else if (conflict) {
-      const rec = repo[0] || exact[0];
+      // the repository's exact version first; between the user's own words, the latest they said
+      const latestUser = [...user].sort((a, b) => num(b.source.ref) - num(a.source.ref))[0];
+      const rec = repo[0] || latestUser || exact[0];
       it.status = 'to_decide';
       it.options = distinct.length > 1 ? distinct.map((c, i) => ({ key: String.fromCharCode(97 + i), text: `${c.version} (${c.source.kind === 'word' ? `you said "${c.source.quote}"` : `${c.source.ref}`})`, version: c.version })) : [{ key: 'a', text: `${user[0].version} (you said "${user[0].source.quote}")`, version: user[0].version }];
       it.recommendation = it.options.find((x) => x.version === rec.version) ? it.options.find((x) => x.version === rec.version).key : 'a';
-      it.why = distinct.length > 1 ? `the versions disagree; ${rec.source.kind === 'repo' ? `the repository installs ${rec.version}` : 'take the one you stated'}` : `${user[0].version} is outside what the repository allows (${ranges.map((r) => r.version).join(', ')})`;
+      it.why = distinct.length > 1 ? `the versions disagree; ${rec.source.kind === 'repo' ? `the repository installs ${rec.version}` : 'take the one you stated last'}` : `${user[0].version} is outside what the repository allows (${ranges.map((r) => r.version).join(', ')})`;
       itemEvent(it, 'conflict', 'cli', it.why);
     } else if (exact.length) {
       const c = user[0] || exact[0];
@@ -559,7 +607,9 @@ function applyReadback(root, state, data, out) {
   }
   // what an earlier read-back proposed and this one no longer does (the user corrected it)
   for (const it of data.items) {
-    if (referenced.has(it.id) || it.origin !== 'readback' || it.status === 'dropped' || it.strength === 'user' || !data.readback) continue;
+    // (only what is still open: a decided, assumed or deferred item is history the user saw, and a
+    // read-back after a redirect does not drop it for not mentioning it again)
+    if (referenced.has(it.id) || it.origin !== 'readback' || FINAL.has(it.status) || it.strength === 'user' || !data.readback) continue;
     if (['fact', 'decision', 'question', 'scope', 'design'].includes(it.kind) && !(it.links || []).length) {
       it.status = 'dropped';
       itemEvent(it, 'dropped', 'interviewer', 'not in the new read-back (your edit replaced it)');
@@ -694,7 +744,9 @@ function applyResearch(root, state, data, outputs, runs, S, pass) {
   }
   judge(root, data);
   for (const e of data.evidence.filter((x) => x.pass === rec.n && !usable(x))) {
-    const pin = pinsBySystem(data)[e.system || (item(data, e.item) || { pins: [] }).pins[0]];
+    const pins = pinsBySystem(data);
+    const sys = systemsFor(e, item(data, e.item), pins)[0] || systemsFor(e, item(data, e.item), rangesBySystem(data))[0];
+    const pin = sys ? pins[sys] || `a version the repository allows (${(rangesBySystem(data)[sys] || []).join(', ')})` : 'version';
     const why = e.verdict === 'other_version' ? `documents ${e.version || (urlVersion(e.source) || {}).version || 'another version'}, not the confirmed ${pin}` : e.verdict === 'unpinned' ? `documents the latest release (${(urlVersion(e.source) || {}).moving ? 'a moving page' : 'no version'}), not the confirmed ${pin}` : e.verdict === 'bad_quote' ? 'the quote is not at the cited line' : 'no source quote';
     fail1(e.source, `skipped: ${why}`, { plan: e.plan });
   }
@@ -865,18 +917,28 @@ function sheetScreen(state, data) {
     for (const k of skipped.slice(0, 8)) L.push(`- ${k.source}: ${k.why}`);
   }
   if (s.queued) L.push('', `${s.queued} more decision(s) come on the next sheet.`);
+  const stuck = s.decisions.filter((d) => !d.answered && !d.recommendation);
+  if (s.ok_without_answer && stuck.length) L.push('', `**You replied ok, but ${stuck.map((d) => d.no).join(', ')} ${stuck.length > 1 ? 'have' : 'has'} no recommendation to take.** Answer ${stuck.length > 1 ? 'them' : 'it'} in your own words, or reply **ok** again and design decides ${stuck.length > 1 ? 'them' : 'it'} (shown at H1 under "Design may still choose").`);
   L.push('', 'Reply **ok** to take my recommendations, or say what to change: **ok, but 2 b**, **3: other: <your words>**, **2 defer**, **fact 1: <correction>**. Plain words work too.');
   return L.join('\n');
 }
 
-const ACCEPT = /^(ok|okay|k|yes|y|yep|yeah|go|go ahead|proceed|accept(ed)?|accept all|agreed|fine|sure|looks good|lgtm|sounds good|correct|right|confirmed?|as recommended|take (your|the) recommendations?|all recommended|start|start research)[.!]*$/i;
+// "proceed" is not an ok: it is the human-only verb that continues a park (factory proceed).
+const ACCEPT = /^(ok|okay|k|yes|y|yep|yeah|go|go ahead|accept(ed)?|accept all|agreed|fine|sure|looks good|lgtm|sounds good|correct|right|confirmed?|as recommended|take (your|the) recommendations?|all recommended|start|start research)[.!]*$/i;
 const ACCEPT_HEAD = /^(ok|okay|yes|yep|fine|sure|agreed|looks good|lgtm|sounds good|accept(?: all)?|go ahead)\s*[,.;:!]?\s*(?:but|except|and|although|though)?\s*[,:;-]?\s*/i;
+// "otherwise ok", "the rest as recommended": an ok for whatever the numbered parts leave open
+const ACCEPT_REST = /^(?:and\s+|but\s+)?(?:otherwise|the rest|rest|others|all others|everything else|all else)\s*(?:is\s+|are\s+|as\s+)?(?:ok|okay|fine|good|recommended|as recommended|as you recommend)$/i;
+// where one numbered answer starts: "2 b", "2: …", "2) …", "fact 1: …", "3 defer", "1a"
+const NUMBERED = String.raw`(?:fact\s*|f)?\d{1,2}(?:\s*[:)]|\s*[a-e](?![a-z])|\s+(?:ok|okay|defer|other)\b)`;
 
 // A sheet reply in plain words: { accept, answers: [{no, choice|text|defer}], facts: [{no, text}] },
-// or null when it is not that shape (it goes to the interviewer then).
+// or null when it is not exactly that shape: the interviewer reads it then (one call, every
+// mapping quoted). Only an unambiguous reply is applied here: an option key, ok, defer, or
+// free words after an explicit "2: …" / "2 other: …". "2 b please", "1 a 2 b and 3 defer" or
+// "3 is b" are never taken word for word as the user's answer.
 function parseSheetReply(text, sheet) {
   let t = String(text || '').trim();
-  if (!t) return null;
+  if (!t || !sheet) return null;
   if (ACCEPT.test(t)) return { accept: true, answers: [], facts: [] };
   let accept = false;
   const head = ACCEPT_HEAD.exec(t);
@@ -884,20 +946,27 @@ function parseSheetReply(text, sheet) {
     accept = true;
     t = t.slice(head[0].length).trim();
   }
-  const segs = t.includes('\n') ? t.split('\n').map((x) => x.trim()).filter(Boolean) : t.split(/[;,]\s*(?=(?:fact\s*|f)?\d{1,2}\s*(?:[:.)\-]|\s+[a-e]\b|\s+(?:ok|defer|other)))/i).map((x) => x.trim()).filter(Boolean);
+  // split before every numbered answer: at a separator (newline ; , . and), or bare whitespace
+  const segs = t.split(new RegExp(String.raw`(?:\s*(?:\n|[;,]|\.(?=\s)|\band\b)\s*|(?<!\bfact)\s+)(?=${NUMBERED})|\s*(?:\n|[;,]|\.(?=\s))\s*(?=(?:and\s+|but\s+)?(?:otherwise|the rest|rest|others|all others|everything else|all else)\b)`, 'i')).map((x) => x.trim()).filter(Boolean);
   const answers = [];
   const facts = [];
   for (const seg of segs) {
-    const m = /^(fact\s*|f)?(\d{1,2})\s*[:.)\-]?\s*(.*)$/i.exec(seg);
-    if (!m || !m[3].trim()) return null;
+    if (ACCEPT_REST.test(seg.replace(/[.!]+$/, ''))) {
+      accept = true;
+      continue;
+    }
+    const m = /^(fact\s*|f)?(\d{1,2})\s*([:)\-.])?\s*(.*)$/i.exec(seg);
+    if (!m || !m[4].trim()) return null;
     const no = Number(m[2]);
-    const body = m[3].trim().replace(/[.!]+$/, '');
+    const colon = Boolean(m[3] && m[3] !== '.');
+    const body = m[4].trim().replace(/[.!]+$/, '');
     if (m[1]) {
-      if (!sheet.facts.some((f) => f.no === no)) return null;
+      if (!colon || !sheet.facts.some((f) => f.no === no)) return null;
       facts.push({ no, text: body });
       continue;
     }
     if (!sheet.decisions.some((d) => d.no === no)) return null;
+    if (answers.some((a) => a.no === no)) return null; // two answers to one decision: ask the interviewer
     let a;
     const key = /^\(?([a-e])\)?$/i.exec(body);
     if (key) a = { no, choice: key[1].toLowerCase() };
@@ -905,7 +974,12 @@ function parseSheetReply(text, sheet) {
     else if (/^(defer|deferred|later|skip|design( decides)?|you decide|your call|let design decide)$/i.test(body)) a = { no, defer: true };
     else {
       const other = /^other\s*[:\-]?\s*(.+)$/i.exec(body);
-      a = { no, text: other ? other[1].trim() : body };
+      // free words only after "2: " or "2 other …", and never starting with a bare option key
+      // ("2: b please"): those are for the interviewer, who quotes what it maps
+      if (!other && !colon) return null;
+      const words = other ? other[1].trim() : body;
+      if (!other && /^\(?[a-e]\)?(?:[\s,.;:)!-]|$)/i.test(words)) return null;
+      a = { no, text: words };
     }
     answers.push(a);
   }
@@ -972,8 +1046,44 @@ function applySheet(data, sheet, parsed, word, how = 'reply') {
   return out;
 }
 
-// A decided contradiction settles the user's statement it was about.
+// An ok (or an interpreted "as you recommend") that leaves decisions with no recommendation open:
+// the sheet says so once; the second hands those decisions to design, with the words that did it,
+// so the sheet never loops. Only when nothing else was left open (an unanswered decision that has
+// a recommendation is the user's to answer).
+function okWithoutRecommendation(data, s, r, w, nos) {
+  const stuck = s.decisions.filter((d) => !d.answered && !d.recommendation && nos.includes(d.no));
+  if (!stuck.length || stuck.length !== r.open.length) return;
+  s.ok_without_answer = (s.ok_without_answer || 0) + 1;
+  if (s.ok_without_answer < 2) return;
+  for (const d of stuck) {
+    const it = item(data, d.item);
+    if (!it) continue;
+    it.status = 'deferred';
+    it.owner = 'design';
+    it.strength = 'user';
+    it.value = 'deferred to design';
+    it.deferred_by_ok = true;
+    itemEvent(it, 'deferred', 'user', `you replied ok twice to a decision with no recommendation: design decides it ("${clip(w.text, 80)}")`);
+    d.answered = { at: nowIso(), word: w.id, how: 'ok twice: deferred to design' };
+    r.decided.push(it.id);
+  }
+  r.open = [];
+  s.answered_at = nowIso();
+}
+
+// A decided contradiction settles the user's statement it was about; a decision about an item
+// the user's hand edit took out puts it back or drops it.
 function afterDecision(data, it) {
+  if (it.lost) {
+    const target = item(data, it.lost.item);
+    if (!target) return;
+    const leaveOut = (it.options || [])[1] && it.value === it.options[1].text;
+    if (leaveOut) {
+      target.status = 'dropped';
+      itemEvent(target, 'dropped', 'user (hand edit)', `you removed ${it.lost.where} from the contract and chose to leave it out (${it.id})`);
+    } else itemEvent(target, 'restore', 'user (hand edit)', `put back (${it.id}): ${clip(it.value, 120)}`);
+    return;
+  }
   if (!it.contradiction) return;
   const said = item(data, it.contradiction.said);
   if (!said) return;
@@ -1001,6 +1111,45 @@ function sentences(text) {
   return String(text).split(/(?<=[.;!?])\s+|;\s*/).map((x) => x.trim().replace(/[.;]+$/, '')).filter((x) => x.length >= 6);
 }
 
+// The parts of `text` no quote covers, verbatim, each with real content (more than glue words
+// such as "and", "also", "please"). Quotes are matched without case or spacing differences.
+const GLUE = new Set(['and', 'also', 'then', 'but', 'so', 'please', 'or', 'too', 'as', 'well', 'the', 'a', 'an', 'to', 'it', 'that', 'this', 'with', 'of', 'for', 'in', 'on', 'not', 'just']);
+function unquoted(text, quotes) {
+  const src = String(text);
+  const lower = src.toLowerCase();
+  const covered = new Array(src.length).fill(false);
+  for (const q of quotes) {
+    const words = String(q || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (!words.length) continue;
+    // the quote's words in order, with any whitespace between them
+    const re = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'g');
+    let m;
+    while ((m = re.exec(lower))) {
+      for (let i = m.index; i < m.index + m[0].length; i++) covered[i] = true;
+      if (!m[0].length) re.lastIndex++;
+    }
+  }
+  const out = [];
+  let cur = '';
+  const flush = () => {
+    const parts = cur.split(/(?<=[.;!?])\s+|;\s*|\n+/);
+    cur = '';
+    for (const part of parts) {
+      let t = part.replace(/^[\s,.;:!?\-–—()]+|[\s,.;:!?\-–—(]+$/g, '').trim();
+      t = t.replace(/^(?:(?:and|also|then|but|so|plus)\b[\s,]*)+/i, '').trim();
+      if (!t) continue;
+      const content = t.toLowerCase().split(/[^a-z0-9.]+/).filter((w) => w && !GLUE.has(w));
+      if (content.length >= 2 || (content.length === 1 && content[0].length >= 6)) out.push(t);
+    }
+  };
+  for (let i = 0; i < src.length; i++) {
+    if (covered[i]) flush();
+    else cur += src[i];
+  }
+  flush();
+  return out;
+}
+
 function applyRedirect(data, out) {
   const R = currentRedirect(data);
   if (!R) return;
@@ -1011,11 +1160,10 @@ function applyRedirect(data, out) {
     const action = ['research', 'decide', 'fix', 'fact', 'instruction'].includes(c.action) ? c.action : 'instruction';
     clauses.push({ n: clauses.length + 1, quote: clip(c.quote, 400), item: it ? it.id : null, action, text: clip(c.text || c.quote, 300), tag: ['repo', 'docs'].includes(c.tag) ? c.tag : null });
   }
-  // conservation: a sentence no clause quotes becomes an instruction, verbatim
-  for (const s of sentences(R.text)) {
-    if (clauses.some((c) => norm(c.quote).includes(norm(s)) || norm(s).includes(norm(c.quote)))) continue;
-    clauses.push({ n: clauses.length + 1, quote: s, item: null, action: 'instruction', text: s, tag: null, unread: true });
-  }
+  // conservation: every part of the redirect no clause quotes becomes an instruction, verbatim.
+  // Not only whole sentences: "research X, and decide Y" with only "research X" quoted leaves
+  // "decide Y" over, and that is tracked too.
+  for (const s of unquoted(R.text, clauses.map((c) => c.quote))) clauses.push({ n: clauses.length + 1, quote: s, item: null, action: 'instruction', text: s, tag: null, unread: true });
   R.clauses = clauses;
   R.status = 'to_confirm';
   data.stage = 'redirect_wait';
@@ -1035,7 +1183,7 @@ function redirectScreen(state, data) {
   return L.join('\n');
 }
 
-const STAGE_OF = { research: 'research', decide: 'research', fix: 'assemble', fact: 'assemble', instruction: 'assemble' };
+const STAGE_OF = { research: 'research', decide: 'research', fix: 'assemble', fact: 'assemble', instruction: 'assemble', readback: 'readback' };
 
 function confirmRedirect(data, word) {
   const R = currentRedirect(data);
@@ -1043,6 +1191,27 @@ function confirmRedirect(data, word) {
   R.confirmed = { at: nowIso(), word: word.id };
   for (const c of R.clauses) {
     let it = c.item ? item(data, c.item) : null;
+    // a version the user states in a redirect ("we run 2.3, not 2.4"): pins come from the user's
+    // words only through the read-back, so the version is read back and every finding judged
+    // again against it. A clause on a pin item, or a stated fact that names a version.
+    const pinChange = (it && it.kind === 'pin') || (!it && c.action === 'fact' && /\b\d+\.\d+/.test(c.quote));
+    if (pinChange) {
+      if (it) {
+        itemEvent(it, 'reopened', 'user (redirect)', c.quote);
+        it.value_before = it.value;
+        it.value = null;
+        it.strength = null;
+        it.status = 'open';
+        it.resolved = null;
+      } else it = newItem(data, { kind: 'fact', text: c.text, value: c.text, status: 'decided', strength: 'user', source: { kind: 'word', ref: R.word, quote: c.quote }, origin: 'redirect' }, 'user (redirect)');
+      it.links = [...new Set([...(it.links || []), R.id])];
+      c.item = it.id;
+      c.stage = 'readback';
+      c.pin_change = true;
+      c.started_at = nowIso();
+      c.pass_at = data.research.passes.length;
+      continue;
+    }
     if (c.action === 'research' || c.action === 'decide') {
       if (it) {
         if (c.tag && !it.tag) it.tag = c.tag;
@@ -1069,6 +1238,7 @@ function confirmRedirect(data, word) {
   // the decisions the redirect touches are asked again once they are researched
   data.counters.research_passes = 0;
   data.counters.writer_attempts = 0;
+  data.counters.readiness_cycles = 0;
   const earliest = R.clauses.map((c) => ORDER[c.stage]).reduce((m, x) => Math.min(m, x), 9);
   R.restart = Object.keys(ORDER).find((k) => ORDER[k] === earliest) || 'assemble';
   log(data, 'redirect_confirmed', `${R.clauses.length} clause(s); restart at ${R.restart}`);
@@ -1078,6 +1248,13 @@ function confirmRedirect(data, word) {
 function clauseOutcome(data, R, c) {
   const it = c.item && item(data, c.item);
   if (!it) return { done: false, how: 'not linked to anything' };
+  if (c.pin_change) {
+    // done when a version was confirmed from words given with or after this redirect
+    const pins = data.items.filter((x) => x.kind === 'pin' && x.status === 'decided' && x.value && (x.id === it.id || (x.history || []).some((h) => h.at >= R.at)));
+    const fresh = pins.filter((p) => p.source && p.source.kind === 'word' && num(p.source.ref) >= num(R.word));
+    if (!fresh.length) return { done: false, how: pins.length ? `the version was not changed: ${pins.map((p) => `${p.system} ${p.value}`).join(', ')} (${byWhom(pins[0])})` : 'no version is confirmed yet' };
+    return { done: true, how: `read back and confirmed: ${fresh.map((p) => `${p.system} ${p.value}`).join(', ')}; every source judged again against it` };
+  }
   if (c.action === 'research') {
     const fresh = it.evidence.map((id) => data.evidence.find((e) => e.id === id)).filter((e) => usable(e) && Math.max(...(e.passes || [e.pass || 0])) > (c.pass_at || 0));
     if (!FINAL.has(it.status)) return { done: false, how: `still ${it.status}` };
@@ -1108,6 +1285,7 @@ function sectionLines(data) {
     return `- ${it.text} → ${it.status === 'deferred' ? 'deferred to design' : clip(it.value, 300)} (${byWhom(it)}${ev ? `; ${ev}` : ''})`;
   });
   for (const p of live.filter((it) => it.kind === 'pin' && it.value)) decisions.unshift(`- ${p.system} version → ${p.value} (${byWhom(p)}${p.source && p.source.quote ? `: "${clip(p.source.quote, 80)}"` : ''})`);
+  for (const p of live.filter((it) => it.kind === 'pin' && !it.value)) decisions.unshift(`- ${p.system} version → not confirmed${(p.allows || []).length ? ` (the repository allows ${p.allows.map((a) => `"${a.range}"`).join(', ')}; sources were judged against that range)` : ''}`);
   const facts = live.filter((it) => it.kind === 'fact' && ['decided', 'assumed'].includes(it.status) && it.value && !it.superseded).map((it) => `- ${clip(it.value, 300)} (${factSource(data, it)})`);
   const design = live.filter((it) => it.status === 'deferred' && (it.kind === 'design' || it.kind === 'fact' || it.kind === 'question')).map((it) => `- ${it.text}${it.unconfirmed ? ` (not researched: ${it.unconfirmed})` : ''}`);
   const gaps = openFailures(data).map((f) => `- ${f.what}: ${f.reason}`);
@@ -1140,6 +1318,13 @@ function contractHash(root, state) {
   return require('./contract').hash(root, state);
 }
 
+// The contract is an input only of the stages that read it (the read-back reads the draft, the
+// writer and the readiness check the text): a hand edit while research runs (the long stage), a
+// redirect or a sheet answer is read does not throw their results away.
+function stageContractHash(root, state, stage) {
+  return ['readback', 'assemble', 'check'].includes(stage) ? contractHash(root, state) : null;
+}
+
 // The writer's text, checked; the CLI-owned sections written from the record.
 function applyWriter(root, state, data, out) {
   const contract = require('./contract');
@@ -1155,7 +1340,33 @@ function applyWriter(root, state, data, out) {
   else if (probs.length) res.refused = `the contract has problems: ${probs.slice(0, 4).join('; ')}`;
   else if (/^## Reply format|^# Factory [a-z-]+ — this run/m.test(next)) res.refused = "the contract carries the agent's own instructions";
   if (res.refused) return res;
+  // nothing leaves the contract silently: once the factory has written a version (or the user
+  // edited one), an acceptance criterion, constraint or non-goal the new text no longer has must be
+  // listed under `removed` with the item, blocker or redirect it rests on
+  const removedNow = [];
+  if (data.contract.written_hash) {
+    const before = contract.parse(contract.read(root, state.id));
+    const key = (t) => norm(t).replace(/[.;]+$/, '');
+    const gone = [
+      ...before.acs.filter((a) => !parsed.acs.some((b) => b.id === a.id)).map((a) => ({ ref: a.id, text: a.text })),
+      ...before.constraints.filter((c) => !parsed.constraints.some((d) => key(d) === key(c))).map((c) => ({ ref: 'Constraints', text: c })),
+      ...before.nonGoals.filter((c) => !parsed.nonGoals.some((d) => key(d) === key(c))).map((c) => ({ ref: 'Non-goals', text: c })),
+    ];
+    const listed = Array.isArray(out.removed) ? out.removed : [];
+    const known = (b) => Boolean(b) && Boolean(item(data, b) || data.redirects.some((R) => R.id === String(b).toUpperCase()) || (data.blockers || []).some((x) => x.ref === b) || data.checks.some((k) => (k.objections || []).some((o) => o.ref === b)));
+    const unexplained = [];
+    for (const g of gone) {
+      const l = listed.find((x) => (x.ref === g.ref || (x.text && key(x.text) === key(g.text))) && known(x.because));
+      if (l) removedNow.push({ ref: g.ref, text: clip(g.text, 200), because: String(l.because).toUpperCase() === String(l.because) ? l.because : String(l.because), why: clip(l.why || '', 200) });
+      else unexplained.push(g.ref === 'Constraints' || g.ref === 'Non-goals' ? `${g.ref}: "${clip(g.text, 80)}"` : g.ref);
+    }
+    if (unexplained.length) {
+      res.refused = `the new text drops ${unexplained.join(', ')} with no reason: list each under removed with the item (I-n), blocker or redirect it rests on, or keep it`;
+      return res;
+    }
+  }
   writeText(jobPaths(root, state.id).contract, next);
+  if (removedNow.length) data.contract.removed = [...(data.contract.removed || []), ...removedNow.map((r) => ({ ...r, at: nowIso() }))].slice(-40);
   res.written = true;
   const sections = contract.sections(next);
   const acIds = new Set(parsed.acs.map((a) => a.id));
@@ -1182,7 +1393,7 @@ function applyWriter(root, state, data, out) {
 
 // ---------------------------------------------------------------- readiness
 function liveForCoverage(it) {
-  if (it.status === 'dropped' || it.status === 'deferred' || it.superseded) return false;
+  if (it.status === 'dropped' || it.status === 'deferred' || it.superseded || it.lost) return false;
   if (['design', 'question'].includes(it.kind)) return false;
   if (it.kind === 'intent' || it.kind === 'scope') return false;
   if (it.kind === 'pin') return Boolean(it.value);
@@ -1230,6 +1441,8 @@ function earliest(blockers) {
 // A blocker goes back to its stage: what that means for the record.
 function sendBack(root, state, data, blockers, S) {
   const stage = earliest(blockers);
+  data.counters.readiness_cycles = (data.counters.readiness_cycles || 0) + 1;
+  data.sent_back = { blockers: blockers.length, stage };
   data.blockers = blockers.map((b) => ({ ...b }));
   log(data, 'back', `${blockers.length} blocker(s): back to ${stage}`);
   if (stage === 'assemble') {
@@ -1377,7 +1590,7 @@ function stagePlan(root, state) {
   // what each group is called while it runs (the console's live step list)
   const PH = { readback: ['read your words back'], redirect: ['read your redirect back'], interpret: ['read your sheet answer'], assemble: ['write the contract'], check: ['readiness check'] };
   const phases = stage === 'research' ? groups.map((g) => (g.some((a) => a.role === roles.brief.role) ? 'research brief' : `research (${g.map((a) => a.mode).join(', ')})`)) : PH[stage];
-  return { stage, rev: data.rev || 0, groups, phases, contract_hash: contractHash(root, state) };
+  return { stage, rev: data.rev || 0, groups, phases, contract_hash: stageContractHash(root, state, stage) };
 }
 
 function writerInput(root, state, data) {
@@ -1391,6 +1604,7 @@ function writerInput(root, state, data) {
     evidence: data.evidence.filter(usable).map((e) => ({ id: e.id, item: e.item, claim: e.claim, source: e.source })),
     instructions: live.filter((it) => it.kind === 'instruction').map((it) => ({ id: it.id, text: it.text, quote: it.value })),
     blockers: (data.blockers || []).map((b) => ({ check: b.check, ref: b.ref, issue: b.issue || b.why, fix: b.fix || '' })),
+    ...(data.contract.edited_by_hand ? { hand_edited: 'The user edited the contract file by hand since the last version the factory wrote. Start from the file as it is now and keep every change they made; change only what the items and blockers below require.' } : {}),
     design_may_choose: live.filter((it) => it.status === 'deferred').map((it) => it.text),
     gaps: data.failures.map((f) => `${f.what}: ${f.reason}`),
   };
@@ -1404,6 +1618,8 @@ function ledgerNote(root, state, data, outcome, detail = {}) {
 // `factory record` for workflow clarify: apply the stage's replies, then move on by the rules.
 function record(root, state, env) {
   const data = get(root, state);
+  // a record that fails its seal is never written over (that would reseal the hand edit)
+  if (data.tampered) fail(`${state.id}'s clarify.json fails its seal (edited by hand?). Nothing recorded; the user runs factory reseal in their own terminal to keep the file as it is.`, 'tampered');
   const d = env.data || {};
   const S = settings(root, state);
   if (d.stage !== data.stage) return { status: 'stale', message: `The clarify record moved on (it is at ${data.stage}, the run was for ${d.stage}). Nothing recorded; run factory next.` };
@@ -1449,6 +1665,8 @@ function record(root, state, env) {
       const answers = (out.answers || []).filter((a) => norm(w.text).includes(norm(a.quote || '')) && norm(a.quote || '').length >= 2).map((a) => ({ no: Number(a.decision), ...(a.choice === 'defer' ? { defer: true } : ['recommended', 'a', 'b', 'c', 'd', 'e'].includes(a.choice) ? { choice: a.choice, quote: clip(a.quote, 300) } : { text: clip(a.text || a.quote, 400), quote: a.quote }) }));
       const facts = (out.facts || []).filter((f) => norm(w.text).includes(norm(f.quote || ''))).map((f) => ({ no: Number(f.fact), text: clip(f.text, 400) }));
       const r = applySheet(data, s, { accept: false, answers, facts }, w, 'interpret');
+      // "as you recommend" for a decision that has no recommendation is an ok without an answer
+      okWithoutRecommendation(data, s, r, w, answers.filter((a) => a.choice === 'recommended').map((a) => a.no));
       result.applied = r;
       next = r.open.length ? 'sheet_wait' : 'route';
       if (r.open.length) result.note = `Still open on the sheet: ${r.open.join(', ')}.`;
@@ -1490,16 +1708,19 @@ function record(root, state, env) {
 function finish(root, state, data, next, S, result = {}) {
   if (next === 'route') next = advance(data, S);
   if (next === 'assemble' && data.stage !== 'assemble' && data.stage !== 'check') data.counters.writer_attempts = 0;
-  if (next === 'check') {
-    // the deterministic half first: a blocker goes back without spending God Eye
-    data.stage = 'check';
-    const det = deterministic(root, state, data);
-    if (det.length) {
-      data.checks.push({ n: data.checks.length + 1, at: nowIso(), contract_hash: contractHash(root, state), deterministic: det, checklist: null, objections: det, ok: false });
-      next = sendBack(root, state, data, det, S);
-      if (next === 'route') next = advance(data, S);
+  if (next === 'check') next = enterCheck(root, state, data, S);
+  // the readiness cycle cap: work sent back more often than the cap allows parks where it
+  // would have gone (resume: one more cycle; proceed: H1 with the blockers shown open)
+  if (data.sent_back && next !== 'park') {
+    const sb = data.sent_back;
+    if (data.counters.readiness_cycles > S.readiness_cycles) {
+      const last = data.blockers || [];
+      data.parked = { kind: 'check', stage: next, reason: `The readiness check sent the work back ${data.counters.readiness_cycles} times (the cap is ${S.readiness_cycles}); still open: ${last.slice(0, 4).map((b) => `${b.check} (${b.ref}): ${clip(b.issue || b.why, 140)}`).join('; ')}.` };
+      next = 'park';
     }
+    void sb;
   }
+  data.sent_back = null;
   if (next === 'ready') {
     data.contract.checked_hash = contractHash(root, state);
     data.blockers = null;
@@ -1509,7 +1730,7 @@ function finish(root, state, data, next, S, result = {}) {
     data.stage = data.parked.stage;
     save(root, state.id, data);
     ledgerNote(root, state, data, 'park', { reason: data.parked.reason });
-    return { status: 'park', park_from: 'clarify', park_reason: `${data.parked.reason} Reply "resume" for one more try${data.parked.kind === 'agent' ? '' : ', or "proceed" to go on with the gaps shown'}.`, stage: data.stage, message: 'Parked.' };
+    return { status: 'park', park_from: 'clarify', park_reason: `${data.parked.reason} Reply "resume" for one more try${data.parked.kind === 'agent' ? '' : ', or "proceed" to go on with the gaps shown'}.`, stage: data.stage, ...result, message: 'Parked.' };
   }
   data.stage = next;
   data.parked = null;
@@ -1540,6 +1761,7 @@ function reply(root, { jobId, text, via = 'cli' }) {
   const state = job.resolve(root, jobId);
   if (['closed', 'cancelled', 'abandoned'].includes(state.status)) fail(`${state.id} is ${state.status}; nothing to reply to.`, 'not_active');
   if (state.approvals && (state.approvals.H1 || state.approvals.EH1)) fail(`${state.id}'s contract is approved: clarify takes no more replies. To change it, start an amendment (factory amend start --reason "…").`, 'approved');
+  if (state.status === 'parked') fail(parkedMessage(state), 'parked');
   const t = String(text || '').trim();
   if (!t) fail('Say the reply: factory clarify reply "<the user\'s words>".', 'bad_input');
   const data = get(root, state);
@@ -1578,7 +1800,7 @@ function reply(root, { jobId, text, via = 'cli' }) {
     if (ACCEPT.test(t)) {
       confirmRedirect(data, w);
       const R = data.redirects[data.redirects.length - 1];
-      next = 'route';
+      next = R.restart === 'readback' ? 'readback' : 'route';
       msg = `Redirect confirmed: ${R.clauses.length} item(s), restarting at ${R.restart}.`;
     } else {
       const R = currentRedirect(data);
@@ -1596,6 +1818,7 @@ function reply(root, { jobId, text, via = 'cli' }) {
       msg = 'Recorded; the interviewer reads your words against the sheet (one short call).';
     } else {
       const r = applySheet(data, s, parsed, w);
+      if (parsed.accept) okWithoutRecommendation(data, s, r, w, s.decisions.filter((d) => !d.answered && !d.recommendation).map((d) => d.no));
       next = r.open.length ? 'sheet_wait' : 'route';
       msg = `Recorded: ${r.decided.length} decision(s)${r.facts.length ? `, ${r.facts.length} fact(s) corrected` : ''}.${r.open.length ? ` Still open: ${r.open.join(', ')} (no recommendation, or not answered).` : ''}`;
     }
@@ -1605,10 +1828,18 @@ function reply(root, { jobId, text, via = 'cli' }) {
   return { job: state.id, word: w.id, ...res, message: `${msg} ${res.message}` };
 }
 
+// While clarify is parked, words are not a reply: only the user's resume or proceed (human-only)
+// moves it, so nothing the main session relays is recorded as a redirect behind the park.
+function parkedMessage(state) {
+  return `${state.id} is parked (${clip((state.park && state.park.reason) || 'clarify', 200)}). Nothing was recorded: the user replies "resume"${state.park && state.park.from === 'clarify' ? ' or "proceed"' : ''} in chat or runs it in their own terminal; their other words wait until then.`;
+}
+
 function redirect(root, { jobId, text, via = 'cli', gate = null }) {
   const job = require('./job');
   const state = job.resolve(root, jobId);
   if (state.approvals && (state.approvals.H1 || state.approvals.EH1)) fail(`${state.id}'s contract is approved: start an amendment instead (factory amend start --reason "…").`, 'approved');
+  if (state.status === 'parked') fail(parkedMessage(state), 'parked');
+  if (!['active'].includes(state.status)) fail(`${state.id} is ${state.status}; nothing to redirect.`, 'not_active');
   const t = String(text || '').trim();
   if (!t) fail('Say the redirect: factory clarify redirect "<the user\'s words>".', 'bad_input');
   const data = get(root, state);
@@ -1650,18 +1881,80 @@ function sync(root, state, data) {
   const H = ['H1', 'EH1'];
   const approvedAt = (g) => (state.approvals && state.approvals[g] ? state.approvals[g].at : '');
   const fresh = (state.denials || []).filter((x) => H.includes(x.gate) && x.at > approvedAt(x.gate) && x.at > (data.denials_seen || ''));
-  for (const d of fresh) {
-    startRedirect(data, d.reason || '(no reason given)', 'denial', d.gate);
-    data.denials_seen = d.at;
+  if (fresh.length) {
+    // two denials before clarify saw either (two chat messages at H1): one redirect with both,
+    // so neither is left half-read
+    const texts = [...new Set(fresh.map((d) => String(d.reason || '').trim()).filter(Boolean))];
+    const open = currentRedirect(data);
+    if (open && open.status === 'interpreting' && open.gate) {
+      open.text = [open.text, ...texts].join('\n');
+      addWord(data, texts.join('\n'), 'denial');
+    } else startRedirect(data, texts.join('\n') || '(no reason given)', 'denial', fresh[fresh.length - 1].gate);
+    data.denials_seen = fresh[fresh.length - 1].at;
     changed = true;
   }
-  if (['ready'].includes(data.stage) && data.contract.checked_hash && contractHash(root, state) !== data.contract.checked_hash) {
-    data.stage = 'check';
-    data.contract.edited_by_hand = true;
-    log(data, 'edited', 'contract.md changed after the readiness check: checked again');
-    changed = true;
-  }
+  if (handEdit(root, state, data)) changed = true;
   return changed;
+}
+
+// The user edited contract.md by hand (a hash the factory neither wrote nor checked). Before the
+// readiness check passes, the next writer is told to keep the edit. Once it has passed (or while
+// it runs), the edited text is checked again from the start: the deterministic checks first, and
+// an item the edit took out of the contract (an AC the user deleted) becomes a decision on the
+// sheet: put it back, or leave it out (the item is then dropped by the user). An edit never
+// silently undoes what the user said, and the writer never silently undoes the edit.
+function handEdit(root, state, data) {
+  const cur = contractHash(root, state);
+  const C = data.contract;
+  if (!C.written_hash || !cur || [C.written_hash, C.checked_hash, C.seen_hash].includes(cur)) return false;
+  if (['assemble', 'interpret', 'redirect', 'readback'].includes(data.stage) && cur === C.seen_hash) return false;
+  C.seen_hash = cur;
+  C.edited_by_hand = true;
+  C.hand_edits = [...(C.hand_edits || []), { at: nowIso(), hash: cur, stage: data.stage }].slice(-20);
+  log(data, 'edited', `contract.md changed by hand at ${data.stage}`);
+  if (!['ready', 'check'].includes(data.stage)) return true;
+  const S = settings(root, state);
+  data.counters.writer_attempts = 0;
+  data.counters.readiness_cycles = 0;
+  const lost = lostCoverage(root, state, data);
+  for (const it of lost) {
+    const d = newItem(data, { kind: 'decision', text: `You took ${it.covered.where} out of the contract by hand; it was where the contract honoured ${it.id}: ${clip(it.value || it.text, 160)}`, status: 'to_decide', impact: 'high', origin: 'edit', extra: { researched: true, lost: { item: it.id, where: it.covered.where } } }, 'cli');
+    d.options = [
+      { key: 'a', text: `Put it back: the contract honours ${it.id} again (your other edits stay)`, consequences: 'the writer restores it and keeps the rest of your edit' },
+      { key: 'b', text: `Leave it out: drop ${it.id}`, consequences: `${it.id} is listed at H1 as dropped by you` },
+    ];
+    // the edit is the user's latest word; their own earlier words are not overruled silently
+    d.recommendation = it.strength === 'user' ? null : 'b';
+    d.why = it.strength === 'user' ? `${it.id} is something you said ("${clip((it.source && it.source.quote) || it.value, 100)}"): only you can drop it` : 'you removed it yourself';
+    itemEvent(it, 'uncovered', 'user (hand edit)', `${it.covered.where} was removed from contract.md`);
+    it.covered = null;
+  }
+  data.stage = lost.length ? advance(data, S) : enterCheck(root, state, data, S);
+  if (data.stage === 'route') data.stage = advance(data, S);
+  return true;
+}
+
+// Live items the contract no longer honours where the writer said it did (an AC or a section
+// that is gone from the current text).
+function lostCoverage(root, state, data) {
+  const contract = require('./contract');
+  const text = contract.read(root, state.id);
+  const parsed = contract.parse(text);
+  const acIds = new Set(parsed.acs.map((a) => a.id));
+  const sections = Object.keys(contract.sections(text));
+  return data.items.filter((it) => liveForCoverage(it) && it.covered && it.covered.where && !(/^(E-)?AC-\d+$/i.test(it.covered.where) ? acIds.has(it.covered.where.toUpperCase()) : sections.includes(it.covered.where.toLowerCase())));
+}
+
+// The readiness check, deterministic half first: a blocker goes back without spending God Eye.
+// Returns the next stage ('check' runs God Eye).
+function enterCheck(root, state, data, S) {
+  data.stage = 'check';
+  const det = deterministic(root, state, data);
+  if (!det.length) return 'check';
+  data.checks.push({ n: data.checks.length + 1, at: nowIso(), contract_hash: contractHash(root, state), deterministic: det, checklist: null, objections: det, ok: false });
+  let next = sendBack(root, state, data, det, S);
+  if (next === 'route') next = advance(data, S);
+  return next;
 }
 
 function ready(root, state) {
@@ -1681,7 +1974,7 @@ function ready(root, state) {
 // For factory next while clarify is the step: run, or wait on the user (with the screen).
 function nextInfo(root, state) {
   const data = get(root, state);
-  if (data.tampered) return { stage: null, run: null, waiting_for_user: false, error: 'clarify.json fails its seal (edited by hand?)', status_command: `factory clarify status --job ${state.id}` };
+  if (data.tampered) return { stage: null, run: null, waiting_for_user: false, error: `clarify.json fails its seal (edited by hand?): nothing in clarify runs or records until the user looks at it and, to keep the file as it now is, runs factory reseal --job ${state.id} in their own terminal (human-only)`, status_command: `factory clarify status --job ${state.id}` };
   const migrating = !load(root, state.id);
   const changed = sync(root, state, data);
   if (changed || migrating) save(root, state.id, data);
@@ -1721,7 +2014,8 @@ function h1View(root, state, data = load(root, state.id)) {
     }
     if (it.strength !== 'user' || !s.quote || !['fact', 'decision', 'instruction', 'question'].includes(it.kind)) continue;
     const sup = it.superseded;
-    checked.push({ item: it.id, quote: clip(s.quote, 200), text: it.value || it.text, ok: !sup && Boolean(it.covered || it.status === 'deferred'), where: sup ? `you went by the source instead: ${clip(sup.value, 160)}` : it.covered ? it.covered.where : it.status === 'deferred' ? 'deferred to design' : 'not in the contract' });
+    const w = data.words.find((x) => x.id === (s.kind === 'sheet' ? s.word : s.ref));
+    checked.push({ item: it.id, quote: clip(s.quote, 200), text: it.value || it.text, ok: !sup && Boolean(it.covered || it.status === 'deferred'), where: sup ? `you went by the source instead: ${clip(sup.value, 160)}` : it.covered ? it.covered.where : it.status === 'deferred' ? 'deferred to design' : 'not in the contract', ...(w && w.relayed ? { relayed: true } : {}) });
   }
   const last = data.checks[data.checks.length - 1] || null;
   const objections = last ? (last.objections || []).map((o) => ({ check: o.check, severity: o.severity, issue: o.issue || o.why, fix: o.fix || '', ref: o.ref, open: o.severity === 'blocker' })) : [];
@@ -1735,12 +2029,19 @@ function h1View(root, state, data = load(root, state.id)) {
     checked,
     decisions: live.filter((it) => it.kind === 'decision' && ['decided', 'deferred'].includes(it.status)).map((it) => ({ item: it.id, text: it.text, value: it.status === 'deferred' ? 'deferred to design' : it.value, by: byWhom(it) })),
     design_may_choose: live.filter((it) => it.status === 'deferred').map((it) => it.text),
+    // the versions research went by (or that none was confirmed: then only the repo's range)
+    versions: live.filter((it) => it.kind === 'pin').map((it) => (it.value ? `${it.system} ${it.value} (${byWhom(it)})` : `${it.system}: no exact version confirmed${(it.allows || []).length ? `; the repository allows ${it.allows.map((a) => a.range).join(', ')}` : ''}`)),
     gaps: openFailures(data).map((f) => ({ what: f.what, reason: f.reason })),
     skipped: skippedSources(data),
     objections,
     proceeded: data.proceeded || null,
     redirects,
     edited_by_hand: Boolean(data.contract.edited_by_hand),
+    hand_edits: (data.contract.hand_edits || []).length,
+    removed: (data.contract.removed || []).map((r) => `${r.ref}${r.ref === 'Constraints' || r.ref === 'Non-goals' ? ` "${r.text}"` : ` (${r.text})`}: because ${r.because}${r.why ? ` — ${r.why}` : ''}`),
+    // the user's words as the factory received them: through the reply hook or a gate verb, or
+    // relayed by the main session (which the user should recognise as theirs before approving)
+    words: { total: data.words.length, relayed: data.words.filter((w) => w.relayed).map((w) => ({ id: w.id, via: w.via, text: clip(w.text, 200) })) },
   };
   // the 0.6.1 guarantees, under the names the gate skill shows: what was dropped (who, why),
   // what research could not do, and God Eye's objections, which are never approval
@@ -1765,12 +2066,13 @@ function h1Screen(state, v) {
   for (const a of v.done) L.push(`- ${a.id} ${a.text}`);
   if (v.checked.length) {
     L.push('', '**Checked against what you said**');
-    for (const c of v.checked) L.push(`- ${c.ok ? '✓' : '✗'} "${c.quote}" → ${c.where}`);
+    for (const c of v.checked) L.push(`- ${c.ok ? '✓' : '✗'} "${c.quote}"${c.relayed ? ' †' : ''} → ${c.where}`);
   }
   if (v.decisions.length) {
     L.push('', '**Decisions and who made them**');
     for (const d of v.decisions) L.push(`- ${d.text} → ${d.value} (${d.by})`);
   }
+  if (v.versions.length) L.push('', `**Versions researched against:** ${v.versions.join('; ')}.`);
   if (v.design_may_choose.length) L.push('', `**Design may still choose:** ${v.design_may_choose.join('; ')}.`);
   if (v.gaps.length) L.push('', '**Research gaps**', ...v.gaps.map((g) => `- ${g.what}: ${g.reason}`));
   if (v.skipped.length) L.push('', `**Sources skipped:** ${v.skipped.length} (${[...new Set(v.skipped.map((x) => x.why))].join('; ')}); none of them is relied on.`);
@@ -1780,11 +2082,13 @@ function h1Screen(state, v) {
   if (open.length) L.push('', '**God Eye objects** (it did not approve this contract; you chose to proceed: `approve` takes it on over them, `deny <what must change>` sends it back)', ...open.map((o) => `- ${o.check} (${o.ref}): ${o.issue}`));
   else L.push('', `**God Eye:** all ${CHECKLIST.length} checks pass${notes.length ? `; remarks: ${notes.map((o) => o.issue).join('; ')}` : ''}.`);
   if (v.dropped) L.push('', '**Dropped**', ...v.dropped.map((x) => `- ${x}`));
+  if (v.removed && v.removed.length) L.push('', '**Taken out of the contract**', ...v.removed.map((x) => `- ${x}`));
   for (const R of v.redirects) {
     L.push('', `**Your redirect ${R.id}:** ${R.done} of ${R.of} done`);
     for (const c of R.clauses) L.push(`- ${c.done ? '✓' : '✗'} "${clip(c.quote, 120)}" — ${c.how}`);
   }
-  if (v.edited_by_hand) L.push('', 'The contract was edited by hand after the writer; it was checked again.');
+  if (v.words.relayed.length) L.push('', `† ${v.words.relayed.length} of the ${v.words.total} things you said reached the factory through the assistant (factory clarify reply / redirect, or the request it filed), not through the reply hook: check they are your words before you approve (factory clarify status lists them).`);
+  if (v.edited_by_hand || v.hand_edits) L.push('', `You edited the contract by hand${v.hand_edits > 1 ? ` (${v.hand_edits} times)` : ''}${v.edited_by_hand ? ' after the writer' : ''}; the edited text went through the readiness check again.`);
   return L.join('\n');
 }
 
@@ -1828,6 +2132,11 @@ function statusText(state, data) {
       L.push(`  ${it.id}: ${clip(it.text, 100)} (dropped by ${h.actor || 'nobody'}: ${h.text ? clip(h.text, 120) : 'no reason recorded'})`);
     }
   }
+  const relayed = data.words.filter((w) => w.relayed);
+  if (relayed.length) {
+    L.push('', 'Your words as the assistant relayed them (factory clarify reply / redirect, job new --request; the reply hook did not see them):');
+    for (const w of relayed) L.push(`  ${w.id} (${w.via}): ${clip(w.text, 160)}`);
+  }
   if (data.failures.length) {
     L.push('', 'Not researched / failed:');
     for (const f of data.failures) L.push(`  - ${f.what}: ${f.reason}`);
@@ -1859,9 +2168,10 @@ function status(root, { jobId, json = false, h1 = false } = {}) {
 // ---------------------------------------------------------------- parks: resume and proceed
 function onResume(root, state) {
   const data = load(root, state.id);
-  if (!data || !data.parked) return;
+  if (!data || data.tampered || !data.parked) return;
   if (data.parked.kind === 'research') data.counters.research_passes = Math.max(0, data.counters.research_passes - 1);
   if (data.parked.kind === 'writer') data.counters.writer_attempts = Math.max(0, data.counters.writer_attempts - 1);
+  if (data.parked.kind === 'check') data.counters.readiness_cycles = Math.max(0, (data.counters.readiness_cycles || 0) - 1);
   log(data, 'resumed', data.parked.reason);
   data.parked = null;
   save(root, state.id, data);
@@ -1875,6 +2185,7 @@ function proceed(root, { jobId, channel }) {
   const state = job.resolve(root, jobId);
   if (state.status !== 'parked' || !state.park || state.park.from !== 'clarify') fail(`${state.id} is not parked by clarify; "proceed" only continues a clarify park.`, 'not_parked');
   const data = load(root, state.id);
+  if (data && data.tampered) fail(`${state.id}'s clarify.json fails its seal (edited by hand?); nothing was done.`, 'tampered');
   if (!data || !data.parked) fail(`${state.id}'s clarify record has no park to proceed from.`, 'not_parked');
   if (data.parked.kind === 'agent') fail(`${state.id} parked because an agent failed (${data.parked.reason}); there is nothing to proceed with. Reply "resume" to try again.`, 'not_proceedable');
   human.confirmTyped(channel, state.id, 'proceed with the gaps shown');
@@ -1983,6 +2294,6 @@ module.exports = {
   applyReadback, readbackScreen, parseSheetReply, applySheet, sheetScreen, buildSheet,
   startRedirect, applyRedirect, confirmRedirect, redirectScreen, sentences,
   applyWriter, writeSections, sectionLines, deterministic, applyCheck,
-  stagePlan, record, reply, redirect, chatReply, sync, ready, nextInfo, waitingForUser,
+  stagePlan, stageContractHash, record, reply, redirect, chatReply, sync, ready, nextInfo, waitingForUser,
   h1View, h1Summary: (root, state) => h1View(root, state), view, status, statusText, onResume, proceed, briefText, deferredText, floorOk, inClarify, consoleBlock, split, ACCEPT,
 };

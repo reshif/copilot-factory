@@ -118,6 +118,7 @@
     "max_research_passes": 2,
     "max_sheet_decisions": 5,
     "max_writer_attempts": 2,
+    "max_readiness_cycles": 3,
     "research_minutes": {
       "low": 6,
       "medium": 10,

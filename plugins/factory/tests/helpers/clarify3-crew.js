@@ -607,6 +607,54 @@ ${acs || '- AC-1: interfaces match (evidence: test)'}
   },
 };
 
+// (av) J-0001, then a redirect at H1 that names another version than the pin ("we actually run
+// 2.3.x"). The interviewer is a faithful one: it refers to the items it is given by id, links the
+// version clause to the pin, and on the read-back after the redirect quotes both versions the user
+// gave. The docs researcher cites the pages of whatever version is pinned.
+const byText = (items, re) => ((items || []).find((x) => re.test(x.text || '')) || {}).id || 'new';
+S.av = {
+  ...S.a,
+  readback(inp) {
+    const r = S.a.readback(inp);
+    const words = inp.words.map((w) => w.text).join('\n');
+    const items = inp.items || [];
+    for (const t of r.took) t.item = byText(items.filter((x) => x.kind === 'fact'), new RegExp(t.text.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+    for (const p of r.plan) p.item = byText(items.filter((x) => ['fact', 'decision'].includes(x.kind)), new RegExp(p.what.slice(0, 24).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+    const v = /2\.3\.x/.test(words) ? '2.3.x' : '2.4.x';
+    if (v === '2.3.x') {
+      r.pins.push({ system: 'nautobot', version: '2.3.x', source: 'user', quote: 'we actually run Nautobot 2.3.x' });
+      for (const p of r.plan) p.what = p.what.replace('2.4', '2.3');
+    }
+    return r;
+  },
+  redirect(inp) {
+    const pin = (inp.items || []).find((x) => x.kind === 'pin');
+    return { clauses: [{ quote: 'we actually run Nautobot 2.3.x, not 2.4', item: pin ? pin.id : 'new', action: 'fact', text: 'Nautobot 2.3.x is the version in use', tag: null }] };
+  },
+  docs(inp) {
+    const pin = (inp.pins.find((p) => p.system === 'nautobot') || {}).version || '2.4.x';
+    const r = S.a.docs(inp);
+    const j = r.json || r;
+    if (/^2\.3/.test(pin)) for (const e of j.evidence) if (/v2\.4\.x/.test(e.source)) Object.assign(e, { source: e.source.replace('v2.4.x', 'v2.3.x'), version: '2.3.x', claim: e.claim.replace('2.4', '2.3') });
+    return r;
+  },
+  writer(inp) {
+    const pin = (inp.items || []).find((x) => x.kind === 'pin' && x.value);
+    const r = S.a.writer(inp);
+    if (pin && /^2\.3/.test(pin.value)) {
+      r.contract = r.contract.replace('the Nautobot 2.4 test APIs', 'the Nautobot 2.3 test APIs').replace(/Nautobot 2\.4(\.x)?/g, 'Nautobot 2.3.x');
+      // the reworded constraint is a removal of the old text: said, with the item it rests on
+      r.removed = [{ ref: 'Constraints', text: 'Nautobot 2.4.x; tests use the Nautobot 2.4 test APIs', because: pin.id, why: 'the user runs Nautobot 2.3.x' }];
+    }
+    return r;
+  },
+  sheet: (screen, view, round) => S.a.sheet(screen, view, round),
+};
+
+// (loop) God Eye that never runs out of things to ask: every readiness check sends a new
+// decision to the sheet. The readiness cycle cap parks it; nothing loops the user forever.
+S.loop = { ...S.b, check: (inp) => verdict([{ check: 'decisions_closed', severity: 'blocker', stage: 'sheet', ref: 'contract', issue: `Who owns the limits? (asked ${(inp.decisions || []).length})`, fix: 'ask the user' }]), interpret: (inp) => ({ answers: inp.sheet.decisions.map((d) => ({ decision: d.no, choice: 'other', text: inp.reply.text, quote: inp.reply.text })), facts: [], unclear: [] }), sheet: () => 'the platform team' };
+
 // The failure scenarios reuse b's world with one agent broken.
 S.e1 = { ...S.b, readback: () => ({ __timeout: true }) };
 S.e2 = { ...S.b, docs: (inp) => ({ mode: 'docs', web_available: false, versions: [], evidence: [], unresolved: inp.plan.map((p) => ({ plan: p.id, reason: 'web_fetch failed: no network' })), failed_sources: [] }) };

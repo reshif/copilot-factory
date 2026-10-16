@@ -546,8 +546,10 @@ function currentInputHash(root, state, envelope) {
   const answers = readJson(jobPaths(root, state.id).answers, []);
   switch (envelope.workflow) {
     case 'clarify': {
-      const d = require('./clarify').load(root, state.id);
-      return inputHash({ stage: d ? d.stage : 'readback', rev: d ? d.rev || 0 : 0, contract: ctx.b.contract });
+      const C = require('./clarify');
+      const d = C.load(root, state.id);
+      const stage = d ? d.stage : 'readback';
+      return inputHash({ stage, rev: d ? d.rev || 0 : 0, contract: C.stageContractHash(root, state, stage) });
     }
     case 'fanout-judge':
       if (envelope.config === 'decide') return inputHash({ contract: ctx.b.contract, findings: ctx.b.findings });

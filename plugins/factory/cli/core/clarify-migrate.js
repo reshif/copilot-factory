@@ -87,8 +87,20 @@ function migrate(root, state, legacy) {
       fields = { ...fields, status: 'open', needs_research: Boolean(k.tag) };
       report.open += 1;
     }
+    // the options v2 asked with are kept; its default is a recommendation only when it named one
+    // of them (a "Your call: …" default was no recommendation, and is not made one now)
+    const opts = (Array.isArray(u.options) ? u.options : []).slice(0, 5).map((o, i) => ({ key: String.fromCharCode(97 + i), text: clip(typeof o === 'string' ? o : o && o.text, 200) })).filter((o) => o.text);
+    if (opts.length && !parent) {
+      const def = String(u.default || '').trim();
+      const rec = /^your call\b/i.test(def) ? null : opts.find((o) => o.text.toLowerCase() === def.toLowerCase());
+      fields.extra = { ...(fields.extra || {}), options: opts, recommendation: rec ? rec.key : null, ...(u.why ? { why: clip(u.why, 300) } : {}), ...(def ? { v2_default: clip(def, 200) } : {}) };
+    }
     const it = C.newItem(data, fields, 'migration');
-    if (sh.status === 'dropped') it.history.push({ at: nowIso(), event: 'dropped', actor: 'clarify v2', text: clip(u.note || 'dropped before v3', 200) });
+    if (sh.status === 'dropped') {
+      // who dropped it and why, as v2 recorded it (the judge's dismissal reason, J-0001's credentials)
+      const h = [...(u.history || [])].reverse().find((x) => /dropped|dismissed/.test(x.event || '')) || {};
+      it.history.push({ at: nowIso(), event: 'dropped', actor: h.actor ? `${h.actor} (clarify v${from})` : `clarify v${from}`, text: clip(h.text || u.note || 'no reason recorded', 200) });
+    }
     if (parent) {
       it.folded_into = idMap[parent.id];
       it.history.push({ at: nowIso(), event: 'split', actor: 'migration', text: `v2 folded "${text}" into ${parent.id}; v3 keeps it as its own item` });
@@ -118,18 +130,26 @@ function migrate(root, state, legacy) {
   // the answers.json lines no issue claimed: still the user's words
   const answers = readJson(jobPaths(root, state.id).answers, []) || [];
   for (const a of answers) if (a.answer && !data.words.some((w) => w.text === String(a.answer).trim())) C.addWord(data, a.answer, 'migration');
-  // a denial since the last approval: a redirect, read back after the read-back
+  // the denials since the last approval: one redirect, read back after the read-back. Every
+  // denial is the user's words: an earlier one is never lost to a later one (J-0002 had several).
   const approvedAt = (g) => (state.approvals && state.approvals[g] ? state.approvals[g].at : '');
   const denials = (state.denials || []).filter((d) => ['H1', 'EH1'].includes(d.gate) && d.at > approvedAt(d.gate));
   if (denials.length) {
+    const texts = [];
+    for (const d of denials) {
+      const t = String(d.reason || '').trim();
+      if (t && !texts.includes(t)) texts.push(t);
+    }
     const d = denials[denials.length - 1];
-    const R = C.startRedirect(data, d.reason || '(no reason given)', 'denial', d.gate);
+    const R = C.startRedirect(data, texts.length > 1 ? texts.join('\n') : texts[0] || '(no reason given)', 'denial', d.gate);
     R.status = 'queued';
+    R.denials = denials.length;
     data.denials_seen = d.at;
     report.redirect = R.id;
+    report.denials = denials.length;
   }
   data.stage = 'readback';
-  report.summary = `${report.items} item(s) (${report.aliases_split} folded alias(es) made their own items again), ${report.answered} answered by you, ${report.accepted} accepted defaults, ${report.assumed} assumed without asking, ${report.deferred} deferred to design, ${report.dropped} dropped, ${report.open} still open, ${report.evidence} finding(s) to re-check against the confirmed versions${report.redirect ? `; your last denial is ${report.redirect}, read back after this` : ''}`;
+  report.summary = `${report.items} item(s) (${report.aliases_split} folded alias(es) made their own items again), ${report.answered} answered by you, ${report.accepted} accepted defaults, ${report.assumed} assumed without asking, ${report.deferred} deferred to design, ${report.dropped} dropped, ${report.open} still open, ${report.evidence} finding(s) to re-check against the confirmed versions${report.redirect ? `; ${report.denials > 1 ? `your ${report.denials} denials since the last approval are` : 'your last denial is'} ${report.redirect}, read back after this` : ''}`;
   data.migration = report;
   data.history.push({ at: nowIso(), stage: 'readback', event: 'migrated', text: report.summary });
   return data;

@@ -4,4 +4,6 @@
   "covers": { "type": "array", "items": { "type": "object", "required": ["item", "where"], "properties": {
     "item": { "type": "string", "pattern": "^I-\\d+$" }, "where": { "type": "string" }, "how": { "type": "string" } } } },
   "uncovered": { "type": "array", "items": { "type": "object", "required": ["item", "why"], "properties": {
-    "item": { "type": "string" }, "why": { "type": "string" } } } } } }
+    "item": { "type": "string" }, "why": { "type": "string" } } } },
+  "removed": { "type": "array", "items": { "type": "object", "required": ["ref", "because"], "properties": {
+    "ref": { "type": "string" }, "text": { "type": "string" }, "because": { "type": "string" }, "why": { "type": "string" } } } } } }

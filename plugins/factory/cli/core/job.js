@@ -113,7 +113,16 @@ function reseal(root, jobId) {
   const s = readJson(jobPaths(root, jobId).state, null);
   if (!s) fail(`Job ${jobId} not found`, 'job_missing');
   save(root, s);
-  return { job: jobId, resealed: true };
+  // the clarify record too: a hand edit of clarify.json otherwise leaves the job with no way on
+  // (the human who reseals takes the file as it now is)
+  const C = require('./clarify');
+  const d = C.load(root, jobId);
+  const out = { job: jobId, resealed: true };
+  if (d && d.tampered) {
+    C.save(root, jobId, d);
+    out.clarify_resealed = true;
+  }
+  return out;
 }
 
 function current(root) {

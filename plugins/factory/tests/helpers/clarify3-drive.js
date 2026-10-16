@@ -36,13 +36,14 @@ function mergePolicy(root, extra) {
 }
 
 function drive(scen, { log = () => {} } = {}) {
-  const root = makeRepo(scen.repo);
+  // an existing repository (a job made by an earlier version, upgraded mid-clarify) or a new one
+  const root = scen.existing ? scen.existing.root : makeRepo(scen.repo);
   mergePolicy(root, scen.policy);
   const logFile = path.join(root, '.factory', 'scratch', 'copilot.jsonl');
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const env = { COPILOT_BIN: FAKE, FAKE_COPILOT_SCRIPT: CREW, FAKE_COPILOT_LOG: logFile, CREW: JSON.stringify({ scenario: scen.crew, ...(scen.crewOpts || {}) }) };
   const cli = (args) => F.cli(root, args, { env });
-  const created = cli(['job', 'new', '--title', scen.title, '--type', scen.type || 'feature', '--risk', scen.risk || 'medium', '--request', scen.request]);
+  const created = scen.existing ? { job: scen.existing.J } : cli(['job', 'new', '--title', scen.title, '--type', scen.type || 'feature', '--risk', scen.risk || 'medium', '--request', scen.request]);
   if (!created.job) throw new Error(`job new failed: ${JSON.stringify(created)}`);
   const J = created.job;
   const JD = F.jobDir(root, J);
