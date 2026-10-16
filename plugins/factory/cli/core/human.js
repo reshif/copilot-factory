@@ -560,7 +560,7 @@ const PLACEHOLDER = (r) => /^<[^>]*>$|^\[[^\]]*\]$/.test(String(r || '').trim())
 function parseReply(text) {
   const p = parseReplyRaw(text);
   if (p && ['settle_finding', 'waive', 'deny', 'cancel', 'abandon', 'reject_lesson', 'reject_brief'].includes(p.cmd) && p.reason && PLACEHOLDER(p.reason)) return null;
-  if (p && ['settle_finding', 'waive'].includes(p.cmd) && String(p.reason || '').trim().length < 3) return null;
+  if (p && ['settle_finding', 'waive'].includes(p.cmd) && p.reason && String(p.reason).trim().length < 3) return null;
   return p;
 }
 
