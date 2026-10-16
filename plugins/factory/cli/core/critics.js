@@ -86,7 +86,7 @@ function gateView(ctx, gate) {
   if (showsDesign) {
     const d = critique(root, state.id, 'design');
     if (d && d.hash === ctx.b.design) {
-      out.design_critique = { verdict: d.verdict, rounds: d.rounds, stop: d.stop || null, revised_after_last: Boolean(d.revised_after_last), open: (d.open || d.items || []).filter((i) => i.severity !== 'minor').map(itemLine), ...(d.question ? { question: d.question } : {}), ...(d.loop ? { loop: d.loop } : {}) };
+      out.design_critique = { verdict: d.verdict, rounds: d.rounds, stop: d.stop || null, revised_after_last: Boolean(d.revised_after_last), ...(d.revised_after_last ? { not_rechecked: 'final revision not re-checked by the critics: the architect revised the design after the last critique round, and no critic has read that revision' } : {}), open: (d.open || d.items || []).filter((i) => i.severity !== 'minor').map(itemLine), ...(d.question ? { question: d.question } : {}), ...(d.loop ? { loop: d.loop } : {}) };
     }
     const l = ledgerSummary(root, state.id);
     if (l) out.api_ledger = l;

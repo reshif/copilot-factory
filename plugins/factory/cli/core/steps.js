@@ -10,18 +10,33 @@ const invalidation = require('./invalidation');
 const recipes = require('./recipes');
 
 // The recipe a job runs is the one it locked at creation (recipe.lock.json, sealed): a job in
-// flight keeps its steps and gates when the plugin's recipes change (an upgrade). A job with no
-// valid lock for its recipe id and version runs the current file, as before.
+// flight keeps its steps and gates when the plugin's recipes change (an upgrade). A job whose lock
+// predates recipe locking (no recipe in it) runs the current file, as before. A lock that holds a
+// recipe but is invalid (a broken seal, another recipe id or version, a recipe that fails its
+// checks) is refused with a clear message, never a silent switch to the current recipe (m13).
+function lockProblem(root, state) {
+  const lock = readJson(jobPaths(root, state.id).recipeLock, null);
+  if (!lock || !lock.recipe) return { lock: null, problem: null };
+  if (!require('../lib/seal').valid(lock)) return { lock, problem: 'its seal does not match (the file was edited)', resealable: true };
+  if (lock.id !== state.recipe.id || lock.version !== state.recipe.version || lock.recipe.id !== state.recipe.id) return { lock, problem: `it is for ${lock.id || lock.recipe.id} v${lock.version}, but the job runs ${state.recipe.id} v${state.recipe.version}` };
+  const errs = recipes.check(lock.recipe);
+  if (errs.length) return { lock, problem: `its recipe fails the recipe checks: ${errs.slice(0, 3).join('; ')}` };
+  return { lock, problem: null };
+}
+
 function lockedRecipe(root, state) {
-  try {
-    const lock = readJson(jobPaths(root, state.id).recipeLock, null);
-    if (!lock || !lock.recipe || !require('../lib/seal').valid(lock)) return null;
-    if (lock.id !== state.recipe.id || lock.version !== state.recipe.version || lock.recipe.id !== state.recipe.id) return null;
-    if (recipes.check(lock.recipe).length) return null;
-    return lock.recipe;
-  } catch {
-    return null;
+  const { lock, problem, resealable } = lockProblem(root, state);
+  if (!lock) return null;
+  if (problem) {
+    try {
+      require('./events').append(root, { event: 'recipe_lock_invalid', job: state.id, problem });
+    } catch {
+      /* the refusal says it */
+    }
+    const { fail } = require('../lib/util');
+    fail(`${state.id}'s recipe lock (.factory/jobs/${state.id}/recipe.lock.json) is invalid: ${problem}. The factory does not silently run the current ${state.recipe.id} recipe instead (the job's steps and gates could change under it). Restore the file${resealable ? ', or run `factory reseal` in your own terminal to accept it as it now is' : ''}.`, 'recipe_lock_invalid');
   }
+  return lock.recipe;
 }
 
 function context(root, state, loadJob) {
@@ -266,4 +281,4 @@ function isDone(ctx, stepDef) {
   }
 }
 
-module.exports = { isLocalShip, lockedRecipe, combinedOf, combinedParts, context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };
+module.exports = { lockProblem, isLocalShip, lockedRecipe, combinedOf, combinedParts, context, isDone, shipsLocally, planTasks, taskDone, allTasksDone, allTasksMerged, taskBranch, gateHash, gateDocs, approved, latestAt, lastAtFingerprint };

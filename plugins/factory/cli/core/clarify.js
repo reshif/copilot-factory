@@ -1477,15 +1477,43 @@ function applyWriter(root, state, data, out) {
     const changedList = Array.isArray(out.changed) ? out.changed : [];
     const nowLines = [...parsed.constraints.map((c) => ({ ref: 'Constraints', text: c })), ...parsed.nonGoals.map((c) => ({ ref: 'Non-goals', text: c })), ...parsed.acs.map((a) => ({ ref: a.id, text: a.text }))];
     const unexplained = [];
+    // the user's words (W-n) justify changing a line only when they came after the contract that
+    // has it was written: older words (the request, W-1) were there when the line was written from
+    // them, so citing them cannot turn it into something else (m11)
+    const wordOf = (b) => data.words.find((w) => w.id === String(b || '').toUpperCase());
+    const stale = (b) => {
+      const w = wordOf(b);
+      return Boolean(w && data.contract.written_at && Date.parse(w.at) < Date.parse(data.contract.written_at));
+    };
+    const staleCites = [];
+    // and the words cited must say what the new line adds: one of its new words is in them
+    const sig = (t) => new Set((String(t || '').toLowerCase().match(/[a-z0-9][a-z0-9_-]{3,}/g) || []).filter((x) => !['this', 'that', 'with', 'from', 'must', 'should', 'will', 'have', 'only', 'also', 'are', 'not'].includes(x)));
+    const unsupported = (b, from, to) => {
+      const w = wordOf(b);
+      if (!w) return false;
+      const old = sig(from);
+      const added = [...sig(to)].filter((x) => !old.has(x));
+      const said = String(w.text).toLowerCase();
+      return added.length > 0 && !added.some((x) => said.includes(x.replace(/s$/, '')));
+    };
+    const quoteOf = (b) => (wordOf(b) ? clip(wordOf(b).text, 200) : null);
     for (const g of gone) {
       const ch = changedList.find((x) => x && (x.ref === g.ref || !x.ref) && x.from && key(x.from) === key(g.text) && x.to && nowLines.some((l) => key(l.text) === key(x.to)) && known(x.because));
-      if (ch) {
-        changedNow.push({ ref: g.ref, from: clip(g.text, 200), to: clip(ch.to, 200), because: String(ch.because), why: clip(ch.why || '', 200) });
+      if (ch && stale(ch.because)) staleCites.push(`${g.ref}: "${clip(g.text, 80)}" (cites ${String(ch.because).toUpperCase()}, given before this line was written)`);
+      else if (ch && unsupported(ch.because, g.text, ch.to)) staleCites.push(`${g.ref}: "${clip(g.text, 80)}" (cites ${String(ch.because).toUpperCase()}, whose words do not say what the new line says)`);
+      else if (ch) {
+        changedNow.push({ ref: g.ref, from: clip(g.text, 200), to: clip(ch.to, 200), because: String(ch.because), why: clip(ch.why || '', 200), ...(quoteOf(ch.because) ? { quote: quoteOf(ch.because) } : {}) });
         continue;
       }
       const l = listed.find((x) => (x.ref === g.ref || (x.text && key(x.text) === key(g.text))) && known(x.because));
-      if (l) removedNow.push({ ref: g.ref, text: clip(g.text, 200), because: String(l.because).toUpperCase() === String(l.because) ? l.because : String(l.because), why: clip(l.why || '', 200) });
+      if (l && stale(l.because)) staleCites.push(`${g.ref}: "${clip(g.text, 80)}" (cites ${String(l.because).toUpperCase()}, given before this line was written)`);
+      else if (l) removedNow.push({ ref: g.ref, text: clip(g.text, 200), because: String(l.because).toUpperCase() === String(l.because) ? l.because : String(l.because), why: clip(l.why || '', 200), ...(quoteOf(l.because) ? { quote: quoteOf(l.because) } : {}) });
+      else if (ch) continue;
       else unexplained.push(g.ref === 'Constraints' || g.ref === 'Non-goals' ? `${g.ref}: "${clip(g.text, 80)}"` : g.ref);
+    }
+    if (staleCites.length) {
+      res.refused = `the new text changes or drops ${staleCites.join(', ')}: a change rests on the user's words only when they came after the line was written and say what the new line says. Cite what changed since (an item I-n, a blocker, a redirect, or the user's later words), or keep the line`;
+      return res;
     }
     if (unexplained.length) {
       res.refused = `the new text drops ${unexplained.join(', ')} with no reason: list each under changed (a rewording: from, to, because) or removed with the item (I-n), the user's words (W-n), the blocker or the redirect it rests on, or keep it`;
@@ -1515,6 +1543,7 @@ function applyWriter(root, state, data, out) {
   }
   for (const it of data.items) if (it.kind === 'instruction' && it.covered && it.status === 'open') { it.status = 'done'; itemEvent(it, 'done', 'contract-writer', it.covered.where); }
   data.contract.written_hash = contractHash(root, state);
+  data.contract.written_at = nowIso();
   data.contract.edited_by_hand = false;
   return res;
 }
@@ -2479,7 +2508,7 @@ function h1View(root, state, data = load(root, state.id)) {
     // the user's later words that changed their earlier ones (the later one won)
     changes: data.items.flatMap((it) => (it.changes || []).map((c) => ({ item: it.id, from: c.from, to: c.to, quote: c.quote }))),
     // contract lines the writer reworded, each with what it rests on
-    reworded: (data.contract.changed || []).map((c) => `${c.ref}: "${c.from}" → "${c.to}" because ${c.because}${c.why ? ` — ${c.why}` : ''}`),
+    reworded: (data.contract.changed || []).map((c) => `${c.ref}: "${c.from}" → "${c.to}" because ${c.because}${c.quote ? ` (the user's words: "${c.quote}")` : ''}${c.why ? ` — ${c.why}` : ''}`),
     redirects,
     edited_by_hand: Boolean(data.contract.edited_by_hand),
     hand_edits: (data.contract.hand_edits || []).length,

@@ -742,3 +742,24 @@ test('upgrade: a medium job sitting at H3 under 0.8.2 keeps the recipe it locked
   assert.equal(after.workflow, 'realize', 'approved: it builds, with no re-plan forced by the upgrade');
   assert.equal(core('job').load(root, J).recipe.version, 1);
 });
+
+test('m13: an invalid recipe lock is refused with a clear message, never a silent switch to the current recipe; reseal takes an edited one', (t) => {
+  const root = F.makeRepo(t);
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'feature', '--risk', 'medium']).job;
+  const file = path.join(F.jobDir(root, J), 'recipe.lock.json');
+  const lock = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(lock.recipe, 'the job locked its recipe');
+  fs.writeFileSync(file, JSON.stringify({ ...lock, recipe: { ...lock.recipe, steps: lock.recipe.steps.filter((s) => s.step !== 'H3') } }));
+  const r = F.cli(root, ['next']);
+  assert.equal(r.code, 'recipe_lock_invalid', JSON.stringify(r).slice(0, 300));
+  assert.match(JSON.stringify(r), /recipe lock[\s\S]*seal does not match[\s\S]*does not silently run the current[\s\S]*factory reseal/);
+  assert.equal(core('job').reseal(root, J).recipe_lock_resealed, true);
+  assert.notEqual(F.cli(root, ['next']).code, 'recipe_lock_invalid');
+  // another version: refused, and reseal cannot make it valid
+  const sealed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const { seal: _s, ...body } = sealed;
+  fs.writeFileSync(file, JSON.stringify(require('../cli/lib/seal').seal({ ...body, version: 999 })));
+  const r2 = F.cli(root, ['next']);
+  assert.equal(r2.code, 'recipe_lock_invalid');
+  assert.match(JSON.stringify(r2), /v999/);
+});

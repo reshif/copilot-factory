@@ -130,6 +130,7 @@ test('standard@medium: ADR and plan approved at ONE gate (H3, with the build env
   assert.ok(n.gate.docs.some((d) => d.endsWith('design.json')) && n.gate.docs.some((d) => d.endsWith('plan.json')) && n.gate.docs.some((d) => d.endsWith('probe.json')), JSON.stringify(n.gate.docs));
   assert.deepEqual(n.review.approves, ['design', 'plan', 'environment']);
   assert.equal(n.review.design_critique.open.length, 1, 'the open objection is shown at the gate');
+  assert.match(n.review.design_critique.not_rechecked, /final revision not re-checked by the critics/, 'm12: the gate says the last revision was never critiqued');
   assert.match(n.review.objections, /1 objection/);
   // a document edited after it was presented can't be approved
   F.write(F.jobDir(root, J), 'adr-001-math.md', F.adrText({ job: J, acs: ['AC-1', 'AC-2'], decision: 'We will add separate modules, edited.' }));

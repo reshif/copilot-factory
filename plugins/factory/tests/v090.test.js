@@ -290,6 +290,18 @@ test('clarify: scope lines are items (a redirect can change one by id); a reword
   const d = record(root, J);
   const out = d.items.find((x) => x.kind === 'scope' && x.scope === 'out');
   assert.equal(out.value, 'subtraction');
+  // m11: citing the original request (W-1, older than the written contract) cannot invert a constraint
+  const C = core('clarify');
+  const text0 = fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8');
+  assert.match(text0, /No new dependencies/);
+  const inv = C.applyWriter(root, stateOf(root, J), C.load(root, J), { contract: text0.replace('- No new dependencies', '- New dependencies are welcome'), changed: [{ ref: 'Constraints', from: 'No new dependencies', to: 'New dependencies are welcome', because: d.words[0].id }] });
+  assert.equal(inv.written, false);
+  assert.match(inv.refused, /cites W-1, given before this line was written[\s\S]*only when they came after the line was written/);
+  // words that do not say what the new line says ("ok") support nothing either
+  const D0 = C.load(root, J);
+  const okWord = C.addWord(D0, 'ok', 'chat');
+  const inv2 = C.applyWriter(root, stateOf(root, J), D0, { contract: text0.replace('- No new dependencies', '- New dependencies are welcome'), changed: [{ ref: 'Constraints', from: 'No new dependencies', to: 'New dependencies are welcome', because: okWord.id }] });
+  assert.match(inv2.refused || '', /whose words do not say what the new line says/);
   // the writer rewords the constraint, citing the user's words: recorded as a change
   const W = d.words[0].id;
   F.reply(root, `deny ${J} keep it dependency free but dev dependencies are fine`);
@@ -297,12 +309,12 @@ test('clarify: scope lines are items (a redirect can change one by id); a reword
     redirect: () => ({ clauses: [{ quote: 'keep it dependency free but dev dependencies are fine', item: 'new', action: 'instruction', text: 'no runtime dependencies; dev dependencies are fine' }] }),
     writer: (text, dd) => {
       if (!/No new dependencies/.test(text)) return {};
-      const w = dd.words[dd.words.length - 1].id;
+      const w = dd.words.find((x) => /dev dependencies are fine/.test(x.text)).id;
       return { contract: text.replace('- No new dependencies', '- No new runtime dependencies (dev dependencies are fine)'), changed: [{ ref: 'Constraints', from: 'No new dependencies', to: 'No new runtime dependencies (dev dependencies are fine)', because: w, why: 'the user said dev dependencies are fine' }] };
     },
   });
   assert.equal(n.step, 'H1', JSON.stringify(n).slice(0, 300));
-  assert.ok(n.clarify_h1.reworded.some((x) => /^Constraints: "No new dependencies" → "No new runtime dependencies \(dev dependencies are fine\)" because W-\d+/.test(x)), JSON.stringify(n.clarify_h1.reworded));
+  assert.ok(n.clarify_h1.reworded.some((x) => /^Constraints: "No new dependencies" → "No new runtime dependencies \(dev dependencies are fine\)" because W-\d+ \(the user's words: "keep it dependency free but dev dependencies are fine"\)/.test(x)), JSON.stringify(n.clarify_h1.reworded));
   assert.match(n.clarify_h1.screen, /Reworded in the contract/);
   assert.match(fs.readFileSync(path.join(F.jobDir(root, J), 'contract.md'), 'utf8'), /No new runtime dependencies/);
   void W;

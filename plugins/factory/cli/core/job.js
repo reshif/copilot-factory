@@ -118,6 +118,14 @@ function reseal(root, jobId) {
   const C = require('./clarify');
   const d = C.load(root, jobId);
   const out = { job: jobId, resealed: true };
+  // the recipe lock, when only its seal is broken (the human takes the file as it now is)
+  const lp = require('./steps').lockProblem(root, s);
+  if (lp.lock && lp.resealable) {
+    const { seal } = require('../lib/seal');
+    const { seal: _old, ...body } = lp.lock;
+    writeJson(jobPaths(root, jobId).recipeLock, seal(body));
+    if (!require('./steps').lockProblem(root, s).problem) out.recipe_lock_resealed = true;
+  }
   if (d && d.tampered) {
     C.save(root, jobId, d);
     out.clarify_resealed = true;
