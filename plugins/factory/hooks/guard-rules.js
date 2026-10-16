@@ -170,7 +170,7 @@ const INTERPRETER = /^(node|nodejs|python[0-9.]*|ruby|perl|php|deno|bun|osascrip
 // Factory state and CLI internals. STRICT: code that loads the CLI's internals or the seal
 // secret could forge state, whatever it does. STATE: the job files; reading them is fine.
 const INTERNALS_STRICT = /cli\/core\/|cli\/lib\/(seal|util)|software-factory\/secret|\.config\/software-factory/;
-const STATE = /\.factory\/(jobs|log|lessons|project\.json|policy\.json|environment\.json|current)/;
+const STATE = /\.factory\/(jobs|log|lessons|project\.json|project\.md|project-brief\.proposals\.json|cache\/|policy\.json|environment\.json|current)/;
 const INTERNALS = new RegExp(`${INTERNALS_STRICT.source}|${STATE.source}`);
 const WRITE_OPS = /writeFile|appendFile|createWriteStream|\bunlink|\brename|\brmSync|\brmdir|\bcopyFile|truncate|\.write\(|open\([^)]*['"][wax+]|json\.dump\(|os\.remove|os\.replace|shutil\.|Path\([^)]*\)\.write_|File\.write|>>?\s*['"]?\.factory/;
 const SECRET_FILE = /software-factory[\\/]secret|\.config[\\/]software-factory/;

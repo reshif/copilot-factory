@@ -282,7 +282,7 @@ function stopDetail(kind, n, extra = {}) {
     case 'evidence':
       return { commands: n.commands || [], acs: n.acs || [], summary: `${J}: ${(n.acs || []).join(', ')} need${(n.acs || []).length === 1 ? 's' : ''} a doc/diff record the drive could not pick a file for: check the build and run the command with the real path, then factory drive.` };
     case 'done':
-      return { summary: `${J} is done: ${n.reason || 'closed'}${extra.lessons && extra.lessons.length ? ` Lessons proposed: ${extra.lessons.map((l) => l.id).join(', ')} (reply "accept lesson Ln" or "reject lesson Ln <why>").` : ''}`, ...(extra.lessons && extra.lessons.length ? { lessons: extra.lessons } : {}) };
+      return { summary: `${J} is done: ${n.reason || 'closed'}${extra.lessons && extra.lessons.length ? ` Lessons proposed: ${extra.lessons.map((l) => l.id).join(', ')} (reply "accept lesson Ln" or "reject lesson Ln <why>").` : ''}${extra.briefs && extra.briefs.length ? ` Project brief changes proposed: ${extra.briefs.map((b) => b.id).join(', ')} (reply "accept brief Pn" or "reject brief Pn <why>"; they reach every later agent).` : ''}`, ...(extra.lessons && extra.lessons.length ? { lessons: extra.lessons } : {}), ...(extra.briefs && extra.briefs.length ? { briefs: extra.briefs } : {}) };
     default:
       return { summary: `${J || 'drive'}: ${extra.message || n.reason || kind}` };
   }
@@ -333,6 +333,8 @@ async function loop(ctx) {
             // Copilot unavailable: the distill skill moves on to distill done; any other failure is a stop
             if (!w.json || (w.json.error && w.json.code !== 'copilot_unavailable')) return ctx.stop('error', n, { message: `factory distill write failed: ${(w.json && w.json.message) || `exit ${w.code}`}`, code: w.json && w.json.code });
             if (w.json && Array.isArray(w.json.lessons)) ctx.lessons.push(...w.json.lessons);
+            // a proposed change to the project brief waits for the user like a lesson does
+            if (w.json && w.json.project_brief && w.json.project_brief.proposal) (ctx.briefs = ctx.briefs || []).push({ id: w.json.project_brief.proposal, job: n.job || ctx.job, edits: (w.json.project_brief.edits || []).length, why: w.json.project_brief.why || null });
             const d = await runChild(ctx, ['distill', 'done']);
             if (!d.json || d.json.error) return ctx.stop('error', n, { message: `factory distill done failed: ${(d.json && d.json.message) || `exit ${d.code}`}` });
             continue;
@@ -445,7 +447,7 @@ async function loop(ctx) {
           ctx.job = parent;
           continue;
         }
-        return ctx.stop('done', n, { lessons: ctx.lessons });
+        return ctx.stop('done', n, { lessons: ctx.lessons, briefs: ctx.briefs || [] });
       }
       case 'driving':
         return ctx.stop('error', n, { message: 'another factory drive runs this job' });
@@ -579,7 +581,7 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
     const sent = repeat ? { method: 'repeat' } : require('./notify').notify(root, { title, body: rec.summary, job: ctx.job, kind });
     rec.notified = sent.method;
     rec.notify_key = key;
-    events.append(root, { event: 'drive_stop', job: ctx.job, kind, summary: String(rec.summary).slice(0, 500), gate: rec.gate ? rec.gate.id : null, park_kind: rec.park ? rec.park.kind : null, stage: rec.stage || null, decision_id: rec.decision_id, steps: ctx.steps, notified: sent.method, pid: process.pid });
+    events.append(root, { event: 'drive_stop', job: ctx.job, kind, summary: String(rec.summary).slice(0, 500), gate: rec.gate ? rec.gate.id : null, park_kind: rec.park ? rec.park.kind : null, stage: rec.stage || null, decision_id: rec.decision_id, steps: ctx.steps, notified: sent.method, sent: sent.sent === true, pid: process.pid });
     save({ status: 'stopped', step: null, stopped_at: rec.at, last: rec, stops: [...(current.stops || []), { at: rec.at, job: ctx.job, kind, summary: rec.summary }].slice(-20) });
     ctx.err(`[factory drive] stop (${kind}): ${rec.summary}\n`);
     return rec;

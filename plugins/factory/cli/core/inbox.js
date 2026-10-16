@@ -94,6 +94,14 @@ function list(root, { plain = false } = {}) {
     const it = itemFor(root, state, stop, plain);
     if (it) items.push(it);
   }
+  // project brief changes distill proposed: they wait for the user like a gate (human-only)
+  try {
+    for (const p of require('./project-brief').proposals(root, { status: 'proposed' })) {
+      items.push({ job: p.job || 'project', title: 'Project brief (.factory/project.md)', kind: 'brief', proposal: p.id, since: p.created_at || null, what: `accept or reject project brief change ${p.id}${p.why ? ` (${String(p.why).slice(0, 120)})` : ''}: ${p.edits.map((e) => `${e.section}: ${[...(e.add || []).map((a) => `+ ${a}`), ...(e.remove || []).map((r) => `- ${r}`)].join(' ')}`).join('; ').slice(0, 400)}`, reply: [`accept brief ${p.id}`, `reject brief ${p.id} <why>`], command: `factory lessons accept ${p.id}`, human_only: true });
+    }
+  } catch {
+    /* no proposals file */
+  }
   items.sort((a, b) => String(a.since || '').localeCompare(String(b.since || '')));
   const live = drive.liveFor(root);
   return {

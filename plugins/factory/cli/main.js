@@ -85,7 +85,7 @@ Console    console [--out file.html] [--job J] [--label "…"] [--data data.json
            console --serve [--port 4477] [--job J]   (the same page, live: updates as Copilot works)
 Human only (your terminal, or reply in chat):
            approve [gate] · deny --reason "…" · resume [step] · proceed (after a clarify cap: go on, gaps shown) · cancel · abandon · waive <floor> --reason "…"
-           merged <commit> · confirm <AC> · lessons accept|reject <L> · lessons promote <L> --check "cmd" · reseal
+           merged <commit> · confirm <AC> · lessons accept|reject <L|P> · lessons promote <L> --check "cmd" · reseal
            assumption change <A-n> --value "…" · assumption drop <A-n>   (chat: change A-3 <value> · drop A-3)
            finding accept|dismiss <id> --reason "…"   (a serious finding no verifier settled; chat: dismiss finding code-1 <reason>)
 Global     --root <repo> · --job <J-0001>`;
@@ -393,6 +393,8 @@ function run(argv) {
       const l = C('lessons');
       if (sub === 'list') return l.load(R());
       if (sub === 'add') return l.add(R(), { jobId: J || C('job').current(R()), text: opt.text, scope: opt.scope, why: opt.why });
+      // a project brief proposal (P<n>, from distill) is accepted like a lesson: human-only
+      if ((sub === 'accept' || sub === 'reject') && /^P\d+$/i.test(pos[2] || '')) return C('project-brief').decide(R(), { id: pos[2], accept: sub === 'accept', reason: opt.reason, channel: tty });
       if (sub === 'accept' || sub === 'reject') return l.decide(R(), { id: pos[2], accept: sub === 'accept', reason: opt.reason, channel: tty });
       if (sub === 'promote') return l.promote(R(), { id: pos[2], check: opt.check, channel: tty });
       return fail('lessons list | add | accept | reject | promote', 'bad_input');

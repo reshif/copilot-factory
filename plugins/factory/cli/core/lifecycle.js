@@ -45,6 +45,13 @@ function close(root, { jobId }) {
   const notDone = ctx.recipe.steps.filter((s) => s.step !== 'close' && !steps.isDone(ctx, s)).map((s) => s.step);
   if (notDone.length) fail(`Cannot close ${state.id}: steps not done: ${notDone.join(', ')}`, 'not_ready');
   if (state.branch) cleanup(root, state);
+  // the transcript disk budget: ended jobs' transcripts go after transcript_closed_days / keep_jobs
+  try {
+    const T = require('./transcripts');
+    T.pruneAll(root, T.limits((require('./policy').load(root) || {}).copilot || {}));
+  } catch {
+    /* a convenience */
+  }
   const down = require('./environment').servicesDown(root, state);
   if (down) require('./events').append(root, { event: 'environment_services_down', job: state.id, cmd: down.cmd, code: down.code });
   state.status = 'closed';
@@ -68,6 +75,7 @@ function close(root, { jobId }) {
 // task states set by hand, findings settled by hand, waivers). Each list is capped; `count` is
 // how many items there were in all.
 const CAP = 12;
+const TROUBLE_STOPS = new Set(['parked', 'error', 'transient', 'copilot_unavailable', 'limit', 'degraded']);
 const clip = (v, n = 240) => (v === undefined || v === null ? null : String(v).slice(0, n));
 function troubleOf(root, state) {
   const { readJsonl } = require('../lib/util');
@@ -80,9 +88,13 @@ function troubleOf(root, state) {
     ...decs.filter((d) => d.action === 'parked' || d.action === 'park').map((d) => ({ at: d.ts, source: 'router', type: clip((d.park && d.park.kind) || d.rule || d.type || null, 80), reason: clip(d.reason) })),
     ...evs.filter((e) => e.event === 'cli' && e.ok !== false && ((e.cmd === 'record' && e.status === 'park') || e.cmd === 'park')).map((e) => ({ at: e.ts, source: e.cmd === 'park' ? 'by hand' : `${e.workflow || 'workflow'} result`, type: clip(e.park_from || e.park_type || null, 80), reason: clip(e.park_reason || e.reason || null) })),
     ...led.filter((e) => e.kind === 'clarify' && e.outcome === 'park').map((e) => ({ at: e.at, source: 'clarify', type: 'clarify', reason: clip((e.detail || {}).reason) })),
-    // typed park and drive-stop events (any name with "park", or drive_stop): read by their type and reason
-    ...evs.filter((e) => typeof e.event === 'string' && (/park/i.test(e.event) || e.event === 'drive_stop') && e.event !== 'cli').map((e) => ({ at: e.ts, source: e.event, type: typed(e), reason: clip(e.reason || e.message || e.park_reason || null) })),
-  ].sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+    // typed park events (any name with "park"), and the drive's stops that are trouble (a park, an
+    // error, Copilot down, a step limit, a degraded run), never its gate, clarify or done stops
+    ...evs.filter((e) => typeof e.event === 'string' && e.event !== 'cli' && ((/park/i.test(e.event) && !/unpark|resume/i.test(e.event)) || (e.event === 'drive_stop' && TROUBLE_STOPS.has(e.kind || e.type)))).map((e) => ({ at: e.ts, source: e.event, type: typed(e), reason: clip(e.reason || e.summary || e.message || e.park_reason || null) })),
+  ]
+    .sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')))
+    // one park written by several records (its decision row, the workflow result, the drive's stop) counts once
+    .filter((p, i, all) => !all.slice(0, i).some((q) => q.at && p.at && Math.abs(Date.parse(p.at) - Date.parse(q.at)) < 5000));
   if (state.park && !parks.some((p) => p.reason && state.park.reason && p.reason === clip(state.park.reason))) parks.push({ at: state.park.at, source: 'current', type: clip(state.park.type || state.park.from || null, 80), reason: clip(state.park.reason) });
   const resumes = decs.filter((d) => d.action === 'human.resume').map((d) => ({ at: d.ts, from: d.from || null, reason: clip(d.reason) }));
   const runs = evs.filter((e) => e.event === 'agent_run');
@@ -108,7 +120,10 @@ function troubleOf(root, state) {
     ...evs.filter((e) => e.event === 'cli' && e.ok !== false && e.via !== 'run' && ((e.cmd === 'amend' && e.sub === 'submit') || (e.cmd === 'task' && e.sub === 'state'))).map((e) => ({ at: e.ts, what: `factory ${e.cmd} ${e.sub}` })),
     ...decs.filter((d) => ['human.waive', 'human.accept_finding', 'human.dismiss_finding', 'human.finding'].includes(d.action) || /finding/.test(String(d.action || '')) && /^human\./.test(String(d.action || ''))).map((d) => ({ at: d.ts, what: String(d.action).replace(/^human\./, ''), reason: clip(d.reason) })),
   ];
-  const lists = { parks, resumes, retries, timeouts, scope_violations: scope, environment_broken: envBroken, integration_failures: integration, tasks, manual_repairs: manual };
+  // Copilot rate limits, 5xx and network drops the runner rode out, and automatic recoveries (a rebuild)
+  const transient = evs.filter((e) => e.event === 'agent_transient').map((e) => ({ at: e.ts, label: clip(e.label, 80), match: clip(e.match, 80) }));
+  const recovery = evs.filter((e) => e.event === 'recovery').map((e) => ({ at: e.ts, kind: e.kind || null, action: e.action || null, tasks: (e.tasks || []).slice(0, 6), reason: clip(e.reason) }));
+  const lists = { parks, resumes, retries, timeouts, scope_violations: scope, environment_broken: envBroken, integration_failures: integration, tasks, manual_repairs: manual, transient, recovery };
   const count = Object.values(lists).reduce((n, l) => n + l.length, 0);
   const out = { count };
   for (const [k, l] of Object.entries(lists)) out[k] = l.slice(-CAP);

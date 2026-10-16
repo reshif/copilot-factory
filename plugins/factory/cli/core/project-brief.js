@@ -7,9 +7,13 @@
 //   created   at the first job (factory job new), from detection: git ls-files, the manifests'
 //             scripts, the policy's checks, the build environment;
 //   ground    the first ground step's codebase claims fill "What ground found";
-//   distill   the lesson-writer may propose edits (a diff: lines to add and remove per section)
-//             and the CLI applies them (applyEdits), logged as project_brief_updated; distill
-//             done refreshes the ADR and lesson indexes.
+//   ground    each job's ground step replaces "What ground found" with its own cited claims;
+//   distill   the lesson-writer may propose edits (a diff: lines to add, and lines an earlier
+//             accepted proposal added to remove). They are stored as a proposal (P<n>, in
+//             .factory/project-brief.proposals.json) and applied only on the user's reply
+//             ("accept brief P1", or `factory lessons accept P1` from their terminal), like a
+//             lesson; distill never removes a line the user wrote. distill done refreshes the
+//             ADR and lesson indexes.
 //
 // Lines between <!-- factory:auto NAME --> and <!-- /factory:auto --> are the CLI's: refreshed
 // from the repo and .factory/ each time. Everything else is the user's (and distill's, through
@@ -17,13 +21,19 @@
 
 const fs = require('fs');
 const path = require('path');
-const { readJson, writeText, exists, nowIso } = require('../lib/util');
+const { readJson, writeJson, writeText, exists, nowIso, fail } = require('../lib/util');
 const { project, jobPaths } = require('../lib/paths');
 
 const SECTIONS = ['Conventions', 'Module map', 'Test and lint commands', 'Environment', 'What ground found', 'Earlier decisions (ADRs)', 'Accepted lessons', 'Notes'];
 // the sections distill may edit (outside the auto blocks)
 const EDITABLE = ['Conventions', 'Module map', 'Test and lint commands', 'Environment', 'Notes'];
 const BRIEF_CHARS = 3000;
+// What a brief keeps of each section (characters), most important first; the module map and what
+// ground found give way first.
+const BUDGET = { Conventions: 800, 'Earlier decisions (ADRs)': 500, 'Accepted lessons': 600, Notes: 500, 'Test and lint commands': 400, Environment: 300, 'Module map': 300, 'What ground found': 300 };
+const MAX_ADDS = 10; // lines one proposal may add
+const MAX_SECTION_LINES = 40; // distill never grows a section past this
+const proposalsFile = (root) => path.join(project(root).dir, 'project-brief.proposals.json');
 
 const file = (root) => path.join(project(root).dir, 'project.md');
 const rel = (root, p) => path.relative(root, p).split(path.sep).join('/');
@@ -190,65 +200,176 @@ function initial(root, policy) {
 }
 
 // Replace the lines of one auto block; a block whose markers are gone is left alone.
+// The markers count only as whole lines, so a line that merely contains one can't move a block.
 function setBlock(text, name, lines) {
-  const re = new RegExp(`(<!-- factory:auto ${name} -->\\n)([\\s\\S]*?)(<!-- /factory:auto -->)`);
+  const re = new RegExp(`(^<!-- factory:auto ${name} -->\\n)([\\s\\S]*?)(^<!-- /factory:auto -->$)`, 'm');
   return re.test(text) ? text.replace(re, (_, a, _b, c) => `${a}${lines.join('\n')}\n${c}`) : text;
 }
 const block = (text, name) => {
-  const m = new RegExp(`<!-- factory:auto ${name} -->\\n([\\s\\S]*?)<!-- /factory:auto -->`).exec(text || '');
+  const m = new RegExp(`^<!-- factory:auto ${name} -->\\n([\\s\\S]*?)^<!-- /factory:auto -->$`, 'm').exec(text || '');
   return m ? m[1] : null;
 };
+// One line of brief text from anything an agent or the repo wrote: no newlines, no markers, no headings.
+const oneLine = (v, n = 300) => String(v || '').replace(/<!--|-->/g, ' ').replace(/\s+/g, ' ').replace(/^#+\s*/, '').trim().slice(0, n);
 
-// The CLI's own refreshes are not logged (they only restate the repo); distill's edits are.
-function write(root, text) {
-  writeText(file(root), text.endsWith('\n') ? text : `${text}\n`);
+// read-modify-write under a short lock, written whole (temp file, then rename)
+function update(root, fn) {
+  const f = file(root);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  return require('./job').withLock(`${f}.lock`, () => {
+    const before = read(root);
+    const after = fn(before);
+    if (typeof after === 'string' && after !== before) {
+      const tmp = `${f}.${process.pid}.tmp`;
+      writeText(tmp, after.endsWith('\n') ? after : `${after}\n`);
+      fs.renameSync(tmp, f);
+    }
+    return after;
+  }, { waitMs: 10000, staleMs: 30000, what: 'the project brief' });
 }
+
 
 // Created once (the first job), from detection. Returns { file, created }.
 function ensure(root, policy) {
   if (exists(file(root))) return { file: file(root), created: false };
-  write(root, initial(root, policy || require('./policy').load(root)));
+  update(root, (t) => t || initial(root, policy || require('./policy').load(root)));
   return { file: file(root), created: true };
 }
 
 // The CLI's blocks, from the repo and .factory/ as they are now.
 function refresh(root, policy) {
   ensure(root, policy);
-  const before = read(root) || '';
-  let t = before;
-  t = setBlock(t, 'modules', modules(root));
-  t = setBlock(t, 'commands', commands(root, policy || require('./policy').load(root)));
-  t = setBlock(t, 'environment', environment(root));
-  t = setBlock(t, 'adrs', adrs(root));
-  t = setBlock(t, 'lessons', lessons(root));
-  if (t !== before) write(root, t);
-  return { file: file(root), changed: t !== before };
+  const blocks = { modules: modules(root), commands: commands(root, policy || require('./policy').load(root)), environment: environment(root), adrs: adrs(root), lessons: lessons(root) };
+  let changed = false;
+  update(root, (before) => {
+    let t = before || '';
+    for (const [k, v] of Object.entries(blocks)) t = setBlock(t, k, v.map((l) => l.replace(/<!--|-->/g, ' ')));
+    changed = t !== before;
+    return t;
+  });
+  return { file: file(root), changed };
 }
 
-// The first ground step's codebase findings (cited claims) fill "What ground found" once.
+// Each job's ground step replaces "What ground found" with its own codebase findings (cited
+// claims, one line each): the latest job's view of the code, never a stale one.
 function noteGround(root, state, topics) {
   try {
     ensure(root, state.policy);
-    const t = read(root) || '';
-    const cur = block(t, 'ground');
-    if (cur === null || cur.trim() !== GROUND_EMPTY) return false;
-    const claims = (topics || []).filter((x) => ['codebase', 'interfaces'].includes(x.topic)).flatMap((x) => (x.claims || []).filter((c) => c.source && c.source !== 'UNVERIFIED').map((c) => `- ${String(c.claim).slice(0, 200)} (\`${String(c.source).slice(0, 120)}\`)`)).slice(0, 12);
+    const claims = (topics || []).filter((x) => ['codebase', 'interfaces'].includes(x.topic)).flatMap((x) => (x.claims || []).filter((c) => c.source && c.source !== 'UNVERIFIED').map((c) => `- ${oneLine(c.claim, 200)} (\`${oneLine(c.source, 120).replace(/`/g, "'")}\`)`)).slice(0, 8);
     if (!claims.length) return false;
-    write(root, setBlock(t, 'ground', [`- From ${state.id}'s ground step (${nowIso().slice(0, 10)}):`, ...claims]));
-    return true;
+    let done = false;
+    update(root, (t) => {
+      if (block(t || '', 'ground') === null) return t; // its markers were removed: the user's now
+      done = true;
+      return setBlock(t, 'ground', [`- From ${state.id}'s ground step (${nowIso().slice(0, 10)}):`, ...claims]);
+    });
+    return done;
   } catch {
     return false; // the brief is a convenience: never fail a record over it
   }
 }
 
-// Distill's proposed diff: [{ section, add: [line…], remove: [line…] }]. Applied by the CLI to
-// the editable sections, outside the auto blocks; an unknown section or a line that is not there
-// is refused, never guessed. Returns { applied, refused }.
-function applyEdits(root, edits, { job } = {}) {
-  const out = { applied: [], refused: [] };
+// Distill's proposed diff: [{ section, add: [line…], remove: [line…] }], checked and stored as a
+// proposal for the user, never applied here. Only the editable sections; added lines are one line
+// each (no markers, no headings), at most MAX_ADDS per proposal; a removal must be a line an
+// earlier accepted proposal added (distill never removes the user's lines). Returns
+// { id, edits, refused }; id is null when nothing was left to propose.
+function loadProposals(root) {
+  const d = readJson(proposalsFile(root), null) || {};
+  return { version: 1, proposals: Array.isArray(d.proposals) ? d.proposals : [], added: Array.isArray(d.added) ? d.added : [] };
+}
+
+function propose(root, edits, { job, why } = {}) {
+  const out = { id: null, edits: [], refused: [] };
   if (!Array.isArray(edits) || !edits.length) return out;
-  ensure(root);
-  let lines = (read(root) || '').split('\n');
+  const doc = loadProposals(root);
+  let adds = 0;
+  for (const e of edits.slice(0, 20)) {
+    const section = String((e && e.section) || '');
+    if (!EDITABLE.includes(section)) {
+      out.refused.push({ section, why: `not an editable section (${EDITABLE.join(', ')})` });
+      continue;
+    }
+    const add = [];
+    for (const raw of Array.isArray(e.add) ? e.add : []) {
+      const a0 = String(raw || '');
+      if (/[\r\n]/.test(a0.trim()) || /<!--|-->/.test(a0) || /^\s*#/.test(a0)) {
+        out.refused.push({ section, add: oneLine(a0, 120), why: 'one plain line only: no newlines, markers or headings' });
+        continue;
+      }
+      const l = oneLine(a0);
+      if (!l) continue;
+      if (adds >= MAX_ADDS) {
+        out.refused.push({ section, add: l.slice(0, 120), why: `at most ${MAX_ADDS} added lines per distill` });
+        continue;
+      }
+      adds += 1;
+      add.push(/^[-*] /.test(l) ? l : `- ${l}`);
+    }
+    const remove = [];
+    for (const raw of Array.isArray(e.remove) ? e.remove : []) {
+      const r = oneLine(raw);
+      if (!r) continue;
+      if (!doc.added.some((x) => x.section === section && x.line === r)) out.refused.push({ section, remove: r.slice(0, 120), why: 'distill removes only lines an accepted proposal added, never yours' });
+      else remove.push(r);
+    }
+    if (add.length || remove.length) out.edits.push({ section, ...(add.length ? { add } : {}), ...(remove.length ? { remove } : {}) });
+  }
+  if (!out.edits.length) return out;
+  out.id = `P${doc.proposals.length + 1}`;
+  doc.proposals.push({ id: out.id, status: 'proposed', job: job || null, edits: out.edits, why: oneLine(why, 300) || null, created_at: nowIso() });
+  writeJson(proposalsFile(root), doc);
+  try {
+    require('./events').append(root, { event: 'project_brief_proposed', job: job || null, proposal: out.id, edits: out.edits.length, refused: out.refused.length });
+  } catch {
+    /* logged best-effort */
+  }
+  return out;
+}
+
+function proposals(root, { status = null } = {}) {
+  return loadProposals(root).proposals.filter((p) => !status || p.status === status);
+}
+
+// The user's reply: apply an accepted proposal (human-only, like accepting a lesson), or reject it.
+function decide(root, { id, accept, reason, channel }) {
+  const human = require('./human');
+  human.requireHumanChannel(channel);
+  const doc = loadProposals(root);
+  const p = doc.proposals.find((x) => x.id === String(id || '').toUpperCase());
+  if (!p) fail(`Project brief proposal ${id} not found`, 'bad_input');
+  if (p.status !== 'proposed') fail(`Project brief proposal ${p.id} is already ${p.status}`, 'bad_input');
+  human.confirmTyped(channel, p.id, `${accept ? 'accept' : 'reject'} it`);
+  let applied = [];
+  if (accept) {
+    ensure(root);
+    update(root, (t) => {
+      const r = applyTo(t || '', p.edits, doc.added);
+      applied = r.applied;
+      return r.text;
+    });
+    for (const x of applied) {
+      if (x.add) doc.added.push({ section: x.section, line: x.add, from: p.id });
+      if (x.remove) doc.added = doc.added.filter((y) => !(y.section === x.section && y.line === x.remove));
+    }
+  }
+  p.status = accept ? 'accepted' : 'rejected';
+  p.decided_at = nowIso();
+  p.reason = reason || '';
+  writeJson(proposalsFile(root), doc);
+  try {
+    require('./events').append(root, { event: 'project_brief_updated', job: p.job, proposal: p.id, status: p.status, applied: applied.slice(0, 20) });
+  } catch {
+    /* logged best-effort */
+  }
+  return { proposal: p, applied, message: `Project brief proposal ${p.id} ${p.status}.${accept ? ` ${applied.length} line change(s) in ${rel(root, file(root))}; every later agent brief carries them.` : ''}` };
+}
+
+// Apply edits to the brief's text: editable sections only, outside the CLI's blocks, removals only
+// of lines distill added (`added`), each section capped at MAX_SECTION_LINES.
+function applyTo(text, edits, added) {
+  let lines = text.split('\n');
+  const applied = [];
   const bounds = (name) => {
     const i = lines.findIndex((l) => l.trim() === `## ${name}`);
     if (i < 0) return null;
@@ -256,63 +377,73 @@ function applyEdits(root, edits, { job } = {}) {
     if (j < 0) j = lines.length;
     return [i, j];
   };
-  // the CLI's lines (an auto block, its markers included)
   const inAuto = (i) => {
     let auto = false;
     for (let k = 0; k <= i; k++) {
-      if (/^<!-- factory:auto /.test(lines[k])) auto = true;
+      if (/^<!-- factory:auto [\w-]+ -->$/.test(lines[k])) auto = true;
       if (k === i) return auto;
-      if (/^<!-- \/factory:auto -->/.test(lines[k])) auto = false;
+      if (/^<!-- \/factory:auto -->$/.test(lines[k])) auto = false;
     }
     return auto;
   };
-  const clean = (s) => String(s || '').replace(/\r?\n/g, ' ').trim().slice(0, 400);
-  for (const e of edits.slice(0, 20)) {
-    const section = String((e && e.section) || '');
-    if (!EDITABLE.includes(section)) {
-      out.refused.push({ section, why: `not an editable section (${EDITABLE.join(', ')})` });
-      continue;
-    }
-    if (!bounds(section)) lines.push('', `## ${section}`);
-    for (const r of (Array.isArray(e.remove) ? e.remove : []).map(clean).filter(Boolean)) {
-      const [i, j] = bounds(section);
+  for (const e of edits) {
+    if (!EDITABLE.includes(e.section)) continue;
+    if (!bounds(e.section)) lines.push('', `## ${e.section}`);
+    for (const r of e.remove || []) {
+      if (!added.some((x) => x.section === e.section && x.line === r)) continue;
+      const [i, j] = bounds(e.section);
       const k = lines.findIndex((l, n) => n > i && n < j && l.trim() === r && !inAuto(n));
-      if (k < 0) out.refused.push({ section, remove: r, why: 'no such line outside the CLI\'s blocks' });
-      else {
+      if (k >= 0) {
         lines.splice(k, 1);
-        out.applied.push({ section, remove: r });
+        applied.push({ section: e.section, remove: r });
       }
     }
-    for (const a0 of (Array.isArray(e.add) ? e.add : []).map(clean).filter(Boolean)) {
-      const a = /^[-*] /.test(a0) ? a0 : `- ${a0}`;
-      const [i, j] = bounds(section);
+    for (const a of e.add || []) {
+      const [i, j] = bounds(e.section);
       if (lines.slice(i + 1, j).some((l) => l.trim() === a)) continue;
+      if (lines.slice(i + 1, j).filter((l) => /^[-*] /.test(l)).length >= MAX_SECTION_LINES) continue;
       let at = j;
-      while (at > i + 1 && !lines[at - 1].trim()) at -= 1; // before the blank lines that end the section
+      while (at > i + 1 && !lines[at - 1].trim()) at -= 1;
       lines.splice(at, 0, a);
-      out.applied.push({ section, add: a });
+      applied.push({ section: e.section, add: a });
     }
   }
-  if (out.applied.length) {
-    // the Conventions placeholder goes once a convention is added
-    if (out.applied.some((x) => x.section === 'Conventions' && x.add)) lines = lines.filter((l) => !l.startsWith('- (none recorded yet: distill proposes them'));
-    writeText(file(root), lines.join('\n'));
-    try {
-      require('./events').append(root, { event: 'project_brief_updated', job: job || null, applied: out.applied.slice(0, 20), refused: out.refused.slice(0, 20) });
-    } catch {
-      /* logged best-effort */
-    }
-  }
-  return out;
+  if (applied.some((x) => x.section === 'Conventions' && x.add)) lines = lines.filter((l) => !l.startsWith('- (none recorded yet: distill proposes them'));
+  return { text: lines.join('\n'), applied };
 }
 
-// What an agent brief carries: the brief without comments, trimmed, with where the rest is.
+// What an agent brief carries: each section within its budget (BUDGET), most important first,
+// without comments, and where the full brief is. A section over its budget keeps its first lines
+// and says how many it left out. The brief is data about the project, not instructions: the
+// factory's rules and the agent's role win (wfargs frames it so).
 function forBrief(root, max = BRIEF_CHARS) {
   const t = read(root);
   if (!t) return null;
-  const body = t.replace(/<!--[\s\S]*?-->\n?/g, '').replace(/\n{3,}/g, '\n\n').replace(/^# Project brief\s*\n/, '').trim();
-  if (!body) return null;
-  return body.length > max ? `${body.slice(0, max).replace(/\n[^\n]*$/, '')}\n… (trimmed; the full brief: ${rel(root, file(root))})` : body;
+  const body = t.replace(/<!--[\s\S]*?-->\n?/g, '').replace(/^# Project brief\s*\n/, '');
+  const parts = body.split(/^## /m).slice(1).map((chunk) => {
+    const nl = chunk.indexOf('\n');
+    return { name: (nl < 0 ? chunk : chunk.slice(0, nl)).trim(), lines: (nl < 0 ? '' : chunk.slice(nl + 1)).split('\n').filter((l) => l.trim()) };
+  }).filter((p) => p.lines.length);
+  if (!parts.length) return null;
+  const total = Object.values(BUDGET).reduce((a, b) => a + b, 0);
+  const scale = Math.min(1, max / total);
+  let trimmed = false;
+  const out = parts.map((p) => {
+    const cap = Math.max(80, Math.round((BUDGET[p.name] || 300) * scale));
+    const kept = [];
+    let n = 0;
+    for (const l of p.lines) {
+      if (n + l.length + 1 > cap && kept.length) break;
+      kept.push(l.length > cap ? `${l.slice(0, cap - 1)}…` : l);
+      n += l.length + 1;
+    }
+    if (kept.length < p.lines.length) {
+      trimmed = true;
+      kept.push(`- … ${p.lines.length - kept.length} more line(s) in the full brief`);
+    }
+    return `## ${p.name}\n${kept.join('\n')}`;
+  });
+  return `${out.join('\n\n')}${trimmed ? `\n\n(trimmed; the full brief: ${rel(root, file(root))})` : ''}`;
 }
 
-module.exports = { file, read, ensure, refresh, noteGround, applyEdits, forBrief, SECTIONS, EDITABLE, BRIEF_CHARS };
+module.exports = { file, read, ensure, refresh, noteGround, propose, proposals, decide, applyTo, forBrief, proposalsFile, SECTIONS, EDITABLE, BRIEF_CHARS, BUDGET, MAX_ADDS };
