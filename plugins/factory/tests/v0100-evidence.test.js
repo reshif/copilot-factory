@@ -379,7 +379,7 @@ test('plan probe: lint (fixed ports, sleep, background) and a dry-run of every v
   ] }));
   const r = F.cli(root, ['plan', 'probe']);
   assert.equal(r.ok, false);
-  assert.deepEqual(r.commands.map((c) => [c.task, c.class]), [['T1', 'fails_as_expected'], ['T1', 'missing_binary'], ['T2', 'fails_as_expected']]);
+  assert.deepEqual(r.commands.map((c) => [c.task, c.class]), [['T1', 'fails_as_expected'], ['T1', 'missing_binary'], ['T2', 'lint_skipped']]);
   assert.ok(r.problems.some((p) => /no-such-tool --check` cannot run[\s\S]*not found/.test(p)), r.problems.join('\n'));
   assert.ok(r.problems.some((p) => /fixed port 5999/.test(p)) && r.problems.some((p) => /\(sleep\)/.test(p)));
   assert.equal(F.sh(root, 'git worktree list').split('\n').filter((l) => /_probe-/.test(l)).length, 0, 'the scratch worktree is gone');
@@ -409,6 +409,12 @@ test('plan probe: greenfield needs a bootstrap task first (setup waits for it); 
   plan([{ ...T1, bootstrap: true }, { ...T2, depends_on: ['T1'] }]);
   r = F.cli(root, ['plan', 'probe']);
   assert.equal(r.ok, true, r.problems.join('\n'));
+  assert.equal(r.mode, 'lint', 'an unconfirmed environment that installs from the network: lint only');
+  assert.equal(r.setup.status, 'not_run');
+  fs.mkdirSync(path.join(root, '.factory'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { plan_probe: 'full' } }));
+  r = F.cli(root, ['plan', 'probe']);
+  assert.equal(r.mode, 'full');
   assert.equal(r.setup.status, 'deferred');
   plan([{ ...T1, bootstrap: true, depends_on: ['T2'] }, T2]);
   assert.match(F.cli(root, ['plan', 'validate']).errors.join('\n'), /bootstrap task T1 must come first/);
@@ -416,6 +422,38 @@ test('plan probe: greenfield needs a bootstrap task first (setup waits for it); 
   plan([{ ...T1, bootstrap: true }, { ...T2, depends_on: ['T1'] }]);
   const src = fs.readFileSync(path.join(F.PLUGIN, 'workflows', 'realize.js'), 'utf8');
   assert.match(src, /factory\.prepare && !st\[id\]\.prepared && !T\[id\]\.bootstrap/);
+});
+
+test('M2: plan probe hardening: no tokens, FACTORY_RUNNER set, no tty, survivors killed and reported, output redacted, lint-flagged commands not run, stale scratch worktrees swept', (t) => {
+  const root = F.makeRepo(t);
+  const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'feature', '--risk', 'medium']).job;
+  const marker = path.join(root, '..', `m2-ran-${process.pid}`);
+  t.after(() => fs.rmSync(marker, { force: true }));
+  const show = `node -e "console.log('tok='+(process.env.GH_TOKEN||'none')+' aws='+(process.env.AWS_SECRET_ACCESS_KEY||'none')+' runner='+process.env.FACTORY_RUNNER+' agent='+process.env.AI_AGENT+' tty='+Boolean(process.stdin.isTTY)); console.log('leak '+'gh'+'p_abcdefghijklmnopqrstuvwxyz0123 pass'+'word=hun'+'ter22'); process.exit(1)"`;
+  const escape = `node -e "require('child_process').spawn('sleep',['60'],{detached:true,stdio:'ignore'}).unref()"; exit 1`;
+  fs.writeFileSync(path.join(F.jobDir(root, J), 'plan.json'), JSON.stringify({ tasks: [
+    { id: 'T1', objective: 'a', allowed_paths: ['src/add.js'], criteria_ids: ['AC-1'], verify_commands: [show, escape] },
+    { id: 'T2', objective: 'b', allowed_paths: ['src/b.js'], criteria_ids: ['AC-1'], verify_commands: [`touch ${marker} && sleep 1`] },
+  ] }));
+  const stale = path.join(root, '.factory', 'worktrees', `_probe-${J}-999999`);
+  fs.mkdirSync(stale, { recursive: true });
+  const r = F.cli(root, ['plan', 'probe'], { env: { GH_TOKEN: 'ghs_supersecretvalue123456', AWS_SECRET_ACCESS_KEY: 'awsSecretValue987' } });
+  assert.equal(r.mode, 'full');
+  const [a, b, c] = r.commands;
+  assert.match(a.tail, /tok=none aws=none runner=1 agent=factory-probe tty=false/, a.tail);
+  assert.doesNotMatch(a.tail, /ghp_abcdefghijklmnop|hunter22/, 'redacted');
+  assert.equal(b.class, 'escaped', JSON.stringify(b));
+  assert.ok(r.problems.some((p) => /left 1 process\(es\) running[\s\S]*sleep 60/.test(p)), r.problems.join('\n'));
+  assert.equal(c.class, 'lint_skipped');
+  assert.equal(fs.existsSync(marker), false, 'a lint-flagged command is never run');
+  assert.equal(fs.existsSync(stale), false, 'a dead probe\'s scratch worktree is swept');
+  const onDisk = fs.readFileSync(core('probe').FILE(root, J), 'utf8');
+  assert.doesNotMatch(onDisk, /ghp_abcdefghijklmnop|hunter22|supersecretvalue|awsSecretValue/);
+  // a lint-only probe (policy) runs nothing at all
+  fs.writeFileSync(path.join(root, '.factory', 'policy.json'), JSON.stringify({ decompose: { plan_probe: 'lint' } }));
+  const l = F.cli(root, ['plan', 'probe']);
+  assert.equal(l.mode, 'lint');
+  assert.deepEqual([...new Set(l.commands.map((x) => x.class))], ['not_run']);
 });
 
 test('decompose: probe problems go back to the planner with the raw output until they stop shrinking; the plan critique runs with the probe as evidence', async () => {

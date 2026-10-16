@@ -225,9 +225,22 @@ function processEnv(e, v, base = process.env) {
 
 // ---------------------------------------------------------------- running it
 
+// The plan probe (cli/core/probe.js) runs setup with an allowlisted environment (no tokens or
+// credentials) and no terminal: withBaseEnv sets that base for the commands run inside fn.
+let BASE_ENV = null;
+function withBaseEnv(base, fn) {
+  const prev = BASE_ENV;
+  BASE_ENV = base;
+  try {
+    return fn();
+  } finally {
+    BASE_ENV = prev;
+  }
+}
+
 function sh(cmd, cwd, timeoutSec, extraEnv = {}) {
   const started = Date.now();
-  const r = spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', timeout: timeoutSec * 1000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, CI: process.env.CI || '1', FACTORY_ENV_SETUP: '1', ...extraEnv } });
+  const r = spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', timeout: timeoutSec * 1000, maxBuffer: 64 * 1024 * 1024, ...(BASE_ENV ? { stdio: ['ignore', 'pipe', 'pipe'] } : {}), env: { ...(BASE_ENV || process.env), CI: process.env.CI || '1', FACTORY_ENV_SETUP: '1', ...extraEnv } });
   const out = `${r.stdout || ''}${r.stderr ? `\n${r.stderr}` : ''}`;
   return { code: r.status === null ? -1 : r.status, timed_out: Boolean(r.error && r.error.code === 'ETIMEDOUT'), ms: Date.now() - started, output: out.length > 2000 ? `…${out.slice(-2000)}` : out };
 }
@@ -550,4 +563,4 @@ function notice(root) {
   };
 }
 
-module.exports = { gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };
+module.exports = { withBaseEnv, gateProposal, needsConfirmation, fullHash, essence, isNone, JOB_PROPOSED, teardown, servicesDown, load, loadSafe, detect, proposal, problems, show, propose, confirm, check, ensure, wrap, preamble, processEnv, vars, expand, notice, cacheKey, short, FILE, PROPOSED };

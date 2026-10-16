@@ -34,8 +34,117 @@ const cmdOf = (c) => (typeof c === 'string' ? c : c && c.cmd);
 const LINT = [
   { rule: 'fixed_port', re: /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d{2,5})\b|--port[= ](\d{2,5})\b|\bPORT=(\d{2,5})\b|\s-p\s+(\d{2,5}):/, message: (m) => `uses the fixed port ${m.slice(1).find(Boolean)}: tasks run in parallel worktrees and collide on it; let the test pick a free port (port 0) or take it from the environment` },
   { rule: 'sleep', re: /(^|[;&|(\s])sleep\s+\d/, message: () => 'waits with sleep: a race on a slow machine and wasted time on a fast one; wait on a readiness check (a health URL, a log line, a retry loop with a deadline)' },
-  { rule: 'background', re: /(^|[^&>|])&(\s*$|\s+[^&])/, message: () => 'starts a background process (&) that nothing stops: start and stop it inside the test, or use the environment\'s services' },
+  { rule: 'background', re: /(^|[^&>|])&(\s*$|\s+[^&])|\b(setsid|nohup|disown|daemonize|start-stop-daemon)\b|\bdocker\s+(run|compose\s+up)\b[^|;&]*\s-d\b|\b(screen|tmux)\b[^|;&]*\s-d/, message: () => 'starts a background process (&, setsid, nohup, docker -d …) that nothing stops: start and stop it inside the test, or use the environment\'s services' },
 ];
+
+// ---------------------------------------------------------------- what a dry-run may see
+
+// The environment a dry-run gets: an allowlist, never the user's tokens or credentials, marked as
+// an agent's (every human-only verb refuses it, a pty included), tagged so survivors can be found.
+const KEEP = /^(PATH|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|SHELL|USER|LOGNAME|PWD|COLUMNS|LINES)$/;
+const PROXY = /^(https?_proxy|HTTPS?_PROXY|no_proxy|NO_PROXY|ALL_PROXY|all_proxy|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|REQUESTS_CA_BUNDLE|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|npm_config_registry)$/;
+const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|_KEY$|^KEY$|APIKEY|API_KEY|CREDENTIAL|^AWS_|^GH_|^GITHUB_|^SSH_|^GPG_|^COPILOT_|^NPM_TOKEN|^AZURE_|^GOOGLE_|^GCP_|COOKIE|SESSION)/i;
+function probeEnv(root, probeId, extra = {}) {
+  let allowProxy = false;
+  try {
+    allowProxy = ((require('./policy').load(root) || {}).decompose || {}).probe_proxy === true;
+  } catch {
+    allowProxy = false;
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(process.env)) if (KEEP.test(k) || (allowProxy && PROXY.test(k))) out[k] = v;
+  // what the environment declares (its env block, the probe's own dirs) is kept, except a value
+  // carrying one of the user's secrets (a declared `TOKEN: $GH_TOKEN`)
+  const secrets = Object.entries(process.env).filter(([k, v]) => SECRET_NAME.test(k) && v && v.length >= 6).map(([, v]) => v);
+  for (const [k, v] of Object.entries(extra)) if (!secrets.some((x) => String(v).includes(x))) out[k] = v;
+  return { ...out, CI: '1', FACTORY_PROBE: '1', FACTORY_PROBE_ID: probeId, FACTORY_RUNNER: '1', AI_AGENT: 'factory-probe', PYTHONDONTWRITEBYTECODE: '1' };
+}
+
+// Secrets out of anything the probe records or shows (probe.json, the gate, God Eye's input):
+// well-known token shapes, key=value pairs that name a secret, and the values of the user's own
+// secret-looking environment variables.
+function redact(text) {
+  let t = String(text || '');
+  for (const [k, v] of Object.entries(process.env)) if (SECRET_NAME.test(k) && v && v.length >= 6) t = t.split(v).join(`[redacted ${k}]`);
+  return t
+    .replace(/\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,})\b/g, '[redacted]')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[redacted private key]')
+    .replace(/\b([A-Za-z_]*(token|secret|password|passwd|api[_-]?key)[A-Za-z_]*)\s*[=:]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=[redacted]');
+}
+
+// Processes a dry-run left behind (a new session escapes the timeout's group kill): found by the
+// probe's tag in their environment (Linux /proc), killed, reported.
+function survivors(probeId) {
+  const out = [];
+  let pids = [];
+  try {
+    pids = fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x));
+  } catch {
+    return out;
+  }
+  for (const pid of pids) {
+    if (Number(pid) === process.pid) continue;
+    let env = '';
+    try {
+      env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!env.includes(`FACTORY_PROBE_ID=${probeId}\0`) && !env.endsWith(`FACTORY_PROBE_ID=${probeId}`)) continue;
+    let cmd = '';
+    try {
+      cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
+    } catch {
+      cmd = '';
+    }
+    try {
+      process.kill(Number(pid), 'SIGKILL');
+    } catch {
+      /* gone */
+    }
+    out.push({ pid: Number(pid), cmd: redact(cmd).slice(0, 200) });
+  }
+  return out;
+}
+
+// Scratch worktrees an earlier probe left (it was killed before its cleanup ran).
+function sweep(root, keep = null) {
+  const dir = path.join(root, '.factory', 'worktrees');
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((n) => /^_probe-/.test(n));
+  } catch {
+    return [];
+  }
+  const removed = [];
+  for (const n of names) {
+    const wt = path.join(dir, n);
+    if (keep && wt === keep) continue;
+    const pid = Number((/-(\d+)$/.exec(n) || [])[1]);
+    let alive = false;
+    try {
+      if (pid && pid !== process.pid) {
+        process.kill(pid, 0);
+        alive = true;
+      }
+    } catch {
+      alive = false;
+    }
+    if (alive) continue;
+    git.run(root, ['worktree', 'remove', '--force', wt], { allowFail: true });
+    try {
+      fs.rmSync(wt, { recursive: true, force: true });
+    } catch {
+      /* gone */
+    }
+    removed.push(n);
+  }
+  if (removed.length) git.run(root, ['worktree', 'prune'], { allowFail: true });
+  return removed;
+}
+
+// Does this environment's setup fetch code from the network (and so run code nobody approved)?
+const NETWORK_SETUP = /pip3? install|poetry install|uv (sync|pip)|npm (ci|install|i)\b|pnpm (install|i)\b|yarn\b|go (mod download|get|install)|cargo (build|fetch|install)|bundle install|gem install|curl |wget |docker (pull|build|compose (pull|build|up))|invoke build|apt(-get)? install|brew install/;
 
 function lintCommand(cmd) {
   const out = [];
@@ -102,10 +211,20 @@ const hasTimeout = (() => {
 
 // One command, bounded: GNU timeout signals the whole process group (servers and sleeps a
 // command started included); without it, spawnSync's own cap.
-function runBounded(cmd, cwd, capSec, env = {}) {
+const hasSetsid = (() => {
+  let v = null;
+  return () => {
+    if (v === null) v = spawnSync('bash', ['-c', 'command -v setsid'], { encoding: 'utf8' }).status === 0;
+    return v;
+  };
+})();
+// `env` is the whole environment (probeEnv). No stdin, no controlling terminal (its own session).
+function runBounded(cmd, cwd, capSec, env) {
   const started = Date.now();
-  const opts = { cwd, encoding: 'utf8', timeout: (capSec + 15) * 1000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, CI: process.env.CI || '1', FACTORY_PROBE: '1', PYTHONDONTWRITEBYTECODE: '1', ...env } };
-  const r = hasTimeout() ? spawnSync('timeout', ['-k', '5', String(capSec), 'bash', '-lc', cmd], opts) : spawnSync('bash', ['-lc', cmd], { ...opts, timeout: capSec * 1000 });
+  const opts = { cwd, encoding: 'utf8', timeout: (capSec + 15) * 1000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env };
+  const inner = hasTimeout() ? ['timeout', '-k', '5', String(capSec), 'bash', '-c', cmd] : ['bash', '-c', cmd];
+  const argv = hasSetsid() ? ['setsid', '--wait', ...inner] : inner;
+  const r = spawnSync(argv[0], argv.slice(1), hasTimeout() ? opts : { ...opts, timeout: capSec * 1000 });
   const output = `${r.stdout || ''}${r.stderr ? `\n${r.stderr}` : ''}`;
   return { code: r.status === null ? -1 : r.status, timed_out: Boolean(r.error && r.error.code === 'ETIMEDOUT') || r.status === 124 || r.signal === 'SIGTERM' || r.signal === 'SIGKILL', ms: Date.now() - started, cap: capSec, output: output.length > 4000 ? `…${output.slice(-4000)}` : output };
 }
@@ -136,6 +255,26 @@ function settings(state) {
 // Is the probe on for this job? policy decompose.plan_probe (the live .factory/policy.json wins,
 // then the job's snapshot; default on), and only when the job's recipe plans with the decompose
 // workflow and does not turn the probe off for it (`"plan_probe": false` on the step).
+// The probe's mode for this job: false (off), 'lint' (lint only, nothing runs) or 'full' (lint,
+// setup in the scratch worktree, and a dry-run of every command lint did not flag).
+// policy decompose.plan_probe: false | "lint" | "full" | "auto" (default, also true): "lint" while
+// the environment the gate binds is an unconfirmed proposal whose setup installs from the
+// network (it would run code nobody approved), "full" otherwise.
+function mode(root, state, ctx = null) {
+  if (!enabled(root, state, ctx)) return false;
+  let live = {};
+  try {
+    live = (require('./policy').load(root) || {}).decompose || {};
+  } catch {
+    live = {};
+  }
+  const snap = ((state && state.policy) || {}).decompose || {};
+  const flag = live.plan_probe !== undefined ? live.plan_probe : snap.plan_probe;
+  if (flag === 'lint' || flag === 'full') return flag;
+  const g = require('./environment').gateProposal(root, state.id);
+  return g.status === 'proposed' && NETWORK_SETUP.test(((g.env || {}).setup || []).join('\n')) ? 'lint' : 'full';
+}
+
 function enabled(root, state, ctx = null) {
   let live = {};
   try {
@@ -157,6 +296,9 @@ function run(root, { jobId } = {}) {
   const planMod = require('./plan');
   const state = job.resolve(root, jobId);
   if (!enabled(root, state)) return { job: state.id, ok: true, skipped: true, problems: [], commands: [], lint: [], message: 'The plan probe is off for this job (policy decompose.plan_probe, or its recipe).' };
+  const runMode = mode(root, state);
+  const probeId = require('crypto').randomBytes(8).toString('hex');
+  sweep(root);
   const jp = jobPaths(root, state.id);
   const plan = readJson(jp.plan, null);
   if (!plan || !Array.isArray(plan.tasks)) return { job: state.id, ok: false, problems: ['No plan.json to probe.'], commands: [], lint: [] };
@@ -188,7 +330,11 @@ function run(root, { jobId } = {}) {
   }
   const commands = [];
   let setup = { status: e ? 'pending' : 'none' };
-  if (green && boot.length) {
+  const flagged = new Set(lint.map((l) => `${l.task}\0${l.cmd}`));
+  if (runMode === 'lint') {
+    setup = { status: 'not_run', why: 'lint-only probe: the proposed environment installs from the network and is not confirmed yet (policy decompose.plan_probe "full" runs it)' };
+    for (const t of plan.tasks) for (const c of t.verify_commands || []) commands.push({ task: t.id, cmd: cmdOf(c), class: 'not_run', ok: true, why: 'lint only: not executed' });
+  } else if (green && boot.length) {
     setup = { status: 'deferred', why: `the environment is set up after ${boot[0].id} (bootstrap) writes its manifests` };
     for (const t of plan.tasks) for (const c of t.verify_commands || []) commands.push({ task: t.id, cmd: cmdOf(c), class: 'deferred', ok: true, why: 'dry-run after the bootstrap task (greenfield)' });
   } else {
@@ -203,10 +349,11 @@ function run(root, { jobId } = {}) {
         if (e) {
           const { evidence: _e, notes: _n, source: _s, ...runEnv } = e;
           // the probe's budget bounds setup too
-          E = envMod.ensure(root, null, { taskId: 'probe', wt, env: { ...runEnv, timeout_seconds: Math.min(runEnv.timeout_seconds || 1200, S.budget) } });
+          // setup runs with the same allowlisted environment (no tokens), no terminal
+          E = envMod.withBaseEnv(probeEnv(root, probeId), () => envMod.ensure(root, null, { taskId: 'probe', wt, env: { ...runEnv, timeout_seconds: Math.min(runEnv.timeout_seconds || 1200, S.budget) } }));
           if (!E.ok) {
-            setup = { status: 'broken', cmd: E.broken.cmd, code: E.broken.code, tail: String(E.broken.tail || '').slice(-800) };
-            problems.push(`The build environment does not set up: ${E.broken.reason.slice(0, 600)}. Fix environment.proposed.json (setup, env, services) so every worktree can build.`);
+            setup = { status: 'broken', cmd: E.broken.cmd, code: E.broken.code, tail: redact(String(E.broken.tail || '').slice(-800)) };
+            problems.push(`The build environment does not set up: ${redact(E.broken.reason.slice(0, 600))}. Fix environment.proposed.json (setup, env, services) so every worktree can build.`);
           } else setup = { status: 'ok', ran: (E.ran || []).map((x) => ({ cmd: x.cmd, code: x.code })), cached: Boolean(E.cached) };
         }
         if (!e || (E && E.ok)) {
@@ -215,7 +362,7 @@ function run(root, { jobId } = {}) {
           // which the check after the run reports)
           const box = path.join(wt, '.factory-probe');
           for (const d of ['home', 'tmp', 'cache']) fs.mkdirSync(path.join(box, d), { recursive: true });
-          const penv = { ...(E && E.env ? envMod.processEnv(E.env, E.vars) : {}), HOME: path.join(box, 'home'), TMPDIR: path.join(box, 'tmp'), TMP: path.join(box, 'tmp'), TEMP: path.join(box, 'tmp'), XDG_CACHE_HOME: path.join(box, 'cache'), npm_config_cache: path.join(box, 'cache', 'npm'), PIP_CACHE_DIR: path.join(box, 'cache', 'pip') };
+          const penv = probeEnv(root, probeId, { ...(E && E.env ? envMod.processEnv(E.env, E.vars) : {}), HOME: path.join(box, 'home'), TMPDIR: path.join(box, 'tmp'), TMP: path.join(box, 'tmp'), TEMP: path.join(box, 'tmp'), XDG_CACHE_HOME: path.join(box, 'cache'), npm_config_cache: path.join(box, 'cache', 'npm'), PIP_CACHE_DIR: path.join(box, 'cache', 'pip') });
           const before = rootStatus(root);
           for (const t of plan.tasks) {
             for (const c of t.verify_commands || []) {
@@ -224,10 +371,17 @@ function run(root, { jobId } = {}) {
                 commands.push({ task: t.id, cmd, class: 'skipped', ok: true, why: `the probe's time budget (${S.budget}s) ran out` });
                 continue;
               }
+              // a command lint flagged (a background process, a sleep, a fixed port) is not run
+              if (flagged.has(`${t.id}\0${cmd}`)) {
+                commands.push({ task: t.id, cmd, class: 'lint_skipped', ok: false, why: 'not run: lint flagged it (see the problems)' });
+                continue;
+              }
               const r = runBounded(E && E.env ? envMod.wrap(E.env, E.vars, cmd) : cmd, wt, S.perCommand, penv);
               const k = classify(r, plan);
-              commands.push({ task: t.id, cmd, code: r.code, ms: r.ms, class: k.class, ok: k.ok, why: k.why, tail: String(r.output || '').trim().split('\n').slice(-12).join('\n').slice(-1200) });
-              if (!k.ok) problems.push(`${t.id}: \`${cmd}\` cannot run in the build environment: ${k.why}. Output (tail): ${String(r.output || '').trim().split('\n').slice(-4).join(' | ').slice(-400)}`);
+              const left = survivors(probeId);
+              commands.push({ task: t.id, cmd, code: r.code, ms: r.ms, class: left.length ? 'escaped' : k.class, ok: k.ok && !left.length, why: left.length ? `left ${left.length} process(es) running after it ended (killed): ${left.map((x) => x.cmd).join('; ')}` : k.why, tail: redact(String(r.output || '').trim().split('\n').slice(-12).join('\n')).slice(-1200) });
+              if (left.length) problems.push(`${t.id}: \`${cmd}\` left ${left.length} process(es) running after it ended (the probe killed them): ${left.map((x) => x.cmd).join('; ')}. A verify command must stop everything it starts.`);
+              else if (!k.ok) problems.push(`${t.id}: \`${cmd}\` cannot run in the build environment: ${k.why}. Output (tail): ${redact(String(r.output || '').trim().split('\n').slice(-4).join(' | ')).slice(-400)}`);
               // undo what a command left behind (a cache, a db file) before the next one
               git.run(wt, ['checkout', '--', '.'], { allowFail: true });
             }
@@ -240,8 +394,9 @@ function run(root, { jobId } = {}) {
           if (e) {
             const { evidence: _e, notes: _n, source: _s, ...runEnv } = e;
             envMod.teardown(root, null, { taskId: 'probe', wt, env: runEnv });
-            if (runEnv.services && runEnv.services.down) spawnSync('bash', ['-lc', envMod.expand(runEnv.services.down, envMod.vars(root, null, 'probe', wt))], { cwd: root, timeout: 600000 });
+            if (runEnv.services && runEnv.services.down) spawnSync('bash', ['-lc', envMod.expand(runEnv.services.down, envMod.vars(root, null, 'probe', wt))], { cwd: root, timeout: Math.min(600, S.budget) * 1000, stdio: ['ignore', 'pipe', 'pipe'], env: probeEnv(root, probeId) });
           }
+          for (const x of survivors(probeId)) problems.push(`A process of the probe's setup or services was still running at the end and was killed: ${x.cmd}`);
         } catch {
           /* best effort */
         }
@@ -263,12 +418,13 @@ function run(root, { jobId } = {}) {
     environment: gate.hash,
     environment_name: (gate.env && gate.env.name) || null,
     greenfield: green,
+    mode: runMode,
     ok: problems.length === 0,
     ms: Date.now() - started,
     setup,
     lint,
     commands,
-    problems,
+    problems: problems.map(redact),
   });
   writeJson(FILE(root, state.id), doc);
   try {
@@ -309,4 +465,4 @@ function problemKey(p) {
   return sha256(stableStringify([...((p && p.problems) || [])].map((x) => String(x).replace(/Output \(tail\):.*$/, '')).sort()));
 }
 
-module.exports = { enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
+module.exports = { mode, probeEnv, redact, survivors, sweep, NETWORK_SETUP, enabled, run, current, classify, lintCommand, greenfield, planOwns, problemKey, FILE, LINT };
