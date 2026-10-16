@@ -7,13 +7,16 @@ This is the shipped implementation, on the GitHub Copilot CLI, of [`DESIGN-v2.md
 | Part | Role | Can write state? |
 |---|---|---|
 | **`factory` CLI** (`bin/factory`, `cli/`) | Decides the next step, validates everything, runs verify commands, writes state, ledger and decision log | **Only writer** |
-| **Driver skill** (`skills/start`) | Main Copilot session: runs `factory next`, executes what it says, talks to you | No (through the CLI only) |
+| **`factory drive`** (`cli/core/drive.js`) | The deterministic driver: a loop over `factory next` that runs workflows, CLI steps, ship, distill and checkable evidence as child `factory` commands; stops (typed, logged, notified) at gates, clarify turns, parks, degraded runs and done; never runs a human-only verb ([DRIVE.md](DRIVE.md)) | Through the CLI only |
+| **Driver skill** (`skills/start`) | Main Copilot session: launches `factory drive`, relays each stop and your replies, talks to you (it steps `factory next` itself only where drive can't run) | No (through the CLI only) |
 | **Workflows** (`workflows/*.js`) | Run by `factory run` in Node; fan agents out and in; return a result envelope | No (no fs, no shell) |
 | **Agents** (`agents/*.agent.md`) | One role each, each a separate `copilot -p --agent factory:<role>` process; propose; builders commit only on their task branch | No: the guard blocks state, and `factory record` re-checks what they produce |
 | **Hooks** (`hooks/`) | Guard every tool call; apply your replies; refuse to stop while the agent owes work | Your replies only, via the CLI |
 | **You** | Approve gates, merge, accept lessons, edit recipes/floors/policy | Through chat replies or your terminal |
 
 ## 2. The loop
+
+`factory drive` runs this loop; the start skill runs it by hand only where drive can't run. The drive stops at `gate`, clarify's `waiting_for_user`, ground's questions, `degraded`, `parked`, `wait`, `amend`, uncheckable `evidence` and `done` ([DRIVE.md](DRIVE.md)).
 
 ```text
 factory next ──▶ action

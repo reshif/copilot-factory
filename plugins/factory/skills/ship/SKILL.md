@@ -5,6 +5,9 @@ user-invocable: false
 ---
 # Ship
 
+Under `factory drive` the drive runs `factory ship` itself and stops at the merge (kind `wait`); its stop carries what `factory ship` printed under `ship`. Tell the user step 2 from it, then **stop**. The steps below are for stepping by hand.
+
+
 Floors and the CI re-verify floor are defined in the start skill's [glossary](../start/references/glossary.md).
 
 1. Run `factory ship`. It refuses unless every pre-ship floor is met (it lists the missing ones — then run `factory next`, which routes to the missing step).
@@ -17,5 +20,5 @@ Floors and the CI re-verify floor are defined in the start skill's [glossary](..
 
 After the merge:
 - GitHub: `factory next` runs `factory pr sync`, which records checks and the merge commit.
-- Local: once `factory next` shows the user's `merged <commit>` reply was applied, just continue the loop — `factory next` itself asks for `factory ci verify` (the CI re-verify floor) before distill; don't run it on your own.
+- Local: once the user's `merged <commit>` reply was applied (`last_reply`), continue with `factory drive` (or the loop) — the router itself asks for `factory ci verify` (the CI re-verify floor) before distill; don't run it on your own.
 - If `factory-gate` isn't set up in the repo, suggest the user run `factory ci install` themselves (it's human-only) and commit it on their base branch. Until then, after a GitHub merge, run `factory ci verify --commit <merge commit>` to re-verify locally, or the user can reply `waive ci_reverify <reason>`.

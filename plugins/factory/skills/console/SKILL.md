@@ -11,6 +11,8 @@ argument-hint: "[job id, e.g. J-0003 — optional, to open that job first]"
    - If `integrity` is `tampered`, say plainly that some records fail their seal and suggest `/factory:why <job id>` for that job.
    - If `integrity` is `not_checked`, say this machine has no factory key, so seals were not checked.
 
+Above the board, **Waiting on you** lists the same items as `factory inbox` (gates, clarify turns, parks, merges across jobs, each with the chat reply and the terminal command) and where `factory drive` is.
+
 If the user asks what the page shows or how to use it (views, filters, keys), read [references/ui-tour.md](references/ui-tour.md) and answer from it.
 
 ## Watching live

@@ -484,7 +484,11 @@ async function drive(root, { jobId, maxSteps = MAX_STEPS, detached = false, quie
       ...(n && n.last_reply ? { last_reply: n.last_reply } : {}),
       ...(n && n.environment ? { environment: n.environment } : {}),
       ...(n && n.autopilot ? { autopilot: n.autopilot } : {}),
+      ...(ctx.shipped && ['wait', 'done'].includes(kind) ? { ship: ctx.shipped } : {}),
       steps: ctx.steps,
+      // the `factory next` output at this stop, whole: the gate, park and clarify skills read
+      // their fields from it (no second factory next needed)
+      ...(n && n.action ? { next: n } : {}),
     };
     ctx.stopped = rec;
     const title = `Factory ${ctx.job}: ${STOP_TITLE[kind] || kind}`;

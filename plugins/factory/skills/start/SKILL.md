@@ -5,7 +5,7 @@ argument-hint: "[what you want built or fixed, or leave empty to continue the cu
 ---
 # Software Factory: driver
 
-You run the factory loop. **The `factory` CLI decides every next step; you carry it out.** The CLI, its run lock and the hooks enforce the order, so your job is to follow the loop below faithfully and keep the user informed. Terms like recipe, floor, gate, God Eye and envelope are defined in [references/glossary.md](references/glossary.md); read it when one is unclear.
+You run the factory. **The `factory` CLI decides every next step, and `factory drive` carries the mechanical ones out.** Your job is to start it, relay each stop to the user faithfully, and pass their replies back. Terms like recipe, floor, gate, God Eye and envelope are defined in [references/glossary.md](references/glossary.md); read it when one is unclear.
 
 ## The `factory` command
 Run it as `factory …`; every command prints JSON. If `factory` is not found, use the absolute command the session-start note gave you (`node "<plugin root>/bin/factory"`) and tell the user once that `node "<plugin root>/bin/factory" shim`, run in their own terminal, puts `factory` on their PATH and ends the permission prompts (or they can `/add-dir <plugin root>`).
@@ -16,33 +16,36 @@ Run `factory doctor`. If it says not initialized, run `factory init` and tell th
 ## New request or continue?
 A request with no active job for it → follow the **intake** skill to create the job. Otherwise continue the current job.
 
-## The loop
-1. Run `factory next` (once per finished step or user reply; re-running it is harmless but don't poll). Before acting, show what it reports in these fields, once each, in one line: `last_reply` (what happened to the user's last reply), `notice` (chat replies aren't reaching the factory; show it as it is), `autopilot` (Copilot Autopilot was detected: show its warning and **stop**; the factory runs in interactive mode, where gates wait for the user), and `environment` (no build environment is confirmed for this repository: show its `message` once; at a gate the gate skill shows the proposal in full; never confirm it yourself).
-2. Do what `action` says:
+## The loop: `factory drive`
+`factory drive` steps the job for you: every workflow (`factory run`, clarify's agent stages included), every CLI step, ship, distill and the evidence records it can check. It stops only where a person is needed, and sends the user a desktop notification at each stop. You don't step `factory next` yourself, and you never run `factory next` or `factory run` while a drive runs (they answer `driving` or refuse with `drive_in_progress`).
 
-| action | what you do | then |
+1. Tell the user in one line that the factory is working (it can take minutes, 30 or more for a big build). Run `factory drive` once, in the foreground, with your shell tool's longest timeout. Its progress goes to stderr; when it stops it prints one JSON stop: `kind`, a one-line `summary`, and `next` (the `factory next` output at that stop, which the gate, park and clarify skills read their fields from).
+   If your shell hands control back before it ends, or your host can't keep a long command running, start it with `factory drive --detach` instead, then run `factory drive status --wait 540` (again while its `status` is `running`). Its `last` is the stop. `drive_in_progress` means one is already running: wait for it the same way.
+2. Show what the stop carries, once each, in one line: `last_reply` (what happened to the user's last reply), `notice` (chat replies aren't reaching the factory; show it as it is), `autopilot` (Copilot Autopilot was detected: show its warning and **stop**; gates must wait for the user), and `environment` (no build environment is confirmed: show its `message` once; at a gate the gate skill shows the proposal in full; never confirm it yourself).
+3. Act on `kind`:
+
+| kind | what you do | then |
 |---|---|---|
-| `skill` | Follow the factory skill named in `skill` (clarify, ship, distill, amend). For clarify, `clarify` carries the stage, and either the command to run (`run`) or the `screen` to show while it waits on the user (`waiting_for_user`). | step 1 |
-| `workflow` | Run it (see *Running a workflow*). | step 1 |
-| `cli` | Run exactly the `command` shown. If it fails, show the message. | step 1 |
-| `evidence` | For each AC in `acs`, check the job worktree shows it, then run its line in `commands` with the real file path (relative to the repo root). If it isn't there, tell the user and **stop**. | step 1 |
-| `gate` | Follow the **gate** skill. | **stop** |
-| `wait` | If it lists `ready` slice jobs (epic), run `factory use <first ready id>` and loop on that job; otherwise say in one line what is awaited (`reason`). | **stop** unless a slice is ready |
-| `parked` | Follow the **park** skill. | **stop** |
-| `done` | Summarise in two or three lines what shipped (`factory why --format md` if useful). | **stop** |
+| `gate` | Follow the **gate** skill with the stop's `next`. | **stop** |
+| `clarify` | Show the stop's `screen` **as it is** (the **clarify** skill says how to record what the user says). | **stop** |
+| `questions` | Ask exactly the `questions` as one numbered list. Record each answer with `factory answer --question "…" --answer "…"`. | **stop**, then `factory drive` |
+| `degraded` | Ask the user: re-run, or go on without the missing angle. To go on, write the angle under Assumptions in the contract and run the workflow from `next` with `--accept-degraded`. | **stop**, then `factory drive` |
+| `parked` | Follow the **park** skill: `next.reason`, `park.kind` and `park.next` (the suggested step). | **stop** |
+| `wait` | Say in one line what is awaited (`summary`; a merge: the **ship** skill's commands). | **stop** |
+| `amend` | Follow the **amend** skill. | `factory drive` |
+| `evidence` | For each AC in `acs`, check the job worktree shows it, then run its line in `commands` with the real path. If it isn't there, tell the user and **stop**. | `factory drive` |
+| `skill` | Follow the factory skill named in `next.skill`. | `factory drive` |
+| `done` | Summarise in two or three lines what shipped (`factory why --format md` if useful); list any `lessons` the user can accept. | **stop** |
+| `copilot_unavailable` | Tell the user the fix (`not_found`: install the Copilot CLI or put it on PATH; `not_signed_in`: `copilot login`). | **stop** |
+| `transient` | Copilot kept failing with rate limits or network errors: tell the user to wait a few minutes, then run `factory drive` again. | **stop** |
+| `error`, `interrupted`, `limit` | Show the `summary`. `factory why --format md` explains the last decisions. | **stop** |
 
-3. Between steps, one short line to the user is plenty; don't narrate JSON. End your turn only at a **stop** above or after asking the questions a result gave you: the stop hook sends you back otherwise.
+4. After the user replies to a stop (the reply hook applies `approve`, `ok`, `resume`, …), run `factory drive` again: it continues from where the job is, and its stop's `last_reply` says whether the reply was applied. Between steps, one short line to the user is plenty; don't narrate JSON. End your turn only at a **stop** above: the stop hook sends you back otherwise.
 
-## Running a workflow
-1. Tell the user in one line that it is running; it takes minutes (30 or more for a big build). Then run, once, in the foreground with your shell tool's longest timeout, only the fields `factory next` gave you (leave out null ones):
-   `factory run <workflow> [--config <config>] [--mode <mode>] [--scope <scope>] [--lanes a,b] [--threat-model | --no-threat-model] [--plan-critique]`
-   It starts each agent as its own Copilot process, checks their JSON, records the result and prints a summary starting with `status: <x>`. It is the only way a workflow runs: briefs, envelopes and agent fan-out all happen inside it. If your shell hands control back while it runs, keep reading that same command's output. A second `factory run` for the job is refused with `run_in_progress` (the job's run lock), so wait for the first one's output instead.
-2. Act on the top-level `status` line and the fields after it, never on `workflow.status` (the workflow's own summary):
-   - `ok` / `fix` / `retry` / `revise` / `stale` / `error` / `park` → step 1; `factory next` handles retries, fix rounds and parking.
-   - A **clarify** run (`factory run clarify`) with any status → the **clarify** skill says what to show and do (`continue` just loops back to step 1).
-   - `needs_user` with `questions` from **ground** → ask exactly those questions as one numbered list and **stop**; record each answer with `factory answer --question "…" --answer "…"`, then step 1.
-   - `degraded` (any other workflow) → ask the user: re-run, or go on without the missing angle. **Stop.** To go on, write the angle under Assumptions in the contract and run the same command with `--accept-degraded`.
-3. If `factory run` refuses instead of printing a result, read `code`: `not_waiting_for_workflow` → step 1 and follow it; `run_in_progress` → tell the user it is still running and wait for that run's output; `copilot_unavailable` → tell the user the fix (`not_found`: install the Copilot CLI or put it on PATH; `not_signed_in`: `copilot login`) and **stop**; anything else → show the message, then step 1.
+**`factory inbox`** lists everything waiting on the user across jobs, each with the chat reply and the terminal command. Suggest it when the user asks what is waiting, or when several jobs are open.
+
+## Without `factory drive`
+Use this only when `factory drive` can't run here (a host that can neither keep a long command running nor background one). Run `factory next` once per finished step or user reply, show its `last_reply`, `notice`, `autopilot` and `environment` as in step 2, and do what `action` says: `skill` (the factory skill named), `workflow` (run `factory run <workflow>` with only the fields `factory next` gave: `--config`, `--mode`, `--scope`, `--lanes a,b`, `--threat-model` or `--no-threat-model`, `--plan-critique`; act on its top-level `status` line: `needs_user` from ground means ask its questions, `degraded` means ask as above, anything else goes back to `factory next`), `cli` (run exactly the `command`), `evidence` (as above), `gate` (the gate skill, **stop**), `wait` (say what is awaited, **stop**; with `ready` slice jobs run `factory use <first ready id>` and loop on it), `parked` (the park skill, **stop**), `done` (summarise, **stop**). A second `factory run` for the job is refused with `run_in_progress`: wait for the first one's output.
 
 ## Rules
 - Human gates are the user's. Their replies in chat are applied by the reply hook before you act: `approve`, `deny <what must change>`, `resume`, `cancel job`, `abandon job`, `waive <floor> <reason>`, `merged <commit>`, `confirm AC-n`, `accept lesson Ln`, `proceed` (go on from a clarify cap with the gaps shown), `confirm environment <hash|none>`, `dismiss finding <id> <why>`, `accept finding <id> <why>`, and while clarify waits, `ok` or a structured sheet answer (`ok, but 2 b`, `fact 1: …`). You relay them; the guard refuses the human-only commands from you. `factory next` (`last_reply`) shows what was applied.
@@ -50,4 +53,5 @@ A request with no active job for it → follow the **intake** skill to create th
 - During clarify you never research on your own and never answer for the user: record what they said, verbatim, with `factory clarify reply "…"` (or `factory clarify redirect "…"` when they change direction), show `factory clarify status` when they ask what is open, and run `factory next`. The user may edit `contract.md` themselves; the CLI checks it again.
 - If the user says the requirements changed, follow the **amend** skill.
 - The job is done when `factory next` says `done` (the stop hook checks the floors).
-- If the user asks why something happened, `factory why --format md` explains every routing decision.
+- If the user asks why something happened, `factory why --format md` explains every routing decision and every park (its kind and suggested next step).
+- Never answer a gate, a clarify turn or a park for the user, and never type their replies (`approve`, `ok`, `resume`, `proceed`) yourself: `factory drive` stops there so the user can answer.
