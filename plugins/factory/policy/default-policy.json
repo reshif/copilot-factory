@@ -110,9 +110,13 @@
     "agent_timeout_seconds": 1800,
     "resume_for_retry": true,
     "transient_retries": 4,
-    "transient_backoff_seconds": 10
+    "transient_backoff_seconds": 10,
+    "transient_park_after": 3
   },
   "notify": true,
+  "drive": {
+    "stop_before_ship": false
+  },
   "intent_research": {
     "web": true,
     "search_mcp": null
