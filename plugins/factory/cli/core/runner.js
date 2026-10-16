@@ -74,6 +74,10 @@ function settings(root, state) {
     modelIds: (pol.agents || {}).model_ids || {},
     timeoutSec: num(cp.agent_timeout_seconds, 1800),
     resumeForRetry: cp.resume_for_retry !== false,
+    // P3.3 transient failures (rate limit, 5xx, network): re-spawned with backoff and jitter
+    // inside the same agent call, so no workflow attempt is spent on them.
+    transientRetries: typeof cp.transient_retries === 'number' && cp.transient_retries >= 0 ? Math.floor(cp.transient_retries) : 4,
+    transientBackoffSec: typeof cp.transient_backoff_seconds === 'number' && cp.transient_backoff_seconds >= 0 ? cp.transient_backoff_seconds : 10,
     copilot: cp,
     flags: (Array.isArray(cp.flags) ? cp.flags : []).map((f) => String(f).replace(/\{plugin_root\}/g, PLUGIN_ROOT).replace(/\{root\}/g, root)),
   };
@@ -565,6 +569,21 @@ function unavailable(r) {
   return null;
 }
 
+// A transient failure: Copilot (or the service behind it) said rate limit, a 5xx, or the network
+// dropped. Read from stderr and plain (non-JSONL) stdout lines only: an agent's own tool output
+// (a test that prints ECONNREFUSED) is inside the JSONL records and never counts. Returns the
+// matching text, or null.
+const TRANSIENT_TEXT = /\b429\b|too many requests|rate[ -]?limit(?:ed|ing)?\b|\b(?:HTTP|status(?: code)?)[ :/]*5\d\d\b|\b50[0234] (?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)\b|\b(?:ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ENETUNREACH)\b|socket hang up|fetch failed|network (?:error|is unreachable)/i;
+function transient(r) {
+  if (!r || r.code === 0 || r.timedOut) return null;
+  const plain = String(r.stdout || '').split('\n').filter((l) => l.trim() && l.trim()[0] !== '{').join('\n');
+  const m = TRANSIENT_TEXT.exec(`${r.stderr || ''}\n${plain}`);
+  return m ? m[0] : null;
+}
+// The wait before transient retry n (0-based): exponential from the base, capped at 2 min,
+// with ±50% jitter so parallel agents don't retry in step.
+const transientWaitMs = (n, baseSec) => Math.round(Math.min(120, baseSec * 2 ** n) * 1000 * (0.5 + Math.random()));
+
 // The time-up turn a builder gets in its own session when its time cap is reached.
 const GRACE_TURN = (sec) => [
   `Time is up for this attempt. You have about ${sec} seconds left: do not start anything new.`,
@@ -765,7 +784,25 @@ async function runAgent(ctx, prompt, opts) {
         throw new Error(`Copilot CLI unavailable: ${ctx.unavailable.detail}`);
       }
       if (!retryTurn) events.append(ctx.root, { event: 'agent_start', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, config: ctx.brief.config || null, ...wf, agent_type: agentType, label: o.label || role, role, model: o.model || null, model_id: model, session_id: sessionId, ...(resumedFrom ? { resumed_session: true } : {}), pid: process.pid });
-      const r = await spawnCopilot(S.bin, copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm }), { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()) });
+      const argv = copilotArgs({ prompt: deliverable(ctx, text, `${o.label || role}${retryTurn ? (capSecOverride ? ' (time up)' : ' (format)') : ''}`, retryTurn && !capSecOverride), agentType, model, cwd, root: ctx.root, sessionId, flags: S.flags, permissions: perm });
+      let r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()) });
+      // Transient (429, 5xx, network): back off with jitter and spawn the same turn again; the
+      // workflow never sees the failure, so no attempt is spent. After transient_retries the run
+      // stops (nothing recorded) with copilot_transient: the service is down, not the agent wrong.
+      for (let n = 0, why = transient(r); why; why = transient(r), n += 1) {
+        const waitMs = transientWaitMs(n, S.transientBackoffSec);
+        const room = capSecOverride ? null : deadline ? deadline - Date.now() : null;
+        if (n >= S.transientRetries || (room !== null && room < waitMs + 5000)) {
+          if (!ctx.unavailable) ctx.unavailable = { why: 'transient', detail: `${why} (after ${n} retr${n === 1 ? 'y' : 'ies'}): ${errorLine(r.stderr) || why}`, label: o.label || role };
+          closeUnavailable(ctx.unavailable.detail, r);
+          throw new Error(`Copilot CLI transient failure: ${ctx.unavailable.detail}`);
+        }
+        transientRetries += 1;
+        events.append(ctx.root, { event: 'agent_transient', run_id: runId, job: ctx.brief.job, decision_id: ctx.decisionId, workflow: ctx.brief.workflow, label: o.label || role, retry: n + 1, wait_ms: waitMs, match: String(why).slice(0, 80), exit: r.code });
+        ctx.say(`${o.label || role}: transient failure (${why}); retry ${n + 1} in ${(waitMs / 1000).toFixed(1)}s (no attempt spent)`);
+        await new Promise((res) => setTimeout(res, waitMs));
+        r = await spawnCopilot(S.bin, argv, { cwd, env, timeoutSec: capSecOverride || Math.max(1, left()) });
+      }
       const u = unavailable(r);
       if (u) {
         closeUnavailable(u.detail, r); // closes this agent's agent_start
@@ -776,6 +813,7 @@ async function runAgent(ctx, prompt, opts) {
     };
     const full = `${prompt}${replyBlock(o.schema)}`;
     const startedAt = new Date().toISOString();
+    let transientRetries = 0;
     const runs = [await spawnOnce(full)];
     let result = null;
     let errors = [];
@@ -837,6 +875,7 @@ async function runAgent(ctx, prompt, opts) {
       ...(sessionId ? { session_id: sessionId } : {}),
       ...(resumedFrom ? { resumed_session: true } : {}),
       ...(grace ? { grace_turn: true } : {}),
+      ...(transientRetries ? { transient_retries: transientRetries } : {}),
       ...(wip ? { wip_commit: wip } : {}),
       ...(capSec ? { time_cap_sec: capSec } : {}),
       ...(result && typeof result.verdict === 'string' ? { verdict: result.verdict } : {}), // god-eye's approve/revise, for telemetry
@@ -1050,6 +1089,9 @@ function acquireLock(root, state, info) {
 
 function copilotUnavailable(ctx) {
   const u = ctx.unavailable;
+  if (u.why === 'transient') {
+    fail(`Copilot kept failing with a rate limit, a server error or a network error (${u.detail}), so the run stopped after its retries. Nothing was recorded and no attempt was spent. Wait a few minutes, then run factory next (or factory drive) again.`, 'copilot_transient', { why: u.why, detail: u.detail, copilot: ctx.settings.bin, agents: ctx.runs });
+  }
   const how = u.why === 'not_signed_in'
     ? 'The Copilot CLI is not signed in. Run `copilot` in a terminal and use /login (or set COPILOT_GITHUB_TOKEN), then run factory next.'
     : `The Copilot CLI could not be started as "${ctx.settings.bin}". Install it (npm install -g @github/copilot, or see the Copilot CLI docs), make sure it is on PATH or set COPILOT_BIN, then run factory next.`;
@@ -1318,6 +1360,7 @@ function summaryText(r) {
   if (r.next_gate) L.push(`next_gate: ${r.next_gate}`);
   if (r.restatement) L.push(`restatement: ${one(r.restatement)}`);
   if (r.park_reason) L.push(`park_reason: ${r.park_reason}`);
+  if (r.park && r.park.kind) L.push(`park: ${r.park.kind} — next: ${r.park.next}`);
   if (Array.isArray(r.questions) && r.questions.length) {
     L.push(`questions (${r.questions.length})${r.intent_first ? ' — intent first: other questions wait' : ''}:`);
     r.questions.forEach((q, i) => {
@@ -1367,4 +1410,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { run, distillWrite, runAgent, workflowApi, cliChild, killAgents, HEARTBEAT_SEC, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, lockFileAlive, WORKFLOWS };
+module.exports = { transient, run, distillWrite, runAgent, workflowApi, cliChild, killAgents, HEARTBEAT_SEC, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, lockFileAlive, WORKFLOWS };
