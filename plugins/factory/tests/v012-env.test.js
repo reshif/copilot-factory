@@ -289,6 +289,40 @@ test('guard (012D MJ-1): cd tracking fails CLOSED: any cd it cannot follow makes
   assert.equal(G.checkBash(root, 'ln -s ../tests/fixtures src/fixtures', null, o), null, 'a link inside its own worktree');
 });
 
+test('release gate: 45 ordinary builder commands are all allowed, scratch output at the worktree root included (ruff.txt, listing.txt, patch.diff); a tracked file outside the allowed paths stays refused', (t) => {
+  const root = F.makeRepo(t);
+  F.write(root, 'scripts/run.sh', 'echo hi\n');
+  F.write(root, 'src/app.py', 'x=1\n');
+  F.write(root, 'tests/test_app.py', 'def test(): pass\n');
+  F.write(root, 'package.json', '{}\n');
+  F.write(root, 'Makefile', 'all:\n\techo\n');
+  F.write(root, 'docs/guide.md', 'tracked\n');
+  F.sh(root, 'git add -A && git commit -qm s');
+  fs.mkdirSync(path.join(root, '.factory', 'jobs', 'J-0001'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.factory', 'jobs', 'J-0001', 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', allowed_paths: ['src/**', 'tests/**', 'scripts/**', 'package.json', 'Makefile', 'pyproject.toml', 'README.md', 'go.mod', 'cmd/**'] }] }));
+  const wt = worktree(root, 'J-0001-T1');
+  const G = require('../hooks/guard-rules');
+  const o = { agent: true, job: 'J-0001', cwd: wt };
+  const cmds = [
+    'python -m pytest -q', 'python -m pytest -q > test-output.txt 2>&1', 'pytest -x tests/test_app.py | tee pytest.log',
+    'echo "x=2" > src/app.py', 'cat >> src/app.py <<EOF\ny=3\nEOF', "sed -i 's/x=1/x=2/' src/app.py", 'printf "a\\n" > tests/data.txt',
+    'mkdir -p src/pkg/sub && touch src/pkg/__init__.py', 'chmod +x scripts/run.sh && ./scripts/run.sh', 'cp src/app.py src/app_old.py', 'mv src/app_old.py src/legacy.py', 'rm src/legacy.py',
+    'rm -rf build dist *.egg-info', 'rm -rf .pytest_cache __pycache__', 'find . -name __pycache__ -exec rm -rf {} +', 'rm -rf .factory-venv && python3 -m venv .factory-venv',
+    'pip install -e .', 'pip install -e ".[dev]" > pip.log', 'uv pip install pytest', 'uv sync', 'python -m build', 'ruff check src > ruff.txt; true',
+    'npm ci', 'npm install lodash', 'npm run build > build.log', 'npm test -- --reporter=dot', 'rm -rf node_modules && npm ci', 'npx tsc -p .',
+    'go build ./... && go test ./...', 'go mod tidy', 'mkdir -p cmd/tool && echo "package main" > cmd/tool/main.go',
+    'make', 'make test > make.log 2>&1', 'cd src && python -c "import app"', 'cd src && echo y > b.py', '(cd src && ls) > listing.txt',
+    'pushd tests && pytest -q; popd', 'git add src/app.py tests/test_app.py && git commit -qm wip', 'git diff > patch.diff', 'git status --short',
+    'touch README.md && echo docs >> README.md', 'echo x > /tmp/scratch.txt', 'mktemp -d', 'tar -czf dist/out.tgz src', 'cp -r src build/',
+  ];
+  assert.equal(cmds.length, 45);
+  for (const c of cmds) assert.equal(G.checkBash(root, c, null, o), null, `allowed: ${c}`);
+  // tracked files outside the allowed paths, protected paths and factory state stay refused
+  for (const c of ['echo x > docs/guide.md', 'rm docs/guide.md', 'echo x > .github/workflows/ci.yml', 'echo x > ../../state.json']) assert.ok(G.checkBash(root, c, null, o), `refused: ${c}`);
+  assert.match(G.checkWrite(root, path.join(wt, 'docs', 'guide.md'), core('policy').defaults(), { own: 'J-0001-T1' }), /outside T1's allowed paths/);
+  assert.equal(G.checkWrite(root, path.join(wt, 'notes.txt'), core('policy').defaults(), { own: 'J-0001-T1' }), null);
+});
+
 test('build output stays out of the commit: the factory\'s save of uncommitted work unstages new build output and logs; the builder and its time-up turn are told to add only their changed files (012D m-3)', (t) => {
   const root = F.makeRepo(t);
   const wt = worktree(root, 'J-0001-T1');
@@ -307,6 +341,11 @@ test('build output stays out of the commit: the factory\'s save of uncommitted w
   // nothing but build output: no empty commit
   fs.writeFileSync(path.join(wt, 'more.log'), 'log\n');
   assert.equal(require('../cli/core/runner')._commitWip(wt, 'T1', 'time up'), null);
+  // given the task's paths, scratch output outside them stays out too
+  fs.writeFileSync(path.join(wt, 'ruff.txt'), 'x\n');
+  fs.writeFileSync(path.join(wt, 'src', 'more.py'), 'y = 2\n');
+  assert.ok(require('../cli/core/runner')._commitWip(wt, 'T1', 'time up', ['src/**']));
+  assert.deepEqual(F.sh(wt, 'git show --name-only --format= HEAD').trim().split('\n'), ['src/more.py']);
   const md = fs.readFileSync(path.join(F.PLUGIN, 'agents', 'builder.agent.md'), 'utf8');
   assert.match(md, /never `git add -A`/);
   assert.doesNotMatch(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'runner.js'), 'utf8'), /`git add -A && git commit/);

@@ -632,7 +632,9 @@ function errorLine(stderr) {
 
 // Commit what a builder left uncommitted in its task worktree: "wip:" on the task branch, so a
 // timed-out or crashed attempt's work survives for the next attempt. Returns the commit or null.
-function commitWip(wt, label, why) {
+// `paths`: the task's allowed paths; a new file outside them (scratch output such as ruff.txt)
+// is left unstaged too, so the save never makes task verify fail its scope check.
+function commitWip(wt, label, why, paths = null) {
   const git = require('../lib/git');
   try {
     if (!exists(path.join(wt, '.git')) || !git.status(wt)) return null;
@@ -642,11 +644,24 @@ function commitWip(wt, label, why) {
     // out of the commit: the task's diff must stay within its allowed paths
     const { BUILD_OUTPUT } = require('../lib/paths');
     const added = git.run(wt, ['diff', '--cached', '--name-only', '--diff-filter=A', '-z'], { allowFail: true });
-    const drop = String(added.stdout || '').split('\0').filter((f) => f && BUILD_OUTPUT.test(f));
+    const { matchesAny } = require('../lib/glob');
+    const drop = String(added.stdout || '').split('\0').filter((f) => f && (BUILD_OUTPUT.test(f) || (Array.isArray(paths) && !matchesAny(f, paths))));
     for (let i = 0; i < drop.length; i += 200) git.run(wt, ['rm', '-q', '--cached', '--', ...drop.slice(i, i + 200)], { allowFail: true });
     if (!git.run(wt, ['diff', '--cached', '--quiet'], { allowFail: true }).code) return null;
     const r = git.run(wt, ['commit', '-q', '-m', `wip: ${label} (${why}; uncommitted work saved by factory run)`], { allowFail: true });
     return r.code === 0 ? git.revParse(wt, 'HEAD') : null;
+  } catch {
+    return null;
+  }
+}
+
+// The task's allowed paths for commitWip, or null when the plan cannot be read.
+function wipPaths(ctx, taskId) {
+  try {
+    const { readJson } = require('../lib/util');
+    const jp = require('../lib/paths').jobPaths(ctx.root, ctx.brief.job);
+    const task = ((readJson(jp.plan, null) || {}).tasks || []).find((x) => x.id === taskId);
+    return task ? require('./tasks').taskPaths(readJson(jp.state, null), task) : null;
   } catch {
     return null;
   }
@@ -984,7 +999,7 @@ async function runAgent(ctx, prompt, opts) {
     // branch, so the next attempt continues from it instead of losing it.
     let wip = null;
     if (taskId) {
-      if (rawOutcome !== 'ok' && typeof cwd === 'string') wip = commitWip(cwd, o.label || role, rawOutcome);
+      if (rawOutcome !== 'ok' && typeof cwd === 'string') wip = commitWip(cwd, o.label || role, rawOutcome, wipPaths(ctx, taskId));
       if (wip) ctx.note(`${o.label}: its uncommitted work was saved as ${wip.slice(0, 10)} (wip:) on the task branch`);
       try {
         result = require('./tasks').afterBuilder(ctx.root, ctx.brief.job, taskId, result, { startedAt: startedAt, label: o.label, sessionId, resumed: Boolean(resumedFrom), wip, outcome: rawOutcome });

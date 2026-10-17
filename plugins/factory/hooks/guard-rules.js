@@ -77,11 +77,10 @@ function taskScope(root, worktreeName) {
   return { paths: plan.tasks.flatMap((t) => [...(t.allowed_paths || []), ...granted(t.id)]), job: m[1], task: null };
 }
 
-// What a builder may write or remove in its worktree whatever its allowed paths (012C MJ-3): the
-// environment's own directories (the factory's exclude block, the sealed environment's ignore
-// list, .factory-venv, node_modules, *.egg-info), anything the repository ignores, and untracked
-// build output, caches and logs (build/, dist/, .pytest_cache/, *.log, test-output.txt …). None of
-// it is committed by the factory (commitWip unstages new build output), and task verify checks
+// What a builder may write or remove in its own worktree whatever its allowed paths (012C MJ-3,
+// release gate): anything not tracked (not in the index, not at HEAD): the environment's own
+// directories, build output, caches, logs and scratch files (ruff.txt, patch.diff …). None of
+// it is committed by the factory (commitWip unstages new files outside the allowed paths), and task verify checks
 // the diff against the allowed paths.
 const { BUILD_OUTPUT } = require('../cli/lib/paths');
 function buildArtifact(root, wtName, inner) {
@@ -94,8 +93,13 @@ function buildArtifact(root, wtName, inner) {
       return { status: 1, stdout: '' };
     }
   };
-  // a tracked file is source, whatever its name
+  // a tracked file (in the index or at HEAD) is source, whatever its name
   if (git(['ls-files', '--error-unmatch', '--', inner]).status === 0) return false;
+  if (git(['cat-file', '-e', `HEAD:${inner}`]).status === 0) return false;
+  // anything else is new and untracked: scratch output (ruff.txt, patch.diff, listing.txt),
+  // build output, caches and logs. Refusing it would park a task over a scratch file, and task
+  // verify's scope check already keeps such files out of the commit (release gate, false refusals).
+  if (git(['rev-parse', '--git-dir']).status === 0) return true;
   if (BUILD_OUTPUT.test(inner)) return true;
   // the environment's own patterns (the factory's block, the sealed environment's ignore list)
   try {
