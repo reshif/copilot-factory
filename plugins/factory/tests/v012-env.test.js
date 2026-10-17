@@ -43,13 +43,13 @@ const run = (r, wt, cmd, cwd = wt) => spawnSync('bash', ['-c', E.wrap(r.env, r.v
 
 // ------------------------------------------------------------------ fake installers (counting)
 
-// fake-install.sh <worktree> <count file> <packages…>: "downloads" a package into PIP_CACHE_DIR
+// fake-install.sh <worktree> <count file> <packages…>: "downloads" a package into UV_CACHE_DIR
 // (or a cache of the worktree's own when none is shared) only when it is not there, counting each
-// download, then "installs" it into the worktree's own .factory-venv.
+// download, then "installs" (copies) it into the worktree's own .factory-venv.
 const INSTALL = `#!/usr/bin/env bash
 set -euo pipefail
 wt="$1"; count="$2"; shift 2
-cache="\${PIP_CACHE_DIR:-$wt/.own-cache}"
+cache="\${UV_CACHE_DIR:-$wt/.own-cache}"
 mkdir -p "$cache" "$wt/.factory-venv/bin" "$wt/.factory-venv/site"
 for p in "$@"; do
   if [ ! -f "$cache/$p.whl" ]; then echo "download $p" >> "$count"; sleep 0.2; echo "$p" > "$cache/$p.whl"; fi
@@ -61,7 +61,7 @@ function kit(t) {
   const dir = T.mkdtemp('factory-fakeinst-', t);
   fs.writeFileSync(path.join(dir, 'fake-install.sh'), INSTALL, { mode: 0o755 });
   const count = path.join(dir, 'count');
-  const env = (cache = 'pip', extra = []) => ({
+  const env = (cache = 'uv', extra = []) => ({
     version: 2,
     name: 'fake-python',
     tool: 'fake',
@@ -101,12 +101,12 @@ test('shared cache: five worktrees each build their OWN environment, and each pa
     const wt = worktree(root, n);
     const r = E.ensure(root, { id: 'J-0001' }, { taskId: n === 'J-0001' ? null : n.split('-').pop(), wt });
     assert.equal(r.ok, true, JSON.stringify(r.broken));
-    assert.equal(r.cache.kind, 'pip');
+    assert.equal(r.cache.kind, 'uv');
     assert.deepEqual(fs.readdirSync(path.join(wt, '.factory-venv', 'site')).sort(), ['napalm', 'nautobot', 'netmiko'], `${n} has its own environment`);
     assert.equal(F.sh(wt, 'git status --porcelain'), '', `${n}: its environment is kept out of git status`);
   }
   assert.equal(K.downloads(), 3, '0.12: each package downloaded once, for five worktrees');
-  assert.ok(fs.existsSync(path.join(C.CACHE(root), 'pip', 'nautobot.whl')), 'the cache is under .factory/envcache');
+  assert.ok(fs.existsSync(path.join(C.CACHE(root), 'uv', 'nautobot.whl')), 'the cache is under .factory/envcache');
   // a second call in the same worktree is cached; a removed environment (git clean -fdx) is not (review M-6)
   const wt1 = path.join(root, '.factory', 'worktrees', 'J-0001-T1');
   assert.equal(E.ensure(root, { id: 'J-0001' }, { taskId: 'T1', wt: wt1 }).cached, true);
@@ -132,7 +132,7 @@ test('runs without your credentials (probe, proposal check, repair candidate) ge
   const r = E.withBaseEnv(base, () => E.ensure(root, null, { taskId: 'probe', wt, env: { ...K.env(), ignore: ['/proposal-wants-this/'] } }));
   assert.equal(r.ok, true, JSON.stringify(r.broken));
   assert.ok(fs.existsSync(path.join(wt, '.own-cache', 'nautobot.whl')), 'its own scratch cache');
-  assert.ok(!fs.existsSync(path.join(C.CACHE(root), 'pip')), 'the shared cache was not written');
+  assert.ok(!fs.existsSync(path.join(C.CACHE(root), 'uv')), 'the shared cache was not written');
   assert.equal(fs.existsSync(E.excludeReport(root).file) ? fs.readFileSync(E.excludeReport(root).file, 'utf8') : '', before, 'the exclude block is the sealed environment\'s only (review m-2)');
 });
 
@@ -166,7 +166,7 @@ test('one setup per worktree at a time: a lock that is never taken over while it
   assert.equal(E.ensure(root, null, { taskId: 'T1', wt }).cached, true);
 });
 
-test('the wheelhouse is integrity-checked (sealed sha256 per wheel); garbage collection keeps the newest N and shows sizes; agents may not run it', (t) => {
+test('the wheelhouse is integrity-checked (sealed sha256 per wheel); garbage collection keeps the newest N and shows sizes; agents may not run it, nor touch the caches in any form the guard reads', (t) => {
   const root = pyRepo(t);
   const mk = (key, wheels, at) => {
     const d = C.dirOf(root, key);
@@ -198,6 +198,14 @@ test('the wheelhouse is integrity-checked (sealed sha256 per wheel); garbage col
   // agents may not write the caches or the wheelhouse, from a shell or inline code
   const G = require('../hooks/guard-rules');
   for (const cmd of ['cp evil.whl .factory/wheelhouse/aaaa/', `python3 -c "open('.factory/envcache/pip/x','w').write('x')"`]) assert.ok(G.checkBash(root, cmd, null, { agent: true, job: 'J-0001' }), cmd);
+  // from a worktree: relative paths, cd, installer flags and cache variables, tar/rsync/find/mkdir/chmod, script files (012B M-1)
+  const wt = path.join(root, '.factory', 'worktrees', 'J-0001-T1');
+  fs.mkdirSync(path.join(wt, 'tools'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'tools', 'p.py'), `import pathlib\npathlib.Path('${root}/.factory/envcache/uv/x').write_text('x')\n`);
+  const ab = path.join(root, '.factory');
+  const refused = ['cp evil.whl ../../wheelhouse/abc/', 'cd ../../envcache && echo x > uv/f', 'echo x >> ../../jobs/J-0001/state.json', `UV_CACHE_DIR=${ab}/envcache/uv uv pip install ./evil`, `export UV_CACHE_DIR=${ab}/envcache/uv; uv pip install x`, `pip install --cache-dir ${ab}/envcache/pip x`, 'pip download -d ../../wheelhouse/abc x', 'npm cache add --cache ../../envcache/npm x', `npm_config_cache=${ab}/envcache/npm npm install`, `tar -xf x.tar -C ${ab}/envcache/pip`, `rsync -a x/ ${ab}/envcache/pip/`, `find ${ab}/envcache -delete`, `mkdir -p ${ab}/wheelhouse/zz`, `chmod -R 777 ${ab}/envcache`, `uv cache clean --cache-dir ${ab}/envcache/uv`, 'python3 tools/p.py'];
+  for (const cmd of refused) assert.ok(G.checkBash(root, cmd, null, { agent: true, job: 'J-0001', cwd: wt }), `refused: ${cmd}`);
+  for (const cmd of ['ls ../../envcache', `du -sh ${ab}/envcache`, 'pip install -e .', 'uv pip install six']) assert.equal(G.checkBash(root, cmd, null, { agent: true, job: 'J-0001', cwd: wt }), null, `allowed: ${cmd}`);
 });
 
 test('tool choice: one function, recorded with its reason; templates build each worktree\'s own .factory-venv / node_modules with the matching cache', (t) => {
@@ -291,16 +299,16 @@ test('doctor: a "build environment" section (tool and why, python3 -m venv with 
   assert.match(c('build environment').detail, /fake-python/);
   assert.match(c('build environment: tool').detail, /the sealed environment uses fake \(a fake installer that counts its downloads\); on this machine now the factory would choose venv/);
   assert.match(c('build environment: python3 -m venv').detail, /works \(scanned (just now|\d+ (min|h) ago); factory doctor --machine scans again\)/);
-  assert.match(c('build environment: cache').detail, /each worktree builds its own environment; its pip installs share .*envcache[\s\S]*pip \d+ (B|kB|MB)/);
+  assert.match(c('build environment: cache').detail, /each worktree builds its own environment; its uv installs share .*envcache \(files copied, never linked\)[\s\S]*uv \d+ (B|kB|MB)/);
   assert.match(c('build environment: your .venv').detail, /\.venv exists: the factory never creates, changes or deletes it[\s\S]*has a "\.venv\/" line/);
   assert.match(c('build environment: last check').detail, /none yet/);
   assert.ok(fs.existsSync(d.build_environment.guide));
   assert.ok(F.cli(root, ['doctor', '--machine']).checks.some((x) => x.name === 'machine: python tools'));
   const s = F.cli(root, ['env', 'status'], { env: { FACTORY_RUNNER: '1' } });
-  assert.deepEqual([s.tool.chosen, s.tool.cache], ['fake', 'pip']);
+  assert.deepEqual([s.tool.chosen, s.tool.cache], ['fake', 'uv']);
   assert.equal(s.worktrees[0].name, 'J-0001-T1');
   assert.deepEqual(s.worktrees[0].own_env, ['.factory-venv']);
-  assert.ok(s.cache.caches.some((x) => x.name === 'pip' && /\d/.test(x.size)));
+  assert.ok(s.cache.caches.some((x) => x.name === 'uv' && /\d/.test(x.size)));
   assert.equal(s.last_build.ok, true);
   assert.match(s.your_venv.note, /never creates, changes or deletes your \.venv/);
   assert.match(s.environment.schema, /own environment per worktree, shared package cache/);
@@ -340,7 +348,7 @@ test.after(() => {
   if (Object.keys(timings).length) fs.writeFileSync(path.join(require('os').tmpdir(), 'factory-v012-timings.json'), JSON.stringify(timings, null, 1));
 });
 
-test('REAL uv: a workspace member is imported from each worktree\'s OWN copy; the second worktree installs from the shared cache, much faster', { timeout: 600000 }, (t) => {
+test('REAL uv: a workspace member is imported from each worktree\'s OWN copy; the second worktree installs from the shared cache, faster; files are copied, so a write in one venv reaches no other venv and not the cache', { timeout: 600000 }, (t) => {
   if (skipUnless(t, 'uv', PYPI)) return;
   const root = F.makeRepo(t);
   F.write(root, 'pyproject.toml', '[project]\nname = "app"\nversion = "0.1.0"\nrequires-python = ">=3.9"\ndependencies = ["mylib", "six", "iniconfig", "packaging", "pluggy"]\n[tool.uv.sources]\nmylib = { workspace = true }\n[tool.uv.workspace]\nmembers = ["libs/*"]\n[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n[tool.hatch.build.targets.wheel]\npackages = ["app"]\n');
@@ -363,8 +371,19 @@ test('REAL uv: a workspace member is imported from each worktree\'s OWN copy; th
     assert.equal(F.sh(wt, 'git status --porcelain'), '');
   }
   timings.uv_workspace_ms = out;
+  // 012B B-1: copies, never hard links: a write in T1's venv changes neither T2, a new worktree nor the cache
+  const site = (wt) => path.join(wt, '.factory-venv', fs.readdirSync(path.join(wt, '.factory-venv', 'lib')).map((d) => path.join('lib', d, 'site-packages')).find((d) => fs.existsSync(path.join(wt, '.factory-venv', d, 'iniconfig'))), 'iniconfig', '__init__.py');
+  const w1 = path.join(root, '.factory', 'worktrees', 'J-0001-T1');
+  const w2 = path.join(root, '.factory', 'worktrees', 'J-0001-T2');
+  assert.equal(fs.statSync(site(w1)).nlink, 1, 'its own copy (one link)');
+  fs.appendFileSync(site(w1), '\nPOISON = "written by T1"\n');
+  const w3 = worktree(root, 'J-0002-T1');
+  const r3 = E.ensure(root, null, { taskId: 'T1', wt: w3 });
+  assert.equal(r3.ok, true);
+  for (const w of [w2, w3]) assert.doesNotMatch(fs.readFileSync(site(w), 'utf8'), /POISON/, `${path.basename(w)} is unaffected`);
+  assert.equal(spawnSync('grep', ['-rl', 'POISON', path.join(C.CACHE(root), 'uv')], { encoding: 'utf8' }).stdout, '', 'the cache is unaffected');
   t.diagnostic(`uv: first worktree ${out['J-0001-T1']} ms, second ${out['J-0001-T2']} ms`);
-  assert.ok(out['J-0001-T2'] < out['J-0001-T1'], 'the second worktree is faster (shared uv cache, hard links)');
+  assert.ok(out['J-0001-T2'] < out['J-0001-T1'], 'the second worktree is faster (the shared uv cache, copied)');
   assert.ok(fs.readdirSync(path.join(C.CACHE(root), 'uv')).length > 0, 'the uv cache is under .factory/envcache');
 });
 
@@ -394,7 +413,7 @@ test('REAL poetry: a path dependency (develop = true) is imported from each work
   assert.ok(fs.existsSync(path.join(C.CACHE(root), 'poetry')), 'the poetry cache is under .factory/envcache');
 });
 
-test('REAL pip: a setuptools_scm project builds in each worktree (.git is there); the second worktree installs from the hash-checked wheelhouse without the network, much faster; a killed install is rebuilt cleanly', { timeout: 900000 }, async (t) => {
+test('REAL pip: a setuptools_scm project builds in each worktree (.git is there); only the sealed environment\'s check builds the wheelhouse (from a fresh venv), tasks install from it offline, ci verify resolves fresh; a killed install is rebuilt cleanly', { timeout: 900000 }, async (t) => {
   if (skipUnless(t, 'python3', PYPI)) return;
   const root = F.makeRepo(t);
   F.write(root, 'pyproject.toml', '[project]\nname = "sapp"\ndynamic = ["version"]\ndependencies = ["six", "iniconfig", "packaging", "pluggy", "pygments"]\n[project.optional-dependencies]\ndev = ["pytest"]\n[build-system]\nrequires = ["setuptools>=64", "setuptools_scm>=8"]\nbuild-backend = "setuptools.build_meta"\n[tool.setuptools_scm]\n[tool.setuptools]\npackages = ["sapp"]\n');
@@ -404,22 +423,44 @@ test('REAL pip: a setuptools_scm project builds in each worktree (.git is there)
   const env = E.detect(root, { machine: MH.inventory({ venv: true }) });
   assert.deepEqual([env.tool, env.cache], ['venv', 'pip']);
   sealEnv(root, env);
+  // a task before any check: no wheelhouse is built from a task's venv (012B M-2)
+  const w0 = worktree(root, 'J-0001-T0');
+  const r0 = E.ensure(root, null, { taskId: 'T0', wt: w0 });
+  assert.equal(r0.ok, true, JSON.stringify(r0.broken));
+  assert.equal(r0.cache.wheelhouse_built, undefined);
+  assert.equal(C.wheelhouses(root).length, 0, 'a task worktree never builds the wheelhouse');
+  // the sealed environment's check builds it, from the fresh venv of its scratch worktree
+  const [ck, ckMs] = timed(() => F.cli(root, ['env', 'check']));
+  assert.equal(ck.ok, true, JSON.stringify(ck));
+  assert.equal(C.wheelhouses(root).length, 1);
   const out = {};
   for (const n of ['J-0001-T1', 'J-0001-T2']) {
     const wt = worktree(root, n, (w) => F.write(w, 'sapp/__init__.py', `WHO = "${n}"\n`));
     const [r, ms] = timed(() => E.ensure(root, null, { taskId: n, wt }));
     assert.equal(r.ok, true, JSON.stringify(r.broken));
     out[n] = { ms, cache: r.cache };
+    assert.equal(r.cache.offline, true, `${n} installed with no index, from the wheelhouse`);
     const py = run(r, wt, 'python -c "import sapp, importlib.metadata as m; print(sapp.WHO, m.version(\'sapp\'))" && pytest --version', T.mkdtemp('factory-cwd-', t));
     assert.equal(py.status, 0, py.stdout + py.stderr);
     assert.match(py.stdout, new RegExp(`^${n} 1\\.2\\.`), 'its own code, its scm version');
     assert.equal(F.sh(wt, 'git status --porcelain'), '');
   }
-  timings.pip_scm_ms = { first: out['J-0001-T1'].ms, second: out['J-0001-T2'].ms };
-  t.diagnostic(`pip: first worktree ${out['J-0001-T1'].ms} ms (and builds the wheelhouse), second ${out['J-0001-T2'].ms} ms offline`);
-  assert.match(out['J-0001-T1'].cache.wheelhouse_built, /^[0-9a-f]{16} \(\d+ wheels\)$/);
-  assert.equal(out['J-0001-T2'].cache.offline, true, 'the second worktree installed with no index, from the wheelhouse');
-  assert.ok(out['J-0001-T2'].ms < out['J-0001-T1'].ms * 0.8, JSON.stringify(timings.pip_scm_ms));
+  timings.pip_scm_ms = { env_check_with_wheelhouse: ckMs, task_from_index: r0.ms, task1_offline: out['J-0001-T1'].ms, task2_offline: out['J-0001-T2'].ms };
+  t.diagnostic(`pip: a task from the index ${r0.ms} ms; the env check (setup + wheelhouse) ${ckMs} ms; tasks offline ${out['J-0001-T1'].ms} / ${out['J-0001-T2'].ms} ms`);
+  assert.ok(out['J-0001-T2'].ms < r0.ms, JSON.stringify(timings.pip_scm_ms));
+  // an agent drifts its own venv: the wheelhouse is not touched (it is never built from a task)
+  const w1 = path.join(root, '.factory', 'worktrees', 'J-0001-T1');
+  const before = JSON.stringify(C.wheelhouses(root).map((w) => [w.key, w.wheels]));
+  assert.equal(spawnSync(path.join(w1, '.factory-venv', 'bin', 'python'), ['-m', 'pip', 'install', '-q', 'iniconfig==1.1.1'], { encoding: 'utf8' }).status, 0);
+  // (what its venv holds changed: the marker no longer counts, setup runs again in that worktree)
+  assert.equal(E.ensure(root, null, { taskId: 'T1', wt: w1 }).ok, true);
+  assert.equal(JSON.stringify(C.wheelhouses(root).map((w) => [w.key, w.wheels])), before);
+  // ci verify and the epic gate: a fresh resolution from the index (no wheelhouse, no shared cache)
+  const wc = worktree(root, 'J-0001-ci');
+  const rc = E.ensure(root, null, { taskId: 'ci', wt: wc, fresh: true });
+  assert.equal(rc.ok, true);
+  assert.deepEqual([rc.cache.fresh, rc.cache.offline], [true, false]);
+  assert.match(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'ship.js'), 'utf8'), /taskId: 'ci', wt, fresh: !/);
   // crash mid-build: the install is killed; the next ensure builds a complete environment
   const wt3 = worktree(root, 'J-0001-T3');
   const code = `const E = require(${JSON.stringify(path.join(F.PLUGIN, 'cli', 'core', 'environment.js'))}); E.ensure(${JSON.stringify(root)}, null, { taskId: 'T3', wt: ${JSON.stringify(wt3)} });`;
@@ -431,6 +472,60 @@ test('REAL pip: a setuptools_scm project builds in each worktree (.git is there)
   const r3 = E.ensure(root, null, { taskId: 'T3', wt: wt3 });
   assert.equal(r3.ok, true, JSON.stringify(r3.broken));
   assert.equal(run(r3, wt3, 'python -c "import sapp, six, pytest; print(sapp.WHO)"').stdout.trim(), 'root');
+});
+
+test('REAL pip: an incomplete wheelhouse (a requirement it lacks) is detected: the miss falls back from a clean venv, no later worktree tries offline, and the next env check rebuilds it', { timeout: 900000 }, (t) => {
+  if (skipUnless(t, 'python3', PYPI)) return;
+  const root = F.makeRepo(t);
+  // a 0.11-style setup whose nested requirements file is not in cache_key: a task can add a
+  // requirement without changing the key
+  F.write(root, 'requirements.txt', '-r requirements/base.txt\n');
+  F.write(root, 'requirements/base.txt', 'six\n');
+  F.sh(root, 'git rm -q -r src && git add -A && git commit -qm reqs');
+  const OLD = { version: 1, name: 'reqs', setup: ['python3 -m venv .venv', '.venv/bin/pip install -q --retries 5 --timeout 60 -r requirements.txt'], cache_key: ['requirements.txt'], env: { VIRTUAL_ENV: '{worktree}/.venv', PATH: '{worktree}/.venv/bin:$PATH' }, ignore: ['.venv/'], timeout_seconds: 600 };
+  sealEnv(root, E.upgradeOf(root, OLD).env);
+  assert.equal(F.cli(root, ['env', 'check']).ok, true);
+  const add = (w) => F.write(w, 'requirements/base.txt', 'six\niniconfig\n');
+  const w1 = worktree(root, 'J-0001-T1', add);
+  const r1 = E.ensure(root, null, { taskId: 'T1', wt: w1 });
+  assert.equal(r1.ok, true, JSON.stringify(r1.broken));
+  assert.equal(r1.cache.fallback, true, 'the offline attempt missed iniconfig, then the index');
+  assert.equal(run(r1, w1, 'python -c "import iniconfig, six"').status, 0);
+  const key = C.wheelhouses(root)[0].key;
+  assert.ok(fs.existsSync(path.join(C.WHEELS(root), `${key}.missed.json`)), 'the miss is recorded for the key');
+  const w2 = worktree(root, 'J-0001-T2', add);
+  const r2 = E.ensure(root, null, { taskId: 'T2', wt: w2 });
+  assert.equal(r2.ok, true);
+  assert.deepEqual([r2.cache.offline, r2.cache.fallback], [false, undefined], 'no second failed offline attempt');
+  assert.match(r2.cache.wheelhouse_skipped, /incomplete/);
+  // the next env check rebuilds it (from the base commit's declared inputs)
+  const ck = F.cli(root, ['env', 'check']);
+  assert.equal(ck.ok, true);
+  assert.ok(!fs.readdirSync(C.WHEELS(root)).some((n) => n.endsWith('.missed.json')), 'the miss is cleared by the rebuild');
+});
+
+test('REAL uv: a migrated 0.11 setup (`uv venv .venv`, not idempotent) survives an offline miss: the fallback starts from a clean venv', { timeout: 600000 }, (t) => {
+  if (skipUnless(t, 'uv', PYPI)) return;
+  const root = F.makeRepo(t);
+  F.write(root, 'requirements.txt', '-r requirements/base.txt\n');
+  F.write(root, 'requirements/base.txt', 'six\n');
+  F.sh(root, 'git rm -q -r src && git add -A && git commit -qm reqs');
+  const OLD = { version: 1, name: 'uv-reqs', setup: ['uv venv -q .venv', 'uv pip install -q --python .venv/bin/python -r requirements.txt'], cache_key: ['requirements.txt'], env: { VIRTUAL_ENV: '{worktree}/.venv', PATH: '{worktree}/.venv/bin:$PATH' }, ignore: ['.venv/'], timeout_seconds: 600 };
+  const up = E.upgradeOf(root, OLD).env;
+  assert.deepEqual(up.setup, OLD.setup, 'the setup is kept as sealed');
+  sealEnv(root, up);
+  const w1 = worktree(root, 'J-0001-T1');
+  assert.equal(E.ensure(root, null, { taskId: 'T1', wt: w1 }).ok, true);
+  const w2 = worktree(root, 'J-0001-T2', (w) => F.write(w, 'requirements/base.txt', 'six\niniconfig\n'));
+  const r2 = E.ensure(root, null, { taskId: 'T2', wt: w2 });
+  assert.equal(r2.ok, true, JSON.stringify(r2.broken));
+  assert.equal(r2.cache.fallback, true, 'offline missed iniconfig; `uv venv .venv` ran again in a clean state');
+  assert.equal(run(r2, w2, 'python -c "import iniconfig, six"').status, 0);
+  // env gc --caches also forgets that a key was installed: the next worktree goes online at once
+  F.cli(root, ['env', 'gc', '--caches']);
+  assert.ok(!fs.existsSync(path.join(C.CACHE(root), 'uv-installed.json')));
+  const r3 = E.ensure(root, null, { taskId: 'T3', wt: worktree(root, 'J-0001-T3') });
+  assert.deepEqual([r3.ok, r3.cache.offline, r3.cache.fallback], [true, false, undefined]);
 });
 
 test('REAL npm: npm ci in one worktree never touches another\'s node_modules; the second install comes from the shared npm cache', { timeout: 600000 }, (t) => {

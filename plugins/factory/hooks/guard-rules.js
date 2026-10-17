@@ -682,6 +682,35 @@ function walk(src, ctx, depth, collect = false) {
   return null;
 }
 
+// 0.12: the shared package caches and the pip wheelhouse (.factory/envcache, .factory/wheelhouse)
+// are installer data every later worktree, ci verify included, reads. A factory agent may not
+// touch them in any form the guard can read (review 012B M-1, best effort): a word of the command
+// (an argument, an installer's --cache-dir / -d / -w / --cache / -C value, a VAR=… assignment such
+// as UV_CACHE_DIR or PIP_CACHE_DIR, a redirect) that names a path there, relative paths resolved
+// against the command's directory (cd tracked). Reading them (ls, du, cat …) stays allowed.
+const SHARED_CACHE = /(^|[\\/])\.factory[\\/](envcache|wheelhouse)([\\/]|$)/;
+const CACHE_READERS = new Set(['ls', 'du', 'stat', 'cat', 'head', 'tail', 'wc', 'file', 'less', 'more', 'tree']);
+function sharedCacheTouch(head, cmd, ctx) {
+  const words = [...cmd.words.map((w) => w.text), ...cmd.redirs.filter((r) => r.target).map((r) => r.target.text)];
+  if (head && CACHE_READERS.has(head.name) && !cmd.redirs.some((r) => r.target && SHARED_CACHE.test(resolveIn(ctx, r.target.text)))) return null;
+  if (head && head.name === 'find' && !head.args.some((a) => /^-(delete|exec|execdir|ok|okdir|fprint\w*)$/.test(a.text))) return null;
+  for (let w of words) {
+    if (!w) continue;
+    const v = varName(w);
+    if (v && ctx.vars.has(v)) w = ctx.vars.get(v);
+    for (const part of [w, ...(w.includes('=') ? [w.slice(w.indexOf('=') + 1)] : [])]) {
+      if (!part || /^-/.test(part) && !part.includes('=')) continue;
+      if (SHARED_CACHE.test(resolveIn(ctx, part))) return 'The shared package caches and the wheelhouse (.factory/envcache, .factory/wheelhouse) are factory data every later install reads, ci verify included: a factory agent may not write, install into, point an installer at, or remove them. Install into your worktree\'s own environment with its own tool.';
+    }
+  }
+  return null;
+}
+function resolveIn(ctx, t) {
+  const x = String(t || '').replace(/^["']|["']$/g, '');
+  if (!x || /^\$/.test(x)) return x;
+  return path.isAbsolute(x) ? x : path.resolve(ctx.cwd || ctx.root || process.cwd(), x.replace(/^~(?=\/)/, require('os').homedir()));
+}
+
 function checkCommand(cmd, pipeline, ctx, depth, collect) {
   const { root, policy, agent } = ctx;
   // code that runs: every $( ) and backtick in the command
@@ -690,6 +719,12 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
     if (why) return why;
   }
   const head = resolveHead(cmd.words, ctx);
+  // cd within the command: later relative paths resolve from there (review 012B M-1)
+  if (head && !head.lookup && (head.name === 'cd' || head.name === 'pushd') && head.args[0] && !/^[$`-]/.test(head.args[0].text)) ctx.cwd = resolveIn(ctx, head.args[0].text);
+  if (agent && !collect) {
+    const why = sharedCacheTouch(head && !head.lookup ? head : null, cmd, ctx);
+    if (why) return why;
+  }
   const piped = cmd.pipeIn || cmd.heredocs.length > 0 || cmd.redirs.some((r) => r.op === '<' || r.op === '<<<' || r.op === '<>');
   if (head && !head.lookup) {
     const n = head.name;
@@ -801,8 +836,11 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
       if (agent) {
         const arg = head.args.map((x) => x.text).find((t) => t && !t.startsWith('-') && !/[$`]/.test(t));
         const file = arg ? path.resolve(ctx.cwd || ctx.root || '.', arg) : null;
-        const why = machineStepInText(code) || (file ? machineStepInText(readScript(file, ctx) || '') : null);
+        const text = file ? readScript(file, ctx) || '' : '';
+        const why = machineStepInText(code) || (file ? machineStepInText(text) : null);
         if (why) return why;
+        // a script file's writes into factory state or the shared caches, as for inline code
+        if (text && ((STATE.test(text) || SHARED_CACHE.test(text)) && WRITE_OPS.test(text))) return 'A script that changes factory state or the shared package caches is not allowed for factory agents. Use the factory CLI your brief gives you; install into your worktree\'s own environment.';
       }
       if (INTERNALS_STRICT.test(code) || (STATE.test(code) && WRITE_OPS.test(code))) {
         return 'Inline scripts may not change factory state or load factory internals. To read a job file use the Read tool; to change one you are allowed to change (an ADR, the plan, a threat model) use Write or Edit; for job state use the factory CLI (factory job show, contract show, why).';
@@ -832,7 +870,7 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
   for (const t of writeTargets(head && !head.lookup ? head : null, cmd)) {
     if (!t || /^\$/.test(t) || t === '-') continue;
     if (SECRET_FILE.test(t)) return 'The factory seal secret is off limits.';
-    const abs = path.isAbsolute(t) ? t : path.resolve(root || process.cwd(), t.replace(/^~(?=\/)/, require('os').homedir()));
+    const abs = path.isAbsolute(t) ? t : path.resolve(ctx.cwd || root || process.cwd(), t.replace(/^~(?=\/)/, require('os').homedir()));
     const why = checkWrite(root, abs, policy);
     if (why) return why;
   }

@@ -12,39 +12,46 @@ flowchart LR
     venv[".venv (yours: never created, changed or deleted)"]
   end
   subgraph cache[".factory/ (factory-owned, outside git)"]
-    c1["envcache/uv, pip, poetry, npm, yarn, pnpm-store (the installers' own caches)"]
-    c2["wheelhouse/KEY (pip: every wheel of one lockfile, sha256 sealed)"]
+    c1["envcache/uv, poetry, npm, yarn, pnpm-store (the installers' caches; files are copied out, never linked)"]
+    c2["wheelhouse/KEY (pip: built by the env check from a fresh venv; every wheel's sha256 sealed)"]
   end
   subgraph wts[".factory/worktrees/"]
     t1["J-0001-T1/.factory-venv: its own venv, T1's code editable"]
     t2["J-0001-T2/.factory-venv: its own venv, T2's code editable"]
-    job["J-0001, _envcheck-*, J-0001-ci: their own too"]
+    ci["J-0001-ci, the epic gate: resolve fresh from the index"]
   end
-  c1 -- "read by uv / pip / poetry / npm (hard links for uv)" --> t1
+  c1 -- "uv / poetry / npm copy from their cache" --> t1
   c1 --> t2
-  c2 -- "pip --no-index --find-links (no network)" --> t2
-  c2 --> job
+  c2 -- "pip --no-index --find-links (no network)" --> t1
+  c2 --> t2
 ```
 
 ## When things happen
 
 | When | What runs | What is shared |
 |---|---|---|
-| The first `factory env check --job J` (factory next runs it before any task) | `setup` in a scratch worktree | It fills the caches. For pip it then builds the wheelhouse for the key (`pip wheel` of everything the venv holds, plus the build requirements, from the cache) and seals the sha256 of every wheel. |
-| Every task, the job worktree, ci verify | `setup` in that worktree | **pip:** first with `PIP_NO_INDEX=1 PIP_FIND_LINKS=<wheelhouse>` (no network), after checking every wheel's hash; if a wheel is missing, once more with the index.<br>**uv:** with `UV_OFFLINE=1` once the key has installed, falling back the same way, and hard-linked from the cache.<br>**poetry and npm:** from their caches; they check what they read against `poetry.lock` and `package-lock.json`. |
-| Again in the same worktree | nothing | The worktree's marker records the key. A removed environment (`git clean -fdx`) is built again, never reported ready. |
-| A task changes a lockfile | `setup` in that worktree | New packages are downloaded once; everything else still comes from the cache. A new wheelhouse key is built. |
+| `factory env check --job J` (factory next runs it before any task; also any later check) | the sealed `setup` in a scratch worktree of the base commit | Fills the uv, poetry and npm caches. For pip it builds the **wheelhouse** from that fresh venv: `pip wheel` of everything it holds, plus the build requirements. The sha256 of every wheel and the expected set go in a sealed manifest. Only this check builds a wheelhouse, never a task's worktree. |
+| Every task and the job worktree | `setup` in that worktree | **pip:** first with `PIP_NO_INDEX=1 PIP_FIND_LINKS=<wheelhouse>` (no network), after checking every wheel's hash and that the set is complete.<br>**uv:** with `UV_OFFLINE=1` once the key has installed.<br>**poetry and npm:** from their caches, offline first.<br>If an offline attempt misses, setup runs again from a clean environment (its venv or `node_modules` removed) with the index. The key is marked incomplete, so no later worktree tries offline before the next env check rebuilds it. |
+| ci verify, the epic gate | `setup` in a fresh worktree | Nothing shared: a fresh resolution from the index, as in 0.11. Policy `environment.ci_cache: true` lets them use the caches. |
+| Again in the same worktree | nothing | The marker records the key and what the environment holds (its installed distributions, or the `node_modules` packages). A removed or changed environment is built again, never reported ready. |
 
-**One build at a time.** One setup runs per worktree at a time. The lock names its holder's pid and start time and is never taken over while that process lives. A run whose owner was killed has its setup processes ended before the next run starts. Wheelhouses are built in a temp directory and renamed into place.
+**One build at a time.** One setup runs per worktree at a time. The lock names its holder's pid and start time and is never taken over while that process lives. A killed run's setup processes are ended before the next run, and so are a killed wheelhouse build's processes; their temp dirs are removed.
 
-**Garbage collection.** It keeps the newest 3 wheelhouses (`FACTORY_ENV_KEEP`) and any used in the last 10 minutes. `factory env gc [--keep N] [--caches]` does it by hand; `--caches` also empties the package caches. Agents may not run it, and may not write `.factory/envcache` or `.factory/wheelhouse`.
+**Garbage collection.** It keeps the newest 3 wheelhouses (`FACTORY_ENV_KEEP`) and any used in the last 10 minutes. `factory env gc [--keep N] [--caches]` does it by hand; `--caches` also empties the package caches and forgets which keys installed from them.
+
+**What is trusted:**
+- **Files are copied, never linked.** uv runs with `UV_LINK_MODE=copy`, so a write into one worktree's venv cannot reach another worktree or the cache.
+- **pip's own cache is not shared:** it is not verified. pip's only shared source is the sealed wheelhouse.
+- **The uv cache is trusted as uv trusts it.** uv checks hashes when the lock (or a `--require-hashes` requirements file) carries them; otherwise it uses what its cache holds.
+- **poetry and npm** check what they read against `poetry.lock` and `package-lock.json`.
+- **Agents may not touch the caches or the wheelhouse:** no writes, no `--cache-dir`, `UV_CACHE_DIR=`, `tar -C`, `rsync`, `find -delete`, `mkdir` or `chmod` there, and no scripts that write there. This is best effort: the guard reads commands; it is not a sandbox. ci verify and the epic gate never read the caches unless policy says so.
 
 ## The tool, and why
 
 One function decides (`machine.pythonTool`), and the proposal records its choice as `tool` and `reason`:
 
 1. **poetry**: a poetry repository with `poetry.lock`, and poetry installed. Only poetry installs from that lock and its dev group. The venv is made with uv when uv is there.
-2. **uv**: installed. It makes the venv without ensurepip, installs fastest (hard links from the cache), and uses `uv sync` into the worktree's venv when there is a `uv.lock`.
+2. **uv**: installed. It makes the venv without ensurepip, installs fastest (copied from its cache), and uses `uv sync` into the worktree's venv when there is a `uv.lock`.
 3. **virtualenv**: installed. It works where `python3 -m venv` lacks ensurepip.
 4. **python3 -m venv**: only when the machine scan saw it make a venv with pip.
 
@@ -67,14 +74,14 @@ These run with an allowlisted environment (no tokens, no login shell, a scratch 
 - `factory env check --proposed`;
 - environment repair candidates.
 
-They may install from a wheelhouse whose hashes check out, read-only. They never write the shared caches or the exclude block. Only the environment you sealed fills the shared caches.
+They may install from a wheelhouse whose hashes check out, read-only. They never write the shared caches, the wheelhouse (not even its last-use stamp) or the exclude block. Only the environment you sealed fills them.
 
 ## Seeing what happened
 
 - **`factory env status`** is read-only. It shows:
   - the tool and why;
   - the caches and wheelhouses (path, size, wheels, built when);
-  - each worktree's own environment (ok or failed, offline or fallback, wheelhouse built);
+  - each worktree's own environment (ok or failed, offline or fallback, or why the wheelhouse was skipped);
   - the last check;
   - the last failure, with commands and output redacted, and the exact next step.
 - **`factory doctor`** has the "build environment" checks:
@@ -91,10 +98,12 @@ They may install from a wheelhouse whose hashes check out, read-only. They never
 
 A sealed 0.11 environment (version 1) keeps working exactly as before. When its setup uses an installer the cache serves (uv, pip, poetry, npm, pnpm, yarn, docker build), `factory next` and `factory env show` offer **the same environment** as version 2, adding `tool`, `reason` and `cache`. Every setup step is kept exactly as you sealed it, pins, extras, constraints and requirement files included. You switch with one reply: `confirm environment <hash>`.
 
+A setup step does not need to be safe to run twice. When an offline attempt misses, the factory removes the worktree's environment (the venv `VIRTUAL_ENV` names, or `node_modules`) before running setup again.
+
 ## The schema (version 2)
 
 | Field | Meaning |
 |---|---|
 | `tool`, `reason` | How the environment is built, and why (shown everywhere). |
-| `cache` | `uv`, `pip`, `poetry`, `npm`, `pnpm`, `yarn`, `docker` or `none`: whose shared cache the setup uses (and, for pip, the wheelhouse). |
+| `cache` | `uv`, `pip`, `poetry`, `npm`, `pnpm`, `yarn`, `docker` or `none`: whose shared cache the setup uses (for pip: the wheelhouse). |
 | `setup`, `cache_key`, `env`, `prefix`, `services`, `teardown`, `ignore`, `timeout_seconds`, `notes` | As in version 1. `setup` runs in every worktree and builds its own environment. |

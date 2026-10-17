@@ -86,6 +86,9 @@ function breakLock(file, judged) {
   const fs = require('fs');
   const aside = `${file}.stale-${process.pid}-${require('crypto').randomBytes(3).toString('hex')}`;
   try {
+    // judged again right before the move: the window in which another waiter can take the lock
+    // between the judgement and the move is as small as it can be without a kernel lock (012B m-7)
+    if (judged !== null && fs.readFileSync(file, 'utf8') !== judged) return;
     fs.renameSync(file, aside);
   } catch {
     return; // gone meanwhile

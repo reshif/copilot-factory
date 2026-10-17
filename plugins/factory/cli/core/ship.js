@@ -282,7 +282,9 @@ function ciVerify(root, { manifestDir, jobId, commit }) {
   const envMod = require('./environment');
   let results;
   try {
-    const E = envMod.ensure(root, state, { taskId: 'ci', wt });
+    // a fresh resolution from the index, as 0.11 did: no shared cache, no wheelhouse (012B M-2),
+    // unless policy environment.ci_cache is true
+    const E = envMod.ensure(root, state, { taskId: 'ci', wt, fresh: !(((state.policy || {}).environment || {}).ci_cache === true) });
     if (!E.ok) fail(`${E.broken.reason}\nThe environment is broken, not the merge result: fix it (factory env check, factory env set), then run factory ci verify again.`, 'environment_broken', E.broken);
     results = m.commands.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c.cmd), wt, { timeoutSec: state.policy.limits.command_timeout_seconds, reruns: 0 }), cmd: c.cmd }));
   } finally {

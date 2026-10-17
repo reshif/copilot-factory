@@ -694,18 +694,29 @@ function venvPython(e, v, wt) {
 // One setup per worktree at a time (a lock naming its holder's pid and start time, never taken
 // over while that process lives); setup's processes carry a tag, so a run whose owner was killed
 // is ended (its processes too) before the next one starts (review M-7).
-function ensure(root, state, { taskId = null, wt, env: given } = {}) {
+// `fresh`: no shared cache and no wheelhouse (ci verify and the epic gate resolve from the index,
+// as 0.11 did: 012B M-2). `buildWheelhouse`: after a successful setup, build (or rebuild an
+// incomplete) pip wheelhouse from this fresh venv: only environment.check (the sealed
+// environment's check in a scratch worktree of the base commit) passes it.
+function ensure(root, state, { taskId = null, wt, env: given, fresh = false, buildWheelhouse = false } = {}) {
   const e = given !== undefined ? given : load(root);
   const v = vars(root, state, taskId, wt);
   if (!e || inert(e)) return { ok: true, env: e, vars: v, ran: [], cached: false, key: null, none: true };
   // never the user's own checkout (or the .venv in it): only factory worktrees are set up
-  if (wt && path.resolve(wt) === path.resolve(root)) fail('The factory never sets up the root checkout (your own .venv stays yours): environments are made in factory worktrees only.', 'bad_input');
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  if (wt && real(wt) === real(root)) fail('The factory never sets up the root checkout (your own .venv stays yours): environments are made in factory worktrees only.', 'bad_input');
   const readOnly = Boolean(BASE_ENV);
   if (!readOnly) ensureIgnored(root, e);
   const svc = ensureServices(root, state, e, v);
   if (!svc.ok) return { ok: false, broken: svc.broken, env: e, vars: v };
   const key = cacheKey(e, wt);
-  const run = () => setupIn(root, e, v, wt, key, { readOnly, state, taskId });
+  const run = () => setupIn(root, e, v, wt, key, { readOnly, state, taskId, fresh, buildWheelhouse });
   if (readOnly) return run();
   let lockFile = null;
   try {
@@ -719,7 +730,55 @@ function ensure(root, state, { taskId = null, wt, env: given } = {}) {
   return require('./job').withLock(lockFile, run, { waitMs: wait, staleMs: wait, what: `the build environment of ${path.basename(wt)}` });
 }
 
-function setupIn(root, e, v, wt, key, { readOnly, state, taskId }) {
+// What the environment holds, cheaply (012B m-6): the distributions in its site-packages, or the
+// top-level packages of node_modules. A cached marker counts only while all of them are there.
+function fingerprint(e, v, wt) {
+  const out = [];
+  const py = venvPython(e, v, wt);
+  if (py) {
+    const venv = path.dirname(path.dirname(py));
+    for (const lib of ['lib', 'lib64']) {
+      let ds = [];
+      try {
+        ds = fs.readdirSync(path.join(venv, lib)).filter((n) => /^python\d/.test(n));
+      } catch {
+        ds = [];
+      }
+      for (const d of ds) {
+        try {
+          for (const n of fs.readdirSync(path.join(venv, lib, d, 'site-packages'))) if (/\.dist-info$/.test(n)) out.push(path.join(path.relative(wt, venv), lib, d, 'site-packages', n));
+        } catch {
+          /* none */
+        }
+      }
+      if (out.length) break;
+    }
+  }
+  if (envDirs(e, v, wt).some((f) => /node_modules$/.test(f))) {
+    try {
+      for (const n of fs.readdirSync(path.join(wt, 'node_modules'))) if (!n.startsWith('.')) out.push(path.join('node_modules', n));
+    } catch {
+      /* none */
+    }
+  }
+  return out.sort();
+}
+
+function uvInstalled(root, wkey, set) {
+  const C = require('./envcache');
+  const f = path.join(C.CACHE(root), 'uv-installed.json');
+  if (set === undefined) return Boolean((readJson(f, {}) || {})[wkey]);
+  fs.mkdirSync(C.CACHE(root), { recursive: true });
+  // a read-modify-write under a lock: parallel first installs keep every key (012B m-7)
+  return require('./job').withLock(`${f}.lock`, () => {
+    const cur = readJson(f, {}) || {};
+    if (set) cur[wkey] = nowIso();
+    else delete cur[wkey];
+    writeJson(f, cur);
+  }, { waitMs: 30000, staleMs: 60000, what: 'uv-installed.json' });
+}
+
+function setupIn(root, e, v, wt, key, { readOnly, state, taskId, fresh = false, buildWheelhouse = false }) {
   let marker = null;
   try {
     marker = readJson(markerFile(wt), null);
@@ -734,7 +793,7 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId }) {
       /* nothing left */
     }
   }
-  const present = envDirs(e, v, wt).every((f) => exists(f));
+  const present = envDirs(e, v, wt).every((f) => exists(f)) && (marker && Array.isArray(marker.holds) ? marker.holds.every((f) => exists(path.join(wt, f))) : true);
   if (marker && marker.key === key && marker.ok && present) return { ok: true, env: e, vars: v, ran: [], cached: true, key };
   const C = require('./envcache');
   const v2 = schemaOf(e) === 2 && e.cache && e.cache !== 'none';
@@ -744,17 +803,17 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId }) {
   // the wheelhouse / offline key: the cache_key files' content, the setup, the tool, the python
   const files = cacheFiles(e, wt);
   const wkey = v2 ? C.keyOf(e, files, readOnly ? BASE_ENV : process.env) : null;
-  const shared = v2 && !readOnly ? C.cacheEnv(root) : {};
+  const shared = v2 && !readOnly && !fresh ? C.cacheEnv(root) : {};
   let offline = {};
   let wh = null;
-  if (v2 && e.cache === 'pip') {
+  if (v2 && !fresh && e.cache === 'pip') {
     wh = C.verify(root, wkey);
     if (wh.ok) {
       offline = { PIP_NO_INDEX: '1', PIP_FIND_LINKS: wh.dir };
-      C.touch(wh.dir);
+      if (!readOnly) C.touch(wh.dir);
     }
   }
-  if (v2 && e.cache === 'uv' && !readOnly && readJson(path.join(C.CACHE(root), 'uv-installed.json'), {})[wkey]) offline = { UV_OFFLINE: '1' };
+  if (v2 && !fresh && e.cache === 'uv' && !readOnly && uvInstalled(root, wkey)) offline = { UV_OFFLINE: '1' };
   try {
     writeJson(markerFile(wt), { key, ok: false, building: true, tag, owner: { pid: process.pid, start: (require('./probe').procStat(process.pid) || {}).start || null }, at: nowIso() });
   } catch {
@@ -770,13 +829,28 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId }) {
     }
     return { ok: true, ran };
   };
+  // the environment's own directories inside this worktree (never anything outside it)
+  const cleanEnvDirs = () => {
+    const dirs = envDirs(e, v, wt).map((f) => (/node_modules$/.test(f) ? f : path.dirname(path.dirname(f))));
+    for (const d of dirs) {
+      const rel = path.relative(wt, d);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) fs.rmSync(d, { recursive: true, force: true });
+    }
+  };
   const started = Date.now();
   let res = attempt(offline);
   let fallback = null;
   if (!res.ok && Object.keys(offline).length) {
-    // the wheelhouse (or uv's cache) lacks something: the index this time, then a fuller one
-    fallback = { offline_failed: res.broken.cmd };
+    // the wheelhouse (or uv's cache) lacks something: the index this time, from a clean state (a
+    // setup step such as `uv venv .venv` is not idempotent: 012B M-3); the key is marked so no
+    // later worktree tries offline again before the next env check rebuilds it (012B M-4)
+    fallback = { offline_failed: C.redact(res.broken.cmd) };
+    if (!readOnly) {
+      if (e.cache === 'pip') C.markMissed(root, wkey, res.broken.cmd);
+      if (e.cache === 'uv') uvInstalled(root, wkey, false);
+    }
     const first = res.ran;
+    cleanEnvDirs();
     res = attempt({});
     res.ran = [...first.map((x) => ({ ...x, offline: true })), ...res.ran];
   }
@@ -792,19 +866,15 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId }) {
   }
   let cacheInfo = null;
   if (v2) {
-    cacheInfo = { kind: e.cache, offline: Boolean(Object.keys(offline).length) && !fallback, ...(fallback ? { fallback: true } : {}), ...(wh && wh.ok ? { wheelhouse: wkey.slice(0, 16) } : {}) };
-    if (!readOnly && e.cache === 'pip' && (!wh || !wh.ok || fallback)) {
-      const b = C.buildWheelhouse(root, wkey, { python: venvPython(e, v, wt), buildRequires: buildRequires(read(wt, 'pyproject.toml')), env: { ...process.env, ...shared, ...penv }, timeoutSec: T });
-      cacheInfo.wheelhouse_built = b.ok ? `${wkey.slice(0, 16)} (${b.count || 0} wheels)` : `not built: ${b.why}`;
+    cacheInfo = { kind: e.cache, ...(fresh ? { fresh: true } : {}), offline: Boolean(Object.keys(offline).length) && !fallback, ...(fallback ? { fallback: true } : {}), ...(wh && wh.ok ? { wheelhouse: wkey.slice(0, 16) } : wh && !wh.ok && wh.why !== 'none' ? { wheelhouse_skipped: wh.why } : {}) };
+    if (!readOnly && !fresh && buildWheelhouse && e.cache === 'pip' && (!wh || !wh.ok)) {
+      const b = C.buildWheelhouse(root, wkey, { python: venvPython(e, v, wt), buildRequires: buildRequires(read(wt, 'pyproject.toml')), env: { ...process.env, ...penv }, timeoutSec: T, force: true });
+      cacheInfo.wheelhouse_built = b.ok ? `${wkey.slice(0, 16)} (${b.count || 0} wheels${b.incomplete ? `; ${b.incomplete}` : ''})` : `not built: ${b.why}`;
     }
-    if (!readOnly && e.cache === 'uv') {
-      const f = path.join(C.CACHE(root), 'uv-installed.json');
-      const cur = readJson(f, {}) || {};
-      if (!cur[wkey]) writeJson(f, { ...cur, [wkey]: nowIso() });
-    }
+    if (!readOnly && !fresh && e.cache === 'uv' && !uvInstalled(root, wkey)) uvInstalled(root, wkey, true);
   }
   try {
-    writeJson(markerFile(wt), { key, ok: true, at: nowIso(), name: e.name || null, ran: res.ran, ...(cacheInfo ? { cache: cacheInfo } : {}) });
+    writeJson(markerFile(wt), { key, ok: true, at: nowIso(), name: e.name || null, ran: res.ran, holds: fingerprint(e, v, wt), ...(cacheInfo ? { cache: cacheInfo } : {}) });
   } catch {
     /* cache is a convenience */
   }
@@ -907,7 +977,8 @@ function check(root, { proposed = false, env: given = null } = {}) {
       const base = P.probeEnv(root, `envcheck-${process.pid}`, {}, P.ownDirs(box));
       inBox = (fn) => withBaseEnv(base, fn);
     }
-    let r = inBox(() => ensure(root, null, { taskId: 'envcheck', wt, env: run }));
+    // the sealed environment's check builds the pip wheelhouse from this fresh venv (012B M-2)
+    let r = inBox(() => ensure(root, null, { taskId: 'envcheck', wt, env: run, buildWheelhouse: which === 'confirmed' }));
     // the prefix runs in front of every verify command: the check runs it too (release review B2)
     if (r.ok && run.prefix && String(run.prefix).trim()) {
       const v = vars(root, null, 'envcheck', wt);

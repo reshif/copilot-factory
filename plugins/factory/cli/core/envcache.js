@@ -2,20 +2,27 @@
 // The shared package CACHE (0.12): every worktree keeps its OWN environment, built exactly like
 // 0.11 (its own .factory-venv or node_modules, its own code, workspaces, path dependencies and
 // setuptools_scm versions just work, .git is there). What is shared is data the installers
-// already know how to reuse, kept on the same filesystem as the worktrees (hard links work):
+// already know how to reuse:
 //
-//   .factory/envcache/uv        UV_CACHE_DIR (UV_LINK_MODE=hardlink: a second install is seconds)
-//   .factory/envcache/pip       PIP_CACHE_DIR (downloads and built wheels)
+//   .factory/envcache/uv        UV_CACHE_DIR, with UV_LINK_MODE=copy: every venv gets its own
+//                               copy of each file (a hard link would let a write in one worktree's
+//                               venv change every other worktree and the cache: review 012B B-1);
+//                               uv checks the hashes a uv.lock or a --require-hashes file carries
 //   .factory/envcache/poetry    POETRY_CACHE_DIR (artifacts; poetry checks them against poetry.lock)
 //   .factory/envcache/npm       npm_config_cache, with npm_config_prefer_offline (npm checks the
 //                               lockfile's integrity hashes)
 //   .factory/envcache/yarn, pnpm-store
-//   .factory/wheelhouse/<key>/  pip only: every wheel the environment ended up with (and the
-//                               project's build requirements), built once per key after the first
-//                               successful setup. A later worktree installs with PIP_NO_INDEX and
-//                               PIP_FIND_LINKS (no network), falling back to the index when a wheel
-//                               is missing. Each wheel's sha256 is in a sealed manifest and checked
-//                               before every use: a changed, added or missing file voids it.
+//   .factory/wheelhouse/<key>/  pip: the ONLY shared source for pip (pip's own cache is not shared:
+//                               it is not verified). Built only by the sealed environment's check
+//                               (factory env check --job), from a fresh venv its setup just made in
+//                               a scratch worktree of the base commit: what the declared inputs
+//                               resolve to, never what an agent's venv holds (012B M-2). Every
+//                               wheel's sha256 and the expected set are in a sealed manifest,
+//                               checked before every use; a changed, added or missing wheel, or a
+//                               set that is incomplete (a requirement that could not be wheeled, an
+//                               offline install that missed), voids it until the next check
+//                               rebuilds it (012B M-4). Task worktrees install with PIP_NO_INDEX
+//                               and PIP_FIND_LINKS; ci verify and the epic gate resolve fresh.
 //
 // The cache is never executed from: it is what the installers read. Runs without your
 // credentials (the plan probe, a proposal's check, repair candidates) use a verified wheelhouse
@@ -36,14 +43,26 @@ const KEEP = () => Math.max(1, parseInt(process.env.FACTORY_ENV_KEEP || '3', 10)
 const hash = (x) => crypto.createHash('sha256').update(typeof x === 'string' || Buffer.isBuffer(x) ? x : stableStringify(x)).digest('hex');
 const dirOf = (root, key) => path.join(WHEELS(root), key.slice(0, 16));
 const MANIFEST = (dir) => path.join(dir, 'manifest.json');
+const MISSED = (root, key) => path.join(WHEELS(root), `${key.slice(0, 16)}.missed.json`);
+const norm = (n) => String(n).toLowerCase().replace(/[-_.]+/g, '_');
+
+// An offline install from this wheelhouse failed in a worktree: the key is incomplete until the
+// next env check rebuilds it, and nobody tries it offline meanwhile (012B M-4).
+function markMissed(root, key, cmd) {
+  try {
+    fs.mkdirSync(WHEELS(root), { recursive: true });
+    writeJson(MISSED(root, key), seal({ key, cmd: redact(cmd || ''), at: nowIso() }));
+  } catch {
+    /* the next offline attempt fails again, then falls back */
+  }
+}
 
 // The variables every installer reads for its cache (only the sealed environment's runs get them).
 function cacheEnv(root) {
   const c = CACHE(root);
   return {
     UV_CACHE_DIR: path.join(c, 'uv'),
-    UV_LINK_MODE: 'hardlink',
-    PIP_CACHE_DIR: path.join(c, 'pip'),
+    UV_LINK_MODE: 'copy',
     POETRY_CACHE_DIR: path.join(c, 'poetry'),
     npm_config_cache: path.join(c, 'npm'),
     npm_config_prefer_offline: 'true',
@@ -130,6 +149,10 @@ function verify(root, key) {
   }
   const extra = names.filter((n) => !(n in wheels));
   if (extra.length) return { ok: false, why: `files the manifest does not list: ${extra.slice(0, 3).join(', ')}` };
+  const missed = readJson(MISSED(root, key), null);
+  if (missed && valid(missed)) return { ok: false, incomplete: true, why: `incomplete: an offline install missed ${missed.cmd ? `(${redact(missed.cmd)})` : 'a requirement'} on ${missed.at}; the next env check rebuilds it` };
+  const lacking = (m.expected || []).filter((name) => !Object.keys(wheels).some((w) => norm(w.split('-')[0]) === norm(name)));
+  if (lacking.length) return { ok: false, incomplete: true, why: `incomplete: no wheel for ${lacking.slice(0, 5).join(', ')}` };
   for (const [n, h] of Object.entries(wheels)) {
     let got = null;
     try {
@@ -150,51 +173,92 @@ function touch(dir) {
   }
 }
 
-// Build the wheelhouse from an environment that just set up: what it holds (pip freeze, pinned
-// lines only: editables and the project itself are not wheels of the key) plus the project's build
-// requirements, as wheels, from the shared pip cache (no second download). Built in a temp dir and
-// renamed into place (a crash never leaves a half wheelhouse), under a lock per key. Best effort:
-// { ok, count } or { ok: false, why }.
-function buildWheelhouse(root, key, { python, buildRequires = [], env = process.env, timeoutSec = 1200 }) {
+// Build the wheelhouse from the fresh venv the sealed environment's check just made (only
+// factory env check calls this: environment.check, review 012B M-2): what that venv holds (pip
+// freeze, pinned lines only: editables and the project itself are not wheels of the key), plus
+// the project's build requirements, as wheels. Built in a temp dir and renamed into place (a crash
+// never leaves a half wheelhouse), under a lock per key; its pip runs carry a tag, so a killed
+// build's processes are ended and its temp dir removed by the next build or gc (012B m-1).
+// `force`: rebuild even when one verifies (after a miss). Best effort: { ok, count } or { ok: false, why }.
+function buildWheelhouse(root, key, { python, buildRequires = [], env = process.env, timeoutSec = 1200, force = false }) {
   if (!python || !fs.existsSync(python)) return { ok: false, why: 'no venv python to read the installed set from' };
   const final = dirOf(root, key);
-  if (verify(root, key).ok) return { ok: true, count: verify(root, key).count, reused: true };
+  const v0 = verify(root, key);
+  if (v0.ok && !force) return { ok: true, count: v0.count, reused: true };
   fs.mkdirSync(WHEELS(root), { recursive: true });
+  const tag = `whbuild-${key.slice(0, 16)}`;
   return require('./job').withLock(`${final}.lock`, () => {
-    if (verify(root, key).ok) return { ok: true, reused: true };
-    const fr = spawnSync(python, ['-m', 'pip', 'freeze', '--all', '--exclude-editable'], { encoding: 'utf8', timeout: 120000, env });
+    // a build killed earlier: its pip processes and temp dirs
+    try {
+      require('./probe').survivors(tag, {});
+    } catch {
+      /* none */
+    }
+    sweepTemp(root);
+    const v1 = verify(root, key);
+    if (v1.ok && !force) return { ok: true, count: v1.count, reused: true };
+    const penv = { ...env, FACTORY_PROBE_ID: tag };
+    const fr = spawnSync(python, ['-m', 'pip', 'freeze', '--all', '--exclude-editable'], { encoding: 'utf8', timeout: 120000, env: penv });
     if (fr.status !== 0) return { ok: false, why: `pip freeze exit ${fr.status}: ${redact(String(fr.stderr || '').trim().slice(-300))}` };
-    const pins = String(fr.stdout).split('\n').map((l) => l.trim()).filter((l) => /^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9._+!-]+$/.test(l));
+    const lines = String(fr.stdout).split('\n').map((l) => l.trim()).filter(Boolean);
+    const pins = lines.filter((l) => /^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9._+!-]+$/.test(l));
+    const unpinned = lines.filter((l) => !pins.includes(l) && !/^#/.test(l)).map((l) => l.split(/[ @=]/)[0]);
     const tmp = `${final}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.mkdirSync(tmp, { recursive: true });
+    const reqs = `${tmp}.txt`;
     try {
-      const reqs = path.join(tmp, '..', `${path.basename(tmp)}.txt`);
       fs.writeFileSync(reqs, `${pins.join('\n')}\n`);
-      const args = ['-m', 'pip', 'wheel', '-q', '--retries', '5', '--timeout', '60', '--no-deps', '-w', tmp, '-r', reqs];
-      const w = spawnSync(python, args, { encoding: 'utf8', timeout: timeoutSec * 1000, env });
-      fs.rmSync(reqs, { force: true });
+      const w = spawnSync(python, ['-m', 'pip', 'wheel', '-q', '--retries', '5', '--timeout', '60', '--no-deps', '-w', tmp, '-r', reqs], { encoding: 'utf8', timeout: timeoutSec * 1000, env: penv });
       if (w.status !== 0) return { ok: false, why: `pip wheel exit ${w.status}: ${redact(String(w.stderr || '').trim().slice(-300))}` };
       if (buildRequires.length) {
-        const b = spawnSync(python, ['-m', 'pip', 'wheel', '-q', '--retries', '5', '--timeout', '60', '-w', tmp, ...buildRequires], { encoding: 'utf8', timeout: timeoutSec * 1000, env });
+        const b = spawnSync(python, ['-m', 'pip', 'wheel', '-q', '--retries', '5', '--timeout', '60', '-w', tmp, ...buildRequires], { encoding: 'utf8', timeout: timeoutSec * 1000, env: penv });
         if (b.status !== 0) return { ok: false, why: `pip wheel (build requirements) exit ${b.status}: ${redact(String(b.stderr || '').trim().slice(-300))}` };
       }
       const wheels = {};
       for (const n of fs.readdirSync(tmp)) if (n.endsWith('.whl')) wheels[n] = fileHash(path.join(tmp, n));
       for (const n of fs.readdirSync(tmp)) if (!n.endsWith('.whl')) fs.rmSync(path.join(tmp, n), { recursive: true, force: true });
-      writeJson(MANIFEST(tmp), seal({ version: 1, key, built_at: nowIso(), wheels, pins: pins.length }));
+      // the expected set: every pinned requirement (a missing wheel shows as incomplete), and the
+      // ones pip could not pin (a VCS or URL requirement): the wheelhouse is incomplete by design
+      const expected = [...pins.map((p) => p.split('==')[0]), ...unpinned];
+      writeJson(MANIFEST(tmp), seal({ version: 2, key, built_at: nowIso(), wheels, expected, pins: pins.length }));
       fs.rmSync(final, { recursive: true, force: true });
       fs.renameSync(tmp, final);
+      fs.rmSync(MISSED(root, key), { force: true });
       try {
         gc(root, { keep: KEEP(), keepKey: key });
       } catch {
         /* garbage collection is a convenience */
       }
-      return { ok: true, count: Object.keys(wheels).length };
+      const v2 = verify(root, key);
+      return { ok: true, count: Object.keys(wheels).length, ...(v2.ok ? {} : { incomplete: v2.why }) };
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(reqs, { force: true });
     }
   }, { waitMs: (timeoutSec + 600) * 1000, staleMs: (timeoutSec + 600) * 1000, what: `the wheelhouse ${key.slice(0, 16)}` });
+}
+
+// Temp dirs of wheelhouse builds whose process is gone (a killed build): removed.
+function sweepTemp(root) {
+  let names = [];
+  try {
+    names = fs.readdirSync(WHEELS(root));
+  } catch {
+    return;
+  }
+  for (const n of names) {
+    const m = /^[0-9a-f]{16}\.tmp-(\d+)-[0-9a-f]+(\.txt)?$/.exec(n);
+    if (!m) continue;
+    let alive = false;
+    try {
+      process.kill(Number(m[1]), 0);
+      alive = Number(m[1]) !== process.pid;
+    } catch {
+      alive = false;
+    }
+    if (!alive) fs.rmSync(path.join(WHEELS(root), n), { recursive: true, force: true });
+  }
 }
 
 function wheelhouses(root) {
@@ -233,6 +297,7 @@ function caches(root) {
 // Remove old wheelhouses: the newest `keep` (by last use) stay, and any used in the last 10
 // minutes (a run may be about to read it). `caches: true` also empties the package caches.
 function gc(root, { keep = KEEP(), caches: all = false, keepKey = null } = {}) {
+  sweepTemp(root);
   const list = wheelhouses(root);
   const kept = [];
   const removed = [];
@@ -252,6 +317,8 @@ function gc(root, { keep = KEEP(), caches: all = false, keepKey = null } = {}) {
   if (all) {
     cleared = caches(root).map((c) => ({ name: c.name, size: c.size, size_bytes: c.size_bytes }));
     for (const c of caches(root)) fs.rmSync(c.path, { recursive: true, force: true });
+    // what said a key was installed from these caches goes with them (012B M-3)
+    fs.rmSync(path.join(CACHE(root), 'uv-installed.json'), { force: true });
   }
   const bytes = [...removed, ...cleared].reduce((s, r) => s + (r.size_bytes || 0), 0);
   return { kept, removed: removed.map(({ size_bytes: _b, ...r }) => r), ...(all ? { caches_cleared: cleared.map(({ size_bytes: _b, ...r }) => r) } : {}), freed: human(bytes) };
@@ -267,4 +334,4 @@ function recordLast(root, rec) {
   }
 }
 
-module.exports = { CACHE, WHEELS, LAST, KEEP, cacheEnv, keyOf, verify, touch, buildWheelhouse, wheelhouses, caches, gc, recordLast, redact, sizeOf, human, dirOf, pythonVersion };
+module.exports = { markMissed, sweepTemp, MISSED, CACHE, WHEELS, LAST, KEEP, cacheEnv, keyOf, verify, touch, buildWheelhouse, wheelhouses, caches, gc, recordLast, redact, sizeOf, human, dirOf, pythonVersion };

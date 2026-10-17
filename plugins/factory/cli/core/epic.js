@@ -104,7 +104,8 @@ function gate(root, { jobId }) {
   const envMod = require('./environment');
   let results;
   try {
-    const E = envMod.ensure(root, epic, { taskId: 'gate', wt });
+    // the end-to-end gate resolves fresh too (012B M-2), unless policy environment.ci_cache is true
+    const E = envMod.ensure(root, epic, { taskId: 'gate', wt, fresh: !(((epic.policy || {}).environment || {}).ci_cache === true) });
     if (!E.ok) fail(`${E.broken.reason}\nThe environment is broken, not the slices: fix it (factory env check, factory env set), then run the epic gate again.`, 'environment_broken', E.broken);
     results = cmds.map((c) => ({ ...runCommand(envMod.wrap(E.env, E.vars, c), wt, { timeoutSec: epic.policy.limits.command_timeout_seconds, reruns: epic.policy.limits.flaky_reruns }), cmd: c }));
   } finally {
