@@ -77,6 +77,37 @@ function taskScope(root, worktreeName) {
   return { paths: plan.tasks.flatMap((t) => [...(t.allowed_paths || []), ...granted(t.id)]), job: m[1], task: null };
 }
 
+// What a builder may write or remove in its worktree whatever its allowed paths (012C MJ-3): the
+// environment's own directories (the factory's exclude block, the sealed environment's ignore
+// list, .factory-venv, node_modules, *.egg-info), anything the repository ignores, and untracked
+// build output, caches and logs (build/, dist/, .pytest_cache/, *.log, test-output.txt …). None of
+// it can reach the commit: the task's diff is checked against its allowed paths at task verify.
+const BUILD_OUTPUT = /^(build|dist|out|target|coverage|htmlcov|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox|\.cache|\.parcel-cache|\.next|\.turbo|__pycache__|\.factory-venv|\.venv|node_modules|[^/]+\.egg-info)(\/|$)|(^|\/)__pycache__(\/|$)|\.(log|out|pyc)$|(^|\/)[\w.-]*(output|results?|report)[\w.-]*\.(txt|xml|json|html)$/;
+function buildArtifact(root, wtName, inner) {
+  if (!inner || inner.startsWith('.git')) return false;
+  const wt = path.join(root, '.factory', 'worktrees', wtName);
+  const git = (args) => {
+    try {
+      return require('child_process').spawnSync('git', ['-C', wt, ...args], { encoding: 'utf8', timeout: 5000 });
+    } catch {
+      return { status: 1, stdout: '' };
+    }
+  };
+  // a tracked file is source, whatever its name
+  if (git(['ls-files', '--error-unmatch', '--', inner]).status === 0) return false;
+  if (BUILD_OUTPUT.test(inner)) return true;
+  // the environment's own patterns (the factory's block, the sealed environment's ignore list)
+  try {
+    const env = require('../cli/lib/util').readJson(path.join(root, '.factory', 'environment.json'), null) || {};
+    const { matchesAny } = require('../cli/lib/glob');
+    const pats = (env.ignore || []).map((x) => String(x).replace(/^\//, '').replace(/\/$/, ''));
+    if (pats.length && (matchesAny(inner, pats) || matchesAny(inner, pats.map((x) => `${x}/**`)))) return true;
+  } catch {
+    /* no environment */
+  }
+  return git(['check-ignore', '-q', '--no-index', '--', inner]).status === 0;
+}
+
 // Returns a deny reason or null.
 function checkWrite(root, absIn, policy) {
   const { matchesAny } = require('../cli/lib/glob');
@@ -108,7 +139,7 @@ function checkWrite(root, absIn, policy) {
       if (!scope) return `Unknown worktree ${parts[2]}.`;
       if (inner.startsWith('.git/') || inner === '.git') return 'Editing git internals in a worktree is not allowed.';
       if (matchesAny(inner, policy.protected_paths)) return `${inner} is a protected path.`;
-      if (!matchesAny(inner, scope.paths)) return `${inner} is outside ${scope.task ? `${scope.task}'s` : `${scope.job}'s`} allowed paths (${scope.paths.map((x) => String(x).replace(/^=/, '')).join(', ') || 'none'}). Return status "blocked" with needs_paths instead.`;
+      if (!matchesAny(inner, scope.paths) && !buildArtifact(root, parts[2], inner)) return `${inner} is outside ${scope.task ? `${scope.task}'s` : `${scope.job}'s`} allowed paths (${scope.paths.map((x) => String(x).replace(/^=/, '')).join(', ') || 'none'}). Return status "blocked" with needs_paths instead.`;
       return null;
     }
     return `${r} is factory state. Only the factory CLI writes it.`;
@@ -673,13 +704,69 @@ function walk(src, ctx, depth, collect = false) {
     cur.push(c);
   }
   if (cur.length) pipelines.push(cur);
-  for (const pipeline of pipelines) {
-    for (const cmd of pipeline) {
+  // the directories a command may run in (012C MJ-1): a ( ) subshell's cd ends with it; code fed to
+  // a nested shell (bash -c, eval) never moves the caller; a cd that may not happen (after && or
+  // ||, before ||, to a directory that does not exist, cd - / popd) only ADDS a possible directory
+  if (!ctx.cwds) ctx.cwds = [ctx.cwd || ctx.root || process.cwd()];
+  if (!ctx.seen) ctx.seen = new Set(ctx.cwds);
+  const saved = ctx.cwds.slice();
+  const frames = [];
+  let level = 0;
+  const flat = [];
+  for (const pipeline of pipelines) for (const cmd of pipeline) flat.push([cmd, pipeline]);
+  try {
+    for (let k = 0; k < flat.length; k++) {
+      const [cmd, pipeline] = flat[k];
+      const d = cmd.depth || 0;
+      while (d > level) {
+        frames.push(ctx.cwds.slice());
+        level += 1;
+      }
+      while (d < level) {
+        ctx.cwds = frames.pop() || ctx.cwds;
+        level -= 1;
+      }
+      cmd.nextAfter = flat[k + 1] ? flat[k + 1][0].after : null;
       const why = checkCommand(cmd, pipeline, ctx, depth, collect);
       if (why) return why;
     }
+  } finally {
+    if (depth > 0) ctx.cwds = saved;
   }
   return null;
+}
+
+// Every directory a relative path may be resolved from (see walk).
+function resolveAll(ctx, t) {
+  const x = String(t || '').replace(/^["']|["']$/g, '');
+  if (!x || /^\$/.test(x)) return [x];
+  if (path.isAbsolute(x)) return [x];
+  const h = x.replace(/^~(?=\/)/, require('os').homedir());
+  if (path.isAbsolute(h)) return [h];
+  return [...new Set((ctx.cwds || [ctx.cwd || ctx.root || process.cwd()]).map((c) => path.resolve(c, h)))];
+}
+function trackCd(head, cmd, ctx) {
+  const n = head.name;
+  const arg = head.args.find((a) => !/^-[LPe@]$/.test(a.text));
+  const cwds = ctx.cwds || [ctx.cwd || ctx.root];
+  const unionWith = (more) => [...new Set([...cwds, ...more])];
+  if (n === 'popd' || !arg || arg.text === '-' || /^[$`~]/.test(arg.text)) {
+    ctx.cwds = unionWith([...(ctx.seen || []), ...(!arg && n !== 'popd' ? [require('os').homedir()] : [])]);
+    return;
+  }
+  const targets = [...new Set(cwds.map((c) => path.resolve(c, arg.text)))];
+  let exist = true;
+  for (const t of targets) {
+    try {
+      if (!require('fs').statSync(t).isDirectory()) exist = false;
+    } catch {
+      exist = false;
+    }
+  }
+  const conditional = cmd.after === '&&' || cmd.after === '||' || cmd.nextAfter === '||';
+  ctx.cwds = !conditional && exist && cwds.length === 1 ? targets : unionWith(targets);
+  for (const t of targets) ctx.seen.add(t);
+  ctx.cwd = ctx.cwds[ctx.cwds.length - 1];
 }
 
 // 0.12: the shared package caches and the pip wheelhouse (.factory/envcache, .factory/wheelhouse)
@@ -692,7 +779,7 @@ const SHARED_CACHE = /(^|[\\/])\.factory[\\/](envcache|wheelhouse)([\\/]|$)/;
 const CACHE_READERS = new Set(['ls', 'du', 'stat', 'cat', 'head', 'tail', 'wc', 'file', 'less', 'more', 'tree']);
 function sharedCacheTouch(head, cmd, ctx) {
   const words = [...cmd.words.map((w) => w.text), ...cmd.redirs.filter((r) => r.target).map((r) => r.target.text)];
-  if (head && CACHE_READERS.has(head.name) && !cmd.redirs.some((r) => r.target && SHARED_CACHE.test(resolveIn(ctx, r.target.text)))) return null;
+  if (head && CACHE_READERS.has(head.name) && !cmd.redirs.some((r) => r.target && resolveAll(ctx, r.target.text).some((x) => SHARED_CACHE.test(x)))) return null;
   if (head && head.name === 'find' && !head.args.some((a) => /^-(delete|exec|execdir|ok|okdir|fprint\w*)$/.test(a.text))) return null;
   for (let w of words) {
     if (!w) continue;
@@ -700,15 +787,10 @@ function sharedCacheTouch(head, cmd, ctx) {
     if (v && ctx.vars.has(v)) w = ctx.vars.get(v);
     for (const part of [w, ...(w.includes('=') ? [w.slice(w.indexOf('=') + 1)] : [])]) {
       if (!part || /^-/.test(part) && !part.includes('=')) continue;
-      if (SHARED_CACHE.test(resolveIn(ctx, part))) return 'The shared package caches and the wheelhouse (.factory/envcache, .factory/wheelhouse) are factory data every later install reads, ci verify included: a factory agent may not write, install into, point an installer at, or remove them. Install into your worktree\'s own environment with its own tool.';
+      if (resolveAll(ctx, part).some((x) => SHARED_CACHE.test(x))) return 'The shared package caches and the wheelhouse (.factory/envcache, .factory/wheelhouse) are factory data every later install reads, ci verify included: a factory agent may not write, install into, point an installer at, or remove them. Install into your worktree\'s own environment with its own tool.';
     }
   }
   return null;
-}
-function resolveIn(ctx, t) {
-  const x = String(t || '').replace(/^["']|["']$/g, '');
-  if (!x || /^\$/.test(x)) return x;
-  return path.isAbsolute(x) ? x : path.resolve(ctx.cwd || ctx.root || process.cwd(), x.replace(/^~(?=\/)/, require('os').homedir()));
 }
 
 function checkCommand(cmd, pipeline, ctx, depth, collect) {
@@ -720,7 +802,7 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
   }
   const head = resolveHead(cmd.words, ctx);
   // cd within the command: later relative paths resolve from there (review 012B M-1)
-  if (head && !head.lookup && (head.name === 'cd' || head.name === 'pushd') && head.args[0] && !/^[$`-]/.test(head.args[0].text)) ctx.cwd = resolveIn(ctx, head.args[0].text);
+  if (head && !head.lookup && ['cd', 'pushd', 'popd'].includes(head.name)) trackCd(head, cmd, ctx);
   if (agent && !collect) {
     const why = sharedCacheTouch(head && !head.lookup ? head : null, cmd, ctx);
     if (why) return why;
@@ -870,9 +952,10 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
   for (const t of writeTargets(head && !head.lookup ? head : null, cmd)) {
     if (!t || /^\$/.test(t) || t === '-') continue;
     if (SECRET_FILE.test(t)) return 'The factory seal secret is off limits.';
-    const abs = path.isAbsolute(t) ? t : path.resolve(ctx.cwd || root || process.cwd(), t.replace(/^~(?=\/)/, require('os').homedir()));
-    const why = checkWrite(root, abs, policy);
-    if (why) return why;
+    for (const abs of resolveAll(ctx, t)) {
+      const why = checkWrite(root, abs, policy, ctx.agent);
+      if (why) return why;
+    }
   }
   return null;
 }

@@ -109,7 +109,7 @@ test('P2.1 detection: a likely environment from the repo files (venv, Nautobot a
   // placeholders and the shell preamble
   const v = env.vars('/r', { id: 'J-0007' }, 'T2', '/r/wt');
   assert.deepEqual([v.slug, v.db], ['j-0007-t2', 'factory_j0007t2']);
-  assert.equal(env.wrap(P.ENV, v, 'myapp-check'), 'export VIRTUAL_ENV="/r/wt/.venv"; export PATH="/r/wt/.venv/bin:$PATH"; myapp-check');
+  assert.equal(env.wrap(P.ENV, v, 'myapp-check'), 'export UV_LINK_MODE="copy"; export VIRTUAL_ENV="/r/wt/.venv"; export PATH="/r/wt/.venv/bin:$PATH"; myapp-check');
   assert.equal(env.processEnv(P.ENV, v, { PATH: '/usr/bin' }).PATH, '/r/wt/.venv/bin:/usr/bin');
 });
 

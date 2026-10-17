@@ -9,7 +9,9 @@
 //
 // parse(src) → [Command]
 //   Command = { words: [Word], redirs: [{ op, fd, target: Word|null }], heredocs: [{ delim, quoted, body }],
-//               pipeIn, pipeOut, subs: [string] }   (subs: the source of every $( ) / `…` in it)
+//               pipeIn, pipeOut, subs: [string], depth, after }   (subs: the source of every $( ) /
+//               `…` in it; depth: how many ( ) subshells it is inside; after: the operator before
+//               it, && || ; & or newline, so a reader can tell a conditional command)
 //   Word    = { text, quoted, expand, subs: [string] }   (text: the value with quotes removed)
 
 const OPS = ['&&', '||', '|&', ';;', '|', ';', '&', '\n', '(', ')'];
@@ -127,6 +129,7 @@ function scanDouble(src, start) {
 function parse(source) {
   const src = String(source || '');
   const commands = [];
+  let depth = 0;
   let cmd = newCommand();
   let word = null; // the word being built
   let pendingRedir = null; // a redirection waiting for its target word
@@ -134,7 +137,7 @@ function parse(source) {
   let i = 0;
 
   function newCommand() {
-    return { words: [], redirs: [], heredocs: [], pipeIn: false, pipeOut: false, subs: [] };
+    return { words: [], redirs: [], heredocs: [], pipeIn: false, pipeOut: false, subs: [], depth, after: null };
   }
   function startWord() {
     if (!word) word = { text: '', quoted: false, expand: false, subs: [] };
@@ -306,6 +309,10 @@ function parse(source) {
       i += op.length;
       if (op === '|' || op === '|&') endCommand(true);
       else endCommand(false);
+      if (op === '(') depth += 1;
+      else if (op === ')') depth = Math.max(0, depth - 1);
+      else cmd.after = op;
+      cmd.depth = depth;
       if (op === '\n' && pendingHeredocs.length) {
         endWord();
         readHeredocBodies();

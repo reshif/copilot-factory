@@ -202,7 +202,9 @@ function buildWheelhouse(root, key, { python, buildRequires = [], env = process.
     if (fr.status !== 0) return { ok: false, why: `pip freeze exit ${fr.status}: ${redact(String(fr.stderr || '').trim().slice(-300))}` };
     const lines = String(fr.stdout).split('\n').map((l) => l.trim()).filter(Boolean);
     const pins = lines.filter((l) => /^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9._+!-]+$/.test(l));
-    const unpinned = lines.filter((l) => !pins.includes(l) && !/^#/.test(l)).map((l) => l.split(/[ @=]/)[0]);
+    // a project installed from a local directory (`pip install .`: "name @ file://…") is the
+    // project itself, not a dependency the wheelhouse should hold (012C m-3)
+    const unpinned = lines.filter((l) => !pins.includes(l) && !/^#/.test(l) && !/ @ file:/.test(l)).map((l) => l.split(/[ @=]/)[0]);
     const tmp = `${final}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.mkdirSync(tmp, { recursive: true });

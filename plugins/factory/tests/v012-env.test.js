@@ -208,6 +208,64 @@ test('the wheelhouse is integrity-checked (sealed sha256 per wheel); garbage col
   for (const cmd of ['ls ../../envcache', `du -sh ${ab}/envcache`, 'pip install -e .', 'uv pip install six']) assert.equal(G.checkBash(root, cmd, null, { agent: true, job: 'J-0001', cwd: wt }), null, `allowed: ${cmd}`);
 });
 
+test('guard (012C): cd is tracked conservatively (subshells, cd -, popd, conditional or failing cd only ADD a directory), and builder output, caches and the environment\'s own directories stay writable whatever the allowed paths', (t) => {
+  const root = F.makeRepo(t);
+  F.write(root, 'scripts/run.sh', 'echo hi\n');
+  F.sh(root, 'git add -A && git commit -qm s');
+  fs.mkdirSync(path.join(root, '.factory', 'jobs', 'J-0001'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.factory', 'jobs', 'J-0001', 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', allowed_paths: ['src/**', 'tests/**', 'scripts/**', 'pyproject.toml', 'package.json'] }] }));
+  const wt = worktree(root, 'J-0001-T1');
+  const G = require('../hooks/guard-rules');
+  const o = { agent: true, job: 'J-0001', cwd: wt };
+  for (const c of ['(cd /tmp); echo x > .github/workflows/ci.yml', 'cd /tmp; cd -; echo x > .github/workflows/ci.yml', '(cd /tmp); echo x > ../../envcache/uv/f', 'pushd /tmp; popd; echo x > ../../envcache/uv/f', 'false && cd /tmp; echo x > ../../envcache/uv/f', 'cd /nonexistent; echo x > ../../envcache/uv/f', 'cd /tmp || true; cp x ../../wheelhouse/abc/', 'bash -c "cd /tmp"; echo x > ../../envcache/uv/f', 'echo x > README.md']) assert.ok(G.checkBash(root, c, null, o), `refused: ${c}`);
+  for (const c of ['pytest > test-output.txt 2>&1', 'npm run build > build.log', 'rm -rf build dist', 'rm -rf .pytest_cache', 'rm -rf node_modules', 'rm -rf .factory-venv', 'cd src && echo x > y.py', 'mkdir -p src/a/b', 'echo x > src/a.py', 'cd /tmp && echo x > out.txt', 'pip install -e .', 'tar -czf dist/out.tgz -C build .']) assert.equal(G.checkBash(root, c, null, o), null, `allowed: ${c}`);
+  // a tracked file outside the allowed paths stays refused, even with a build-like name
+  F.write(root, 'build.log', 'tracked\n');
+  F.sh(root, 'git add -A && git commit -qm log');
+  const wt2 = worktree(root, 'J-0001-T2');
+  fs.writeFileSync(path.join(root, '.factory', 'jobs', 'J-0001', 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', allowed_paths: ['src/**'] }, { id: 'T2', allowed_paths: ['src/**'] }] }));
+  assert.ok(G.checkBash(root, 'echo x > build.log', null, { agent: true, job: 'J-0001', cwd: wt2 }));
+});
+
+test('the fallback after an offline miss starts clean: what the first attempt created at the top of the worktree (mkdir data) is removed too; a project installed from its own directory is not expected in the wheelhouse (012C m-2, m-3)', (t) => {
+  const root = pyRepo(t);
+  const dir = T.mkdtemp('factory-offline-', t);
+  // fake-uv.sh <worktree>: installs every package listed in the worktree's pkgs.txt; offline it
+  // fails like uv for one that is not in the cache
+  fs.writeFileSync(path.join(dir, 'fake-uv.sh'), `#!/usr/bin/env bash
+set -euo pipefail
+wt="$1"; cache="\${UV_CACHE_DIR}"; mkdir -p "$cache" "$wt/.factory-venv/bin"
+for p in $(cat "$wt/pkgs.txt"); do
+  if [ ! -f "$cache/$p" ]; then
+    if [ -n "\${UV_OFFLINE:-}" ]; then echo "error: $p was not found in the cache (offline)" >&2; exit 2; fi
+    echo "$p" > "$cache/$p"
+  fi
+done
+printf '#!/bin/sh\\nexit 1\\n' > "$wt/.factory-venv/bin/python"; chmod +x "$wt/.factory-venv/bin/python"
+`, { mode: 0o755 });
+  F.write(root, 'pkgs.txt', 'six\n');
+  F.sh(root, 'git add -A && git commit -qm pkgs');
+  const env = { version: 2, name: 'fake-uv', tool: 'uv', reason: 'test', cache: 'uv', setup: ['mkdir data', `bash ${dir}/fake-uv.sh {worktree}`], cache_key: ['pyproject.toml'], env: { VIRTUAL_ENV: '{worktree}/.factory-venv' }, ignore: ['/.factory-venv/', '/data/'], timeout_seconds: 60 };
+  sealEnv(root, env);
+  assert.equal(E.ensure(root, null, { taskId: 'T1', wt: worktree(root, 'J-0001-T1') }).ok, true);
+  const w2 = worktree(root, 'J-0001-T2', (w) => F.write(w, 'pkgs.txt', 'six\niniconfig\n'));
+  const r2 = E.ensure(root, null, { taskId: 'T2', wt: w2 });
+  assert.equal(r2.ok, true, JSON.stringify(r2.broken));
+  assert.equal(r2.cache.fallback, true, 'offline missed; the retry did not trip over `mkdir data`');
+  // m-3: "name @ file://…" (pip install .) is the project, not an expected wheel
+  const py = path.join(dir, 'python');
+  fs.writeFileSync(py, `#!/usr/bin/env bash
+if [ "$3" = freeze ]; then printf 'six==1.0\\ndapp @ file:///tmp/x\\n'; exit 0; fi
+if [ "$3" = wheel ]; then while [ $# -gt 0 ]; do if [ "$1" = -w ]; then echo whl > "$2/six-1.0-py3-none-any.whl"; fi; shift; done; exit 0; fi
+exit 1
+`, { mode: 0o755 });
+  const k = 'e'.repeat(64);
+  const b = C.buildWheelhouse(root, k, { python: py, env: process.env });
+  assert.equal(b.ok, true, JSON.stringify(b));
+  assert.equal(b.incomplete, undefined);
+  assert.equal(C.verify(root, k).ok, true, 'complete: the project itself is not expected');
+});
+
 test('tool choice: one function, recorded with its reason; templates build each worktree\'s own .factory-venv / node_modules with the matching cache', (t) => {
   const root = F.makeRepo(t);
   F.write(root, 'pyproject.toml', '[project]\nname = "x"\n[project.optional-dependencies]\ndev = ["pytest"]\n');
@@ -555,4 +613,34 @@ test('REAL npm: npm ci in one worktree never touches another\'s node_modules; th
   assert.equal(run(r2, w2, 'npm ci --no-audit --no-fund -q').status, 0);
   assert.equal(fs.readFileSync(path.join(w1, 'node_modules', 'is-number', 'SENTINEL'), 'utf8'), 'T1', 'T1\'s node_modules is untouched by T2\'s npm ci');
   assert.ok(fs.existsSync(path.join(C.CACHE(root), 'npm', '_cacache')), 'the npm cache is under .factory/envcache');
+});
+
+test('REAL uv (012C MJ-2): ci verify\'s fresh install never reads a cache an agent wrote into: not the factory\'s, not the user\'s own (even after a hard-linking install in a task)', { timeout: 600000 }, (t) => {
+  if (skipUnless(t, 'uv', PYPI)) return;
+  const root = F.makeRepo(t);
+  F.write(root, 'requirements.txt', 'six==1.17.0\n');
+  F.sh(root, 'git rm -q -r src && git add -A && git commit -qm reqs');
+  const env = { version: 2, name: 'uv-reqs', tool: 'uv', reason: 'test', cache: 'uv', setup: ['uv venv -q --allow-existing .factory-venv', 'uv pip install -q --python .factory-venv/bin/python -r requirements.txt'], cache_key: ['requirements.txt'], env: { VIRTUAL_ENV: '{worktree}/.factory-venv', PATH: '{worktree}/.factory-venv/bin:$PATH' }, ignore: ['/.factory-venv/'], timeout_seconds: 600 };
+  sealEnv(root, env);
+  const w1 = worktree(root, 'J-0001-T1');
+  const r1 = E.ensure(root, null, { taskId: 'T1', wt: w1 });
+  assert.equal(r1.ok, true);
+  // the builder's own shell copies too (UV_LINK_MODE=copy in its environment)
+  assert.equal(E.processEnv(r1.env, r1.vars).UV_LINK_MODE, 'copy');
+  // worst case: an agent forces hard links into the user's own cache, then edits its venv
+  const userCache = path.join(process.env.XDG_CACHE_HOME, 'uv');
+  const x = run(r1, w1, `UV_LINK_MODE=hardlink UV_CACHE_DIR=${userCache} uv pip install -q --reinstall six==1.17.0`);
+  assert.equal(x.status, 0, x.stderr);
+  const six = path.join(w1, '.factory-venv', fs.readdirSync(path.join(w1, '.factory-venv', 'lib'))[0] ? `lib/${fs.readdirSync(path.join(w1, '.factory-venv', 'lib'))[0]}/site-packages/six.py` : '');
+  assert.ok(fs.statSync(six).nlink >= 2, 'the agent\'s file is now a hard link into the user\'s cache');
+  fs.appendFileSync(six, '\nPOISON = "agent T1"\n');
+  // ci verify: fresh, with a private copy-mode cache
+  const wc = worktree(root, 'J-0001-ci');
+  const rc = E.ensure(root, null, { taskId: 'ci', wt: wc, fresh: true });
+  assert.equal(rc.ok, true, JSON.stringify(rc.broken));
+  const p = run(rc, wc, 'python -c "import six; print(getattr(six, \'POISON\', None))"');
+  assert.equal(p.stdout.trim(), 'None', 'ci verify installed a clean six');
+  // and a task worktree from the factory's cache is clean too
+  const r2 = E.ensure(root, null, { taskId: 'T2', wt: worktree(root, 'J-0001-T2') });
+  assert.equal(run(r2, path.join(root, '.factory', 'worktrees', 'J-0001-T2'), 'python -c "import six; print(getattr(six, \'POISON\', None))"').stdout.trim(), 'None');
 });

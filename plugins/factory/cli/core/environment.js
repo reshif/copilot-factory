@@ -472,9 +472,14 @@ const dq = (s) => `"${String(s).replace(/(["\\`])/g, '\\$1')}"`; // $VARS stay l
 
 // The shell text put before every command: the env as exports (after the login profile, which
 // may reset PATH), then the prefix.
+// uv never hard-links anything a builder, a verify command or a setup installs (012C MJ-2): a
+// hard link into a cache (the factory's, or your own ~/.cache/uv) would let a write in one venv
+// reach every other venv installed from it. Set unless the environment sets it itself.
+const COPY = { UV_LINK_MODE: 'copy' };
 function preamble(e, v) {
   if (!e) return '';
-  return Object.entries(e.env || {}).map(([k, val]) => `export ${k}=${dq(expand(val, v))}; `).join('');
+  const own = Object.keys(e.env || {});
+  return Object.entries({ ...Object.fromEntries(Object.entries(COPY).filter(([k]) => !own.includes(k))), ...(e.env || {}) }).map(([k, val]) => `export ${k}=${dq(expand(val, v))}; `).join('');
 }
 function wrap(e, v, cmd) {
   if (!e) return cmd;
@@ -485,7 +490,7 @@ function wrap(e, v, cmd) {
 // under a base environment (the probe, a sandboxed check) $VAR expands from that allowlist, never
 // from the user's full environment (a declared `X: $GH_TOKEN` would carry the token in)
 function processEnv(e, v, base = BASE_ENV || process.env) {
-  const out = {};
+  const out = { ...COPY };
   for (const [k, val] of Object.entries((e && e.env) || {})) out[k] = expand(val, v).replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_, n) => (n in out ? out[n] : base[n] || ''));
   return out;
 }
@@ -803,7 +808,10 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId, fresh = false, 
   // the wheelhouse / offline key: the cache_key files' content, the setup, the tool, the python
   const files = cacheFiles(e, wt);
   const wkey = v2 ? C.keyOf(e, files, readOnly ? BASE_ENV : process.env) : null;
-  const shared = v2 && !readOnly && !fresh ? C.cacheEnv(root) : {};
+  // fresh (ci verify, the epic gate): a private, throwaway cache, never the shared one nor your own
+  // ~/.cache (an agent's own installs can write that one): 012C MJ-2
+  const freshDir = fresh ? fs.mkdtempSync(path.join(require('os').tmpdir(), 'factory-fresh-cache-')) : null;
+  const shared = fresh ? { UV_CACHE_DIR: path.join(freshDir, 'uv'), UV_LINK_MODE: 'copy', PIP_NO_CACHE_DIR: '1', POETRY_CACHE_DIR: path.join(freshDir, 'poetry'), npm_config_cache: path.join(freshDir, 'npm'), YARN_CACHE_FOLDER: path.join(freshDir, 'yarn'), npm_config_store_dir: path.join(freshDir, 'pnpm-store') } : v2 && !readOnly ? C.cacheEnv(root) : {};
   let offline = {};
   let wh = null;
   if (v2 && !fresh && e.cache === 'pip') {
@@ -837,22 +845,47 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId, fresh = false, 
       if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) fs.rmSync(d, { recursive: true, force: true });
     }
   };
-  const started = Date.now();
-  let res = attempt(offline);
-  let fallback = null;
-  if (!res.ok && Object.keys(offline).length) {
-    // the wheelhouse (or uv's cache) lacks something: the index this time, from a clean state (a
-    // setup step such as `uv venv .venv` is not idempotent: 012B M-3); the key is marked so no
-    // later worktree tries offline again before the next env check rebuilds it (012B M-4)
-    fallback = { offline_failed: C.redact(res.broken.cmd) };
-    if (!readOnly) {
-      if (e.cache === 'pip') C.markMissed(root, wkey, res.broken.cmd);
-      if (e.cache === 'uv') uvInstalled(root, wkey, false);
+  // what the worktree held before setup ran (its top level): a retry removes what setup created
+  const tracked = new Set();
+  try {
+    for (const f of git.out(wt, ['ls-files']).split('\n')) if (f) tracked.add(f.split('/')[0]);
+  } catch {
+    /* none */
+  }
+  const before = new Set((() => {
+    try {
+      return fs.readdirSync(wt);
+    } catch {
+      return [];
     }
-    const first = res.ran;
-    cleanEnvDirs();
-    res = attempt({});
-    res.ran = [...first.map((x) => ({ ...x, offline: true })), ...res.ran];
+  })());
+  const started = Date.now();
+  let res;
+  let fallback = null;
+  try {
+    res = attempt(offline);
+    if (!res.ok && Object.keys(offline).length) {
+      // the wheelhouse (or uv's cache) lacks something: the index this time, from a clean state (a
+      // setup step such as `uv venv .venv` is not idempotent: 012B M-3); the key is marked so no
+      // later worktree tries offline again before the next env check rebuilds it (012B M-4)
+      fallback = { offline_failed: C.redact(res.broken.cmd) };
+      // only a resolution miss voids the wheelhouse for the key (a flaky or non-install step does
+      // not: 012C m-2)
+      const miss = /No matching distribution|Could not find a version|not found in the (package )?(index|registry|cache)|offline|--no-index|because .* (was not found|cannot be (found|used))|No solution found|ENOTCACHED|Network is unreachable|failed to fetch/i.test(String(res.broken.tail || ''));
+      if (!readOnly) {
+        if (e.cache === 'pip' && miss) C.markMissed(root, wkey, res.broken.cmd);
+        if (e.cache === 'uv') uvInstalled(root, wkey, false);
+      }
+      const first = res.ran;
+      cleanEnvDirs();
+      // and whatever else the first attempt created at the top of the worktree that git does not
+      // track (a `mkdir data` step is not idempotent either)
+      for (const n of fs.readdirSync(wt)) if (!before.has(n) && !tracked.has(n) && n !== '.git') fs.rmSync(path.join(wt, n), { recursive: true, force: true });
+      res = attempt({});
+      res.ran = [...first.map((x) => ({ ...x, offline: true })), ...res.ran];
+    }
+  } finally {
+    if (freshDir) fs.rmSync(freshDir, { recursive: true, force: true });
   }
   const ms = Date.now() - started;
   if (!res.ok) {

@@ -32,7 +32,7 @@ flowchart LR
 |---|---|---|
 | `factory env check --job J` (factory next runs it before any task; also any later check) | the sealed `setup` in a scratch worktree of the base commit | Fills the uv, poetry and npm caches. For pip it builds the **wheelhouse** from that fresh venv: `pip wheel` of everything it holds, plus the build requirements. The sha256 of every wheel and the expected set go in a sealed manifest. Only this check builds a wheelhouse, never a task's worktree. |
 | Every task and the job worktree | `setup` in that worktree | **pip:** first with `PIP_NO_INDEX=1 PIP_FIND_LINKS=<wheelhouse>` (no network), after checking every wheel's hash and that the set is complete.<br>**uv:** with `UV_OFFLINE=1` once the key has installed.<br>**poetry and npm:** from their caches, offline first.<br>If an offline attempt misses, setup runs again from a clean environment (its venv or `node_modules` removed) with the index. The key is marked incomplete, so no later worktree tries offline before the next env check rebuilds it. |
-| ci verify, the epic gate | `setup` in a fresh worktree | Nothing shared: a fresh resolution from the index, as in 0.11. Policy `environment.ci_cache: true` lets them use the caches. |
+| ci verify, the epic gate | `setup` in a fresh worktree | **Fresh** means: a resolution from the index, with a private, throwaway cache made for that run (uv in copy mode, `PIP_NO_CACHE_DIR=1`, private poetry and npm caches). It never reads the factory's shared caches, the wheelhouse, or your own `~/.cache/uv` or `~/.cache/pip`, which an agent's installs could have written. Policy `environment.ci_cache: true` lets them use the shared caches. |
 | Again in the same worktree | nothing | The marker records the key and what the environment holds (its installed distributions, or the `node_modules` packages). A removed or changed environment is built again, never reported ready. |
 
 **One build at a time.** One setup runs per worktree at a time. The lock names its holder's pid and start time and is never taken over while that process lives. A killed run's setup processes are ended before the next run, and so are a killed wheelhouse build's processes; their temp dirs are removed.
@@ -40,11 +40,13 @@ flowchart LR
 **Garbage collection.** It keeps the newest 3 wheelhouses (`FACTORY_ENV_KEEP`) and any used in the last 10 minutes. `factory env gc [--keep N] [--caches]` does it by hand; `--caches` also empties the package caches and forgets which keys installed from them.
 
 **What is trusted:**
-- **Files are copied, never linked.** uv runs with `UV_LINK_MODE=copy`, so a write into one worktree's venv cannot reach another worktree or the cache.
+- **Files are copied, never linked.** uv runs with `UV_LINK_MODE=copy` in setup, in the builders' and testers' shells and before every verify command (unless the environment sets it itself), so a write into one worktree's venv cannot reach another worktree, the factory's cache or your own uv cache.
 - **pip's own cache is not shared:** it is not verified. pip's only shared source is the sealed wheelhouse.
 - **The uv cache is trusted as uv trusts it.** uv checks hashes when the lock (or a `--require-hashes` requirements file) carries them; otherwise it uses what its cache holds.
 - **poetry and npm** check what they read against `poetry.lock` and `package-lock.json`.
-- **Agents may not touch the caches or the wheelhouse:** no writes, no `--cache-dir`, `UV_CACHE_DIR=`, `tar -C`, `rsync`, `find -delete`, `mkdir` or `chmod` there, and no scripts that write there. This is best effort: the guard reads commands; it is not a sandbox. ci verify and the epic gate never read the caches unless policy says so.
+- **Agents may not touch the caches or the wheelhouse:** no writes, no `--cache-dir`, `UV_CACHE_DIR=`, `tar -C`, `rsync`, `find -delete`, `mkdir` or `chmod` there, and no scripts that write there. Relative paths are resolved from every directory the command may be in: a `cd` inside `( )`, after `&&`/`||`, before `||`, to a missing directory, or a `cd -`/`popd` only adds a possible directory.
+- **This guard is best effort.** It reads commands; it is not a sandbox. Deliberate evasion (globs such as `envcach?`, a symlink made in the same command, a path built up in code) is not caught. That is why ci verify and the epic gate never read any cache unless policy says so.
+- **What builders may write.** A builder may write its own environment directories, anything the repository ignores, and untracked build output, caches and logs anywhere in its worktree (`build/`, `dist/`, `.pytest_cache/`, `*.log`, `test-output.txt` …), whatever its allowed paths. None of it can reach the commit, and a task never parks over a log file. Tracked files outside its allowed paths, protected paths and `.git` stay refused.
 
 ## The tool, and why
 
@@ -98,7 +100,7 @@ They may install from a wheelhouse whose hashes check out, read-only. They never
 
 A sealed 0.11 environment (version 1) keeps working exactly as before. When its setup uses an installer the cache serves (uv, pip, poetry, npm, pnpm, yarn, docker build), `factory next` and `factory env show` offer **the same environment** as version 2, adding `tool`, `reason` and `cache`. Every setup step is kept exactly as you sealed it, pins, extras, constraints and requirement files included. You switch with one reply: `confirm environment <hash>`.
 
-A setup step does not need to be safe to run twice. When an offline attempt misses, the factory removes the worktree's environment (the venv `VIRTUAL_ENV` names, or `node_modules`) before running setup again.
+A setup step does not need to be safe to run twice. When an offline attempt misses, the factory removes the worktree's environment (the venv `VIRTUAL_ENV` names, or `node_modules`) and whatever else the first attempt created at the top of the worktree that git does not track (a `mkdir data`) before running setup again. Only a resolution miss ("No matching distribution", "not found in the cache") marks a pip wheelhouse incomplete; a flaky step does not.
 
 ## The schema (version 2)
 
