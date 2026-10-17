@@ -521,11 +521,13 @@ test('REAL uv: a workspace member is imported from each worktree\'s OWN copy; th
   assert.deepEqual(env.setup, ['uv sync -q --frozen']);
   sealEnv(root, env);
   const out = {};
+  const offline = {};
   for (const n of ['J-0001-T1', 'J-0001-T2']) {
     const wt = worktree(root, n, (w) => F.write(w, 'libs/mylib/mylib/__init__.py', `WHO = "${n}"\n`));
     const [r, ms] = timed(() => E.ensure(root, null, { taskId: n, wt }));
     assert.equal(r.ok, true, JSON.stringify(r.broken));
     out[n] = ms;
+    offline[n] = Boolean(r.cache && r.cache.offline);
     const py = run(r, wt, 'python -c "import mylib, app; print(mylib.WHO, mylib.__file__)"', T.mkdtemp('factory-cwd-', t));
     assert.equal(py.status, 0, py.stderr);
     assert.match(py.stdout, new RegExp(`^${n} ${wt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/libs/mylib/`), `${n} imports its own workspace member`);
@@ -544,7 +546,9 @@ test('REAL uv: a workspace member is imported from each worktree\'s OWN copy; th
   for (const w of [w2, w3]) assert.doesNotMatch(fs.readFileSync(site(w), 'utf8'), /POISON/, `${path.basename(w)} is unaffected`);
   assert.equal(spawnSync('grep', ['-rl', 'POISON', path.join(C.CACHE(root), 'uv')], { encoding: 'utf8' }).stdout, '', 'the cache is unaffected');
   t.diagnostic(`uv: first worktree ${out['J-0001-T1']} ms, second ${out['J-0001-T2']} ms`);
-  assert.ok(out['J-0001-T2'] < out['J-0001-T1'], 'the second worktree is faster (the shared uv cache, copied)');
+  // the second worktree installs offline from the shared cache (its time is reported above; a
+  // timing assertion was flaky once the index answers from a warm proxy)
+  assert.deepEqual(offline, { 'J-0001-T1': false, 'J-0001-T2': true }, 'the second worktree installs offline from the shared uv cache');
   assert.ok(fs.readdirSync(path.join(C.CACHE(root), 'uv')).length > 0, 'the uv cache is under .factory/envcache');
 });
 
