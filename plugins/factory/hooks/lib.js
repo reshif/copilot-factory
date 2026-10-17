@@ -391,14 +391,19 @@ function heartbeat(input, error) {
   }
 }
 
+// The real path of p: every symlink along it resolved, also when p (or several of its last
+// parts) does not exist yet: the longest existing prefix is resolved and the rest appended.
 function realpath(p) {
-  try {
-    return fs.realpathSync(p);
-  } catch {
+  let cur = path.resolve(String(p));
+  const tail = [];
+  for (;;) {
     try {
-      return path.join(fs.realpathSync(path.dirname(p)), path.basename(p));
+      return path.join(fs.realpathSync(cur), ...tail);
     } catch {
-      return p;
+      const up = path.dirname(cur);
+      if (up === cur) return path.resolve(String(p));
+      tail.unshift(path.basename(cur));
+      cur = up;
     }
   }
 }

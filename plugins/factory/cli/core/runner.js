@@ -619,7 +619,7 @@ const transientWaitMs = (n, baseSec) => Math.round(Math.min(120, baseSec * 2 ** 
 // The time-up turn a builder gets in its own session when its time cap is reached.
 const GRACE_TURN = (sec) => [
   `Time is up for this attempt. You have about ${sec} seconds left: do not start anything new.`,
-  'Commit what works now on the task branch (`git add -A && git commit -m "wip: <what is done, what is left>"`), then reply with the JSON object:',
+  'Commit what works now on the task branch (`git add <the files you changed in your allowed paths> && git commit -m "wip: <what is done, what is left>"`; not `git add -A`, which would take build output and logs too), then reply with the JSON object:',
   'status "done" only if the task is finished and its verify commands passed; otherwise status "blocked" with a summary of what is done, what is left and what you would try next (the next attempt continues from your commits and that summary).',
 ].join('\n');
 
@@ -638,6 +638,13 @@ function commitWip(wt, label, why) {
     if (!exists(path.join(wt, '.git')) || !git.status(wt)) return null;
     if (git.ok(wt, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])) git.run(wt, ['merge', '--abort'], { allowFail: true });
     git.run(wt, ['add', '-A']);
+    // new build output, caches and logs the builder was free to write (guard 012C MJ-3) stay
+    // out of the commit: the task's diff must stay within its allowed paths
+    const { BUILD_OUTPUT } = require('../lib/paths');
+    const added = git.run(wt, ['diff', '--cached', '--name-only', '--diff-filter=A', '-z'], { allowFail: true });
+    const drop = String(added.stdout || '').split('\0').filter((f) => f && BUILD_OUTPUT.test(f));
+    for (let i = 0; i < drop.length; i += 200) git.run(wt, ['rm', '-q', '--cached', '--', ...drop.slice(i, i + 200)], { allowFail: true });
+    if (!git.run(wt, ['diff', '--cached', '--quiet'], { allowFail: true }).code) return null;
     const r = git.run(wt, ['commit', '-q', '-m', `wip: ${label} (${why}; uncommitted work saved by factory run)`], { allowFail: true });
     return r.code === 0 ? git.revParse(wt, 'HEAD') : null;
   } catch {
@@ -1602,4 +1609,4 @@ function summaryText(r) {
   return L.join('\n');
 }
 
-module.exports = { transient, run, distillWrite, runAgent, workflowApi, cliChild, killAgents, HEARTBEAT_SEC, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, lockFileAlive, WORKFLOWS };
+module.exports = { _commitWip: commitWip, transient, run, distillWrite, runAgent, workflowApi, cliChild, killAgents, HEARTBEAT_SEC, execute, extractJson, replyText, copilotArgs, toolPermissions, agentTools, resolveBin, command, modelId, settings, limiter, preflight, summaryText, lockAlive, lockFileAlive, WORKFLOWS };

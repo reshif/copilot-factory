@@ -54,7 +54,7 @@ safe((input) => {
   const unknown = !WRITE_TOOLS.has(tool) && !READS.has(tool) && tool !== 'Bash';
   const commands = unknown ? commandArgs(input) : null;
   if (unknown && !commands.length) return;
-  const { checkWrite, checkReadTool, checkBash, checkUnknownCommand, checkContent, deny, loadPolicy } = require('./guard-rules');
+  const { checkWrite, checkReadTool, checkBash, checkUnknownCommand, checkContent, deny, loadPolicy, ownWorktree } = require('./guard-rules');
   const ti = input.args;
   const cwd = input.cwd;
   const abs = (p) => (path.isAbsolute(p) ? p : path.resolve(cwd, p));
@@ -74,7 +74,7 @@ safe((input) => {
   } else if (WRITE_TOOLS.has(tool)) {
     // Every file the call writes: its path argument and every file an apply_patch body touches.
     for (const f of input.files) {
-      why = checkWrite(root, abs(f.path), policy) || (root && f.content ? checkContent(f.content, abs(f.path)) : null);
+      why = checkWrite(root, abs(f.path), policy, { own: agent ? ownWorktree(root, cwd) : null }) || (root && f.content ? checkContent(f.content, abs(f.path)) : null);
       if (why) break;
     }
     if (!why && root && input.isPatch && !input.files.length) why = 'Could not tell which files this patch touches; use the edit or create tool on one file at a time.';

@@ -783,6 +783,8 @@ function uvInstalled(root, wkey, set) {
   }, { waitMs: 30000, staleMs: 60000, what: 'uv-installed.json' });
 }
 
+// The cache settings a fresh run replaces with its private, throwaway cache.
+const FRESH_DROPS = /^(UV_CACHE_DIR|UV_NO_CACHE|UV_LINK_MODE|UV_OFFLINE|UV_FIND_LINKS|PIP_CACHE_DIR|PIP_NO_CACHE_DIR|PIP_FIND_LINKS|PIP_NO_INDEX|POETRY_CACHE_DIR|NPM_CONFIG_CACHE|NPM_CONFIG_PREFER_OFFLINE|NPM_CONFIG_OFFLINE|YARN_CACHE_FOLDER|NPM_CONFIG_STORE_DIR|PNPM_STORE_DIR|XDG_CACHE_HOME)$/i;
 function setupIn(root, e, v, wt, key, { readOnly, state, taskId, fresh = false, buildWheelhouse = false }) {
   let marker = null;
   try {
@@ -803,7 +805,10 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId, fresh = false, 
   const C = require('./envcache');
   const v2 = schemaOf(e) === 2 && e.cache && e.cache !== 'none';
   const T = e.timeout_seconds || 1200;
-  const penv = processEnv(e, v);
+  // fresh: the sealed environment's own cache settings (UV_CACHE_DIR, PIP_CACHE_DIR, …) are
+  // ignored, so a fresh run never reads a cache the environment names (012D m-5)
+  const eRun = fresh ? { ...e, env: Object.fromEntries(Object.entries(e.env || {}).filter(([k]) => !FRESH_DROPS.test(k))) } : e;
+  const penv = processEnv(eRun, v);
   const tag = `envbuild-${require('crypto').randomBytes(6).toString('hex')}`;
   // the wheelhouse / offline key: the cache_key files' content, the setup, the tool, the python
   const files = cacheFiles(e, wt);
@@ -831,7 +836,7 @@ function setupIn(root, e, v, wt, key, { readOnly, state, taskId, fresh = false, 
     const ran = [];
     for (const step of e.setup || []) {
       const cmd = expand(step, v);
-      const r = sh(`${preamble(e, v)}${cmd}`, wt, T, { ...shared, ...penv, ...extra, ...(readOnly ? {} : { FACTORY_PROBE_ID: tag }) });
+      const r = sh(`${preamble(eRun, v)}${cmd}`, wt, T, { ...shared, ...penv, ...extra, ...(readOnly ? {} : { FACTORY_PROBE_ID: tag }) });
       ran.push({ cmd: C.redact(cmd), code: r.code, ms: r.ms });
       if (r.code !== 0) return { ok: false, ran, broken: broken('setup', cmd, r) };
     }
@@ -959,7 +964,7 @@ function confirm(root, { file, none = false, env: given = null, expectHash = nul
   else e = proposal(root);
   if (!e) fail(`No JSON in ${file}`, 'bad_input');
   const { source: _src, evidence: _ev, hash: _h, problems: _p, ...clean } = strip(e);
-  if (expectHash && short(clean) !== expectHash && short(e) !== expectHash) fail(`The proposal is now ${short(clean)}, not ${expectHash}: it changed after it was shown. Run factory env show and confirm again.`, 'stale_environment');
+  if (expectHash && short(clean) !== expectHash && short(e) !== expectHash) fail(`The proposal is ${short(clean)}, not ${expectHash}: the hash was mistyped, or the proposal changed after it was shown. Run factory env show and confirm again.`, 'stale_environment');
   const pp = problems(clean);
   if (pp.length) fail(`The environment is not valid:\n- ${pp.join('\n- ')}`, 'environment_invalid', pp);
   const out = seal({ ...clean, version: schemaOf(clean), confirmed: { at: nowIso(), via: channel, ...(via ? { gate: via } : {}) } });

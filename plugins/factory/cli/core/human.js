@@ -350,7 +350,7 @@ function parkAnswer(state, text) {
     if (m) {
       const want = (state.env_repair || {}).short;
       if (!m[1]) fail(`Name the environment you seal: reply "approve environment ${want || '<hash>'}" (or "a"). Nothing was sealed.`, 'explicit_seal_needed');
-      if (m[1].toLowerCase() !== want) fail(`The repaired environment waiting for your seal is ${want}, not ${m[1]}: it changed after it was shown. Nothing was sealed.`, 'stale_environment');
+      if (m[1].toLowerCase() !== want) fail(`${m[1]} is not the repaired environment waiting for your seal, which is ${want}: the hash was mistyped, or the environment changed after it was shown. Check it with factory env status and seal that hash. Nothing was sealed.`, 'stale_environment');
       const a = (park.options || [])[0];
       return { words: a ? a.text : 'seal', option: 'a', optionText: a ? a.text : 'seal', extra: null, via: 'option' };
     }
@@ -503,7 +503,7 @@ function sealEnvironment(root, { jobId, hash, channel }) {
   if (state.status !== 'parked' || !state.park || state.park.kind !== 'environment_repair' || !state.env_repair) fail(`${state.id} has no repaired build environment waiting for your seal.`, 'no_seal_pending');
   const want = state.env_repair.short;
   if (!hash) fail(`Name the environment you seal: factory env seal --job ${state.id} ${want}. Nothing was sealed.`, 'explicit_seal_needed');
-  if (String(hash).toLowerCase() !== want) fail(`The repaired environment waiting for your seal is ${want}, not ${hash}: it changed after it was shown. Nothing was sealed.`, 'stale_environment');
+  if (String(hash).toLowerCase() !== want) fail(`${hash} is not the repaired environment waiting for your seal, which is ${want}: the hash was mistyped, or the environment changed after it was shown. Check it with factory env status and seal that hash. Nothing was sealed.`, 'stale_environment');
   confirmTyped(channel, state.id, `seal the repaired build environment ${want}`);
   const a = (state.park.options || [])[0];
   applyResume(root, state, { words: a ? a.text : 'seal', via: 'option a', option: { key: 'a', text: a ? a.text : 'seal', extra: null }, channel });

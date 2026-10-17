@@ -81,8 +81,9 @@ function taskScope(root, worktreeName) {
 // environment's own directories (the factory's exclude block, the sealed environment's ignore
 // list, .factory-venv, node_modules, *.egg-info), anything the repository ignores, and untracked
 // build output, caches and logs (build/, dist/, .pytest_cache/, *.log, test-output.txt …). None of
-// it can reach the commit: the task's diff is checked against its allowed paths at task verify.
-const BUILD_OUTPUT = /^(build|dist|out|target|coverage|htmlcov|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox|\.cache|\.parcel-cache|\.next|\.turbo|__pycache__|\.factory-venv|\.venv|node_modules|[^/]+\.egg-info)(\/|$)|(^|\/)__pycache__(\/|$)|\.(log|out|pyc)$|(^|\/)[\w.-]*(output|results?|report)[\w.-]*\.(txt|xml|json|html)$/;
+// it is committed by the factory (commitWip unstages new build output), and task verify checks
+// the diff against the allowed paths.
+const { BUILD_OUTPUT } = require('../cli/lib/paths');
 function buildArtifact(root, wtName, inner) {
   if (!inner || inner.startsWith('.git')) return false;
   const wt = path.join(root, '.factory', 'worktrees', wtName);
@@ -109,10 +110,20 @@ function buildArtifact(root, wtName, inner) {
 }
 
 // Returns a deny reason or null.
-function checkWrite(root, absIn, policy) {
+// The task worktree a directory is in (.factory/worktrees/<name>/...), or null.
+function ownWorktree(root, dir) {
+  if (!root || !dir) return null;
+  const r = rel(realpath(root), realpath(dir));
+  const m = /^\.factory\/worktrees\/([^/]+)(\/|$)/.exec(r);
+  return m ? m[1] : null;
+}
+
+// opts.own: the worktree the writing agent works in; another worktree is not its to write.
+function checkWrite(root, absIn, policy, opts = {}) {
   const { matchesAny } = require('../cli/lib/glob');
   const { PLUGIN_ROOT } = require('../cli/lib/paths');
   const abs = realpath(absIn);
+  if (root) root = realpath(root);
   const pluginRoot = realpath(PLUGIN_ROOT);
   if (abs.startsWith(pluginRoot + path.sep)) {
     const inner = abs.slice(pluginRoot.length);
@@ -137,6 +148,7 @@ function checkWrite(root, absIn, policy) {
       const scope = taskScope(root, parts[2]);
       const inner = parts.slice(3).join('/');
       if (!scope) return `Unknown worktree ${parts[2]}.`;
+      if (opts.own && opts.own !== parts[2]) return `${parts[2]} is another task's worktree; you work in ${opts.own} only.`;
       if (inner.startsWith('.git/') || inner === '.git') return 'Editing git internals in a worktree is not allowed.';
       if (matchesAny(inner, policy.protected_paths)) return `${inner} is a protected path.`;
       if (!matchesAny(inner, scope.paths) && !buildArtifact(root, parts[2], inner)) return `${inner} is outside ${scope.task ? `${scope.task}'s` : `${scope.job}'s`} allowed paths (${scope.paths.map((x) => String(x).replace(/^=/, '')).join(', ') || 'none'}). Return status "blocked" with needs_paths instead.`;
@@ -704,69 +716,112 @@ function walk(src, ctx, depth, collect = false) {
     cur.push(c);
   }
   if (cur.length) pipelines.push(cur);
-  // the directories a command may run in (012C MJ-1): a ( ) subshell's cd ends with it; code fed to
-  // a nested shell (bash -c, eval) never moves the caller; a cd that may not happen (after && or
-  // ||, before ||, to a directory that does not exist, cd - / popd) only ADDS a possible directory
-  if (!ctx.cwds) ctx.cwds = [ctx.cwd || ctx.root || process.cwd()];
-  if (!ctx.seen) ctx.seen = new Set(ctx.cwds);
-  const saved = ctx.cwds.slice();
-  const frames = [];
-  let level = 0;
+  // Where the command runs, failing CLOSED (012D MJ-1). The directory is KNOWN only while every
+  // cd / pushd / popd in it is a simple `cd <literal path>`: no variable, expansion, ~, -, +N/-N,
+  // option or `--`; no CDPATH in play; not inside an if / while / case / for, a { } group or a
+  // function body; not in a pipe or after &; and either certain to succeed (an existing directory)
+  // or gating everything after it (`cd x && …`). A ( ) subshell's cd ends with it; code a nested
+  // shell runs (bash -c, $( )) never moves the caller; eval, source and . may, so they make it
+  // unknown. Once it is unknown, every RELATIVE write target is refused (absolute ones are checked
+  // as always): "use an absolute path or a simple cd".
+  if (ctx.cwdUnknown === undefined) {
+    ctx.cwd = ctx.cwd || ctx.root || process.cwd();
+    ctx.cwdUnknown = false;
+    ctx.dirStack = [];
+  }
+  const state0 = { cwd: ctx.cwd, unknown: ctx.cwdUnknown, stack: ctx.dirStack.slice() };
   const flat = [];
   for (const pipeline of pipelines) for (const cmd of pipeline) flat.push([cmd, pipeline]);
+  const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'do', 'done', 'case', 'esac', 'for', 'select', 'function', '{', '}', '[[', ']]']);
+  const compound = flat.some(([c]) => c.words.length && (KEYWORDS.has(c.words[0].text) || /\)$/.test(c.words[0].text) || /^\w+\(\)$/.test(c.words[0].text))) || /\b\w+\s*\(\s*\)\s*\{/.test(src);
+  if (/\bCDPATH\b/.test(src) || process.env.CDPATH) ctx.cdpath = true;
+  // a cd anywhere in a compound statement or function (however its words are split) moves the
+  // shell where the guard cannot follow
+  if (compound && /(^|[^\w.-])(cd|pushd|popd)(?![\w.-])/.test(src)) ctx.cwdUnknown = true;
+  const frames = [];
+  let level = 0;
   try {
     for (let k = 0; k < flat.length; k++) {
       const [cmd, pipeline] = flat[k];
       const d = cmd.depth || 0;
       while (d > level) {
-        frames.push(ctx.cwds.slice());
+        frames.push({ cwd: ctx.cwd, unknown: ctx.cwdUnknown, stack: ctx.dirStack.slice() });
         level += 1;
       }
       while (d < level) {
-        ctx.cwds = frames.pop() || ctx.cwds;
+        const f = frames.pop();
+        if (f) {
+          ctx.cwd = f.cwd;
+          ctx.cwdUnknown = f.unknown;
+          ctx.dirStack = f.stack;
+        }
         level -= 1;
       }
       cmd.nextAfter = flat[k + 1] ? flat[k + 1][0].after : null;
+      cmd.compound = compound;
+      // does every later command at this level run only if this one succeeded?
+      let allAnd = true;
+      for (let j = k + 1; j < flat.length; j++) {
+        const c = flat[j][0];
+        if ((c.depth || 0) < d) break;
+        if ((c.depth || 0) === d && c.after !== '&&') {
+          allAnd = false;
+          break;
+        }
+      }
+      cmd.restAllAnd = allAnd;
       const why = checkCommand(cmd, pipeline, ctx, depth, collect);
       if (why) return why;
     }
   } finally {
-    if (depth > 0) ctx.cwds = saved;
+    // a nested shell's directory changes are its own
+    if (depth > 0 && !ctx.inSameShell) {
+      ctx.cwd = state0.cwd;
+      ctx.cwdUnknown = state0.unknown;
+      ctx.dirStack = state0.stack;
+    }
   }
   return null;
 }
 
-// Every directory a relative path may be resolved from (see walk).
+// The absolute path a relative one names, or null when the directory is unknown (see walk).
 function resolveAll(ctx, t) {
   const x = String(t || '').replace(/^["']|["']$/g, '');
   if (!x || /^\$/.test(x)) return [x];
   if (path.isAbsolute(x)) return [x];
   const h = x.replace(/^~(?=\/)/, require('os').homedir());
   if (path.isAbsolute(h)) return [h];
-  return [...new Set((ctx.cwds || [ctx.cwd || ctx.root || process.cwd()]).map((c) => path.resolve(c, h)))];
+  if (ctx.cwdUnknown) return [null];
+  return [path.resolve(ctx.cwd || ctx.root || process.cwd(), h)];
 }
+const UNKNOWN_CWD = 'This command changes directory in a way the guard cannot follow (a cd with a variable, ~, -, +N, an option, CDPATH, inside if/while/case/a function, in a pipe or after &, or after eval/source), so it cannot tell where a relative path lands: use an absolute path, or a simple cd to a literal directory (cd src && …).';
 function trackCd(head, cmd, ctx) {
+  if (ctx.cwdUnknown) return;
+  const unknown = () => {
+    ctx.cwdUnknown = true;
+  };
   const n = head.name;
-  const arg = head.args.find((a) => !/^-[LPe@]$/.test(a.text));
-  const cwds = ctx.cwds || [ctx.cwd || ctx.root];
-  const unionWith = (more) => [...new Set([...cwds, ...more])];
-  if (n === 'popd' || !arg || arg.text === '-' || /^[$`~]/.test(arg.text)) {
-    ctx.cwds = unionWith([...(ctx.seen || []), ...(!arg && n !== 'popd' ? [require('os').homedir()] : [])]);
+  if (cmd.compound || cmd.pipeIn || cmd.pipeOut || cmd.after === '&' || cmd.nextAfter === '&' || cmd.nextAfter === '||') return unknown();
+  if (n === 'popd') {
+    if (!head.args.length && ctx.dirStack.length) ctx.cwd = ctx.dirStack.pop();
+    else unknown();
     return;
   }
-  const targets = [...new Set(cwds.map((c) => path.resolve(c, arg.text)))];
-  let exist = true;
-  for (const t of targets) {
-    try {
-      if (!require('fs').statSync(t).isDirectory()) exist = false;
-    } catch {
-      exist = false;
-    }
+  if (head.args.length !== 1) return unknown();
+  const a = head.args[0];
+  if (a.expand || !/^[^-+~$`*?[][^$`*?[]*$/.test(a.text)) return unknown();
+  if (ctx.cdpath && !path.isAbsolute(a.text)) return unknown();
+  const target = path.resolve(ctx.cwd, a.text);
+  let exists = false;
+  try {
+    exists = require('fs').statSync(target).isDirectory();
+  } catch {
+    exists = false;
   }
-  const conditional = cmd.after === '&&' || cmd.after === '||' || cmd.nextAfter === '||';
-  ctx.cwds = !conditional && exist && cwds.length === 1 ? targets : unionWith(targets);
-  for (const t of targets) ctx.seen.add(t);
-  ctx.cwd = ctx.cwds[ctx.cwds.length - 1];
+  const conditional = cmd.after === '&&' || cmd.after === '||';
+  if (conditional ? !cmd.restAllAnd : !exists && !cmd.restAllAnd) return unknown();
+  if (n === 'pushd') ctx.dirStack.push(ctx.cwd);
+  ctx.cwd = target;
 }
 
 // 0.12: the shared package caches and the pip wheelhouse (.factory/envcache, .factory/wheelhouse)
@@ -779,7 +834,7 @@ const SHARED_CACHE = /(^|[\\/])\.factory[\\/](envcache|wheelhouse)([\\/]|$)/;
 const CACHE_READERS = new Set(['ls', 'du', 'stat', 'cat', 'head', 'tail', 'wc', 'file', 'less', 'more', 'tree']);
 function sharedCacheTouch(head, cmd, ctx) {
   const words = [...cmd.words.map((w) => w.text), ...cmd.redirs.filter((r) => r.target).map((r) => r.target.text)];
-  if (head && CACHE_READERS.has(head.name) && !cmd.redirs.some((r) => r.target && resolveAll(ctx, r.target.text).some((x) => SHARED_CACHE.test(x)))) return null;
+  if (head && CACHE_READERS.has(head.name) && !cmd.redirs.some((r) => r.target && resolveAll(ctx, r.target.text).some((x) => x && SHARED_CACHE.test(x)))) return null;
   if (head && head.name === 'find' && !head.args.some((a) => /^-(delete|exec|execdir|ok|okdir|fprint\w*)$/.test(a.text))) return null;
   for (let w of words) {
     if (!w) continue;
@@ -787,7 +842,8 @@ function sharedCacheTouch(head, cmd, ctx) {
     if (v && ctx.vars.has(v)) w = ctx.vars.get(v);
     for (const part of [w, ...(w.includes('=') ? [w.slice(w.indexOf('=') + 1)] : [])]) {
       if (!part || /^-/.test(part) && !part.includes('=')) continue;
-      if (resolveAll(ctx, part).some((x) => SHARED_CACHE.test(x))) return 'The shared package caches and the wheelhouse (.factory/envcache, .factory/wheelhouse) are factory data every later install reads, ci verify included: a factory agent may not write, install into, point an installer at, or remove them. Install into your worktree\'s own environment with its own tool.';
+      if (ctx.cwdUnknown && !path.isAbsolute(part.replace(/^["']|["']$/g, '')) && /(^|[\\/])\.\.([\\/]|$)|envcache|wheelhouse/.test(part)) return UNKNOWN_CWD;
+      if (resolveAll(ctx, part).some((x) => x && SHARED_CACHE.test(x))) return 'The shared package caches and the wheelhouse (.factory/envcache, .factory/wheelhouse) are factory data every later install reads, ci verify included: a factory agent may not write, install into, point an installer at, or remove them. Install into your worktree\'s own environment with its own tool.';
     }
   }
   return null;
@@ -802,7 +858,12 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
   }
   const head = resolveHead(cmd.words, ctx);
   // cd within the command: later relative paths resolve from there (review 012B M-1)
-  if (head && !head.lookup && ['cd', 'pushd', 'popd'].includes(head.name)) trackCd(head, cmd, ctx);
+  const CD = ['cd', 'pushd', 'popd'];
+  if (head && !head.lookup && CD.includes(head.name)) trackCd(head, cmd, ctx);
+  // a cd reached any other way (builtin cd, command cd, exec cd, a wrapper) is not followed
+  else if (cmd.words.some((w) => CD.includes(w.text))) ctx.cwdUnknown = true;
+  // eval, source and . run code in THIS shell: what they do to the directory is not followed
+  if (head && !head.lookup && ['eval', 'source', '.'].includes(head.name)) ctx.cwdUnknown = true;
   if (agent && !collect) {
     const why = sharedCacheTouch(head && !head.lookup ? head : null, cmd, ctx);
     if (why) return why;
@@ -951,10 +1012,41 @@ function checkCommand(cmd, pipeline, ctx, depth, collect) {
   // writes: redirects, tee and the write verbs
   for (const t of writeTargets(head && !head.lookup ? head : null, cmd)) {
     if (!t || /^\$/.test(t) || t === '-') continue;
+    // find -exec's {} is each file find found under its start paths, not a path here
+    if (/^\{\}[;+]?$/.test(t)) continue;
     if (SECRET_FILE.test(t)) return 'The factory seal secret is off limits.';
     for (const abs of resolveAll(ctx, t)) {
-      const why = checkWrite(root, abs, policy, ctx.agent);
+      if (abs === null) return UNKNOWN_CWD;
+      const why = checkWrite(root, abs, policy, { own: ctx.agent ? ctx.ownWt : null });
       if (why) return why;
+    }
+  }
+  // a symlink is a way in: `ln -s ../.. build` makes build/envcache/… the shared cache. The
+  // directory it points to must not be factory state or another task's worktree (012D m-2), and
+  // neither may a new directory.
+  if (head && !head.lookup && ctx.agent && root) {
+    const args = head.args.map((a) => a.text);
+    const extra = [];
+    if (head.name === 'ln' && args.some((a) => /^-[a-zA-Z]*s|^--symbolic$/.test(a))) {
+      const plain = args.filter((a) => !/^-/.test(a));
+      const tIdx = args.findIndex((a) => a === '-t' || a === '--target-directory');
+      const linkDir = tIdx !== -1 && args[tIdx + 1] ? args[tIdx + 1] : plain.length > 1 ? path.dirname(plain[plain.length - 1]) : '.';
+      const sources = tIdx !== -1 ? plain.filter((a) => a !== args[tIdx + 1]) : plain.length > 1 ? plain.slice(0, -1) : plain;
+      for (const src of sources) extra.push(path.isAbsolute(src) ? src : path.join(linkDir, src));
+    } else if (head.name === 'mkdir') extra.push(...args.filter((a) => !/^-/.test(a)));
+    for (const t of extra) {
+      if (!t || /^\$/.test(t)) continue;
+      for (const abs of resolveAll(ctx, t)) {
+        if (abs === null) return UNKNOWN_CWD;
+        const r = rel(realpath(root), realpath(abs));
+        const m = /^\.factory(\/|$)(worktrees\/([^/]+))?/.exec(r);
+        if (!m) continue;
+        // inside its own worktree (its allowed paths are checked where it writes files)
+        if (m[3] && ctx.ownWt && m[3] === ctx.ownWt) continue;
+        const probe = checkWrite(root, path.join(abs, '.factory-probe'), policy, { own: ctx.ownWt });
+        const why = probe && probe.replace(/\/?\.factory-probe\b/g, '');
+        if (why) return head.name === 'ln' ? `This link points into ${r || '.'}, which you may not write: ${why}` : why;
+      }
     }
   }
   return null;
@@ -973,7 +1065,7 @@ const TEST_SEAM = /\bFACTORY_(TEST_HUMAN\w*|SECRET_FILE|DEPS_FETCH_\w+)\b/;
 
 function checkBash(root, cmd, policy, opts = {}) {
   if (TEST_SEAM.test(String(cmd || ''))) return 'FACTORY_TEST_HUMAN, FACTORY_SECRET_FILE and FACTORY_DEPS_FETCH_* are the test suite\'s seams (into human-only actions, and the dependency fetch), never set from here. Human-only actions are the user\'s: their chat reply, or their own terminal.';
-  const ctx = { root, cwd: opts.cwd || root, policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [], scripts: 0 };
+  const ctx = { root, cwd: opts.cwd || root, ownWt: ownWorktree(root, opts.cwd), policy: policy || require('../cli/core/policy').defaults(), agent: Boolean(opts.agent), job: opts.job || null, names: new Set(), vars: new Map(), found: [], scripts: 0 };
   try {
     return walk(String(cmd || ''), ctx, 0);
   } catch {
@@ -1015,4 +1107,4 @@ function normalise(cmd) {
   return parse(cmd).map((c) => c.words.map((w) => w.text).join(' ')).join('; ');
 }
 
-module.exports = { taskScope, CLI_BOOL, checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };
+module.exports = { taskScope, CLI_BOOL, BUILD_OUTPUT, ownWorktree, checkWrite, checkRead, checkReadTool, READ_TOOLS, checkBash, checkUnknownCommand, checkContent, normalise, deny, loadPolicy, isSecret, AGENT_ALLOWED, HUMAN_ONLY };

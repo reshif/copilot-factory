@@ -2797,7 +2797,9 @@ function floorOk(ctx) {
   const lock = require('../lib/util').readJson(require('../lib/paths').jobPaths(ctx.root, ctx.state.id).recipeLock, null);
   if (lock && lock.floors && lock.floors.floors && !JSON.stringify(lock.floors.floors).includes('intent_grounded')) return true;
   const data = load(ctx.root, ctx.state.id);
-  if (!data) return require('./intent').floorOk(ctx);
+  // no clarify record: an older job's v1/v2 intent record decides; with neither, nothing
+  // grounds the contract and the floor fails (012D m-6)
+  if (!data) return exists(require('./intent').files(ctx.root, ctx.state.id).json) && require('./intent').floorOk(ctx);
   if (data.tampered) return false;
   let text = require('./contract').read(ctx.root, ctx.state.id);
   for (const k of Object.values(SECTIONS)) text = dropSection(text, k.replace(/^##\s+/, '').toLowerCase());

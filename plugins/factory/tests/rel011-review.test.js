@@ -97,7 +97,7 @@ test('B2: the seal shows the full diff (prefix, ignore, env, timeout, cache_key 
   const short = st.env_repair.short;
   assert.match(st.park.question, /! prefix runs in front of EVERY verify command[\s\S]*\+ prefix: true &&[\s\S]*The whole repaired environment:[\s\S]*"ignore"/);
   for (const w of ['ok', 'sure', 'yes', 'okay', 'do it']) assert.throws(() => core('human').replyToPark(root, { jobId: J, text: w, channel: 'chat' }), /does not seal/, w);
-  assert.throws(() => F.reply(root, 'approve environment deadbeef'), /not deadbeef/);
+  assert.throws(() => F.reply(root, 'approve environment deadbeef'), /deadbeef is not the repaired environment/);
   assert.throws(() => F.reply(root, 'approve environment'), /Name the environment you seal/);
   assert.equal(core('environment').load(root).name, 'broken', 'nothing sealed');
   const r = core('human').replyToPark(root, { jobId: J, text: 'a', channel: 'chat' });

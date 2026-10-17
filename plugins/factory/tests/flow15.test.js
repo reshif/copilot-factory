@@ -102,18 +102,33 @@ test('§15.5: an integrator that returned nothing goes to the integrator loop (r
   assert.equal(g.status, 'error', JSON.stringify(g));
 });
 
-test('§15.6: the intent_grounded floor runs the clarify v3 check (it falls back to the v1/v2 record for older jobs)', (t) => {
+test('§15.6: the intent_grounded floor runs the clarify v3 check; no record at all fails it (012D m-6)', (t) => {
   assert.match(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'floors.js'), 'utf8'), /case 'intent_grounded':\s*\n\s*\/\/[^\n]*\n\s*return require\('\.\/clarify'\)\.floorOk\(ctx\)/);
   const root = F.makeRepo(t);
   const J = F.cli(root, ['job', 'new', '--title', 'x', '--type', 'feature', '--risk', 'medium']).job;
   const C = core('clarify');
+  const floors = core('floors');
   const state = core('job').load(root, J);
-  const ctx = { root, state };
-  const data = C.load(root, J);
-  if (data) {
-    // a v3 job whose contract cites unusable evidence fails the floor
-    const bad = { id: 'E-9', source: 'https://example.invalid/unusable-source', verdict: 'contradicted' };
-    data.evidence = [...(data.evidence || []), bad];
-    assert.equal(typeof C.floorOk(ctx), 'boolean');
-  } else assert.equal(typeof C.floorOk(ctx), 'boolean');
+  const ctx = { root, state, b: {} };
+  const jp = require(path.join(F.PLUGIN, 'cli', 'lib', 'paths')).jobPaths(root, J);
+  assert.ok(JSON.stringify(require(jp.recipeLock).floors.floors).includes('intent_grounded'), 'a medium job carries the floor');
+  // neither clarify.json nor a v1/v2 intent-evidence.json: nothing grounds the contract
+  assert.equal(C.load(root, J), null);
+  assert.equal(floors.check(ctx, 'intent_grounded'), false);
+  // a v3 record whose contract cites an unusable source fails; once that source is usable it passes
+  const d = C.empty(state);
+  d.evidence = [{ id: 'E-9', source: 'https://example.invalid/unusable-source', verdict: 'unpinned' }];
+  C.save(root, J, d);
+  fs.writeFileSync(jp.contract, '# Contract\n\n## Goal\n\nDo it as https://example.invalid/unusable-source says.\n');
+  assert.equal(floors.check(ctx, 'intent_grounded'), false);
+  const d2 = C.load(root, J);
+  d2.evidence[0].verdict = 'docs';
+  C.save(root, J, d2);
+  assert.equal(floors.check(ctx, 'intent_grounded'), true);
+  // a hand-edited record fails its seal: the floor fails
+  const f = C.file(root, J);
+  const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+  raw.evidence[0].verdict = 'pinned';
+  fs.writeFileSync(f, JSON.stringify(raw));
+  assert.equal(floors.check(ctx, 'intent_grounded'), false);
 });

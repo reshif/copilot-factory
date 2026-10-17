@@ -80,4 +80,8 @@ function taskWorktree(root, jobId, taskId) {
   return path.join(root, '.factory', 'worktrees', `${jobId}-${taskId}`);
 }
 
-module.exports = { PLUGIN_ROOT, pluginPath, findRoot, requireRoot, project, jobPaths, taskWorktree };
+// Untracked build output, caches and logs a builder may write whatever its allowed paths (the
+// guard, hooks/guard-rules.js) and that the factory's save of uncommitted work leaves unstaged.
+const BUILD_OUTPUT = /^(build|dist|out|target|coverage|htmlcov|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox|\.cache|\.parcel-cache|\.next|\.turbo|__pycache__|\.factory-venv|\.venv|node_modules|[^/]+\.egg-info)(\/|$)|(^|\/)__pycache__(\/|$)|\.(log|out|pyc)$|(^|\/)[\w.-]*(output|results?|report)[\w.-]*\.(txt|xml|json|html)$/;
+
+module.exports = { BUILD_OUTPUT, PLUGIN_ROOT, pluginPath, findRoot, requireRoot, project, jobPaths, taskWorktree };

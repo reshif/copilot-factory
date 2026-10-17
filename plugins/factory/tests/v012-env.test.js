@@ -227,6 +227,109 @@ test('guard (012C): cd is tracked conservatively (subshells, cd -, popd, conditi
   assert.ok(G.checkBash(root, 'echo x > build.log', null, { agent: true, job: 'J-0001', cwd: wt2 }));
 });
 
+test('guard (012D MJ-1): cd tracking fails CLOSED: any cd it cannot follow makes the directory unknown and refuses every relative write; absolute targets are checked as always; normal builder work still runs', (t) => {
+  const root = F.makeRepo(t);
+  F.write(root, 'scripts/run.sh', 'echo hi\n');
+  F.write(root, 'src/up.sh', 'cd ../..\n');
+  F.sh(root, 'git add -A && git commit -qm s');
+  fs.mkdirSync(path.join(root, '.factory', 'jobs', 'J-0001'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.factory', 'jobs', 'J-0001', 'plan.json'), JSON.stringify({ tasks: [{ id: 'T1', allowed_paths: ['src/**', 'tests/**', 'scripts/**', 'x/**'] }, { id: 'T2', allowed_paths: ['src/**'] }] }));
+  const wt = worktree(root, 'J-0001-T1');
+  const wt2 = worktree(root, 'J-0001-T2');
+  fs.mkdirSync(path.join(wt, 'x'), { recursive: true });
+  fs.mkdirSync(path.join(wt, 'src', 'sub'), { recursive: true });
+  const G = require('../hooks/guard-rules');
+  const o = { agent: true, job: 'J-0001', cwd: wt };
+  const O = T.mkdtemp('factory-outside-', t); // an existing directory outside the repository
+  const W = '.github/workflows/ci.yml';
+  // every row of the REL-012D review, plus the forms around them
+  const refused = [
+    `pushd ${O}; pushd +1; echo x > ${W}`, `pushd ${O}; pushd -0; echo x > ${W}`,
+    `f() { cd ${O}; }; echo x > ${W}`, `f(){ cd ${O}; }; f; echo x > ${W}`, `function f { cd ${O}; }; f; echo x > ${W}`,
+    `if false; then cd ${O}; fi; echo x > ${W}`, `while false; do cd ${O}; done; echo x > ${W}`, `case a in a) cd ${O};; esac; echo x > ${W}`, `for d in ${O}; do cd $d; done; echo x > ${W}`, `{ cd ${O}; }; echo x > ${W}`,
+    `cd ${O} & echo x > ${W}`, `cd ${O} | true; echo x > ${W}`, `true | cd ${O}; echo x > ${W}`,
+    `pushd ${O}; pushd +1; cd ../../envcache/uv && echo POISON >> archive-v0/h/six.py`,
+    `pushd ${O}; pushd +1; cd ../../wheelhouse/abc && echo x > six-1.0-py3-none-any.whl`,
+    `pushd ${O}; pushd +1; cd ../../.. && echo x > ${W}`,
+    `pushd ${O}; pushd +1; cd ../.. && echo '{}' > environment.json`,
+    'D=../..; cd $D; echo x > envcache/uv/a.log', 'D=../..; cd "$D"; mkdir -p src; echo x > src/f',
+    'set -- ../..; cd "$1"; echo x > envcache/uv/a.log', 'cd ${PWD%/*/*}; echo x > envcache/uv/a.log', 'cd "$(dirname $(dirname $PWD))"; echo x > envcache/uv/a.log',
+    'cd ~+/../..; echo x > envcache/uv/a.log', 'OLDPWD=../..; cd -; echo x > envcache/uv/a.log',
+    "eval 'cd ../..'; echo x > envcache/uv/a.log", "printf 'cd ../..\\n' > src/up.sh && . src/up.sh && echo x > envcache/uv/a.log", '. src/up.sh; echo x > envcache/uv/a.log', 'source src/up.sh; echo x > envcache/uv/a.log', 'source <(echo cd ../..); echo x > envcache/uv/a.log', ". /dev/stdin <<<'cd ../..'; echo x > envcache/uv/a.log",
+    'CDPATH=../.. cd envcache; echo x > uv/a.log', 'export CDPATH=../..; cd envcache; echo x > uv/a.log',
+    'cd -- ../..; echo x > envcache/uv/a.log', 'cd -P ../..; echo x > envcache/uv/a.log',
+    `false && cd ${O}; echo x > ${W}`, `cd /nonexistent-dir; echo x > ${W}`, `cd ${O} || true; echo x > ${W}`,
+    'echo x > README.md',
+  ];
+  for (const c of refused) assert.ok(G.checkBash(root, c, null, o), `refused: ${c}`);
+  // the message says what to do
+  assert.match(G.checkBash(root, `if true; then cd ${O}; fi; echo x > src/a.py`, null, o), /absolute path, or a simple cd/);
+  // unknown directory, absolute target: checked as always (allowed in scope, refused out of it)
+  assert.equal(G.checkBash(root, `if true; then cd ${O}; fi; echo x > ${wt}/src/a.py`, null, o), null);
+  assert.ok(G.checkBash(root, `if true; then cd ${O}; fi; echo x > ${root}/.factory/envcache/uv/a.log`, null, o));
+  // a cd the guard follows exactly: a plain one to a real directory, wherever it is
+  assert.ok(G.checkBash(root, `builtin cd ../../..; echo x > ${W}`, null, o), 'followed into the main checkout: protected');
+  assert.ok(G.checkBash(root, 'cd ../.. && echo x > envcache/uv/a.log', null, o), 'followed into .factory: the cache');
+  const ok = ['cd src && echo x > y.py', '(cd x && make > build.log)', '(cd src && echo x > a.py) && echo y > tests/t.py', 'pushd src && echo x > a.py && popd && echo y > tests/b.py', 'echo x > src/a.py', 'cd src/sub && touch a.py && cd ../.. && echo > tests/x.py', 'cd src; echo x > a.py', `cd ${O} && echo x > out.txt`, 'bash -c "cd /tmp"; echo x > src/a.py', 'echo $(cd /tmp && pwd) > src/a.py', 'pytest > test-output.txt 2>&1', 'rm -rf build dist node_modules .factory-venv', 'mkdir -p src/a/b',
+    // m-4: find's {} is each file it found, not a path
+    'find . -name __pycache__ -exec rm -rf {} +', 'find src -name "*.o" -exec rm -f {} \;'];
+  for (const c of ok) assert.equal(G.checkBash(root, c, null, o), null, `allowed: ${c}`);
+  // m-1: another task's worktree is not this agent's to write, from a shell or the edit tool
+  for (const c of ['echo x > ../J-0001-T2/src/a.py', `echo x > ${wt2}/src/a.py`, 'echo x > ../J-0001-T2/.factory-venv/bin/python', 'echo x > ../J-0001-T2/build.log', 'cd ../J-0001-T2 && echo x > src/a.py']) assert.match(G.checkBash(root, c, null, o) || '', /another task's worktree/, c);
+  const pol = core('policy').defaults();
+  assert.match(G.checkWrite(root, path.join(wt2, 'src', 'a.py'), pol, { own: 'J-0001-T1' }), /another task's worktree/);
+  assert.equal(G.checkWrite(root, path.join(wt, 'src', 'a.py'), pol, { own: 'J-0001-T1' }), null);
+  assert.equal(G.ownWorktree(root, path.join(wt, 'src')), 'J-0001-T1');
+  // m-2: symlinks are resolved along the whole path, however deep the new part is; a link into
+  // factory state is refused when it is made
+  assert.match(G.checkBash(root, 'ln -s ../.. build', null, o) || '', /link points into \.factory/);
+  fs.symlinkSync('../..', path.join(wt, 'build'));
+  for (const c of ['install -D src/p.py build/envcache/uv/a/b/c.py', 'mkdir -p build/envcache/uv/q/r', 'echo x > build/envcache/uv/a/b/c.py', 'cp a build/state.json']) assert.ok(G.checkBash(root, c, null, o), `refused: ${c}`);
+  assert.match(G.checkWrite(root, path.join(wt, 'build', 'envcache', 'uv', 'n', 'e', 'w.py'), pol, { own: 'J-0001-T1' }), /factory state/);
+  assert.equal(G.checkBash(root, 'ln -s ../tests/fixtures src/fixtures', null, o), null, 'a link inside its own worktree');
+});
+
+test('build output stays out of the commit: the factory\'s save of uncommitted work unstages new build output and logs; the builder and its time-up turn are told to add only their changed files (012D m-3)', (t) => {
+  const root = F.makeRepo(t);
+  const wt = worktree(root, 'J-0001-T1');
+  F.sh(wt, 'git checkout -q -b factory/J-0001-T1');
+  fs.mkdirSync(path.join(wt, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(wt, 'build', 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'src', 'new.py'), 'x = 1\n');
+  fs.writeFileSync(path.join(wt, 'build', 'lib', 'new.py'), 'x = 1\n');
+  fs.writeFileSync(path.join(wt, 'pytest.log'), 'log\n');
+  fs.writeFileSync(path.join(wt, 'test-results.xml'), '<x/>\n');
+  const sha = require('../cli/core/runner')._commitWip(wt, 'T1', 'time up');
+  assert.ok(sha);
+  const files = F.sh(wt, 'git show --name-only --format= HEAD').trim().split('\n');
+  assert.deepEqual(files, ['src/new.py']);
+  assert.ok(fs.existsSync(path.join(wt, 'build', 'lib', 'new.py')), 'the output itself is left alone');
+  // nothing but build output: no empty commit
+  fs.writeFileSync(path.join(wt, 'more.log'), 'log\n');
+  assert.equal(require('../cli/core/runner')._commitWip(wt, 'T1', 'time up'), null);
+  const md = fs.readFileSync(path.join(F.PLUGIN, 'agents', 'builder.agent.md'), 'utf8');
+  assert.match(md, /never `git add -A`/);
+  assert.doesNotMatch(fs.readFileSync(path.join(F.PLUGIN, 'cli', 'core', 'runner.js'), 'utf8'), /`git add -A && git commit/);
+});
+
+test('fresh runs ignore the sealed environment\'s own cache settings (012D m-5): UV_CACHE_DIR and PIP_CACHE_DIR in its env never reach a fresh setup', (t) => {
+  const root = F.makeRepo(t);
+  const seen = path.join(T.mkdtemp('factory-seen-', t), 'env.txt');
+  const env = { version: 2, name: 'x', tool: 'uv', reason: 'test', cache: 'uv', setup: [`env > ${seen}`], cache_key: [], env: { UV_CACHE_DIR: '/home/someone/.cache/uv', PIP_CACHE_DIR: '/home/someone/.cache/pip', KEEP_ME: 'yes' }, timeout_seconds: 60 };
+  sealEnv(root, env);
+  const wc = worktree(root, 'J-0001-ci');
+  const rc = E.ensure(root, null, { taskId: 'ci', wt: wc, fresh: true });
+  assert.equal(rc.ok, true, JSON.stringify(rc.broken));
+  const got = Object.fromEntries(fs.readFileSync(seen, 'utf8').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  assert.match(got.UV_CACHE_DIR, /factory-fresh-cache-/);
+  assert.notEqual(got.PIP_CACHE_DIR, '/home/someone/.cache/pip');
+  assert.equal(got.KEEP_ME, 'yes');
+  // a task worktree (not fresh) keeps the sealed choice
+  const w1 = worktree(root, 'J-0001-T1');
+  assert.equal(E.ensure(root, null, { taskId: 'T1', wt: w1 }).ok, true);
+  assert.match(fs.readFileSync(seen, 'utf8'), /^UV_CACHE_DIR=\/home\/someone\/\.cache\/uv$/m);
+});
+
 test('the fallback after an offline miss starts clean: what the first attempt created at the top of the worktree (mkdir data) is removed too; a project installed from its own directory is not expected in the wheelhouse (012C m-2, m-3)', (t) => {
   const root = pyRepo(t);
   const dir = T.mkdtemp('factory-offline-', t);
