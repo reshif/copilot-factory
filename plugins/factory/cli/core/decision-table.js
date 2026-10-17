@@ -43,7 +43,7 @@ const PARK_NEXT = {
   integration: 'Answer the question above in your own words (it resumes the job with them), or amend the plan.',
   epic_gate: 'Decide: a new slice (amend the epic) or a fix job for a merged slice.',
   plan_probe: 'The plan probe was interrupted twice before it finished: answer the question (a: lint only, b: run factory plan probe in your own terminal, then resume, c: no probe for this job).',
-  environment_repair: 'A repaired build environment passed its check in a scratch worktree: reply "approve environment <hash>" (the hash the question names) or "a" to seal it, "b" (or your words) to repair it again, or "c" to re-check after a fix on your machine. A bare "approve environment", "ok" or "yes" seals nothing.',
+  environment_repair: 'A repaired build environment passed its check in a scratch worktree: reply "approve environment <hash>" (the hash the question names) or "a" to seal it, "b" (or your words) to repair it again, or "c" to re-check after a fix on your machine. From your terminal: factory env seal --job <job> <hash>. A bare "approve environment", "ok" or "yes" seals nothing, and a bare factory resume seals nothing either.',
   manual: 'Parked by hand: reply "resume" when ready, or "cancel job".',
   other: 'Read factory why --format md, then reply "resume", "cancel job" or "abandon job".',
 };

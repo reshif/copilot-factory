@@ -61,9 +61,9 @@ Clarify    clarify reply "<the user's words>"   (read-back ok or edit, sheet ans
            clarify note "<text>"   (the same as clarify reply) · clarify split   (v3 keeps no folded issues: says so)
 Intent     intent show   (a v2 job's research record: unknowns, cited evidence, evidence-backed assumptions)
 Workflows  wfargs <clarify|ground|fanout-judge|decompose|realize|reconcile> [--config decide|challenge] [--mode m] [--scope s] [--lanes a,b]
-           [--threat-model | --no-threat-model] [--plan-critique] [--accept-degraded] [--out file]
+           [--threat-model | --no-threat-model] [--plan-critique] [--out file]
            record --file <envelope.json | ->
-           run <clarify|ground|fanout-judge|decompose|realize|reconcile> [--config c] [--mode m] [--scope s] [--lanes a,b] [--accept-degraded]
+           run <clarify|ground|fanout-judge|decompose|realize|reconcile> [--config c] [--mode m] [--scope s] [--lanes a,b]
                [--threat-model | --no-threat-model] [--plan-critique] [--dry-run] [--json]
                runs the workflow on the Copilot CLI (one \`copilot -p --agent factory:<role>\` per agent) and records it;
                only the workflow factory next asked for, one run per job at a time. Prints the recorded result
@@ -72,6 +72,7 @@ Workflows  wfargs <clarify|ground|fanout-judge|decompose|realize|reconcile> [--c
 Env        env show · env status · env check [--proposed]   (the build environment each worktree runs in; read-only, agents may run them)
            env gc [--keep N] [--caches]   (remove old wheelhouses under .factory/wheelhouse, the newest N stay; --caches also empties .factory/envcache)
            env propose --file f   (the main session's proposal) · env set [--file f | --none] [hash]   (human-only: confirm it)
+           env seal --job J <hash>   (human-only: seal a repaired environment from your terminal)
 Deps       deps fetch [--add pypi:name==1.2.3,npm:name@1.2.3]   (the job's pinned packages, downloaded without running them,
            unpacked read-only under .factory/deps/<job>/; a failed download is a gap, never a stop) · deps show
            deps check --file ledger.json   (an API ledger's quotes against the fetched source; agents may run it)
@@ -185,7 +186,6 @@ function run(argv) {
         lanes: opt.lanes,
         threatModel: opt['threat-model'] ? true : opt['no-threat-model'] ? false : undefined,
         planCritique: opt['plan-critique'] ? true : undefined,
-        acceptDegraded: Boolean(opt['accept-degraded']),
         dryRun: Boolean(opt['dry-run']),
       });
       return opt.json || opt['dry-run'] ? p : p.then((r) => runner.summaryText(r));
@@ -295,7 +295,6 @@ function run(argv) {
         lanes: opt.lanes,
         threatModel: opt['threat-model'] ? true : opt['no-threat-model'] ? false : undefined,
         planCritique: opt['plan-critique'] ? true : undefined,
-        acceptDegraded: Boolean(opt['accept-degraded']),
       });
       if (opt.out) {
         writeJson(path.resolve(opt.out), brief);
@@ -542,6 +541,8 @@ function run(argv) {
         return r;
       }
       if (sub === 'propose') return E.propose(R(), { file: opt.file });
+      // human-only: the terminal seal of a repaired environment (factory env seal --job J <hash>)
+      if (sub === 'seal') return C('human').sealEnvironment(R(), { jobId: J, hash: pos[2] || null, channel: tty });
       if (sub === 'set') return C('human').setEnvironment(R(), { file: opt.file, none: Boolean(opt.none), expectHash: pos[2] || null, channel: tty });
       if (sub === 'prepare') {
         // factory run's own step before a wave's builders: the environment in one worktree
@@ -611,7 +612,7 @@ function logCommand(argv, res, err) {
     if (pos[0] === 'next') Object.assign(extra, { action: r.action || null, step: r.step || null });
     // A human-only command that went through came from a terminal the CLI accepted as yours
     // (TTY, typed confirmation): the inspector reads it as a human action, not the driver's.
-    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1])) || (pos[0] === 'env' && pos[1] === 'set')) extra.channel = 'tty';
+    if (HUMAN_CLI.has(pos[0]) || (pos[0] === 'lessons' && ['accept', 'reject', 'promote'].includes(pos[1])) || (pos[0] === 'env' && ['set', 'seal'].includes(pos[1]))) extra.channel = 'tty';
     events.append(root, {
       event: 'cli',
       cmd: pos[0],

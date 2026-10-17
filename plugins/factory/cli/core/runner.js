@@ -1102,7 +1102,7 @@ function askedFor(d) {
 
 // A workflow runs only when `factory next` asked for exactly it, on an active job with no
 // gate pending, and its result hasn't been recorded for that decision yet (a degraded or
-// stale result may be run again, e.g. with --accept-degraded).
+// stale result may be run again).
 function preflight(root, state, workflow, config) {
   const refuse = (message, reason, extra = {}) => fail(`${message} Nothing was started.`, 'not_waiting_for_workflow', { reason, job: state.id, ...extra });
   if (state.status !== 'active') {
@@ -1252,7 +1252,7 @@ function copilotUnavailable(ctx) {
   fail(`${how} (${u.detail}) Nothing was recorded.`, 'copilot_unavailable', { why: u.why, detail: u.detail, copilot: ctx.settings.bin, agents: ctx.runs });
 }
 
-async function run(root, { jobId, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded, dryRun = false, quiet = false }) {
+async function run(root, { jobId, workflow, config, mode, scope, lanes, threatModel, planCritique, dryRun = false, quiet = false }) {
   if (!WORKFLOWS.includes(workflow)) fail(`factory run <${WORKFLOWS.join('|')}> (got ${workflow || 'nothing'})`, 'bad_input');
   const job = require('./job');
   let state = job.resolve(root, jobId);
@@ -1266,7 +1266,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     } catch (e) {
       check = { ok: false, code: e.code, message: e.message };
     }
-    const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
+    const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique });
     const S = settings(root, state);
     const ctx = { root, state, brief, settings: S, files: 0, scratch: path.join(root, '.factory', 'scratch', 'runner', state.id, '<run>') };
     return { dry_run: true, job: state.id, workflow, config: brief.config || null, copilot: S.bin, max_parallel_agents: S.maxParallel, preflight: check, brief, agents: plannedAgents(ctx) };
@@ -1277,7 +1277,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
   try {
     state = job.resolve(root, state.id);
     const decision = preflight(root, state, workflow, config);
-    const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded });
+    const brief = require('./wfargs').build(root, { jobId: state.id, workflow, config, mode, scope, lanes, threatModel, planCritique });
     const S = settings(root, state);
     // the disk budget (transcripts.pruneAll): this job's older runs per workflow, ended jobs, the total;
     // this run's folder does not exist yet, and other jobs' live runs are never touched
@@ -1308,7 +1308,7 @@ async function run(root, { jobId, workflow, config, mode, scope, lanes, threatMo
     };
 
     const args = {};
-    for (const [k, v] of Object.entries({ config, mode, scope, lanes, 'threat-model': threatModel, 'plan-critique': planCritique, 'accept-degraded': acceptDegraded || undefined })) if (v !== undefined && v !== null) args[k] = v;
+    for (const [k, v] of Object.entries({ config, mode, scope, lanes, 'threat-model': threatModel, 'plan-critique': planCritique })) if (v !== undefined && v !== null) args[k] = v;
     logCli(root, { cmd: 'wfargs', sub: workflow, args, job: state.id, workflow, config: brief.config || config || null, mode: brief.mode || null, brief_hash: brief.input_hash || null });
 
     // The run's boundaries and each step as it starts, in the event log while the run is live, so

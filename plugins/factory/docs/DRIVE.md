@@ -31,7 +31,6 @@ Every stop has a `kind`:
 | `gate` | A human gate: H1, H2, H3, HF, HS, EH1–EH3 or A | Reply `approve` or `deny <what must change>` |
 | `clarify` | Clarify waits on the user: the decision sheet (it opens with the read-back), a read-back that needs them (a pin conflict, a question only they can answer), or a redirect read-back | Answer the sheet, reply `ok`, or say what to change |
 | `questions` | Ground's blocking questions | Answer them; the main session records each answer with `factory answer` |
-| `degraded` | A workflow ran without an angle | Re-run it, or go on without it (`--accept-degraded`) |
 | `parked` | The job parked, with a typed reason and, for a loop or the budget, a specific question (see below) | Your answer in your own words (it resumes the job with them), `resume +50%` for the budget, or the change it suggests |
 | `wait` | The **ship review** (your checks of criteria, unsettled findings, the push: `ship_review`), the merge, or an open PR | One reply for the review (`confirm AC-2; dismiss finding code-1 <why>; approve ship`); merge on GitHub (the factory notices) or locally, then reply `merged` |
 | `amend` | An amendment needs writing (what changed, and who asked) | The main session follows the amend skill |

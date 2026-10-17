@@ -306,6 +306,14 @@ function resume(root, { jobId, step, words: given = null, channel }) {
   const sp = splitResume(state, step);
   const words = [given, sp.words].filter(Boolean).join(' ').trim() || null;
   if (needsGrant(state, words)) fail(GRANT_MSG(state), 'needs_grant');
+  // a repaired build environment waits for its seal: a bare resume would discard it (flow map
+  // §15.2); the terminal seals with factory env seal, and resume with words repairs it again
+  if (state.park && state.park.kind === 'environment_repair' && !words) {
+    const short = (state.env_repair || {}).short || '<hash>';
+    fail(`A repaired build environment ${short} waits for your seal. Seal it from this terminal with: factory env seal --job ${state.id} ${short} (or reply "approve environment ${short}" in chat). "factory resume <your words>" discards it and repairs again with your words.`, 'seal_or_words');
+  }
+  // "Stop here (cancel job)" is a cancel, never a resume (flow map §15.3)
+  if (state.park && state.park.from === 'environment' && /^\s*c\s*$/i.test(String(words || '')) && /cancel job/i.test(String(((state.park.options || [])[2] || {}).text || ''))) return stop(root, { jobId: state.id, kind: 'cancelled', channel, reason: 'the build environment could not be fixed (option c)' });
   confirmTyped(channel, state.id, 'resume it');
   applyResume(root, state, { step: sp.step, words });
   job.save(root, state);
@@ -402,6 +410,9 @@ function replyToPark(root, { jobId, text, channel }) {
     const envPark = state.park && state.park.kind === 'environment_repair';
     return { job: state.id, resumed: false, pending: true, question, message: envPark ? `Nothing was sealed or resumed. Reply "yes" to DISCARD the repaired environment ${(state.env_repair || {}).short || ''} and send your words to a new repair round, or "approve environment ${(state.env_repair || {}).short || '<hash>'}" to seal it.` : `Nothing was resumed. Use this as your answer to "${question}"? Reply "yes" to resume ${state.id} with it (or answer the question).` };
   }
+  // "Stop here (cancel job)" (environment_broken, option c) cancels the job; it is not a resume
+  // (flow map §15.3)
+  if (ans.option && state.park && state.park.from === 'environment' && /cancel job/i.test(String(ans.optionText || ''))) return stop(root, { jobId: state.id, kind: 'cancelled', channel, reason: 'the build environment could not be fixed (the park\'s cancel option)' });
   confirmTyped(channel, state.id, 'resume it with your words');
   applyResume(root, state, { words, via: ans.via === 'option' ? `option ${ans.option}` : 'reply', option: ans.option ? { key: ans.option, text: ans.optionText, extra: ans.extra } : null, channel });
   job.save(root, state);
@@ -482,6 +493,23 @@ function applyResume(root, state, { step = null, via = null, words = null, optio
   state.park = null;
   state.pending_gate = null;
   return state;
+}
+
+// factory env seal --job J <hash>: the terminal form of "approve environment <hash>" on a
+// repaired environment's seal question (human-only, with the typed code; flow map §15.2).
+function sealEnvironment(root, { jobId, hash, channel }) {
+  requireHumanChannel(channel);
+  const state = job.resolve(root, jobId);
+  if (state.status !== 'parked' || !state.park || state.park.kind !== 'environment_repair' || !state.env_repair) fail(`${state.id} has no repaired build environment waiting for your seal.`, 'no_seal_pending');
+  const want = state.env_repair.short;
+  if (!hash) fail(`Name the environment you seal: factory env seal --job ${state.id} ${want}. Nothing was sealed.`, 'explicit_seal_needed');
+  if (String(hash).toLowerCase() !== want) fail(`The repaired environment waiting for your seal is ${want}, not ${hash}: it changed after it was shown. Nothing was sealed.`, 'stale_environment');
+  confirmTyped(channel, state.id, `seal the repaired build environment ${want}`);
+  const a = (state.park.options || [])[0];
+  applyResume(root, state, { words: a ? a.text : 'seal', via: 'option a', option: { key: 'a', text: a ? a.text : 'seal', extra: null }, channel });
+  job.save(root, state);
+  log(root, state, 'resume', { channel, via: 'env seal', option: 'a' });
+  return { job: state.id, sealed: want, resumed: true, message: `Sealed the repaired build environment ${want} for ${state.id}. Copilot continues with factory next.` };
 }
 
 function stop(root, { jobId, kind, channel, reason }) {
@@ -808,4 +836,4 @@ function applyReply(root, parsed, channel = 'chat') {
   }
 }
 
-module.exports = { readReply, applyResume, replyToPark, parkAnswer, approveShip, parseBatch, budgetGrant, splitResume, snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };
+module.exports = { sealEnvironment, readReply, applyResume, replyToPark, parkAnswer, approveShip, parseBatch, budgetGrant, splitResume, snapshot, GATE_IDS, requireHumanChannel, confirmTyped, confirmationCode, CODE_ALPHABET, agentContext, testToken, AGENT_ENV, approve, deny, resume, stop, waive, merged, confirmAc, changeAssumption, settleFinding, setEnvironment, parseReply, nearMiss, REPLY_FORMS, applyReply, sha256 };

@@ -2793,6 +2793,9 @@ function deferredText(root, state) {
 
 // Floor intent_grounded for a v3 job: nothing the contract cites rests on unusable evidence.
 function floorOk(ctx) {
+  // a job whose rulebook (recipe.lock.json) predates the floor passes, as for v1/v2 jobs
+  const lock = require('../lib/util').readJson(require('../lib/paths').jobPaths(ctx.root, ctx.state.id).recipeLock, null);
+  if (lock && lock.floors && lock.floors.floors && !JSON.stringify(lock.floors.floors).includes('intent_grounded')) return true;
   const data = load(ctx.root, ctx.state.id);
   if (!data) return require('./intent').floorOk(ctx);
   if (data.tampered) return false;

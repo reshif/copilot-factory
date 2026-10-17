@@ -28,7 +28,6 @@ A request with no active job for it → follow the **intake** skill to create th
 | `gate` | Follow the **gate** skill with the stop's `next`. | **stop** |
 | `clarify` | Show the stop's `screen` **as it is** (the **clarify** skill says how to record what the user says). | **stop** |
 | `questions` | Ask exactly the `questions` as one numbered list. Record each answer with `factory answer --question "…" --answer "…"`. | **stop**, then `factory drive --detach` |
-| `degraded` | Ask the user: re-run, or go on without the missing angle. To go on, write the angle under Assumptions in the contract and run the workflow from `next` with `--accept-degraded`. | **stop**, then `factory drive --detach` |
 | `parked` | Follow the **park** skill: `next.reason`, `park.kind`, `park.question` with its options and recommendation, and `park.next`. | **stop** |
 | `wait` | With `ship_review`: show its `screen` as it is (the **ship** skill: one reply settles it). A merge: the **ship** skill's commands; on GitHub the factory notices the merge itself, locally the user replies `merged` (`next.merge_seen` says the base branch contains the job; show `next.reason`, never reply for them). A build that waits for its environment (`rule` `env.unconfirmed`): show `next.environment` and the `confirm environment <hash>` reply from `next.reason`; never confirm it yourself. Otherwise say in one line what is awaited (`summary`). | **stop** |
 | `amend` | Follow the **amend** skill. | `factory drive --detach` |

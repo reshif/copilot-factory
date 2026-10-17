@@ -693,7 +693,7 @@ function reconcile(root, state, ctx) {
   });
 }
 
-function build(root, { jobId, workflow, config, mode, scope, lanes, threatModel, planCritique, acceptDegraded, inline = false }) {
+function build(root, { jobId, workflow, config, mode, scope, lanes, threatModel, planCritique, inline = false }) {
   const state = job.resolve(root, jobId);
   RUN = inline ? null : { n: 0, dir: path.join(root, '.factory', 'scratch', 'briefs', state.id, `${workflow}${config ? `-${config}` : ''}-${Date.now()}`) };
   PROJECT = (() => {

@@ -404,7 +404,10 @@ function apply(root, { jobId, file, envelope }) {
 
   budgets.addAgentRuns(state, env.budgets && env.budgets.used && env.budgets.used.agent_runs);
   job.save(root, state);
-  if (env.status === 'error') {
+  // an integrator that returned nothing (twice) is the integrator loop's case, not a generic error:
+  // recReconcile retries it on the loop engine and parks with a question (flow map §15.5)
+  const noIntegrator = env.workflow === 'reconcile' && env.status === 'error' && env.data && 'integrator' in env.data && !env.data.integrator;
+  if (env.status === 'error' && !noIntegrator) {
     recordRoster(root, state, env);
     ledger.append(root, state.id, { kind: 'error', workflow: env.workflow, config: env.config || null, summary: env.summary });
     return { job: state.id, status: 'error', message: `Workflow reported an error: ${env.summary}. factory next will retry once, then park.` };

@@ -45,7 +45,8 @@ function check(ctx, floor) {
     case 'contract_approved':
       return steps.approved(ctx, state.epic ? 'EH1' : 'H1', b.contract);
     case 'intent_grounded':
-      return require('./intent').floorOk(ctx);
+      // the clarify v3 check (it falls back to the v1/v2 intent record for older jobs): flow map §15.6
+      return require('./clarify').floorOk(ctx);
     case 'isolation':
       return steps.allTasksDone(ctx);
     case 'prove':

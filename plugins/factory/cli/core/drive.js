@@ -6,7 +6,6 @@
 //   gate        a human gate (H1, H2, H3, HF, HS, EH*, A): the human approves or denies
 //   clarify     clarify waits on the user (read-back, decision sheet, redirect read-back)
 //   questions   ground's blocking questions for the user
-//   degraded    a workflow ran without an angle: re-run, or go on without it
 //   parked      the job parked (typed: kind and the suggested next step)
 //   wait        the merge, a PR, a human check of a criterion
 //   amend       an amendment needs the main session (what changed, and the edit)
@@ -261,7 +260,6 @@ const STOP_TITLE = {
   gate: 'gate waits for you',
   clarify: 'clarify waits for your reply',
   questions: 'questions for you',
-  degraded: 'a run came back degraded',
   parked: 'job parked',
   wait: 'waiting on you',
   amend: 'an amendment needs you',
@@ -300,8 +298,6 @@ function stopDetail(kind, n, extra = {}) {
     }
     case 'questions':
       return { questions: extra.questions || [], summary: `${J}: ${(extra.questions || []).length} question(s) block the design.`, reply: 'answer each question', command: `factory answer --job ${J} --question "<question>" --answer "<answer>"` };
-    case 'degraded':
-      return { degraded: extra.degraded || [], summary: `${J}: ${n.workflow || 'a workflow'} ran without ${(extra.degraded || []).join(', ') || 'an angle'}: re-run it, or go on without it (recorded under Assumptions, then run with --accept-degraded).`, reply: 're-run | go on without it' };
     case 'parked': {
       const p = n.park || {};
       // a repaired build environment waits for its seal: the exact replies, never "resume" or "yes"
@@ -465,7 +461,9 @@ async function loop(ctx) {
           if (args[1] === 'clarify') return ctx.stop('clarify', n, { stage: j.stage, screen: j.screen });
           return ctx.stop('questions', n, { questions: (j.questions || []).map((q) => q.question || q) });
         }
-        if (j.status === 'degraded') return ctx.stop('degraded', n, { degraded: j.degraded || (j.workflow && j.workflow.degraded) || [] });
+        // (no record returns status degraded: a run missing an angle records retry, and the loop
+        // engine or the repeat guard asks the human; the old degraded stop and --accept-degraded
+        // never fired and are gone: flow map §15.4)
         continue;
       }
       case 'cli': {
